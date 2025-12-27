@@ -76,11 +76,7 @@ func (o *TestOrder) ApplyEvent(event interface{}) error {
 		o.CustomerID = e.CustomerID
 		o.Status = "Created"
 	case TestItemAdded:
-		o.Items = append(o.Items, OrderItem{
-			SKU:      e.SKU,
-			Quantity: e.Quantity,
-			Price:    e.Price,
-		})
+		o.Items = append(o.Items, OrderItem(e))
 	case TestOrderSubmitted:
 		o.Status = "Submitted"
 	}
@@ -195,10 +191,10 @@ func TestTestOrder_Integration(t *testing.T) {
 		order := NewTestOrder("order-123")
 
 		// Apply stored events
-		order.ApplyEvent(TestOrderCreated{OrderID: "order-123", CustomerID: "customer-456"})
-		order.ApplyEvent(TestItemAdded{SKU: "SKU-001", Quantity: 2, Price: 29.99})
-		order.ApplyEvent(TestItemAdded{SKU: "SKU-002", Quantity: 1, Price: 49.99})
-		order.ApplyEvent(TestOrderSubmitted{OrderID: "order-123"})
+		_ = order.ApplyEvent(TestOrderCreated{OrderID: "order-123", CustomerID: "customer-456"})
+		_ = order.ApplyEvent(TestItemAdded{SKU: "SKU-001", Quantity: 2, Price: 29.99})
+		_ = order.ApplyEvent(TestItemAdded{SKU: "SKU-002", Quantity: 1, Price: 49.99})
+		_ = order.ApplyEvent(TestOrderSubmitted{OrderID: "order-123"})
 
 		assert.Equal(t, "customer-456", order.CustomerID)
 		assert.Equal(t, "Submitted", order.Status)

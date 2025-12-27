@@ -591,7 +591,7 @@ func TestMemoryAdapter_Subscriptions(t *testing.T) {
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
-			adapter.Append(context.Background(), "Order-123", events, mink.NoStream)
+			_, _ = adapter.Append(context.Background(), "Order-123", events, mink.NoStream)
 		}()
 
 		// Receive event
@@ -613,7 +613,7 @@ func TestMemoryAdapter_Subscriptions(t *testing.T) {
 			{Type: "OrderCreated", Data: []byte(`{}`)},
 			{Type: "ItemAdded", Data: []byte(`{}`)},
 		}
-		adapter.Append(context.Background(), "Order-123", events, mink.NoStream)
+		_, _ = adapter.Append(context.Background(), "Order-123", events, mink.NoStream)
 
 		// Subscribe
 		ch, err := adapter.SubscribeAll(ctx, 0)

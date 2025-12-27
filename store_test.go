@@ -493,7 +493,7 @@ func BenchmarkEventStore_Append(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		streamID := "Order-" + string(rune(i))
-		store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
+		_ = store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
 	}
 }
 
@@ -511,11 +511,11 @@ func BenchmarkEventStore_Load(b *testing.B) {
 		StoreItemAdded{OrderID: "123", SKU: "SKU-003"},
 		StoreItemAdded{OrderID: "123", SKU: "SKU-004"},
 	}
-	store.Append(ctx, "Order-bench", events)
+	_ = store.Append(ctx, "Order-bench", events)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store.Load(ctx, "Order-bench")
+		_, _ = store.Load(ctx, "Order-bench")
 	}
 }
 
@@ -529,7 +529,7 @@ func BenchmarkEventStore_SaveAggregate(b *testing.B) {
 		order := NewStoreTestOrder("order-" + string(rune(i)))
 		order.Create("customer-456")
 		order.AddItem("SKU-001", 2, 29.99)
-		store.SaveAggregate(ctx, order)
+		_ = store.SaveAggregate(ctx, order)
 	}
 }
 
@@ -545,12 +545,12 @@ func BenchmarkEventStore_LoadAggregate(b *testing.B) {
 	for i := 0; i < 10; i++ {
 		order.AddItem("SKU-001", 1, 10.0)
 	}
-	store.SaveAggregate(ctx, order)
+	_ = store.SaveAggregate(ctx, order)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		loaded := NewStoreTestOrder("bench-order")
-		store.LoadAggregate(ctx, loaded)
+		_ = store.LoadAggregate(ctx, loaded)
 	}
 }
 

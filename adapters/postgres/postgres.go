@@ -242,7 +242,7 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Get current stream version with lock
 	var currentVersion int64
