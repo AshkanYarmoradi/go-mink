@@ -55,20 +55,12 @@ nav_external_links:
     url: https://github.com/AshkanYarmoradi/go-mink
     hide_icon: false
 
-# Collections
-collections:
-  docs:
-    permalink: "/:collection/:path/"
-    output: true
-
 # Default front matter
 defaults:
   - scope:
       path: ""
-      type: "docs"
     values:
       layout: "default"
-      nav_order: 1
 
 # Plugins
 plugins:
@@ -76,25 +68,20 @@ plugins:
   - jekyll-github-metadata
   - jekyll-include-cache
 
+# Include markdown files explicitly
+include:
+  - _pages
+  - "*.md"
+
 # Exclude files
 exclude:
-  - "*.md"
-  - "!index.md"
-  - "!01-introduction.md"
-  - "!02-architecture.md"
-  - "!03-event-store.md"
-  - "!04-read-models.md"
-  - "!05-adapters.md"
-  - "!06-cli.md"
-  - "!07-api-design.md"
-  - "!08-roadmap.md"
-  - "!09-advanced-patterns.md"
-  - "!10-security.md"
-  - "!11-testing.md"
   - Gemfile
   - Gemfile.lock
   - node_modules
   - vendor
+  - README.md
+  - LICENSE
+  - .gitignore
 
 # Aux links (top right)
 aux_links:
