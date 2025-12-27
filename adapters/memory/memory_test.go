@@ -652,3 +652,325 @@ func TestExtractCategory(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryAdapter_Load_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
+
+	adapter.Close()
+
+	_, err := adapter.Load(ctx, "Order-123", 0)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_GetStreamInfo_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
+
+	adapter.Close()
+
+	_, err := adapter.GetStreamInfo(ctx, "Order-123")
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := adapter.GetStreamInfo(ctx, "Order-123")
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_GetLastPosition_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+
+	adapter.Close()
+
+	_, err := adapter.GetLastPosition(context.Background())
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := adapter.GetLastPosition(ctx)
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_Snapshots_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	adapter.Close()
+
+	err := adapter.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`))
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAdapterClosed))
+
+	_, err = adapter.LoadSnapshot(ctx, "Order-123")
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+
+	err = adapter.DeleteSnapshot(ctx, "Order-123")
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := adapter.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`))
+	assert.Error(t, err)
+
+	_, err = adapter.LoadSnapshot(ctx, "Order-123")
+	assert.Error(t, err)
+
+	err = adapter.DeleteSnapshot(ctx, "Order-123")
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_Checkpoints_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	adapter.Close()
+
+	err := adapter.SetCheckpoint(ctx, "Projection", 100)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAdapterClosed))
+
+	_, err = adapter.GetCheckpoint(ctx, "Projection")
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_Checkpoints_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := adapter.SetCheckpoint(ctx, "Projection", 100)
+	assert.Error(t, err)
+
+	_, err = adapter.GetCheckpoint(ctx, "Projection")
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_Ping_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := adapter.Ping(ctx)
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_SubscribeAll_ClosedAdapter(t *testing.T) {
+	adapter := NewAdapter()
+	adapter.Close()
+
+	_, err := adapter.SubscribeAll(context.Background(), 0)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+}
+
+func TestMemoryAdapter_SubscribeStream(t *testing.T) {
+	t.Run("filters events by stream", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Add events to multiple streams
+		events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+		_, _ = adapter.Append(context.Background(), "Order-1", events, mink.NoStream)
+		_, _ = adapter.Append(context.Background(), "Order-2", events, mink.NoStream)
+		_, _ = adapter.Append(context.Background(), "Order-1", []adapters.EventRecord{{Type: "ItemAdded", Data: []byte(`{}`)}}, 1)
+
+		// Subscribe to Order-1 only
+		ch, err := adapter.SubscribeStream(ctx, "Order-1", 0)
+		require.NoError(t, err)
+
+		// Should receive 2 events from Order-1
+		received := make([]adapters.StoredEvent, 0)
+		timeout := time.After(500 * time.Millisecond)
+		for {
+			select {
+			case event := <-ch:
+				received = append(received, event)
+				if len(received) >= 2 {
+					goto done
+				}
+			case <-timeout:
+				goto done
+			}
+		}
+	done:
+		assert.Len(t, received, 2)
+		for _, e := range received {
+			assert.Equal(t, "Order-1", e.StreamID)
+		}
+	})
+}
+
+func TestMemoryAdapter_SubscribeCategory(t *testing.T) {
+	t.Run("filters events by category", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Add events to multiple categories
+		events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+		_, _ = adapter.Append(context.Background(), "Order-1", events, mink.NoStream)
+		_, _ = adapter.Append(context.Background(), "Customer-1", events, mink.NoStream)
+		_, _ = adapter.Append(context.Background(), "Order-2", events, mink.NoStream)
+
+		// Subscribe to Order category only
+		ch, err := adapter.SubscribeCategory(ctx, "Order", 0)
+		require.NoError(t, err)
+
+		// Should receive 2 events from Order category
+		received := make([]adapters.StoredEvent, 0)
+		timeout := time.After(500 * time.Millisecond)
+		for {
+			select {
+			case event := <-ch:
+				received = append(received, event)
+				if len(received) >= 2 {
+					goto done
+				}
+			case <-timeout:
+				goto done
+			}
+		}
+	done:
+		assert.Len(t, received, 2)
+	})
+}
+
+func TestMemoryAdapter_SubscribeStream_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := adapter.SubscribeStream(ctx, "Order-1", 0)
+	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_SubscribeCategory_ContextCancellation(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := adapter.SubscribeCategory(ctx, "Order", 0)
+	assert.Error(t, err)
+}
+
+func TestConcurrencyError(t *testing.T) {
+	t.Run("Error message contains details", func(t *testing.T) {
+		err := NewConcurrencyError("Order-123", 5, 7)
+
+		assert.Contains(t, err.Error(), "Order-123")
+		assert.Contains(t, err.Error(), "5")
+		assert.Contains(t, err.Error(), "7")
+	})
+
+	t.Run("Is adapters.ErrConcurrencyConflict", func(t *testing.T) {
+		err := NewConcurrencyError("Order-123", 5, 7)
+		assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict))
+	})
+
+	t.Run("Unwrap returns adapters.ErrConcurrencyConflict", func(t *testing.T) {
+		err := NewConcurrencyError("Order-123", 5, 7)
+		assert.Equal(t, adapters.ErrConcurrencyConflict, errors.Unwrap(err))
+	})
+
+	t.Run("errors.As extracts details", func(t *testing.T) {
+		err := NewConcurrencyError("Order-123", 5, 7)
+
+		var concErr *ConcurrencyError
+		require.True(t, errors.As(err, &concErr))
+		assert.Equal(t, "Order-123", concErr.StreamID)
+		assert.Equal(t, int64(5), concErr.ExpectedVersion)
+		assert.Equal(t, int64(7), concErr.ActualVersion)
+	})
+}
+
+func TestStreamNotFoundError(t *testing.T) {
+	t.Run("Error message contains stream ID", func(t *testing.T) {
+		err := NewStreamNotFoundError("Order-123")
+
+		assert.Contains(t, err.Error(), "Order-123")
+		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("Is adapters.ErrStreamNotFound", func(t *testing.T) {
+		err := NewStreamNotFoundError("Order-123")
+		assert.True(t, errors.Is(err, adapters.ErrStreamNotFound))
+	})
+
+	t.Run("Unwrap returns adapters.ErrStreamNotFound", func(t *testing.T) {
+		err := NewStreamNotFoundError("Order-123")
+		assert.Equal(t, adapters.ErrStreamNotFound, errors.Unwrap(err))
+	})
+}
+
+// Benchmarks for memory adapter
+func BenchmarkMemoryAdapter_Append(b *testing.B) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{"orderId":"123"}`)}}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		streamID := "Order-" + string(rune(i))
+		_, _ = adapter.Append(ctx, streamID, events, mink.AnyVersion)
+	}
+}
+
+func BenchmarkMemoryAdapter_Load(b *testing.B) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	// Setup: create stream with events
+	events := []adapters.EventRecord{
+		{Type: "OrderCreated", Data: []byte(`{}`)},
+		{Type: "ItemAdded", Data: []byte(`{}`)},
+		{Type: "ItemAdded", Data: []byte(`{}`)},
+	}
+	_, _ = adapter.Append(ctx, "Order-bench", events, mink.NoStream)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = adapter.Load(ctx, "Order-bench", 0)
+	}
+}
+
+func BenchmarkMemoryAdapter_Concurrent(b *testing.B) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			streamID := "Order-" + string(rune(i%1000))
+			_, _ = adapter.Append(ctx, streamID, events, mink.AnyVersion)
+			i++
+		}
+	})
+}

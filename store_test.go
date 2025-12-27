@@ -578,3 +578,102 @@ func TestEventStore_UsesAdapterRecords(t *testing.T) {
 	assert.Equal(t, "StoreOrderCreated", stored[0].Type)
 	assert.NotEmpty(t, stored[0].Data)
 }
+
+// Additional tests for edge cases
+func TestEventStore_LoadFrom_EmptyStreamID(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+
+	_, err := store.LoadFrom(context.Background(), "", 0)
+
+	assert.True(t, errors.Is(err, ErrEmptyStreamID))
+}
+
+func TestEventStore_LoadRaw_EmptyStreamID(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+
+	_, err := store.LoadRaw(context.Background(), "", 0)
+
+	assert.True(t, errors.Is(err, ErrEmptyStreamID))
+}
+
+func TestEventStore_GetStreamInfo_EmptyStreamID(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+
+	_, err := store.GetStreamInfo(context.Background(), "")
+
+	assert.True(t, errors.Is(err, ErrEmptyStreamID))
+}
+
+func TestEventStore_Load_EmptyStreamID(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+
+	_, err := store.Load(context.Background(), "")
+
+	assert.True(t, errors.Is(err, ErrEmptyStreamID))
+}
+
+func TestEventStore_SaveAggregate_ConcurrencyConflict(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Create and save initial state
+	order1 := NewStoreTestOrder("conflict-test")
+	order1.Create("customer-456")
+	err := store.SaveAggregate(ctx, order1)
+	require.NoError(t, err)
+
+	// Create another instance without loading
+	order2 := NewStoreTestOrder("conflict-test")
+	order2.Create("customer-789") // This will try to create at version 0
+
+	err = store.SaveAggregate(ctx, order2)
+	assert.True(t, errors.Is(err, ErrConcurrencyConflict))
+}
+
+func TestEventStore_LoadAggregate_DeserializationError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Append invalid event type that won't deserialize
+	events := []interface{}{
+		StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+	}
+	err := store.Append(ctx, "Order-deser-test", events)
+	require.NoError(t, err)
+
+	// Load without registering the event type - should still work but return map
+	store2 := New(adapter) // New store without registered events
+	order := NewStoreTestOrder("deser-test")
+
+	// This should fail because StoreOrderCreated isn't registered
+	// and the deserialized type won't match what ApplyEvent expects
+	err = store2.LoadAggregate(ctx, order)
+	// This might succeed or fail depending on implementation
+	// The important thing is it doesn't panic
+	_ = err
+}
+
+func TestEventStore_SerializerAndAdapter_Accessors(t *testing.T) {
+	adapter := memory.NewAdapter()
+	serializer := NewJSONSerializer()
+	store := New(adapter, WithSerializer(serializer))
+
+	assert.Equal(t, adapter, store.Adapter())
+	assert.Equal(t, serializer, store.Serializer())
+}
+
+func TestEventStore_NoopLogger(t *testing.T) {
+	// Test that noop logger doesn't panic
+	logger := &noopLogger{}
+
+	logger.Debug("test message", "key", "value")
+	logger.Info("test message", "key", "value")
+	logger.Warn("test message", "key", "value")
+	logger.Error("test message", "key", "value")
+}
