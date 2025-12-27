@@ -377,4 +377,4 @@ $ go-mink_CONFIG=go-mink.staging.yaml go-mink projection list
 
 ---
 
-Next: [API Design →](pi-design)
+Next: [API Design →](api-design)
