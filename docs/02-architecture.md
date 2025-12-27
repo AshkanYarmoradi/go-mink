@@ -1,4 +1,20 @@
+---
+layout: default
+title: Architecture
+nav_order: 3
+permalink: /docs/architecture
+---
+
 # Architecture
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## High-Level Overview
 

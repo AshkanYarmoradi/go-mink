@@ -1,4 +1,20 @@
+---
+layout: default
+title: Adapters
+nav_order: 6
+permalink: /docs/adapters
+---
+
 # Adapter System
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Design Philosophy
 

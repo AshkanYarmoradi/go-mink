@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0f;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#12121a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0a0a0f;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.3" />
+      <stop offset="50%" style="stop-color:#7c3aed;stop-opacity:0.2" />
+      <stop offset="100%" style="stop-color:#00ADD8;stop-opacity:0.1" />
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00ADD8" />
+      <stop offset="50%" style="stop-color:#0077b6" />
+      <stop offset="100%" style="stop-color:#7c3aed" />
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bgGrad)"/>
+  
+  <!-- Grid pattern -->
+  <defs>
+    <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
+      <path d="M 60 0 L 0 0 0 60" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  
+  <!-- Glow circles -->
+  <circle cx="200" cy="500" r="300" fill="url(#glowGrad)" opacity="0.5"/>
+  <circle cx="1000" cy="200" r="250" fill="url(#glowGrad)" opacity="0.4"/>
+  
+  <!-- Logo/Icon -->
+  <g transform="translate(520, 120) scale(0.8)">
+    <circle cx="100" cy="100" r="90" fill="none" stroke="url(#textGrad)" stroke-width="3" filter="url(#glow)"/>
+    <g transform="translate(30, 45) scale(0.7)">
+      <!-- Mink silhouette -->
+      <ellipse cx="100" cy="80" rx="60" ry="30" fill="#00ADD8"/>
+      <circle cx="150" cy="70" r="24" fill="#00ADD8"/>
+      <circle cx="142" cy="52" r="7" fill="#00ADD8"/>
+      <circle cx="158" cy="52" r="7" fill="#00ADD8"/>
+      <ellipse cx="170" cy="74" rx="10" ry="7" fill="#0077b6"/>
+      <circle cx="176" cy="72" r="3" fill="#0a0a0f"/>
+      <circle cx="153" cy="66" r="4" fill="#0a0a0f"/>
+      <circle cx="154" cy="65" r="1.5" fill="white"/>
+      <path d="M 40 80 Q 25 65 32 50 Q 42 58 40 80" fill="#00ADD8"/>
+    </g>
+  </g>
+  
+  <!-- Main Title -->
+  <text x="600" y="340" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="800" fill="url(#textGrad)" text-anchor="middle" filter="url(#glow)">go-mink</text>
+  
+  <!-- Subtitle -->
+  <text x="600" y="400" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="400" fill="#94a3b8" text-anchor="middle">Event Sourcing &amp; CQRS Toolkit for Go</text>
+  
+  <!-- Feature badges -->
+  <g transform="translate(300, 460)">
+    <rect x="0" y="0" width="140" height="36" rx="18" fill="rgba(0, 173, 216, 0.15)" stroke="rgba(0, 173, 216, 0.3)" stroke-width="1"/>
+    <text x="70" y="24" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#00ADD8" text-anchor="middle">🎯 Event Store</text>
+  </g>
+  <g transform="translate(460, 460)">
+    <rect x="0" y="0" width="140" height="36" rx="18" fill="rgba(124, 58, 237, 0.15)" stroke="rgba(124, 58, 237, 0.3)" stroke-width="1"/>
+    <text x="70" y="24" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#a78bfa" text-anchor="middle">📖 Projections</text>
+  </g>
+  <g transform="translate(620, 460)">
+    <rect x="0" y="0" width="140" height="36" rx="18" fill="rgba(0, 173, 216, 0.15)" stroke="rgba(0, 173, 216, 0.3)" stroke-width="1"/>
+    <text x="70" y="24" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#00ADD8" text-anchor="middle">🔌 Pluggable</text>
+  </g>
+  <g transform="translate(780, 460)">
+    <rect x="0" y="0" width="140" height="36" rx="18" fill="rgba(124, 58, 237, 0.15)" stroke="rgba(124, 58, 237, 0.3)" stroke-width="1"/>
+    <text x="70" y="24" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#a78bfa" text-anchor="middle">🧪 Test-First</text>
+  </g>
+  
+  <!-- URL -->
+  <text x="600" y="580" font-family="JetBrains Mono, monospace" font-size="18" font-weight="500" fill="#64748b" text-anchor="middle">go-mink.dev</text>
+  
+  <!-- Border glow -->
+  <rect x="2" y="2" width="1196" height="626" rx="0" fill="none" stroke="rgba(0, 173, 216, 0.2)" stroke-width="4"/>
+</svg>

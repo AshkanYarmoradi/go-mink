@@ -1,4 +1,20 @@
+---
+layout: default
+title: Introduction
+nav_order: 2
+permalink: /docs/introduction
+---
+
 # Introduction
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## The Problem
 

@@ -1,4 +1,20 @@
+---
+layout: default
+title: Security
+nav_order: 10
+permalink: /docs/security
+---
+
 # Security & Compliance
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Event Encryption
 

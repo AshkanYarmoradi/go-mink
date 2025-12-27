@@ -1,4 +1,20 @@
+---
+layout: default
+title: Testing
+nav_order: 11
+permalink: /docs/testing
+---
+
 # Testing
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Testing Philosophy
 
@@ -30,7 +46,7 @@ Mink provides comprehensive testing utilities to make event-sourced systems easy
 ```go
 package minktest
 
-import "github.com/yourusername/mink"
+import "github.com/AshkanYarmoradi/go-mink"
 
 // NewInMemoryStore creates a test event store
 func NewInMemoryStore() *mink.EventStore {

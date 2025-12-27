@@ -1,4 +1,20 @@
+---
+layout: default
+title: Advanced Patterns
+nav_order: 9
+permalink: /docs/advanced-patterns
+---
+
 # Advanced Patterns
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Command Bus & CQRS
 

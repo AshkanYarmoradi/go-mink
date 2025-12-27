@@ -1,4 +1,20 @@
+---
+layout: default
+title: Read Models
+nav_order: 5
+permalink: /docs/read-models
+---
+
 # Read Models & Projections
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Overview
 

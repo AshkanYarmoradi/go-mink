@@ -1,4 +1,20 @@
+---
+layout: default
+title: Event Store
+nav_order: 4
+permalink: /docs/event-store
+---
+
 # Event Store Design
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
 
 ## Event Structure
 

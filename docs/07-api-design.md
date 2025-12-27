@@ -1,6 +1,22 @@
-# API Design
+---
+layout: default
+title: API Design
+nav_order: 8
+permalink: /docs/api-design
+---
 
-## Core Package (`go-mink`)
+# API Design
+{: .no_toc }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
+
+## Core Package (`mink`)
 
 ### Event Store
 

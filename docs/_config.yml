@@ -1,0 +1,138 @@
+# Site settings
+title: go-mink
+description: A Comprehensive Event Sourcing & CQRS Toolkit for Go
+baseurl: ""
+url: "https://go-mink.dev"
+lang: en
+
+# Repository
+repository: AshkanYarmoradi/go-mink
+
+# Theme
+remote_theme: just-the-docs/just-the-docs@v0.8.2
+color_scheme: dark
+
+# Logo
+logo: "/assets/images/logo.svg"
+
+# Favicon
+favicon_ico: "/assets/images/favicon.svg"
+
+# Footer
+footer_content: '<div style="text-align: center; padding: 1rem 0;">
+  <strong style="color: #00ADD8;">go-mink</strong> — Event Sourcing for Go<br/>
+  <span style="font-size: 0.875rem; color: #64748b;">
+    Made with ❤️ by <a href="https://github.com/AshkanYarmoradi" style="color: #00ADD8;">Ashkan Yarmoradi</a>
+    · <a href="https://github.com/AshkanYarmoradi/go-mink/blob/main/LICENSE" style="color: #64748b;">Apache 2.0</a>
+  </span>
+</div>'
+
+# Search
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 3
+  preview_words_before: 5
+  preview_words_after: 10
+  tokenizer_separator: /[\s/]+/
+  rel_url: true
+  button: true
+
+# Navigation
+nav_enabled: true
+nav_sort: case_insensitive
+
+# Back to top link
+back_to_top: true
+back_to_top_text: "↑ Top"
+
+# Heading anchor links
+heading_anchors: true
+
+# External links
+nav_external_links:
+  - title: GitHub
+    url: https://github.com/AshkanYarmoradi/go-mink
+    hide_icon: false
+
+# Collections
+collections:
+  docs:
+    permalink: "/:collection/:path/"
+    output: true
+
+# Default front matter
+defaults:
+  - scope:
+      path: ""
+      type: "docs"
+    values:
+      layout: "default"
+      nav_order: 1
+
+# Plugins
+plugins:
+  - jekyll-seo-tag
+  - jekyll-github-metadata
+  - jekyll-include-cache
+
+# Exclude files
+exclude:
+  - "*.md"
+  - "!index.md"
+  - "!01-introduction.md"
+  - "!02-architecture.md"
+  - "!03-event-store.md"
+  - "!04-read-models.md"
+  - "!05-adapters.md"
+  - "!06-cli.md"
+  - "!07-api-design.md"
+  - "!08-roadmap.md"
+  - "!09-advanced-patterns.md"
+  - "!10-security.md"
+  - "!11-testing.md"
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+
+# Aux links (top right)
+aux_links:
+  "go-mink on GitHub":
+    - "https://github.com/AshkanYarmoradi/go-mink"
+
+aux_links_new_tab: true
+
+# Callouts
+callouts:
+  warning:
+    title: Warning
+    color: yellow
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+  important:
+    title: Important
+    color: red
+
+# Code copy button
+enable_copy_code_button: true
+
+# Mermaid diagrams
+mermaid:
+  version: "10.6.0"
+
+# Last modified date
+last_edit_timestamp: true
+last_edit_time_format: "%b %e %Y at %I:%M %p"
+
+# GitHub edit link
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/AshkanYarmoradi/go-mink"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"

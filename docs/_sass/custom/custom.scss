@@ -1,0 +1,806 @@
+// ============================================
+// go-mink Modern UI/UX Design System
+// A sleek, modern documentation experience
+// ============================================
+
+// === Design Tokens ===
+$primary-gradient: linear-gradient(135deg, #00ADD8 0%, #0077b6 50%, #7c3aed 100%);
+$accent-gradient: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+$dark-bg: #0a0a0f;
+$dark-surface: #12121a;
+$dark-surface-elevated: #1a1a24;
+$dark-border: rgba(255, 255, 255, 0.08);
+$glow-primary: rgba(0, 173, 216, 0.4);
+$glow-accent: rgba(124, 58, 237, 0.3);
+$text-primary: #f1f5f9;
+$text-secondary: #94a3b8;
+$text-muted: #64748b;
+
+// === Animations ===
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px $glow-primary; }
+  50% { box-shadow: 0 0 40px $glow-primary, 0 0 60px $glow-accent; }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+// === Base Overrides ===
+body {
+  background: $dark-bg !important;
+  color: $text-primary;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+// === Main Content ===
+.main-content {
+  background: transparent !important;
+  animation: fadeInUp 0.6s ease-out;
+}
+
+.main {
+  background: $dark-bg !important;
+}
+
+// === Sidebar Navigation ===
+.side-bar {
+  background: $dark-surface !important;
+  border-right: 1px solid $dark-border;
+  backdrop-filter: blur(10px);
+  
+  .site-title {
+    font-weight: 700;
+    background: $primary-gradient;
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient-shift 3s ease infinite;
+  }
+}
+
+.nav-list {
+  .nav-list-item {
+    margin: 0.25rem 0;
+    
+    .nav-list-link {
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      color: $text-secondary;
+      position: relative;
+      overflow: hidden;
+      
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 100%;
+        width: 3px;
+        background: $primary-gradient;
+        transform: scaleY(0);
+        transition: transform 0.3s ease;
+      }
+      
+      &:hover {
+        background: rgba(0, 173, 216, 0.1);
+        color: $text-primary;
+        transform: translateX(4px);
+        
+        &::before {
+          transform: scaleY(1);
+        }
+      }
+      
+      &.active {
+        background: rgba(0, 173, 216, 0.15);
+        color: #00ADD8;
+        font-weight: 600;
+        
+        &::before {
+          transform: scaleY(1);
+        }
+      }
+    }
+  }
+}
+
+// === Hero Section (Home Page) ===
+.fs-9 {
+  font-size: 3.5rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em;
+  background: $primary-gradient;
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradient-shift 4s ease infinite;
+  margin-bottom: 1rem;
+}
+
+.fs-6.fw-300 {
+  font-size: 1.5rem !important;
+  color: $text-secondary;
+  font-weight: 400 !important;
+  max-width: 600px;
+}
+
+// === Modern Buttons ===
+.btn {
+  padding: 0.875rem 2rem !important;
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  font-size: 1rem !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  text-decoration: none !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    transition: left 0.5s ease;
+  }
+  
+  &:hover::before {
+    left: 100%;
+  }
+}
+
+.btn-primary {
+  background: $primary-gradient !important;
+  background-size: 200% auto !important;
+  border: none !important;
+  color: white !important;
+  box-shadow: 0 4px 20px $glow-primary, 0 0 0 0 transparent;
+  
+  &:hover {
+    background-position: right center !important;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px $glow-primary, 0 0 40px $glow-accent;
+  }
+}
+
+.btn:not(.btn-primary) {
+  background: $dark-surface-elevated !important;
+  border: 1px solid $dark-border !important;
+  color: $text-primary !important;
+  
+  &:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-color: rgba(0, 173, 216, 0.5) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+}
+
+// === Glassmorphism Cards ===
+.code-example {
+  background: rgba(26, 26, 36, 0.6) !important;
+  backdrop-filter: blur(20px);
+  border: 1px solid $dark-border;
+  border-radius: 16px;
+  padding: 1.5rem !important;
+  margin: 2rem 0;
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 173, 216, 0.5), transparent);
+  }
+}
+
+// === Feature Tables ===
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 2rem 0;
+  animation: fadeInUp 0.6s ease-out;
+  
+  thead {
+    th {
+      background: $dark-surface-elevated !important;
+      color: $text-primary;
+      font-weight: 600;
+      padding: 1rem 1.25rem;
+      text-align: left;
+      border-bottom: 2px solid rgba(0, 173, 216, 0.3);
+      
+      &:first-child {
+        border-radius: 12px 0 0 0;
+      }
+      
+      &:last-child {
+        border-radius: 0 12px 0 0;
+      }
+    }
+  }
+  
+  tbody {
+    tr {
+      transition: all 0.3s ease;
+      
+      &:hover {
+        background: rgba(0, 173, 216, 0.05);
+        transform: scale(1.01);
+      }
+      
+      td {
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid $dark-border;
+        color: $text-secondary;
+        
+        &:first-child {
+          color: $text-primary;
+          font-weight: 500;
+        }
+      }
+      
+      &:last-child td {
+        border-bottom: none;
+        
+        &:first-child {
+          border-radius: 0 0 0 12px;
+        }
+        
+        &:last-child {
+          border-radius: 0 0 12px 0;
+        }
+      }
+    }
+  }
+}
+
+// === Modern Code Blocks ===
+.highlight,
+pre.highlight {
+  background: $dark-surface !important;
+  border: 1px solid $dark-border;
+  border-radius: 16px !important;
+  padding: 1.5rem !important;
+  margin: 1.5rem 0;
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 40px;
+    background: $dark-surface-elevated;
+    border-bottom: 1px solid $dark-border;
+    border-radius: 16px 16px 0 0;
+  }
+  
+  &::after {
+    content: '• • •';
+    position: absolute;
+    top: 10px;
+    left: 16px;
+    color: $text-muted;
+    font-size: 1.2rem;
+    letter-spacing: 4px;
+  }
+  
+  code {
+    display: block;
+    margin-top: 30px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.9rem;
+    line-height: 1.7;
+  }
+}
+
+pre:not(.highlight) {
+  background: $dark-surface !important;
+  border: 1px solid $dark-border;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+// Inline code
+p code,
+li code,
+td code {
+  background: rgba(0, 173, 216, 0.15) !important;
+  color: #5eead4 !important;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.875em;
+  font-weight: 500;
+}
+
+// === Headings ===
+h1, h2, h3, h4, h5, h6 {
+  color: $text-primary;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: 2.5rem;
+  margin-bottom: 1.5rem;
+  position: relative;
+  
+  &::after {
+    content: '';
+    display: block;
+    width: 60px;
+    height: 4px;
+    background: $primary-gradient;
+    border-radius: 2px;
+    margin-top: 0.75rem;
+  }
+}
+
+h2 {
+  font-size: 1.875rem;
+  margin-top: 3rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid $dark-border;
+}
+
+h3 {
+  font-size: 1.5rem;
+  color: #00ADD8;
+}
+
+// === Horizontal Rules ===
+hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, $dark-border, transparent);
+  margin: 3rem 0;
+}
+
+// === Links ===
+a {
+  color: #00ADD8;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  
+  &:hover {
+    color: #5eead4;
+    text-decoration: none;
+  }
+}
+
+// === Blockquotes ===
+blockquote {
+  background: rgba(0, 173, 216, 0.08);
+  border-left: 4px solid #00ADD8;
+  border-radius: 0 12px 12px 0;
+  padding: 1.25rem 1.5rem;
+  margin: 1.5rem 0;
+  color: $text-secondary;
+  font-style: italic;
+  
+  p {
+    margin: 0;
+  }
+}
+
+// === Custom Callouts ===
+.callout {
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin: 1.5rem 0;
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1.5rem;
+  }
+}
+
+.callout-tip {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  
+  &::before {
+    content: '💡';
+  }
+}
+
+.callout-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  
+  &::before {
+    content: '⚠️';
+  }
+}
+
+.callout-note {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  
+  &::before {
+    content: '📝';
+  }
+}
+
+.callout-danger {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  
+  &::before {
+    content: '🚨';
+  }
+}
+
+// === Badges ===
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 50px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge-go {
+  background: linear-gradient(135deg, #00ADD8, #0077b6);
+  color: white;
+  box-shadow: 0 2px 10px rgba(0, 173, 216, 0.3);
+}
+
+.badge-version {
+  background: $dark-surface-elevated;
+  color: $text-secondary;
+  border: 1px solid $dark-border;
+}
+
+.badge-new {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  animation: pulse-glow 2s infinite;
+}
+
+// === Feature Cards Grid ===
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  background: $dark-surface;
+  border: 1px solid $dark-border;
+  border-radius: 16px;
+  padding: 1.5rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: $primary-gradient;
+    transform: scaleX(0);
+    transition: transform 0.3s ease;
+  }
+  
+  &:hover {
+    transform: translateY(-4px);
+    border-color: rgba(0, 173, 216, 0.3);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 30px $glow-primary;
+    
+    &::before {
+      transform: scaleX(1);
+    }
+  }
+  
+  .feature-icon {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+  }
+  
+  .feature-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: $text-primary;
+    margin-bottom: 0.5rem;
+  }
+  
+  .feature-desc {
+    color: $text-secondary;
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+}
+
+// === Roadmap Styling ===
+.roadmap-phase {
+  position: relative;
+  padding-left: 2rem;
+  margin-bottom: 2.5rem;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: $primary-gradient;
+    border-radius: 2px;
+  }
+  
+  &::after {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 0;
+    width: 13px;
+    height: 13px;
+    background: #00ADD8;
+    border-radius: 50%;
+    box-shadow: 0 0 20px $glow-primary;
+  }
+}
+
+// === Search ===
+.search-input {
+  background: $dark-surface !important;
+  border: 1px solid $dark-border !important;
+  border-radius: 12px !important;
+  color: $text-primary !important;
+  padding: 0.75rem 1rem !important;
+  transition: all 0.3s ease;
+  
+  &:focus {
+    border-color: #00ADD8 !important;
+    box-shadow: 0 0 0 3px rgba(0, 173, 216, 0.2) !important;
+    outline: none;
+  }
+  
+  &::placeholder {
+    color: $text-muted;
+  }
+}
+
+.search-results {
+  background: $dark-surface !important;
+  border: 1px solid $dark-border !important;
+  border-radius: 12px !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4) !important;
+  
+  .search-result {
+    border-bottom: 1px solid $dark-border;
+    
+    &:hover {
+      background: rgba(0, 173, 216, 0.1);
+    }
+  }
+}
+
+// === Footer ===
+.site-footer {
+  border-top: 1px solid $dark-border;
+  background: $dark-surface;
+  padding: 2rem;
+  
+  .footer-content {
+    color: $text-muted;
+  }
+}
+
+// === Anchor Links ===
+.anchor-heading {
+  opacity: 0;
+  transition: all 0.3s ease;
+  color: #00ADD8 !important;
+  margin-left: 0.5rem;
+  
+  &:hover {
+    color: #5eead4 !important;
+  }
+}
+
+h2:hover .anchor-heading,
+h3:hover .anchor-heading,
+h4:hover .anchor-heading {
+  opacity: 1;
+}
+
+// === Back to Top Button ===
+.back-to-top {
+  background: $primary-gradient !important;
+  border-radius: 50% !important;
+  box-shadow: 0 4px 20px $glow-primary !important;
+  transition: all 0.3s ease !important;
+  
+  &:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 30px $glow-primary !important;
+  }
+}
+
+// === Scrollbar ===
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: $dark-bg;
+}
+
+::-webkit-scrollbar-thumb {
+  background: $dark-surface-elevated;
+  border-radius: 4px;
+  
+  &:hover {
+    background: rgba(0, 173, 216, 0.3);
+  }
+}
+
+// === Selection ===
+::selection {
+  background: rgba(0, 173, 216, 0.3);
+  color: $text-primary;
+}
+
+// === Lists ===
+ul, ol {
+  color: $text-secondary;
+  
+  li {
+    margin-bottom: 0.5rem;
+    line-height: 1.7;
+    
+    &::marker {
+      color: #00ADD8;
+    }
+  }
+}
+
+// === Mermaid Diagrams ===
+.mermaid {
+  background: $dark-surface !important;
+  border: 1px solid $dark-border;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+// === Responsive Design ===
+@media (max-width: 1024px) {
+  .side-bar {
+    border-right: none;
+    border-bottom: 1px solid $dark-border;
+  }
+}
+
+@media (max-width: 768px) {
+  .fs-9 {
+    font-size: 2.5rem !important;
+  }
+  
+  .fs-6.fw-300 {
+    font-size: 1.125rem !important;
+  }
+  
+  .btn {
+    padding: 0.75rem 1.5rem !important;
+    font-size: 0.9rem !important;
+  }
+  
+  h1 {
+    font-size: 2rem;
+  }
+  
+  h2 {
+    font-size: 1.5rem;
+  }
+  
+  table {
+    font-size: 0.875rem;
+  }
+  
+  .highlight {
+    border-radius: 12px !important;
+    
+    code {
+      font-size: 0.8rem;
+    }
+  }
+  
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+// === Print Styles ===
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  
+  .side-bar,
+  .back-to-top,
+  .search {
+    display: none !important;
+  }
+}
+
+// === Accessibility ===
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+// === Focus States ===
+*:focus-visible {
+  outline: 2px solid #00ADD8;
+  outline-offset: 2px;
+}

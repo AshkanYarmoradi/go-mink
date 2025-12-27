@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0f"/>
+      <stop offset="100%" style="stop-color:#12121a"/>
+    </linearGradient>
+    <linearGradient id="minkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#0077b6"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="32" height="32" rx="6" fill="url(#bgGrad)"/>
+  
+  <!-- Simplified Mink icon -->
+  <g transform="translate(4, 8) scale(0.5)">
+    <!-- Body -->
+    <ellipse cx="24" cy="18" rx="16" ry="8" fill="url(#minkGrad)"/>
+    <!-- Head -->
+    <circle cx="38" cy="14" r="7" fill="url(#minkGrad)"/>
+    <!-- Ear -->
+    <circle cx="36" cy="8" r="2" fill="url(#minkGrad)"/>
+    <circle cx="40" cy="8" r="2" fill="url(#minkGrad)"/>
+    <!-- Eye -->
+    <circle cx="40" cy="12" r="1.5" fill="#0a0a0f"/>
+    <!-- Nose -->
+    <circle cx="44" cy="14" r="1" fill="#0a0a0f"/>
+    <!-- Tail -->
+    <path d="M 8 18 Q 4 14 6 10 Q 10 12 8 18" fill="url(#minkGrad)"/>
+  </g>
+</svg>
