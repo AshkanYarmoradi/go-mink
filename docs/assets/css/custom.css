@@ -305,8 +305,8 @@ table tbody tr:last-child td:last-child {
 }
 
 /* === Modern Code Blocks === */
-/* Only style the outermost wrapper */
-.highlighter-rouge {
+/* Only style DIV elements with highlighter-rouge (block code), not inline code elements */
+div.highlighter-rouge {
   background: #12121a !important;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px !important;
@@ -315,8 +315,8 @@ table tbody tr:last-child td:last-child {
   overflow: hidden;
 }
 
-/* Header bar with dots */
-.highlighter-rouge::before {
+/* Header bar with dots - only for block code */
+div.highlighter-rouge::before {
   content: '';
   display: block;
   height: 40px;
@@ -325,7 +325,7 @@ table tbody tr:last-child td:last-child {
   border-radius: 16px 16px 0 0;
 }
 
-.highlighter-rouge::after {
+div.highlighter-rouge::after {
   content: '• • •';
   position: absolute;
   top: 10px;
@@ -336,7 +336,7 @@ table tbody tr:last-child td:last-child {
 }
 
 /* Inner highlight div - no extra styling */
-.highlighter-rouge .highlight {
+div.highlighter-rouge .highlight {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
@@ -345,20 +345,42 @@ table tbody tr:last-child td:last-child {
 }
 
 /* Remove pseudo-elements from inner elements */
-.highlighter-rouge .highlight::before,
-.highlighter-rouge .highlight::after,
-.highlighter-rouge pre::before,
-.highlighter-rouge pre::after {
+div.highlighter-rouge .highlight::before,
+div.highlighter-rouge .highlight::after,
+div.highlighter-rouge pre::before,
+div.highlighter-rouge pre::after {
   display: none !important;
 }
 
 /* The pre element inside */
-.highlighter-rouge pre.highlight {
+div.highlighter-rouge pre.highlight {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
   padding: 1rem 1.5rem !important;
   margin: 0 !important;
+}
+
+/* Inline code in headings and TOC - clean styling */
+h1 code, h2 code, h3 code, h4 code, h5 code, h6 code,
+.toc-entry code,
+#toc code,
+.nav-list code,
+a code {
+  background: rgba(0, 173, 216, 0.15) !important;
+  color: #5eead4 !important;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 500;
+  border: none !important;
+}
+
+/* Reset any pseudo-elements on inline code */
+code.highlighter-rouge::before,
+code.highlighter-rouge::after {
+  display: none !important;
+  content: none !important;
 }
 
 .highlight code,
