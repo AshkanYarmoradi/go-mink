@@ -893,11 +893,6 @@ func TestConcurrencyError(t *testing.T) {
 		assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict))
 	})
 
-	t.Run("Unwrap returns adapters.ErrConcurrencyConflict", func(t *testing.T) {
-		err := NewConcurrencyError("Order-123", 5, 7)
-		assert.Equal(t, adapters.ErrConcurrencyConflict, errors.Unwrap(err))
-	})
-
 	t.Run("errors.As extracts details", func(t *testing.T) {
 		err := NewConcurrencyError("Order-123", 5, 7)
 
@@ -922,9 +917,12 @@ func TestStreamNotFoundError(t *testing.T) {
 		assert.True(t, errors.Is(err, adapters.ErrStreamNotFound))
 	})
 
-	t.Run("Unwrap returns adapters.ErrStreamNotFound", func(t *testing.T) {
+	t.Run("errors.As extracts details", func(t *testing.T) {
 		err := NewStreamNotFoundError("Order-123")
-		assert.Equal(t, adapters.ErrStreamNotFound, errors.Unwrap(err))
+
+		var snfErr *StreamNotFoundError
+		require.True(t, errors.As(err, &snfErr))
+		assert.Equal(t, "Order-123", snfErr.StreamID)
 	})
 }
 
