@@ -1,21 +1,36 @@
-# AI Agent Instructions for go-mink Development
+# Go-Mink Developer Instructions
 
-## Project Overview
+> Instructions for AI agents and developers working on the go-mink codebase.
 
-**go-mink** is a comprehensive Event Sourcing and CQRS (Command Query Responsibility Segregation) toolkit for Go. It aims to bring the same developer-friendly experience that MartenDB provides for .NET to the Go ecosystem.
+## Quick Start for New Contributors
 
-### Mission Statement
-> "Make Event Sourcing in Go as simple as using a traditional ORM"
+```bash
+# Clone and setup
+git clone https://github.com/AshkanYarmoradi/go-mink.git
+cd go-mink
+go mod download
 
-### Key Differentiators
-- **Pluggable Adapters**: Events in PostgreSQL, read models in MongoDB, snapshots in Redis
-- **Complete CQRS**: Command Bus, Event Store, Projections, Sagas
-- **Developer Experience**: CLI tools, BDD testing, code generation
-- **Production Ready**: Encryption, GDPR, multi-tenancy, observability
+# Run tests
+go test -short ./...          # Unit tests only
+go test ./...                 # All tests (needs PostgreSQL)
 
----
+# Start PostgreSQL for integration tests
+docker run -d --name mink-pg -e POSTGRES_PASSWORD=mink -p 5432:5432 postgres:16
+export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmode=disable"
+```
 
-## Architecture Understanding
+## What is go-mink?
+
+**go-mink** is an Event Sourcing and CQRS library for Go - think "MartenDB for Go".
+
+**Core Idea**: Instead of storing current state, store all changes as events. Rebuild state by replaying events.
+
+```go
+// Traditional: UPDATE orders SET status = 'shipped' WHERE id = 123
+// Event Sourcing: Append(OrderShipped{OrderID: "123", ShippedAt: time.Now()})
+```
+
+## Architecture Overview
 
 ### Core Components
 

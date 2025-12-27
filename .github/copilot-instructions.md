@@ -209,3 +209,12 @@ See `/docs` folder for detailed documentation:
 - `advanced-patterns.md` - Commands, Sagas
 - `testing.md` - Test utilities
 - `roadmap.md` - Development phases
+
+## For Full Developer Instructions
+
+See [AGENTS.md](../AGENTS.md) in the repository root for comprehensive development instructions including:
+- Quick start setup
+- Complete package structure
+- Implementation guidelines with code examples
+- Testing approach (unit, integration, BDD)
+- PR guidelines and commit conventions
