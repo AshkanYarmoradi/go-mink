@@ -8,8 +8,8 @@ lang: en
 # Repository
 repository: AshkanYarmoradi/go-mink
 
-# Theme
-remote_theme: just-the-docs/just-the-docs@v0.8.2
+# Theme - use gem directly (more reliable than remote_theme)
+theme: just-the-docs
 color_scheme: dark
 
 # Logo
@@ -67,10 +67,13 @@ plugins:
   - jekyll-seo-tag
   - jekyll-github-metadata
   - jekyll-include-cache
+  - jekyll-remote-theme
 
 # Include markdown files explicitly
 include:
   - _pages
+  - _includes
+  - assets
   - "*.md"
 
 # Exclude files
@@ -82,6 +85,7 @@ exclude:
   - README.md
   - LICENSE
   - .gitignore
+  - _sass
 
 # Aux links (top right)
 aux_links:

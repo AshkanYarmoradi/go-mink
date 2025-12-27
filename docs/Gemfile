@@ -1,12 +1,15 @@
 source "https://rubygems.org"
 
 gem "jekyll", "~> 4.3"
+
+# Theme - use the gem directly instead of remote_theme
 gem "just-the-docs", "~> 0.8.2"
 
 group :jekyll_plugins do
   gem "jekyll-seo-tag"
   gem "jekyll-github-metadata"
   gem "jekyll-include-cache"
+  gem "jekyll-remote-theme"
 end
 
 # Windows and JRuby does not include zoneinfo files

@@ -3,38 +3,38 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
-<!-- Custom Styles -->
-<link rel="stylesheet" href="{{ '/assets/css/custom.css' | relative_url }}">
+<!-- Custom Styles - Using absolute_url to handle baseurl correctly -->
+<link rel="stylesheet" href="{{ '/assets/css/custom.css' | absolute_url }}">
 
 <!-- Open Graph / Social -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="{{ page.title }} | go-mink">
 <meta property="og:description" content="A Comprehensive Event Sourcing & CQRS Toolkit for Go">
-<meta property="og:image" content="{{ '/assets/images/og-image.png' | absolute_url }}">
+<meta property="og:image" content="{{ '/assets/images/og-image.svg' | absolute_url }}">
 <meta property="og:url" content="{{ page.url | absolute_url }}">
 
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{{ page.title }} | go-mink">
 <meta name="twitter:description" content="A Comprehensive Event Sourcing & CQRS Toolkit for Go">
-<meta name="twitter:image" content="{{ '/assets/images/og-image.png' | absolute_url }}">
+<meta name="twitter:image" content="{{ '/assets/images/og-image.svg' | absolute_url }}">
 
 <!-- Theme Color -->
 <meta name="theme-color" content="#00ADD8">
 <meta name="msapplication-TileColor" content="#0a0a0f">
 
-<!-- Additional styles for smooth loading -->
+<!-- Inline Critical Styles as fallback -->
 <style>
-  /* Prevent FOUC */
-  html {
-    visibility: visible;
-    opacity: 1;
+  /* Base dark theme fallback */
+  html, body {
+    background: #0a0a0f !important;
+    color: #f1f5f9;
   }
+  .side-bar { background: #12121a !important; }
+  .main-content { background: #0a0a0f !important; }
   
   /* Smooth scroll behavior */
-  html {
-    scroll-behavior: smooth;
-  }
+  html { scroll-behavior: smooth; }
   
   /* Custom selection */
   ::selection {

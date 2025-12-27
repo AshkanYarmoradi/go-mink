@@ -45,12 +45,18 @@ jobs:
         run: bundle install
 
       - name: Build with Jekyll
-        run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}" --destination ./_site
+        run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}" --destination ./_site --verbose
         env:
           JEKYLL_ENV: production
 
       - name: List built files
-        run: ls -la _site/
+        run: |
+          echo "=== Root _site ==="
+          ls -la _site/
+          echo "=== _site/assets ==="
+          ls -la _site/assets/ || echo "No assets folder"
+          echo "=== _site/assets/css ==="
+          ls -la _site/assets/css/ || echo "No css folder"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

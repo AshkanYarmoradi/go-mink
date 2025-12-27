@@ -265,7 +265,7 @@ orders, _ := repo.Query(ctx, go-mink.Query{
         {Field: "status", Op: "=", Value: "Pending"},
         {Field: "total_amount", Op: ">", Value: 100},
     },
-    OrderBy: []go-mink.OrderBy{{Field: "created_at", Desc: true}},
+    OrderBy: []go-mink.OrderBy{ {Field: "created_at", Desc: true} },
     Limit:   10,
 })
 ```

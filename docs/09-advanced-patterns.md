@@ -117,7 +117,7 @@ Register(bus, &AddItemHandler{store: store})
 
 err := bus.Dispatch(ctx, CreateOrder{
     CustomerID: "cust-123",
-    Items:      []Item{{SKU: "WIDGET-01", Qty: 2}},
+    Items:      []Item{ {SKU: "WIDGET-01", Qty: 2} },
 })
 ```
 
