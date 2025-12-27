@@ -1,0 +1,45 @@
+---
+---
+{
+{%- assign defined_collections = "" -%}
+{%- for collection in site.just_the_docs.collections -%}
+  {%- assign defined_collections = defined_collections | append: collection[0] | append: "," -%}
+{%- endfor -%}
+{%- assign defined_collections = defined_collections | split: "," -%}
+
+{%- assign defined_categories = "" -%}
+{%- for category in site.just_the_docs.categories -%}
+  {%- assign defined_categories = defined_categories | append: category[0] | append: "," -%}
+{%- endfor -%}
+{%- assign defined_categories = defined_categories | split: "," -%}
+
+{%- assign search_pages = "" | split: "" -%}
+
+{%- for page in site.html_pages -%}
+  {%- unless page.search_exclude == true -%}
+    {%- assign search_pages = search_pages | push: page -%}
+  {%- endunless -%}
+{%- endfor -%}
+
+{%- for collection_name in defined_collections -%}
+  {%- assign collection = site[collection_name] -%}
+  {%- for doc in collection -%}
+    {%- unless doc.search_exclude == true -%}
+      {%- assign search_pages = search_pages | push: doc -%}
+    {%- endunless -%}
+  {%- endfor -%}
+{%- endfor -%}
+
+{%- assign i = 0 -%}
+{%- for page in search_pages -%}
+  {%- if i != 0 -%},{%- endif -%}
+  "{{ i }}": {
+    "doc": {{ page.title | jsonify }},
+    "title": {{ page.title | jsonify }},
+    "content": {{ page.content | markdownify | strip_html | jsonify }},
+    "url": "{{ page.url | absolute_url }}",
+    "relUrl": "{{ page.url }}"
+  }
+  {%- assign i = i | plus: 1 -%}
+{%- endfor -%}
+}
