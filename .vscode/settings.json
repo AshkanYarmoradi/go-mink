@@ -1,0 +1,20 @@
+{
+    "github.copilot.chat.codeGeneration.instructions": [
+        {
+            "file": "AGENTS.md"
+        },
+        {
+            "file": ".github/copilot-instructions.md"
+        }
+    ],
+    "github.copilot.chat.reviewSelection.instructions": [
+        {
+            "text": "Review code following go-mink conventions: context.Context first, error last, use sentinel errors, table-driven tests."
+        }
+    ],
+    "github.copilot.chat.testGeneration.instructions": [
+        {
+            "text": "Generate table-driven tests using testify (assert/require). Use BDD Given/When/Then for aggregate behavior tests."
+        }
+    ]
+}
