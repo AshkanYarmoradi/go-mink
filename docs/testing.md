@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Testing
-nav_order: 12
+nav_order: 9
 permalink: /docs/testing
 ---
 

@@ -1,7 +1,7 @@
 ---
 layout: default
 title: API Design
-nav_order: 9
+nav_order: 7
 permalink: /docs/api-design
 ---
 

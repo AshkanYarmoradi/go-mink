@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Advanced Patterns
-nav_order: 10
+nav_order: 8
 permalink: /docs/advanced-patterns
 ---
 
