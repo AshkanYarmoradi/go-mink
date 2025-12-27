@@ -99,17 +99,17 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 
 | Document | Description |
 |----------|-------------|
-| [Introduction](docs/01-introduction.md) | Problem statement and goals |
-| [Architecture](docs/02-architecture.md) | System design and components |
-| [Event Store](docs/03-event-store.md) | Event storage design |
-| [Read Models](docs/04-read-models.md) | Projection system |
-| [Adapters](docs/05-adapters.md) | Database adapter system |
-| [CLI](docs/06-cli.md) | Command-line tooling |
-| [API Design](docs/07-api-design.md) | Public API reference |
-| [Roadmap](docs/08-roadmap.md) | Development phases |
-| [Advanced Patterns](docs/09-advanced-patterns.md) | Commands, Sagas, Outbox |
-| [Security](docs/10-security.md) | Encryption, GDPR, Versioning |
-| [Testing](docs/11-testing.md) | BDD fixtures and test utilities |
+| [Introduction](docs/introduction.md) | Problem statement and goals |
+| [Architecture](docs/architecture.md) | System design and components |
+| [Event Store](docs/event-store.md) | Event storage design |
+| [Read Models](docs/read-models.md) | Projection system |
+| [Adapters](docs/adapters.md) | Database adapter system |
+| [CLI](docs/cli.md) | Command-line tooling |
+| [API Design](docs/api-design.md) | Public API reference |
+| [Roadmap](docs/roadmap.md) | Development phases |
+| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox |
+| [Security](docs/security.md) | Encryption, GDPR, Versioning |
+| [Testing](docs/testing.md) | BDD fixtures and test utilities |
 
 ## License
 
