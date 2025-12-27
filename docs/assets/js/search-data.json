@@ -1,0 +1,20 @@
+---
+layout: null
+---
+{
+{%- assign i = 0 -%}
+{%- for page in site.html_pages -%}
+  {%- if page.search_exclude != true -%}
+    {%- assign page_content = page.content | strip_html | strip_newlines | replace: '\', '\\' | replace: '"', '\"' | truncate: 5000 -%}
+    {%- if i > 0 %},{% endif %}
+    "{{ i }}": {
+      "doc": {{ page.title | jsonify }},
+      "title": {{ page.title | jsonify }},
+      "content": {{ page_content | jsonify }},
+      "url": {{ page.url | jsonify }},
+      "relUrl": {{ page.url | jsonify }}
+    }
+    {%- assign i = i | plus: 1 -%}
+  {%- endif -%}
+{%- endfor -%}
+}
