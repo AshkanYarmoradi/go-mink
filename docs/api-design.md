@@ -392,4 +392,4 @@ func TestOrderAggregate(t *testing.T) {
 
 ---
 
-Next: [Roadmap →](roadmap)
+Next: [Advanced Patterns →](advanced-patterns)

@@ -555,4 +555,4 @@ func debugOrderState(orderID string, beforeRefund time.Time) {
 
 ---
 
-Next: [Testing →](testing)
+Next: [CLI →](cli)
