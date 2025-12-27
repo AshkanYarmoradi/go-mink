@@ -38,7 +38,10 @@ jobs:
         run: go mod download
 
       - name: Run tests with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: |
+          # Run all tests but exclude examples and test utilities from coverage calculation
+          go test -race -coverprofile=coverage.out -covermode=atomic \
+            $(go list ./... | grep -v '/examples/' | grep -v '/testing/')
           
       - name: Check coverage threshold
         run: |

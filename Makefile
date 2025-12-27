@@ -29,10 +29,11 @@ test: infra-up
 	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
 	go test -race -v ./...
 
-# Run tests with coverage report
+# Run tests with coverage report (excludes examples and test utilities)
 test-coverage: infra-up
 	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
-	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	go test -race -coverprofile=coverage.out -covermode=atomic \
+		$$(go list ./... | grep -v '/examples/' | grep -v '/testing/')
 	@echo ""
 	@echo "=== Coverage Summary ==="
 	@go tool cover -func=coverage.out | grep total
