@@ -305,36 +305,27 @@ table tbody tr:last-child td:last-child {
 }
 
 /* === Modern Code Blocks === */
-.highlight,
-pre.highlight,
-.highlighter-rouge .highlight {
+/* Only style the outermost wrapper */
+.highlighter-rouge {
   background: #12121a !important;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px !important;
-  padding: 1.5rem !important;
-  padding-top: 3rem !important;
   margin: 1.5rem 0;
   position: relative;
   overflow: hidden;
 }
 
-.highlight::before,
-pre.highlight::before,
-.highlighter-rouge .highlight::before {
+/* Header bar with dots */
+.highlighter-rouge::before {
   content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  display: block;
   height: 40px;
   background: #1a1a24;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px 16px 0 0;
 }
 
-.highlight::after,
-pre.highlight::after,
-.highlighter-rouge .highlight::after {
+.highlighter-rouge::after {
   content: '• • •';
   position: absolute;
   top: 10px;
@@ -342,6 +333,32 @@ pre.highlight::after,
   color: #64748b;
   font-size: 1.2rem;
   letter-spacing: 4px;
+}
+
+/* Inner highlight div - no extra styling */
+.highlighter-rouge .highlight {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Remove pseudo-elements from inner elements */
+.highlighter-rouge .highlight::before,
+.highlighter-rouge .highlight::after,
+.highlighter-rouge pre::before,
+.highlighter-rouge pre::after {
+  display: none !important;
+}
+
+/* The pre element inside */
+.highlighter-rouge pre.highlight {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 1rem 1.5rem !important;
+  margin: 0 !important;
 }
 
 .highlight code,
@@ -596,6 +613,21 @@ blockquote p {
 }
 
 /* === Search === */
+/* Move search button to right side */
+.search {
+  position: relative;
+}
+
+.search-input-wrap {
+  display: flex;
+  flex-direction: row-reverse;
+}
+
+.search-button {
+  order: 1;
+  margin-left: auto;
+}
+
 .search-input {
   background: #12121a !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
