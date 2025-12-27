@@ -1,4 +1,5 @@
----
----
-// This file imports our custom styles after the theme styles
-@import "custom/custom";
+// Custom setup file for Just-the-Docs
+// This file is loaded before the theme styles
+// Use it to override Sass variables
+
+// No custom setup needed - we use CSS overrides via head_custom.html
