@@ -59,8 +59,13 @@ nav_external_links:
 defaults:
   - scope:
       path: ""
+      type: "pages"
     values:
       layout: "default"
+  - scope:
+      path: "assets/**"
+    values:
+      layout: null
 
 # Plugins
 plugins:
