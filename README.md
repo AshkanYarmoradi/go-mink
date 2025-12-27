@@ -29,7 +29,12 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 🛠️ **CLI Tool** | Code generation, migrations, and diagnostics |
 | 🏢 **Multi-tenancy** | Built-in tenant isolation strategies |
 | ⚡ **High Performance** | Leveraging Go's concurrency primitives |
-| 🧪 **Testing Utilities** | In-memory adapters and test helpers |
+| 🧪 **Testing Utilities** | BDD-style fixtures and test helpers |
+| 📋 **Command Bus** | Full CQRS with command handlers and middleware |
+| 🔄 **Sagas** | Process manager for long-running workflows |
+| 🔐 **Security** | Field-level encryption and GDPR compliance |
+| 📊 **Event Versioning** | Schema evolution with upcasting |
+| 📤 **Outbox Pattern** | Reliable event publishing to external systems |
 
 ## Quick Example
 
@@ -70,6 +75,9 @@ func main() {
 | [CLI](docs/06-cli.md) | Command-line tooling |
 | [API Design](docs/07-api-design.md) | Public API reference |
 | [Roadmap](docs/08-roadmap.md) | Development phases |
+| [Advanced Patterns](docs/09-advanced-patterns.md) | Commands, Sagas, Outbox |
+| [Security](docs/10-security.md) | Encryption, GDPR, Versioning |
+| [Testing](docs/11-testing.md) | BDD fixtures and test utilities |
 
 ## License
 

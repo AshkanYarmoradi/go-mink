@@ -3,12 +3,12 @@
 ## Version Overview
 
 ```
-v0.1.0 ──► v0.2.0 ──► v0.3.0 ──► v0.4.0 ──► v1.0.0
-  │          │          │          │          │
-  ▼          ▼          ▼          ▼          ▼
- Core     Read       CLI &      Multi-    Production
- Event    Models     DX         tenant    Ready
- Store                          & Scale
+v0.1.0 ──► v0.2.0 ──► v0.3.0 ──► v0.4.0 ──► v0.5.0 ──► v1.0.0
+  │          │          │          │          │          │
+  ▼          ▼          ▼          ▼          ▼          ▼
+ Core      CQRS &    Read      CLI &     Security   Production
+ Event     Commands  Models    DX        & Scale    Ready
+ Store
 ```
 
 ## Phase 1: Foundation (v0.1.0)
@@ -50,7 +50,49 @@ store.LoadAggregate(ctx, loaded)
 
 ---
 
-## Phase 2: Read Models (v0.2.0)
+## Phase 2: CQRS & Command Pattern (v0.2.0)
+
+**Timeline: 6-8 weeks**
+
+### Command Bus
+- [ ] Command interface design
+- [ ] Command handler registration
+- [ ] Command bus implementation
+- [ ] Command middleware pipeline
+- [ ] Validation middleware
+
+### Idempotency
+- [ ] Idempotency key generation
+- [ ] Idempotency store interface
+- [ ] PostgreSQL idempotency adapter
+- [ ] Idempotency middleware
+
+### Causation & Correlation
+- [ ] Enhanced metadata (correlation ID, causation ID)
+- [ ] Causation chain tracking
+- [ ] Request context propagation
+
+### Deliverables
+```go
+// By end of v0.2.0, commands work:
+bus := mink.NewCommandBus()
+bus.Register(&CreateOrderHandler{store: store})
+bus.Use(mink.ValidationMiddleware())
+bus.Use(mink.IdempotencyMiddleware(idempotencyStore))
+
+err := bus.Dispatch(ctx, CreateOrder{
+    CustomerID: "cust-123",
+    Items:      items,
+})
+```
+
+---
+
+## Phase 3: Read Models (v0.3.0)
+
+**Timeline: 6-8 weeks**
+
+## Phase 3: Read Models (v0.3.0)
 
 **Timeline: 6-8 weeks**
 
@@ -60,6 +102,7 @@ store.LoadAggregate(ctx, loaded)
 - [ ] Projection checkpointing
 - [ ] Projection rebuilding
 - [ ] Error handling & retries
+- [ ] Hot projection swap (zero-downtime updates)
 
 ### Read Model Repository
 - [ ] Generic repository interface
@@ -75,8 +118,8 @@ store.LoadAggregate(ctx, loaded)
 
 ### Deliverables
 ```go
-// By end of v0.2.0, projections work:
-engine := go-mink.NewProjectionEngine(store)
+// By end of v0.3.0, projections work:
+engine := mink.NewProjectionEngine(store)
 engine.RegisterInline(&OrderSummaryProjection{})
 engine.RegisterAsync(&OrderAnalyticsProjection{})
 engine.Start(ctx)
@@ -84,22 +127,23 @@ engine.Start(ctx)
 // Query read models
 repo := postgres.NewRepository[OrderSummary](db)
 orders, _ := repo.Find(ctx, 
-    go-mink.NewQuery().Where("status", "=", "pending"))
+    mink.NewQuery().Where("status", "=", "pending"))
 ```
 
 ---
 
-## Phase 3: Developer Experience (v0.3.0)
+## Phase 4: Developer Experience (v0.4.0)
 
 **Timeline: 6-8 weeks**
 
 ### CLI Tool
-- [ ] `go-mink init` - Project scaffolding
-- [ ] `go-mink generate` - Code generation
-- [ ] `go-mink migrate` - Schema management
-- [ ] `go-mink projection` - Projection management
-- [ ] `go-mink stream` - Stream inspection
-- [ ] `go-mink diagnose` - Health checks
+- [ ] `mink init` - Project scaffolding
+- [ ] `mink generate` - Code generation
+- [ ] `mink migrate` - Schema management
+- [ ] `mink projection` - Projection management
+- [ ] `mink stream` - Stream inspection
+- [ ] `mink diagnose` - Health checks
+- [ ] `mink schema` - Event schema management
 
 ### Additional Serializers
 - [ ] Protocol Buffers support
@@ -112,6 +156,14 @@ orders, _ := repo.Find(ctx,
 - [ ] Tracing middleware (OpenTelemetry)
 - [ ] Retry middleware
 
+### Testing Utilities
+- [ ] BDD-style test fixtures (Given/When/Then)
+- [ ] Event assertions
+- [ ] Event diffing
+- [ ] Projection test helpers
+- [ ] Saga test fixtures
+- [ ] Test containers integration
+
 ### Documentation
 - [ ] API reference docs
 - [ ] Getting started guide
@@ -120,16 +172,80 @@ orders, _ := repo.Find(ctx,
 
 ### Deliverables
 ```bash
-# By end of v0.3.0, CLI works:
-$ go-mink init myapp
-$ go-mink generate aggregate Order
-$ go-mink migrate up
-$ go-mink projection rebuild OrderSummary
+# By end of v0.4.0, CLI works:
+$ mink init myapp
+$ mink generate aggregate Order
+$ mink migrate up
+$ mink projection rebuild OrderSummary
 ```
 
 ---
 
-## Phase 4: Scale & Multi-tenancy (v0.4.0)
+## Phase 5: Security & Advanced Patterns (v0.5.0)
+
+**Timeline: 8-10 weeks**
+
+### Saga / Process Manager
+- [ ] Saga interface design
+- [ ] Saga state persistence
+- [ ] Saga manager
+- [ ] Compensation handling
+- [ ] Saga testing utilities
+
+### Outbox Pattern
+- [ ] Outbox message interface
+- [ ] Outbox store (PostgreSQL)
+- [ ] Outbox processor
+- [ ] Built-in publishers (Kafka, Webhooks, SNS)
+- [ ] Retry and dead-letter handling
+
+### Event Versioning & Upcasting
+- [ ] Schema version tracking
+- [ ] Upcaster interface
+- [ ] Upcaster chain
+- [ ] Schema registry
+- [ ] Compatibility checking
+
+### Security & Encryption
+- [ ] Field-level encryption
+- [ ] AWS KMS provider
+- [ ] HashiCorp Vault provider
+- [ ] Per-tenant encryption keys
+
+### GDPR Compliance
+- [ ] Crypto-shredding (forget data subject)
+- [ ] Data export (right to access)
+- [ ] Audit logging
+- [ ] Data retention policies
+
+### Time-Travel Queries
+- [ ] Load aggregate at timestamp
+- [ ] Load aggregate at version
+- [ ] Historical debugging tools
+
+### Deliverables
+```go
+// By end of v0.5.0, advanced patterns work:
+sagaManager := mink.NewSagaManager(store, bus)
+sagaManager.Register("OrderFulfillment", NewOrderFulfillmentSaga)
+sagaManager.Start(ctx)
+
+// Encryption
+store := mink.New(adapter, mink.WithEncryption(EncryptionConfig{
+    Provider: kms.NewProvider(awsConfig),
+    EncryptedFields: map[string][]string{
+        "CustomerCreated": {"email", "phone", "ssn"},
+    },
+}))
+
+// GDPR
+gdpr := mink.NewGDPRManager(store, keyStore)
+gdpr.ForgetDataSubject(ctx, "customer-123")
+```
+
+---
+
+## Phase 6: Scale & Multi-tenancy (v0.6.0)
 
 **Timeline: 8-10 weeks**
 
@@ -143,7 +259,7 @@ $ go-mink projection rebuild OrderSummary
 - [ ] Snapshot store interface
 - [ ] PostgreSQL snapshot adapter
 - [ ] Redis snapshot adapter
-- [ ] Configurable snapshot policies
+- [ ] Configurable snapshot policies (every N events, time-based, size-based)
 
 ### Additional Adapters
 - [ ] MongoDB event store adapter
@@ -159,8 +275,8 @@ $ go-mink projection rebuild OrderSummary
 
 ### Deliverables
 ```go
-// By end of v0.4.0, multi-tenancy works:
-store := go-mink.New(adapter, go-mink.WithMultiTenancy(go-mink.SchemaPerTenant))
+// By end of v0.6.0, multi-tenancy works:
+store := mink.New(adapter, mink.WithMultiTenancy(mink.SchemaPerTenant))
 
 tenantStore := store.ForTenant("acme-corp")
 tenantStore.SaveAggregate(ctx, order)
@@ -168,21 +284,20 @@ tenantStore.SaveAggregate(ctx, order)
 
 ---
 
-## Phase 5: Production Ready (v1.0.0)
+## Phase 7: Production Ready (v1.0.0)
 
 **Timeline: 8-10 weeks**
 
 ### Reliability
-- [ ] Outbox pattern implementation
-- [ ] Idempotency support
 - [ ] Dead letter queue
 - [ ] Circuit breaker
+- [ ] Graceful degradation
+- [ ] Health check endpoints
 
 ### Event Store Features
 - [ ] Event archival
-- [ ] Event encryption
-- [ ] Event versioning/upcasting
 - [ ] Global event ordering guarantees
+- [ ] Stream compaction
 
 ### Advanced Projections
 - [ ] Live projections (real-time)
@@ -191,25 +306,20 @@ tenantStore.SaveAggregate(ctx, order)
 - [ ] Projection analytics
 
 ### Production Tooling
-- [ ] Health check endpoints
 - [ ] Graceful shutdown
 - [ ] Configuration validation
 - [ ] Migration rollback
-
-### Enterprise Features
-- [ ] Audit logging
-- [ ] GDPR data deletion
-- [ ] Event retention policies
 - [ ] Backup/restore utilities
 
 ### Deliverables
 ```go
 // v1.0.0 - Production ready
-store := go-mink.New(adapter,
-    go-mink.WithOutbox(outboxAdapter),
-    go-mink.WithEncryption(kms),
-    go-mink.WithRetentionPolicy(90 * 24 * time.Hour),
-    go-mink.WithHealthCheck("/health"),
+store := mink.New(adapter,
+    mink.WithOutbox(outboxAdapter),
+    mink.WithEncryption(kms),
+    mink.WithRetentionPolicy(90 * 24 * time.Hour),
+    mink.WithHealthCheck("/health"),
+    mink.WithGracefulShutdown(30 * time.Second),
 )
 ```
 
@@ -220,11 +330,12 @@ store := go-mink.New(adapter,
 ### v1.1+ Candidates
 - gRPC API for remote event store
 - Event store clustering
-- Cross-aggregate transactions (Sagas)
 - GraphQL read model API
 - Admin UI dashboard
 - Event replay to external systems
 - Cloud-native deployment (Kubernetes operator)
+- Event sourcing debugger (visual timeline)
+- AI-powered event analysis
 
 ### Community Adapters
 - CockroachDB
@@ -232,6 +343,8 @@ store := go-mink.New(adapter,
 - Elasticsearch (search projections)
 - Apache Kafka (event bus)
 - NATS JetStream
+- Google Cloud Spanner
+- Azure Cosmos DB
 
 ---
 
@@ -252,10 +365,14 @@ store := go-mink.New(adapter,
 |------|------------|--------|
 | Documentation | Easy | High |
 | Test coverage | Easy | High |
+| BDD test fixtures | Easy | High |
 | MongoDB adapter | Medium | High |
 | CLI commands | Medium | Medium |
 | Redis adapter | Medium | Medium |
 | Performance benchmarks | Medium | Medium |
+| Saga implementation | Hard | High |
+| Outbox pattern | Hard | High |
+| Event upcasting | Hard | High |
 | DynamoDB adapter | Hard | Medium |
 
 ### Code Style
@@ -275,10 +392,12 @@ store := go-mink.New(adapter,
 | Milestone | Target |
 |-----------|--------|
 | v0.1.0 release | 10 early adopters |
-| v0.2.0 release | 100 GitHub stars |
-| v0.3.0 release | First production user |
+| v0.2.0 release | 50 GitHub stars |
+| v0.3.0 release | 100 GitHub stars |
+| v0.4.0 release | First production user |
+| v0.5.0 release | 250 GitHub stars |
 | v1.0.0 release | 500 GitHub stars |
-| v1.0.0 + 6 months | 5 production users |
+| v1.0.0 + 6 months | 10 production users |
 
 ### Quality Metrics
 
