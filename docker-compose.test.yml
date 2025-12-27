@@ -1,0 +1,68 @@
+# Docker Compose configuration for running integration tests.
+# This is the SINGLE SOURCE OF TRUTH for all test infrastructure.
+# Used by both local development and GitHub Actions CI.
+#
+# Usage (local):
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   go test ./...
+#   docker compose -f docker-compose.test.yml down
+#
+# Usage (CI):
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   go test ./...
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: mink-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mink_test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mink_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    tmpfs:
+      - /var/lib/postgresql/data
+    # Performance optimizations for testing
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=200
+      -c log_statement=none
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+
+  # Future adapters - uncomment when needed:
+  #
+  # mongodb:
+  #   image: mongo:7
+  #   container_name: mink-test-mongodb
+  #   environment:
+  #     MONGO_INITDB_DATABASE: mink_test
+  #   ports:
+  #     - "27017:27017"
+  #   healthcheck:
+  #     test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+  #     interval: 2s
+  #     timeout: 5s
+  #     retries: 15
+  #   tmpfs:
+  #     - /data/db
+  #
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: mink-test-redis
+  #   ports:
+  #     - "6379:6379"
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 2s
+  #     timeout: 5s
+  #     retries: 15

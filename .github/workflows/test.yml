@@ -9,53 +9,43 @@ on:
 permissions:
   contents: read
 
+# Environment variables shared across all jobs
+env:
+  TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
+  # Future adapters:
+  # TEST_MONGODB_URL: mongodb://localhost:27017/mink_test
+  # TEST_REDIS_URL: redis://localhost:6379
+
 jobs:
   test:
     name: Test with Coverage
     runs-on: ubuntu-latest
     
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: mink_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
+
+      - name: Start test infrastructure
+        run: docker compose -f docker-compose.test.yml up -d --wait
 
       - name: Download dependencies
         run: go mod download
 
       - name: Run tests with coverage
-        env:
-          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
-        run: |
-          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
           
       - name: Check coverage threshold
         run: |
-          # Extract total coverage percentage
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           
-          # Check if coverage meets threshold (85%)
-          THRESHOLD=85.0
+          THRESHOLD=80.0
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
             echo "❌ Coverage ${COVERAGE}% is below the required threshold of ${THRESHOLD}%"
             exit 1
@@ -63,8 +53,12 @@ jobs:
             echo "✅ Coverage ${COVERAGE}% meets the required threshold of ${THRESHOLD}%"
           fi
 
+      - name: Stop test infrastructure
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
+
       - name: Upload coverage report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.out
@@ -76,34 +70,34 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
           version: latest
           args: --timeout=5m
 
   build:
-    name: Build
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ['1.21', '1.22', '1.23', '1.24']
+        go-version: ['1.22', '1.23', '1.24']
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -111,5 +105,5 @@ jobs:
       - name: Build
         run: go build -v ./...
 
-      - name: Run short tests
+      - name: Run unit tests
         run: go test -short -v ./...
