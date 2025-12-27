@@ -17,7 +17,7 @@ We take the security of **go-mink** seriously. If you believe you have found a s
 
 ### How to Report
 
-If you believe you have found a security vulnerability, please email us at [security@example.com](mailto:security@example.com) (replace with actual email if available, or instruct to use GitHub Security Advisories).
+If you believe you have found a security vulnerability, please email us at [security@go-mink.dev](mailto:security@go-mink.dev) (replace with actual email if available, or instruct to use GitHub Security Advisories).
 
 You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
 
