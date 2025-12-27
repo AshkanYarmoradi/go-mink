@@ -664,16 +664,31 @@ blockquote p {
   color: #64748b;
 }
 
-/* Search button (magnifier icon) positioned on right */
-.search-button {
+/* Search label (magnifier icon) positioned on right */
+.search-label {
   position: absolute !important;
-  right: 8px !important;
-  top: 50% !important;
-  transform: translateY(-50%) !important;
-  background: transparent !important;
-  border: none !important;
-  padding: 4px !important;
+  right: 0.75rem !important;
+  left: auto !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.search-input {
+  padding-left: 1rem !important;
+  padding-right: 2.5rem !important;
+}
+
+/* Floating search button in bottom right */
+.search-button {
+  position: fixed !important;
+  right: 1.5rem !important;
+  bottom: 1.5rem !important;
+  background: #12121a !important;
+  border: 1px solid rgba(0, 173, 216, 0.3) !important;
+  border-radius: 50% !important;
+  padding: 0.75rem !important;
   cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
 }
 
 .search-results {
@@ -911,6 +926,12 @@ ul li::marker, ol li::marker {
 
 .search-active .search-input-wrap {
   background: #12121a !important;
+}
+
+.search-active .search-label {
+  right: 0.75rem !important;
+  left: auto !important;
+  padding-left: 0 !important;
 }
 
 .nav-list-expander {
