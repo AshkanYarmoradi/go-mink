@@ -747,4 +747,4 @@ store := mink.NewEventStoreWithOutbox(adapter, outbox,
 
 ---
 
-Next: [Security & Compliance →](10-security.md)
+Next: [Security & Compliance →](security.md)

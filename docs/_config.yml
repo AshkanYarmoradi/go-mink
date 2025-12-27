@@ -5,8 +5,6 @@ baseurl: ""
 url: "https://go-mink.dev"
 lang: en
 
-# Build timestamp: 2024-12-27
-
 # Repository
 repository: AshkanYarmoradi/go-mink
 

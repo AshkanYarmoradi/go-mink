@@ -212,4 +212,4 @@ All go-mink components are designed for concurrent use:
 
 ---
 
-Next: [Event Store →](03-event-store.md)
+Next: [Event Store →](event-store.md)

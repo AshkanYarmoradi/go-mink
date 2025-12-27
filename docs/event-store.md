@@ -339,4 +339,4 @@ func (p EveryNEventsPolicy) ShouldSnapshot(agg Aggregate) bool {
 
 ---
 
-Next: [Read Models →](04-read-models.md)
+Next: [Read Models →](read-models.md)

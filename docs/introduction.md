@@ -119,4 +119,4 @@ Traditional CRUD:                     Event Sourcing:
 
 ---
 
-Next: [Architecture →](02-architecture.md)
+Next: [Architecture →](architecture.md)
