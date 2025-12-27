@@ -321,4 +321,4 @@ migration := go-mink.GenerateSchema[OrderSummary]("order_summaries")
 
 ---
 
-Next: [Adapters →](adapters.md)
+Next: [Adapters →](adapters)

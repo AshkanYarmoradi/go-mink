@@ -418,4 +418,4 @@ store, _ := go-mink.New(go-mink.Config{
 
 ---
 
-Next: [CLI →](cli.md)
+Next: [CLI →](cli)
