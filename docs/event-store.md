@@ -8,6 +8,9 @@ permalink: /docs/event-store
 # Event Store Design
 {: .no_toc }
 
+{: .label .label-green }
+Implemented
+
 ## Table of contents
 {: .no_toc .text-delta }
 

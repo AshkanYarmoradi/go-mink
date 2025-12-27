@@ -8,6 +8,9 @@ permalink: /docs/introduction
 # Introduction
 {: .no_toc }
 
+{: .label .label-green }
+v0.1.0 Released
+
 ## Table of contents
 {: .no_toc .text-delta }
 

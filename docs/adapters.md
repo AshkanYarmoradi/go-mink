@@ -8,6 +8,9 @@ permalink: /docs/adapters
 # Adapter System
 {: .no_toc }
 
+{: .label .label-green }
+Phase 1 Complete
+
 ## Table of contents
 {: .no_toc .text-delta }
 
@@ -46,31 +49,54 @@ go-mink's adapter system allows mixing different storage backends:
 
 ## Adapter Interfaces
 
-### Event Store Adapter
+### Event Store Adapter (Implemented ✅)
 
 ```go
-// EventStoreAdapter is implemented by each database driver
+// EventStoreAdapter is the interface that database adapters must implement.
+// It provides the low-level operations for persisting and retrieving events.
 type EventStoreAdapter interface {
-    // Core operations
-    Append(ctx context.Context, streamID string, events []EventRecord, 
-           expectedVersion int64) ([]StoredEvent, error)
+    // Append stores events to the specified stream with optimistic concurrency control.
+    // expectedVersion specifies the expected current version of the stream:
+    //   - AnyVersion (-1): Skip version check
+    //   - NoStream (0): Stream must not exist
+    //   - StreamExists (-2): Stream must exist
+    //   - Any positive number: Stream must be at this exact version
+    Append(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64) ([]StoredEvent, error)
+
+    // Load retrieves all events from a stream starting from the specified version.
     Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
-    
-    // Subscriptions
-    SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)
-    SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan StoredEvent, error)
-    
-    // Metadata
+
+    // GetStreamInfo returns metadata about a stream.
     GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+
+    // GetLastPosition returns the global position of the last stored event.
     GetLastPosition(ctx context.Context) (uint64, error)
-    
-    // Lifecycle
+
+    // Initialize sets up the required database schema.
     Initialize(ctx context.Context) error
+
+    // Close releases any resources held by the adapter.
     Close() error
 }
 ```
 
-### Read Model Adapter
+### Subscription Adapter (Implemented ✅)
+
+```go
+// SubscriptionAdapter provides event subscription capabilities.
+type SubscriptionAdapter interface {
+    // SubscribeAll subscribes to all events across all streams.
+    SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)
+
+    // SubscribeStream subscribes to events from a specific stream.
+    SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan StoredEvent, error)
+
+    // SubscribeCategory subscribes to all events from streams in a category.
+    SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan StoredEvent, error)
+}
+```
+
+### Read Model Adapter (Future - Phase 3)
 
 ```go
 // ReadModelAdapter provides generic document storage

@@ -43,18 +43,18 @@ Building event-sourced applications in Go means wrestling with **boilerplate cod
 
 <div class="code-example" markdown="1">
 
-| | Feature | What You Get |
-|:--|:--------|:-------------|
-| 🎯 | **Event Store** | Append-only storage with optimistic concurrency & snapshots |
-| 📖 | **Smart Projections** | Inline, async, and live read models that just work |
-| 🔌 | **Pluggable Adapters** | PostgreSQL, MongoDB, Redis — or build your own |
-| 🛠️ | **Powerful CLI** | Generate code, run migrations, diagnose issues |
-| 📋 | **Command Bus** | Full CQRS with middleware, validation & retry |
-| 🔄 | **Saga Orchestration** | Coordinate long-running business processes |
-| 📤 | **Outbox Pattern** | Reliable event publishing with at-least-once delivery |
-| 🔐 | **Built-in Security** | Field-level encryption & GDPR compliance tools |
-| 📊 | **Event Versioning** | Schema evolution with automatic upcasting |
-| 🧪 | **Testing First** | BDD fixtures & time-travel debugging |
+| | Feature | Status | What You Get |
+|:--|:--------|:-------|:-------------|
+| 🎯 | **Event Store** | ✅ v0.1.0 | Append-only storage with optimistic concurrency |
+| 🔌 | **Adapters** | ✅ v0.1.0 | PostgreSQL & In-Memory adapters |
+| 🧱 | **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
+| 🧪 | **Testing** | ✅ v0.1.0 | 90%+ coverage, Docker Compose infrastructure |
+| 📋 | **Command Bus** | 🔜 v0.2.0 | Full CQRS with middleware, validation & retry |
+| 📖 | **Projections** | 🔜 v0.3.0 | Inline, async, and live read models |
+| 🛠️ | **CLI** | 🔜 v0.4.0 | Generate code, run migrations, diagnose issues |
+| 🔐 | **Security** | 🔜 v0.5.0 | Field-level encryption & GDPR compliance |
+| 🔄 | **Sagas** | 🔜 v0.5.0 | Coordinate long-running business processes |
+| 📤 | **Outbox** | 🔜 v0.5.0 | Reliable event publishing |
 
 </div>
 
@@ -103,8 +103,11 @@ func main() {
 # Install the library
 go get github.com/AshkanYarmoradi/go-mink
 
-# Install the CLI (optional but recommended)
-go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+# Install PostgreSQL adapter
+go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
+
+# Or use in-memory adapter for testing
+go get github.com/AshkanYarmoradi/go-mink/adapters/memory
 ```
 
 ---

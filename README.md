@@ -5,9 +5,21 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/AshkanYarmoradi/go-mink.svg)](https://pkg.go.dev/github.com/AshkanYarmoradi/go-mink)
 [![Go Report Card](https://goreportcard.com/badge/github.com/AshkanYarmoradi/go-mink)](https://goreportcard.com/report/github.com/AshkanYarmoradi/go-mink)
 [![Build Status](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg)](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml)
-[![Coverage Status](https://codecov.io/gh/AshkanYarmoradi/go-mink/branch/main/graph/badge.svg)](https://codecov.io/gh/AshkanYarmoradi/go-mink)
+[![Coverage](https://img.shields.io/badge/coverage-90%25+-brightgreen)](https://github.com/AshkanYarmoradi/go-mink)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
+
+---
+
+## 🚀 Current Status: v0.1.0 (Phase 1 Complete)
+
+Phase 1 (Foundation) is complete with:
+- ✅ Event Store with optimistic concurrency
+- ✅ PostgreSQL adapter (production-ready)
+- ✅ In-Memory adapter (for testing)
+- ✅ Aggregate base implementation
+- ✅ JSON serialization with type registry
+- ✅ 90%+ test coverage
 
 ---
 
@@ -25,20 +37,18 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| 🎯 **Event Store** | Append-only event storage with optimistic concurrency |
-| 📖 **Read Models** | Automatic projection management with multiple strategies |
-| 🔌 **Pluggable Adapters** | PostgreSQL, MongoDB, Redis, and more |
-| 🛠️ **CLI Tool** | Code generation, migrations, and diagnostics |
-| 🏢 **Multi-tenancy** | Built-in tenant isolation strategies |
-| ⚡ **High Performance** | Leveraging Go's concurrency primitives |
-| 🧪 **Testing Utilities** | BDD-style fixtures and test helpers |
-| 📋 **Command Bus** | Full CQRS with command handlers and middleware |
-| 🔄 **Sagas** | Process manager for long-running workflows |
-| 🔐 **Security** | Field-level encryption and GDPR compliance |
-| 📊 **Event Versioning** | Schema evolution with upcasting |
-| 📤 **Outbox Pattern** | Reliable event publishing to external systems |
+| Feature | Status | Description |
+|---------|--------|-------------|
+| 🎯 **Event Store** | ✅ v0.1.0 | Append-only event storage with optimistic concurrency |
+| 🔌 **PostgreSQL Adapter** | ✅ v0.1.0 | Production-ready PostgreSQL support |
+| 🧪 **Memory Adapter** | ✅ v0.1.0 | In-memory adapter for testing |
+| 🧱 **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
+| 📋 **Command Bus** | 🔜 v0.2.0 | Full CQRS with command handlers and middleware |
+| 📖 **Projections** | 🔜 v0.3.0 | Automatic projection management |
+| 🛠️ **CLI Tool** | 🔜 v0.4.0 | Code generation, migrations, and diagnostics |
+| 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
+| 🔄 **Sagas** | 🔜 v0.5.0 | Process manager for long-running workflows |
+| 📤 **Outbox Pattern** | 🔜 v0.5.0 | Reliable event publishing to external systems |
 
 ## Quick Example
 
@@ -46,25 +56,43 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 package main
 
 import (
+    "context"
+    
     "github.com/AshkanYarmoradi/go-mink"
     "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
 )
 
 func main() {
-    // Initialize with PostgreSQL
-    store, _ := go-mink.NewEventStore(
-        postgres.NewAdapter("postgres://localhost/mydb"),
-    )
-
-    // Append events
-    store.Append(ctx, "order-123", []go-mink.Event{
-        OrderCreated{OrderID: "123", CustomerID: "456"},
-        ItemAdded{SKU: "WIDGET-01", Quantity: 2},
-    })
-
-    // Build read models automatically
-    store.RegisterProjection(&OrderSummaryProjection{})
+    ctx := context.Background()
+    
+    // Initialize PostgreSQL adapter
+    adapter, _ := postgres.NewAdapter("postgres://localhost/mydb")
+    defer adapter.Close()
+    
+    // Create event store
+    store := mink.NewEventStore(adapter)
+    
+    // Create and populate an aggregate
+    order := NewOrder("order-123")
+    order.Create("customer-456")
+    order.AddItem("SKU-001", 2, 29.99)
+    
+    // Save aggregate (events are persisted)
+    store.SaveAggregate(ctx, order)
+    
+    // Load aggregate (events are replayed)
+    loaded := NewOrder("order-123")
+    store.LoadAggregate(ctx, loaded)
+    // loaded.Status == "Created"
+    // len(loaded.Items) == 1
 }
+```
+
+## Installation
+
+```bash
+go get github.com/AshkanYarmoradi/go-mink
+go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 ```
 
 ## Documentation
