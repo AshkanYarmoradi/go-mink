@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,13 +21,14 @@ const (
 )
 
 // Sentinel errors for the postgres adapter.
+// These are aliases to the adapters package errors for compatibility with errors.Is().
 var (
-	ErrAdapterClosed       = errors.New("mink/postgres: adapter is closed")
-	ErrEmptyStreamID       = errors.New("mink/postgres: stream ID is required")
-	ErrNoEvents            = errors.New("mink/postgres: no events to append")
-	ErrConcurrencyConflict = errors.New("mink/postgres: concurrency conflict")
-	ErrStreamNotFound      = errors.New("mink/postgres: stream not found")
-	ErrInvalidVersion      = errors.New("mink/postgres: invalid version")
+	ErrAdapterClosed       = adapters.ErrAdapterClosed
+	ErrEmptyStreamID       = adapters.ErrEmptyStreamID
+	ErrNoEvents            = adapters.ErrNoEvents
+	ErrConcurrencyConflict = adapters.ErrConcurrencyConflict
+	ErrStreamNotFound      = adapters.ErrStreamNotFound
+	ErrInvalidVersion      = adapters.ErrInvalidVersion
 )
 
 // Ensure PostgresAdapter implements required interfaces.

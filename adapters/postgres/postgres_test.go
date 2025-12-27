@@ -150,7 +150,7 @@ func TestPostgresAdapter_Append(t *testing.T) {
 		_, err = adapter.Append(ctx, "Order-conflict", events2, 0)
 
 		assert.Error(t, err)
-		assert.True(t, errors.Is(err, mink.ErrConcurrencyConflict))
+		assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict))
 	})
 
 	t.Run("preserves metadata", func(t *testing.T) {
@@ -177,12 +177,12 @@ func TestPostgresAdapter_Append(t *testing.T) {
 	t.Run("empty stream ID", func(t *testing.T) {
 		events := []adapters.EventRecord{{Type: "Test", Data: []byte(`{}`)}}
 		_, err := adapter.Append(ctx, "", events, mink.NoStream)
-		assert.True(t, errors.Is(err, mink.ErrEmptyStreamID))
+		assert.True(t, errors.Is(err, adapters.ErrEmptyStreamID))
 	})
 
 	t.Run("no events", func(t *testing.T) {
 		_, err := adapter.Append(ctx, "Order-empty", []adapters.EventRecord{}, mink.NoStream)
-		assert.True(t, errors.Is(err, mink.ErrNoEvents))
+		assert.True(t, errors.Is(err, adapters.ErrNoEvents))
 	})
 }
 
@@ -265,7 +265,7 @@ func TestPostgresAdapter_GetStreamInfo(t *testing.T) {
 		_, err := adapter.GetStreamInfo(ctx, "Order-notfound")
 
 		assert.Error(t, err)
-		assert.True(t, errors.Is(err, mink.ErrStreamNotFound))
+		assert.True(t, errors.Is(err, adapters.ErrStreamNotFound))
 	})
 
 	t.Run("returns stream info", func(t *testing.T) {
