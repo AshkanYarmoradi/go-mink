@@ -1,0 +1,762 @@
+# AI Agent Instructions for go-mink Development
+
+## Project Overview
+
+**go-mink** is a comprehensive Event Sourcing and CQRS (Command Query Responsibility Segregation) toolkit for Go. It aims to bring the same developer-friendly experience that MartenDB provides for .NET to the Go ecosystem.
+
+### Mission Statement
+> "Make Event Sourcing in Go as simple as using a traditional ORM"
+
+### Key Differentiators
+- **Pluggable Adapters**: Events in PostgreSQL, read models in MongoDB, snapshots in Redis
+- **Complete CQRS**: Command Bus, Event Store, Projections, Sagas
+- **Developer Experience**: CLI tools, BDD testing, code generation
+- **Production Ready**: Encryption, GDPR, multi-tenancy, observability
+
+---
+
+## Architecture Understanding
+
+### Core Components
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        APPLICATION LAYER                        │
+│  Commands (Write) │ Queries (Read) │ Subscriptions (Real-time)  │
+├─────────────────────────────────────────────────────────────────┤
+│                         go-mink CORE                            │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Command Bus │ Event Store │ Projection Engine │ Sagas    │  │
+│  └──────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────┤
+│                        ADAPTER LAYER                            │
+│  PostgreSQL │ MongoDB │ Redis │ Memory (testing)                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Package Structure (Target)
+
+```
+github.com/AshkanYarmoradi/go-mink/
+├── mink.go                    # Public API entry point
+├── event.go                   # Event types: EventData, StoredEvent, Metadata
+├── aggregate.go               # Aggregate interface and AggregateBase
+├── command.go                 # Command interface and CommandBus
+├── projection.go              # Projection interfaces (Inline, Async, Live)
+├── store.go                   # EventStore implementation
+├── saga.go                    # Saga/Process Manager
+├── errors.go                  # Sentinel errors and typed errors
+│
+├── adapters/
+│   ├── adapter.go             # Adapter interfaces
+│   ├── postgres/
+│   │   ├── eventstore.go      # PostgreSQL event store
+│   │   ├── readmodel.go       # PostgreSQL read models
+│   │   ├── snapshot.go        # PostgreSQL snapshots
+│   │   ├── outbox.go          # PostgreSQL outbox
+│   │   └── migrations/        # SQL migration files
+│   ├── mongodb/
+│   ├── redis/
+│   └── memory/                # In-memory for testing
+│
+├── projection/
+│   ├── engine.go              # Projection engine
+│   ├── inline.go              # Same-transaction projections
+│   ├── async.go               # Background projections
+│   ├── live.go                # Real-time projections
+│   └── rebuild.go             # Projection rebuilder
+│
+├── middleware/
+│   ├── logging.go
+│   ├── metrics.go
+│   ├── tracing.go
+│   ├── retry.go
+│   ├── idempotency.go
+│   └── validation.go
+│
+├── encryption/
+│   ├── provider.go            # EncryptionProvider interface
+│   ├── kms/                   # AWS KMS implementation
+│   ├── vault/                 # HashiCorp Vault implementation
+│   └── local/                 # Local encryption (testing only)
+│
+├── gdpr/
+│   ├── manager.go             # GDPRManager
+│   ├── export.go              # Data export
+│   └── retention.go           # Data retention policies
+│
+├── upcasting/
+│   ├── upcaster.go            # Upcaster interface
+│   ├── chain.go               # UpcasterChain
+│   └── registry.go            # SchemaRegistry
+│
+├── cli/
+│   └── mink/
+│       ├── main.go
+│       ├── init.go
+│       ├── generate.go
+│       ├── migrate.go
+│       ├── projection.go
+│       └── stream.go
+│
+├── testing/
+│   ├── inmemory.go            # In-memory adapters
+│   ├── fixture.go             # BDD test fixtures
+│   ├── assertions.go          # Event assertions
+│   └── containers.go          # Test containers
+│
+└── examples/
+    ├── basic/
+    ├── ecommerce/
+    └── multi-tenant/
+```
+
+---
+
+## Development Phases
+
+### Phase 1: Foundation (v0.1.0) - CURRENT PRIORITY
+
+**Goal**: Basic event store with PostgreSQL adapter
+
+**Tasks**:
+1. Core interfaces: `Event`, `EventData`, `StoredEvent`, `Metadata`, `StreamID`
+2. `Aggregate` interface and `AggregateBase` implementation
+3. `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
+4. PostgreSQL adapter with optimistic concurrency
+5. In-memory adapter for testing
+6. JSON serializer with event registry
+
+**Acceptance Criteria**:
+```go
+// This code must work by end of v0.1.0
+store := mink.New(postgres.NewAdapter(connStr))
+
+order := NewOrder("order-123")
+order.Create("customer-456")
+order.AddItem("SKU-001", 2, 29.99)
+
+store.SaveAggregate(ctx, order)
+
+loaded := NewOrder("order-123")
+store.LoadAggregate(ctx, loaded)
+// loaded.Status == "Created"
+// len(loaded.Items) == 1
+```
+
+### Phase 2: CQRS & Commands (v0.2.0)
+
+**Goal**: Complete command handling with idempotency
+
+**Tasks**:
+1. `Command` interface with validation
+2. `CommandHandler` generic interface
+3. `CommandBus` with middleware pipeline
+4. `IdempotencyStore` interface and PostgreSQL implementation
+5. Middleware: Logging, Validation, Idempotency, Transaction
+
+### Phase 3: Read Models (v0.3.0)
+
+**Goal**: Projection system with multiple strategies
+
+**Tasks**:
+1. `Projection` interface hierarchy (Inline, Async, Live)
+2. `ProjectionEngine` with worker pool
+3. Checkpoint management
+4. `ReadModelRepository` generic interface
+5. Query builder
+6. Projection rebuilding
+
+### Phase 4-7: See roadmap.md for details
+
+---
+
+## Coding Standards
+
+### Go Conventions
+
+```go
+// Package documentation
+// Package mink provides event sourcing and CQRS primitives for Go applications.
+package mink
+
+// Interface names - single method uses -er suffix
+type Serializer interface {
+    Serialize(v interface{}) ([]byte, error)
+}
+
+// Struct constructors use New prefix
+func NewEventStore(adapter EventStoreAdapter, opts ...Option) *EventStore
+
+// Options pattern for configuration
+type Option func(*EventStore)
+
+func WithSerializer(s Serializer) Option {
+    return func(es *EventStore) {
+        es.serializer = s
+    }
+}
+
+// Error handling - use sentinel errors and typed errors
+var ErrConcurrencyConflict = errors.New("mink: concurrency conflict")
+
+type ConcurrencyError struct {
+    StreamID        string
+    ExpectedVersion int64
+    ActualVersion   int64
+}
+
+func (e *ConcurrencyError) Error() string {
+    return fmt.Sprintf("mink: concurrency conflict on stream %s: expected %d, got %d",
+        e.StreamID, e.ExpectedVersion, e.ActualVersion)
+}
+
+func (e *ConcurrencyError) Is(target error) bool {
+    return target == ErrConcurrencyConflict
+}
+```
+
+### Interface Design Principles
+
+```go
+// 1. Small, focused interfaces
+type EventStoreAdapter interface {
+    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+    Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
+}
+
+// 2. Separate read and write concerns
+type EventReader interface {
+    Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
+}
+
+type EventWriter interface {
+    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+}
+
+// EventStoreAdapter composes both
+type EventStoreAdapter interface {
+    EventReader
+    EventWriter
+    Subscriber
+}
+
+// 3. Context-first parameters
+func (s *EventStore) Append(ctx context.Context, streamID string, ...) error
+
+// 4. Return errors, not panic
+func (s *EventStore) Load(ctx context.Context, streamID string) ([]StoredEvent, error)
+```
+
+### Testing Requirements
+
+```go
+// 1. Table-driven tests
+func TestEventStore_Append(t *testing.T) {
+    tests := []struct {
+        name            string
+        streamID        string
+        events          []EventData
+        expectedVersion int64
+        wantErr         error
+    }{
+        {
+            name:            "append to new stream",
+            streamID:        "order-123",
+            events:          []EventData{{Type: "OrderCreated", Data: []byte("{}")}},
+            expectedVersion: mink.NoStream,
+            wantErr:         nil,
+        },
+        {
+            name:            "concurrency conflict",
+            streamID:        "order-123",
+            events:          []EventData{{Type: "ItemAdded", Data: []byte("{}")}},
+            expectedVersion: 0, // Stream already has version 1
+            wantErr:         mink.ErrConcurrencyConflict,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            // Test implementation
+        })
+    }
+}
+
+// 2. Use testify assertions
+import "github.com/stretchr/testify/assert"
+import "github.com/stretchr/testify/require"
+
+assert.Equal(t, expected, actual)
+require.NoError(t, err)
+
+// 3. BDD-style for aggregate tests
+func TestOrder_CannotAddItemAfterShipping(t *testing.T) {
+    Given(t, NewOrder("order-123"),
+        OrderCreated{OrderID: "order-123"},
+        OrderShipped{OrderID: "order-123"},
+    ).
+    When(AddItemCommand{OrderID: "order-123", SKU: "WIDGET"}).
+    ThenError(ErrOrderAlreadyShipped)
+}
+```
+
+### Documentation Standards
+
+```go
+// Every exported type, function, and method needs documentation
+// Use complete sentences starting with the name
+
+// EventStore manages event persistence and aggregate lifecycle.
+// It provides methods for appending events, loading streams,
+// and managing aggregate state.
+type EventStore struct {
+    // ...
+}
+
+// Append stores events to the specified stream with optimistic concurrency control.
+// If expectedVersion does not match the current stream version, ErrConcurrencyConflict is returned.
+//
+// Special version constants:
+//   - AnyVersion (-1): Skip version check
+//   - NoStream (0): Stream must not exist
+//   - StreamExists (-2): Stream must exist
+func (s *EventStore) Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) error {
+    // ...
+}
+```
+
+---
+
+## Implementation Guidelines
+
+### Event Store Implementation
+
+```go
+// event.go
+package mink
+
+import "time"
+
+// EventData represents an event to be stored.
+type EventData struct {
+    Type     string
+    Data     []byte
+    Metadata Metadata
+}
+
+// StoredEvent represents a persisted event.
+type StoredEvent struct {
+    ID             string
+    StreamID       string
+    Type           string
+    Data           []byte
+    Metadata       Metadata
+    Version        int64
+    GlobalPosition uint64
+    Timestamp      time.Time
+}
+
+// Metadata contains event context for tracing and multi-tenancy.
+type Metadata struct {
+    CorrelationID string            `json:"correlationId,omitempty"`
+    CausationID   string            `json:"causationId,omitempty"`
+    UserID        string            `json:"userId,omitempty"`
+    TenantID      string            `json:"tenantId,omitempty"`
+    Custom        map[string]string `json:"custom,omitempty"`
+}
+
+// Version constants for optimistic concurrency.
+const (
+    AnyVersion   int64 = -1 // No concurrency check
+    NoStream     int64 = 0  // Stream must not exist
+    StreamExists int64 = -2 // Stream must exist
+)
+```
+
+### Aggregate Implementation
+
+```go
+// aggregate.go
+package mink
+
+// Aggregate defines the interface for event-sourced aggregates.
+type Aggregate interface {
+    AggregateID() string
+    AggregateType() string
+    Version() int64
+    ApplyEvent(event interface{}) error
+    UncommittedEvents() []interface{}
+    ClearUncommittedEvents()
+}
+
+// AggregateBase provides a default implementation of Aggregate.
+type AggregateBase struct {
+    id                string
+    aggregateType     string
+    version           int64
+    uncommittedEvents []interface{}
+}
+
+func (a *AggregateBase) AggregateID() string   { return a.id }
+func (a *AggregateBase) AggregateType() string { return a.aggregateType }
+func (a *AggregateBase) Version() int64        { return a.version }
+
+func (a *AggregateBase) SetID(id string)           { a.id = id }
+func (a *AggregateBase) SetType(t string)          { a.aggregateType = t }
+func (a *AggregateBase) SetVersion(v int64)        { a.version = v }
+func (a *AggregateBase) IncrementVersion()         { a.version++ }
+
+func (a *AggregateBase) UncommittedEvents() []interface{} {
+    return a.uncommittedEvents
+}
+
+func (a *AggregateBase) ClearUncommittedEvents() {
+    a.uncommittedEvents = nil
+}
+
+// Apply records an event to be committed.
+// The aggregate should also update its state based on the event.
+func (a *AggregateBase) Apply(event interface{}) {
+    a.uncommittedEvents = append(a.uncommittedEvents, event)
+}
+```
+
+### PostgreSQL Adapter
+
+```go
+// adapters/postgres/eventstore.go
+package postgres
+
+import (
+    "context"
+    "database/sql"
+    
+    "github.com/AshkanYarmoradi/go-mink"
+)
+
+type PostgresAdapter struct {
+    db     *sql.DB
+    schema string
+}
+
+func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
+    db, err := sql.Open("pgx", connStr)
+    if err != nil {
+        return nil, fmt.Errorf("mink/postgres: failed to connect: %w", err)
+    }
+    
+    adapter := &PostgresAdapter{
+        db:     db,
+        schema: "mink", // Default schema
+    }
+    
+    for _, opt := range opts {
+        opt(adapter)
+    }
+    
+    return adapter, nil
+}
+
+func (a *PostgresAdapter) Append(ctx context.Context, streamID string, 
+    events []mink.EventData, expectedVersion int64) ([]mink.StoredEvent, error) {
+    
+    // Use transaction for atomicity
+    tx, err := a.db.BeginTx(ctx, nil)
+    if err != nil {
+        return nil, fmt.Errorf("mink/postgres: begin tx: %w", err)
+    }
+    defer tx.Rollback()
+    
+    // Call PostgreSQL function for optimistic concurrency
+    // See event-store.md for SQL schema
+    
+    if err := tx.Commit(); err != nil {
+        return nil, fmt.Errorf("mink/postgres: commit: %w", err)
+    }
+    
+    return stored, nil
+}
+```
+
+---
+
+## Testing Approach
+
+### Unit Tests (Aggregates)
+
+```go
+// order_test.go
+func TestOrder_Create(t *testing.T) {
+    order := NewOrder("order-123")
+    
+    err := order.Create("customer-456")
+    
+    require.NoError(t, err)
+    assert.Equal(t, "customer-456", order.CustomerID)
+    assert.Equal(t, "Created", order.Status)
+    
+    events := order.UncommittedEvents()
+    require.Len(t, events, 1)
+    
+    created, ok := events[0].(OrderCreated)
+    require.True(t, ok)
+    assert.Equal(t, "order-123", created.OrderID)
+    assert.Equal(t, "customer-456", created.CustomerID)
+}
+
+func TestOrder_AddItem_WhenShipped_ReturnsError(t *testing.T) {
+    order := NewOrder("order-123")
+    order.ApplyEvent(OrderCreated{OrderID: "order-123"})
+    order.ApplyEvent(OrderShipped{OrderID: "order-123"})
+    order.ClearUncommittedEvents()
+    
+    err := order.AddItem("SKU-001", 1, 29.99)
+    
+    assert.ErrorIs(t, err, ErrOrderAlreadyShipped)
+    assert.Empty(t, order.UncommittedEvents())
+}
+```
+
+### Integration Tests (Adapters)
+
+```go
+// adapters/postgres/eventstore_test.go
+func TestPostgresAdapter_Append(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+    
+    connStr := os.Getenv("TEST_DATABASE_URL")
+    if connStr == "" {
+        t.Skip("TEST_DATABASE_URL not set")
+    }
+    
+    adapter, err := postgres.NewAdapter(connStr)
+    require.NoError(t, err)
+    defer adapter.Close()
+    
+    // Initialize schema
+    require.NoError(t, adapter.Initialize(context.Background()))
+    
+    // Test append
+    events := []mink.EventData{
+        {Type: "TestEvent", Data: []byte(`{"key":"value"}`)},
+    }
+    
+    stored, err := adapter.Append(context.Background(), "test-stream", events, mink.NoStream)
+    require.NoError(t, err)
+    assert.Len(t, stored, 1)
+    assert.Equal(t, int64(1), stored[0].Version)
+}
+```
+
+### BDD Tests (Behavior)
+
+```go
+// Use the minktest package
+func TestOrderFulfillment(t *testing.T) {
+    t.Run("successful order flow", func(t *testing.T) {
+        Given(t, NewOrder("order-123")).
+            When(CreateOrderCommand{CustomerID: "cust-456"}).
+            Then(OrderCreated{OrderID: "order-123", CustomerID: "cust-456"})
+    })
+    
+    t.Run("cannot add items after shipping", func(t *testing.T) {
+        Given(t, NewOrder("order-123"),
+            OrderCreated{OrderID: "order-123"},
+            OrderShipped{OrderID: "order-123"},
+        ).
+            When(AddItemCommand{SKU: "WIDGET"}).
+            ThenError(ErrOrderAlreadyShipped)
+    })
+}
+```
+
+---
+
+## Pull Request Guidelines
+
+### PR Title Format
+```
+[component] Brief description
+
+Examples:
+[eventstore] Add PostgreSQL adapter with optimistic concurrency
+[projection] Implement async projection engine
+[cli] Add mink generate aggregate command
+```
+
+### PR Description Template
+```markdown
+## Summary
+Brief description of changes.
+
+## Changes
+- Change 1
+- Change 2
+
+## Testing
+- [ ] Unit tests added/updated
+- [ ] Integration tests added/updated
+- [ ] Manual testing performed
+
+## Documentation
+- [ ] Code comments added
+- [ ] README updated (if applicable)
+- [ ] API docs updated
+
+## Checklist
+- [ ] Code follows project style guidelines
+- [ ] All tests pass
+- [ ] No breaking changes (or documented if intentional)
+```
+
+### Commit Message Format
+```
+component: brief description
+
+Longer explanation if needed.
+
+Closes #123
+```
+
+---
+
+## Common Patterns
+
+### Implementing a New Adapter
+
+```go
+// 1. Create adapter package
+// adapters/mydb/eventstore.go
+
+package mydb
+
+import "github.com/AshkanYarmoradi/go-mink"
+
+// Ensure interface compliance at compile time
+var _ mink.EventStoreAdapter = (*MyDBAdapter)(nil)
+
+type MyDBAdapter struct {
+    client *mydb.Client
+}
+
+func NewAdapter(connStr string) (*MyDBAdapter, error) {
+    // Initialize connection
+}
+
+func (a *MyDBAdapter) Append(ctx context.Context, streamID string,
+    events []mink.EventData, expectedVersion int64) ([]mink.StoredEvent, error) {
+    // Implement with optimistic concurrency
+}
+
+func (a *MyDBAdapter) Load(ctx context.Context, streamID string,
+    fromVersion int64) ([]mink.StoredEvent, error) {
+    // Load events
+}
+
+// ... implement other interface methods
+```
+
+### Implementing a Projection
+
+```go
+type OrderSummaryProjection struct {
+    repo mink.Repository[OrderSummary]
+}
+
+func (p *OrderSummaryProjection) Name() string {
+    return "OrderSummary"
+}
+
+func (p *OrderSummaryProjection) HandledEvents() []string {
+    return []string{"OrderCreated", "ItemAdded", "OrderShipped"}
+}
+
+func (p *OrderSummaryProjection) Apply(ctx context.Context, tx mink.Transaction, event mink.StoredEvent) error {
+    switch event.Type {
+    case "OrderCreated":
+        var e OrderCreated
+        if err := json.Unmarshal(event.Data, &e); err != nil {
+            return err
+        }
+        return tx.Insert(ctx, &OrderSummary{
+            ID:         e.OrderID,
+            CustomerID: e.CustomerID,
+            Status:     "Created",
+        })
+        
+    case "ItemAdded":
+        var e ItemAdded
+        if err := json.Unmarshal(event.Data, &e); err != nil {
+            return err
+        }
+        return tx.Update(ctx, e.OrderID, func(s *OrderSummary) {
+            s.ItemCount++
+            s.TotalAmount += e.Price * float64(e.Quantity)
+        })
+        
+    case "OrderShipped":
+        return tx.Update(ctx, event.StreamID, func(s *OrderSummary) {
+            s.Status = "Shipped"
+        })
+    }
+    return nil
+}
+```
+
+---
+
+## Resources
+
+### Documentation Files
+- [Introduction](docs/introduction.md) - Problem statement and goals
+- [Architecture](docs/architecture.md) - System design
+- [Event Store](docs/event-store.md) - Event storage design with PostgreSQL schema
+- [Read Models](docs/read-models.md) - Projection system
+- [Adapters](docs/adapters.md) - Database adapter interfaces
+- [CLI](docs/cli.md) - Command-line tooling
+- [API Design](docs/api-design.md) - Public API reference
+- [Advanced Patterns](docs/advanced-patterns.md) - Commands, Sagas, Outbox
+- [Security](docs/security.md) - Encryption, GDPR, Versioning
+- [Testing](docs/testing.md) - BDD fixtures and test utilities
+- [Roadmap](docs/roadmap.md) - Development phases
+
+### External References
+- [MartenDB](https://martendb.io/) - .NET inspiration
+- [Event Sourcing by Martin Fowler](https://martinfowler.com/eaaDev/EventSourcing.html)
+- [CQRS by Martin Fowler](https://martinfowler.com/bliki/CQRS.html)
+- [PostgreSQL JSONB](https://www.postgresql.org/docs/current/datatype-json.html)
+
+---
+
+## Quick Reference
+
+### Version Constants
+```go
+AnyVersion   = -1  // Skip version check
+NoStream     = 0   // Stream must not exist  
+StreamExists = -2  // Stream must exist
+```
+
+### Error Handling
+```go
+errors.Is(err, mink.ErrConcurrencyConflict)
+errors.Is(err, mink.ErrStreamNotFound)
+errors.Is(err, mink.ErrEventNotFound)
+```
+
+### Common Imports
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "github.com/AshkanYarmoradi/go-mink/testing/minktest"
+)
+```
+
+---
+
+**Remember**: The goal is to make Event Sourcing accessible to every Go developer. Keep APIs simple, provide excellent error messages, and document everything thoroughly.
