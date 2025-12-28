@@ -431,13 +431,15 @@ func TestE2E_Subscription(t *testing.T) {
 	eventCh, err := adapter.SubscribeAll(ctx, 0)
 	require.NoError(t, err)
 
-	// Collect events in goroutine
+	// Collect events in goroutine with mutex protection for thread safety
 	var receivedEvents []mink.StoredEvent
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for event := range eventCh {
+			mu.Lock()
 			receivedEvents = append(receivedEvents, mink.StoredEvent{
 				ID:             event.ID,
 				StreamID:       event.StreamID,
@@ -447,7 +449,9 @@ func TestE2E_Subscription(t *testing.T) {
 				GlobalPosition: event.GlobalPosition,
 				Timestamp:      event.Timestamp,
 			})
-			if len(receivedEvents) >= 3 {
+			count := len(receivedEvents)
+			mu.Unlock()
+			if count >= 3 {
 				return
 			}
 		}
