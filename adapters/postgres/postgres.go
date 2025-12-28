@@ -393,15 +393,18 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 	}
 
 	var info adapters.StreamInfo
+	// Query stream info and count events in one query using a subquery
 	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT stream_id, category, version, created_at, updated_at
-		FROM %s.streams
-		WHERE stream_id = $1`, a.schema), streamID).Scan(
+		SELECT s.stream_id, s.category, s.version, s.created_at, s.updated_at,
+		       (SELECT COUNT(*) FROM %s.events e WHERE e.stream_id = s.stream_id) as event_count
+		FROM %s.streams s
+		WHERE s.stream_id = $1`, a.schema, a.schema), streamID).Scan(
 		&info.StreamID,
 		&info.Category,
 		&info.Version,
 		&info.CreatedAt,
 		&info.UpdatedAt,
+		&info.EventCount,
 	)
 
 	if err == sql.ErrNoRows {
