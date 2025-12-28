@@ -842,11 +842,6 @@ func TestEventStore_LoadAggregate_DeserializeEventError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to deserialize event")
 }
 
-// Test event that fails deserialization
-type undeserializableEvent struct {
-	Value string
-}
-
 func TestEventStore_LoadAggregate_DeserializeError(t *testing.T) {
 	adapter := memory.NewAdapter()
 	store := New(adapter)

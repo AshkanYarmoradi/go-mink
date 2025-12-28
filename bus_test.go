@@ -27,16 +27,6 @@ func (c busTestCreateOrder) Validate() error {
 	return nil
 }
 
-type busTestAddItem struct {
-	CommandBase
-	OrderID  string
-	SKU      string
-	Quantity int
-}
-
-func (c busTestAddItem) CommandType() string { return "AddItem" }
-func (c busTestAddItem) Validate() error     { return nil }
-
 func TestCommandBus_New(t *testing.T) {
 	t.Run("creates with defaults", func(t *testing.T) {
 		bus := NewCommandBus()
@@ -384,7 +374,7 @@ func TestCommandBus_Concurrent(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "cust-1"})
+				_, _ = bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "cust-1"})
 			}()
 		}
 
@@ -412,7 +402,7 @@ func TestCommandBus_Concurrent(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "cust-1"})
+				_, _ = bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "cust-1"})
 			}()
 		}
 

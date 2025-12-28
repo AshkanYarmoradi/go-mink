@@ -30,10 +30,9 @@ func (c idempotentTestCommand) CommandType() string    { return "IdempotentTestC
 func (c idempotentTestCommand) Validate() error        { return nil }
 func (c idempotentTestCommand) IdempotencyKey() string { return c.IdempotencyID }
 
-// unmarshalableCommand is a command that cannot be JSON marshaled (has a channel)
+// unmarshalableCommand is a command that cannot be JSON marshaled
 type unmarshalableCommand struct {
 	CommandBase
-	ch chan struct{} `json:"-"`
 }
 
 func (c unmarshalableCommand) CommandType() string { return "UnmarshalableCommand" }
