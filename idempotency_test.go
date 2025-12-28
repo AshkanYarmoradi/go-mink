@@ -216,6 +216,15 @@ func TestGenerateIdempotencyKey(t *testing.T) {
 		// Should still generate a key (fallback path)
 		assert.Contains(t, key, "UnmarshalableCommand:")
 	})
+
+	t.Run("fallback generates deterministic key", func(t *testing.T) {
+		// Verify that unmarshallable commands produce identical keys on repeated calls
+		cmd := unmarshalableCommand{}
+		key1 := GenerateIdempotencyKey(cmd)
+		key2 := GenerateIdempotencyKey(cmd)
+		assert.Equal(t, key1, key2, "fallback should generate deterministic keys")
+		assert.Contains(t, key1, ":type-only:", "fallback key should include type-only marker")
+	})
 }
 
 func TestGetIdempotencyKey(t *testing.T) {

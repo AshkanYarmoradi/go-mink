@@ -650,4 +650,9 @@ func TestPanicError(t *testing.T) {
 		err := NewPanicError("CreateOrder", "panic", "full stack trace here")
 		assert.Equal(t, "full stack trace here", err.Stack)
 	})
+
+	t.Run("CommandData is captured with NewPanicErrorWithCommand", func(t *testing.T) {
+		err := NewPanicErrorWithCommand("CreateOrder", "panic", "stack", `{"customerId":"123"}`)
+		assert.Equal(t, `{"customerId":"123"}`, err.CommandData)
+	})
 }

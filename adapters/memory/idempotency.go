@@ -24,6 +24,10 @@ type IdempotencyStore struct {
 	maxAge time.Duration
 	// stopCleanup signals the cleanup goroutine to stop
 	stopCleanup chan struct{}
+	// closeOnce ensures Close() is only executed once
+	closeOnce sync.Once
+	// cleanupStarted indicates whether cleanup goroutine has started
+	cleanupStarted chan struct{}
 }
 
 // IdempotencyStoreOption configures an IdempotencyStore
@@ -52,6 +56,7 @@ func NewIdempotencyStore(opts ...IdempotencyStoreOption) *IdempotencyStore {
 		cleanupInterval: 0, // Disabled by default
 		maxAge:          24 * time.Hour,
 		stopCleanup:     make(chan struct{}),
+		cleanupStarted:  make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -60,6 +65,11 @@ func NewIdempotencyStore(opts ...IdempotencyStoreOption) *IdempotencyStore {
 
 	if s.cleanupInterval > 0 {
 		go s.startCleanup()
+		// Wait for the cleanup goroutine to signal it has started
+		<-s.cleanupStarted
+	} else {
+		// If no cleanup, close the channel so Close() doesn't block
+		close(s.cleanupStarted)
 	}
 
 	return s
@@ -69,6 +79,9 @@ func NewIdempotencyStore(opts ...IdempotencyStoreOption) *IdempotencyStore {
 func (s *IdempotencyStore) startCleanup() {
 	ticker := time.NewTicker(s.cleanupInterval)
 	defer ticker.Stop()
+
+	// Signal that the cleanup goroutine has started
+	close(s.cleanupStarted)
 
 	for {
 		select {
@@ -81,8 +94,11 @@ func (s *IdempotencyStore) startCleanup() {
 }
 
 // Close stops the cleanup goroutine and releases resources.
+// It is safe to call Close() multiple times.
 func (s *IdempotencyStore) Close() error {
-	close(s.stopCleanup)
+	s.closeOnce.Do(func() {
+		close(s.stopCleanup)
+	})
 	return nil
 }
 

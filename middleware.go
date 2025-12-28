@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
 	"time"
@@ -21,13 +22,19 @@ func ValidationMiddleware() Middleware {
 }
 
 // RecoveryMiddleware recovers from panics in handlers and returns them as errors.
+// It captures a sanitized representation of the command data for debugging.
 func RecoveryMiddleware() Middleware {
 	return func(next MiddlewareFunc) MiddlewareFunc {
 		return func(ctx context.Context, cmd Command) (result CommandResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					stack := string(debug.Stack())
-					panicErr := NewPanicError(cmd.CommandType(), r, stack)
+					// Capture command data for debugging (best effort, ignore errors)
+					var commandData string
+					if data, jsonErr := json.Marshal(cmd); jsonErr == nil {
+						commandData = string(data)
+					}
+					panicErr := NewPanicErrorWithCommand(cmd.CommandType(), r, stack, commandData)
 					result = NewErrorResult(panicErr)
 					err = panicErr
 				}

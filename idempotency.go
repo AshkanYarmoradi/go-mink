@@ -82,8 +82,10 @@ func IdempotencyRecordToResult(r *IdempotencyRecord) CommandResult {
 func GenerateIdempotencyKey(cmd Command) string {
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		// Fallback to type + timestamp
-		return cmd.CommandType() + ":" + time.Now().String()
+		// Fallback to a deterministic key based on the command type only.
+		// This ensures identical commands produce identical keys even if serialization fails.
+		typeHash := sha256.Sum256([]byte(cmd.CommandType()))
+		return cmd.CommandType() + ":type-only:" + hex.EncodeToString(typeHash[:16])
 	}
 
 	hash := sha256.Sum256(data)

@@ -219,6 +219,10 @@ func (s *IdempotencyStore) Get(ctx context.Context, key string) (*adapters.Idemp
 		record.Version = version.Int64
 	}
 	if response != nil {
+		// Validate that the response is valid JSON before returning
+		if !json.Valid(response) {
+			return nil, fmt.Errorf("mink/postgres/idempotency: invalid JSON in response for key %s", key)
+		}
 		record.Response = response
 	}
 	if errorMsg.Valid {

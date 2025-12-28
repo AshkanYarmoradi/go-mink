@@ -209,6 +209,9 @@ type PanicError struct {
 	CommandType string
 	Value       interface{}
 	Stack       string
+	// CommandData contains a sanitized JSON representation of the command for debugging.
+	// Sensitive fields should be masked by the caller before setting this field.
+	CommandData string
 }
 
 // Error returns the error message.
@@ -232,5 +235,16 @@ func NewPanicError(cmdType string, value interface{}, stack string) *PanicError 
 		CommandType: cmdType,
 		Value:       value,
 		Stack:       stack,
+	}
+}
+
+// NewPanicErrorWithCommand creates a new PanicError with command data for debugging.
+// The commandData should be a sanitized representation of the command (sensitive fields masked).
+func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, commandData string) *PanicError {
+	return &PanicError{
+		CommandType: cmdType,
+		Value:       value,
+		Stack:       stack,
+		CommandData: commandData,
 	}
 }
