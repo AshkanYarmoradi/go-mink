@@ -27,6 +27,16 @@ func (c middlewareTestCommand) Validate() error {
 	return nil
 }
 
+// middlewareTestCommandWithCorrelation is a command that has a GetCorrelationID method
+type middlewareTestCommandWithCorrelation struct {
+	middlewareTestCommand
+	CorrelationIDValue string
+}
+
+func (c middlewareTestCommandWithCorrelation) GetCorrelationID() string {
+	return c.CorrelationIDValue
+}
+
 func TestValidationMiddleware(t *testing.T) {
 	t.Run("passes valid command", func(t *testing.T) {
 		mw := ValidationMiddleware()
@@ -354,6 +364,55 @@ func TestRetryMiddleware(t *testing.T) {
 
 		assert.Equal(t, 1, attempts) // MaxAttempts defaults to 1
 	})
+
+	t.Run("caps delay at MaxDelay", func(t *testing.T) {
+		config := RetryConfig{
+			MaxAttempts:  4,
+			InitialDelay: 1 * time.Millisecond,
+			MaxDelay:     2 * time.Millisecond, // Very small max
+			Multiplier:   10.0,                 // Large multiplier
+		}
+		mw := RetryMiddleware(config)
+		var attempts int
+		expectedErr := errors.New("fail")
+
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			attempts++
+			return NewErrorResult(expectedErr), expectedErr
+		}
+
+		start := time.Now()
+		_, _ = mw(handler)(context.Background(), middlewareTestCommand{Value: "test"})
+		elapsed := time.Since(start)
+
+		assert.Equal(t, 4, attempts)
+		// With capping, delays would be: 1ms, 2ms (capped), 2ms (capped) = 5ms
+		// Without capping: 1ms, 10ms, 100ms = 111ms
+		assert.Less(t, elapsed, 50*time.Millisecond)
+	})
+
+	t.Run("retries on error result without Go error", func(t *testing.T) {
+		config := RetryConfig{
+			MaxAttempts:  3,
+			InitialDelay: 1 * time.Millisecond,
+		}
+		mw := RetryMiddleware(config)
+		var attempts int
+
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			attempts++
+			if attempts < 3 {
+				return NewErrorResult(errors.New("result error")), nil // No Go error, but error result
+			}
+			return NewSuccessResult("", 0), nil
+		}
+
+		result, err := mw(handler)(context.Background(), middlewareTestCommand{Value: "test"})
+
+		require.NoError(t, err)
+		assert.True(t, result.IsSuccess())
+		assert.Equal(t, 3, attempts)
+	})
 }
 
 type testMetricsCollector struct {
@@ -486,6 +545,24 @@ func TestCorrelationIDMiddleware(t *testing.T) {
 		_, _ = mw(handler)(context.Background(), middlewareTestCommand{Value: "test"})
 
 		assert.NotEmpty(t, capturedID)
+	})
+
+	t.Run("uses correlation ID from command", func(t *testing.T) {
+		mw := CorrelationIDMiddleware(func() string { return "generated-id" })
+
+		var capturedID string
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			capturedID = CorrelationIDFromContext(ctx)
+			return NewSuccessResult("", 0), nil
+		}
+
+		cmd := middlewareTestCommandWithCorrelation{
+			middlewareTestCommand: middlewareTestCommand{Value: "test"},
+			CorrelationIDValue:    "cmd-correlation-id",
+		}
+		_, _ = mw(handler)(context.Background(), cmd)
+
+		assert.Equal(t, "cmd-correlation-id", capturedID)
 	})
 }
 

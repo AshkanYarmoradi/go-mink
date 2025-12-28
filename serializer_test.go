@@ -60,6 +60,17 @@ func TestEventRegistry(t *testing.T) {
 		assert.True(t, ok3)
 	})
 
+	t.Run("RegisterAll handles pointers", func(t *testing.T) {
+		r := NewEventRegistry()
+		r.RegisterAll(&OrderCreated{}, &ItemAdded{})
+
+		assert.Equal(t, 2, r.Count())
+
+		t_, ok := r.Lookup("OrderCreated")
+		assert.True(t, ok)
+		assert.Equal(t, "OrderCreated", t_.Name())
+	})
+
 	t.Run("Lookup returns false for unregistered type", func(t *testing.T) {
 		r := NewEventRegistry()
 
@@ -205,6 +216,15 @@ func TestJSONSerializer(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrSerializationFailed))
 	})
 
+	t.Run("Deserialize returns error for invalid JSON to map", func(t *testing.T) {
+		s := NewJSONSerializer()
+		// No registration - will fall back to map
+
+		_, err := s.Deserialize([]byte(`{invalid`), "UnknownEvent")
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, ErrSerializationFailed))
+	})
+
 	t.Run("roundtrip preserves data", func(t *testing.T) {
 		s := NewJSONSerializer()
 		s.Register("OrderShipped", OrderShipped{})
@@ -262,7 +282,38 @@ func TestSerializeEvent(t *testing.T) {
 		_, err := SerializeEvent(s, nil, Metadata{})
 		assert.Error(t, err)
 	})
+
+	t.Run("returns error when serializer fails", func(t *testing.T) {
+		s := &testFailingSerializer{serializeErr: errors.New("serialize failed")}
+		event := OrderCreated{OrderID: "order-123", CustomerID: "customer-456"}
+
+		_, err := SerializeEvent(s, event, Metadata{})
+		assert.Error(t, err)
+	})
 }
+
+type testFailingSerializer struct {
+	serializeErr   error
+	deserializeErr error
+}
+
+func (s *testFailingSerializer) Serialize(v interface{}) ([]byte, error) {
+	if s.serializeErr != nil {
+		return nil, s.serializeErr
+	}
+	return []byte("{}"), nil
+}
+
+func (s *testFailingSerializer) Deserialize(data []byte, eventType string) (interface{}, error) {
+	if s.deserializeErr != nil {
+		return nil, s.deserializeErr
+	}
+	return map[string]interface{}{}, nil
+}
+
+func (s *testFailingSerializer) Register(eventType string, example interface{}) {}
+
+func (s *testFailingSerializer) RegisterAll(examples ...interface{}) {}
 
 func TestDeserializeEvent(t *testing.T) {
 	t.Run("creates Event from StoredEvent", func(t *testing.T) {

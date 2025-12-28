@@ -30,6 +30,20 @@ func (c idempotentTestCommand) CommandType() string    { return "IdempotentTestC
 func (c idempotentTestCommand) Validate() error        { return nil }
 func (c idempotentTestCommand) IdempotencyKey() string { return c.IdempotencyID }
 
+// unmarshalableCommand is a command that cannot be JSON marshaled (has a channel)
+type unmarshalableCommand struct {
+	CommandBase
+	ch chan struct{} `json:"-"`
+}
+
+func (c unmarshalableCommand) CommandType() string { return "UnmarshalableCommand" }
+func (c unmarshalableCommand) Validate() error     { return nil }
+
+// MarshalJSON always fails for testing the fallback path
+func (c unmarshalableCommand) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("cannot marshal")
+}
+
 // Mock idempotency store for testing
 type mockIdempotencyStore struct {
 	records   map[string]*IdempotencyRecord
@@ -195,6 +209,13 @@ func TestGenerateIdempotencyKey(t *testing.T) {
 		cmd := idempotencyTestCommand{Value: "test"}
 		key := GenerateIdempotencyKey(cmd)
 		assert.Contains(t, key, "IdempotencyTestCommand:")
+	})
+
+	t.Run("handles unmarshallable command with fallback", func(t *testing.T) {
+		cmd := unmarshalableCommand{}
+		key := GenerateIdempotencyKey(cmd)
+		// Should still generate a key (fallback path)
+		assert.Contains(t, key, "UnmarshalableCommand:")
 	})
 }
 
@@ -365,6 +386,24 @@ func TestIdempotencyMiddleware(t *testing.T) {
 		cmd := idempotencyTestCommand{Value: "test"}
 		_, _ = mw(handler)(context.Background(), cmd)
 
+		assert.Len(t, store.records, 0)
+	})
+
+	t.Run("does not store error result when StoreErrors true but no cmdErr", func(t *testing.T) {
+		store := newMockIdempotencyStore()
+		config := DefaultIdempotencyConfig(store)
+		config.StoreErrors = true
+		mw := IdempotencyMiddleware(config)
+
+		// Return error result but nil error (no cmdErr)
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			return NewErrorResult(errors.New("result error")), nil // cmdErr is nil
+		}
+
+		cmd := idempotencyTestCommand{Value: "test"}
+		_, _ = mw(handler)(context.Background(), cmd)
+
+		// Should NOT store because !result.IsSuccess() && cmdErr == nil
 		assert.Len(t, store.records, 0)
 	})
 
