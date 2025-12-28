@@ -577,6 +577,111 @@ func TestCorrelationIDFromContext(t *testing.T) {
 	})
 }
 
+func TestCausationIDMiddleware(t *testing.T) {
+	t.Run("extracts causation ID from command", func(t *testing.T) {
+		mw := CausationIDMiddleware()
+
+		var capturedID string
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			capturedID = CausationIDFromContext(ctx)
+			return NewSuccessResult("", 0), nil
+		}
+
+		cmd := middlewareTestCommandWithCausation{
+			middlewareTestCommand: middlewareTestCommand{Value: "test"},
+			CausationIDValue:      "cause-123",
+		}
+		_, _ = mw(handler)(context.Background(), cmd)
+
+		assert.Equal(t, "cause-123", capturedID)
+	})
+
+	t.Run("preserves existing causation ID", func(t *testing.T) {
+		mw := CausationIDMiddleware()
+
+		ctx := WithCausationID(context.Background(), "existing-cause")
+
+		var capturedID string
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			capturedID = CausationIDFromContext(ctx)
+			return NewSuccessResult("", 0), nil
+		}
+
+		_, _ = mw(handler)(ctx, middlewareTestCommand{Value: "test"})
+
+		assert.Equal(t, "existing-cause", capturedID)
+	})
+
+	t.Run("uses command ID as causation if no causation ID", func(t *testing.T) {
+		mw := CausationIDMiddleware()
+
+		var capturedID string
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			capturedID = CausationIDFromContext(ctx)
+			return NewSuccessResult("", 0), nil
+		}
+
+		cmd := middlewareTestCommandWithCommandID{
+			middlewareTestCommand: middlewareTestCommand{Value: "test"},
+			CommandIDValue:        "cmd-456",
+		}
+		_, _ = mw(handler)(context.Background(), cmd)
+
+		assert.Equal(t, "cmd-456", capturedID)
+	})
+
+	t.Run("does not set causation if no ID available", func(t *testing.T) {
+		mw := CausationIDMiddleware()
+
+		var capturedID string
+		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+			capturedID = CausationIDFromContext(ctx)
+			return NewSuccessResult("", 0), nil
+		}
+
+		_, _ = mw(handler)(context.Background(), middlewareTestCommand{Value: "test"})
+
+		assert.Empty(t, capturedID)
+	})
+}
+
+func TestCausationIDFromContext(t *testing.T) {
+	t.Run("returns ID when present", func(t *testing.T) {
+		ctx := WithCausationID(context.Background(), "test-cause")
+		assert.Equal(t, "test-cause", CausationIDFromContext(ctx))
+	})
+
+	t.Run("returns empty when not present", func(t *testing.T) {
+		assert.Empty(t, CausationIDFromContext(context.Background()))
+	})
+}
+
+func TestWithCausationID(t *testing.T) {
+	t.Run("sets causation ID in context", func(t *testing.T) {
+		ctx := WithCausationID(context.Background(), "my-cause")
+		assert.Equal(t, "my-cause", CausationIDFromContext(ctx))
+	})
+}
+
+// Test command types for causation tests
+type middlewareTestCommandWithCausation struct {
+	middlewareTestCommand
+	CausationIDValue string
+}
+
+func (c middlewareTestCommandWithCausation) GetCausationID() string {
+	return c.CausationIDValue
+}
+
+type middlewareTestCommandWithCommandID struct {
+	middlewareTestCommand
+	CommandIDValue string
+}
+
+func (c middlewareTestCommandWithCommandID) GetCommandID() string {
+	return c.CommandIDValue
+}
+
 func TestTenantMiddleware(t *testing.T) {
 	type tenantCmd struct {
 		middlewareTestCommand

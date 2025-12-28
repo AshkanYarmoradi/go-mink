@@ -90,6 +90,21 @@ func (c CommandBase) GetMetadata(key string) string {
 	return c.Metadata[key]
 }
 
+// GetCommandID returns the command ID.
+func (c CommandBase) GetCommandID() string {
+	return c.CommandID
+}
+
+// GetCorrelationID returns the correlation ID.
+func (c CommandBase) GetCorrelationID() string {
+	return c.CorrelationID
+}
+
+// GetCausationID returns the causation ID.
+func (c CommandBase) GetCausationID() string {
+	return c.CausationID
+}
+
 // CommandResult represents the result of command execution.
 // It can contain either a successful result or an error.
 type CommandResult struct {

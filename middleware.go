@@ -281,6 +281,63 @@ func CorrelationIDMiddleware(generator func() string) Middleware {
 	}
 }
 
+// =============================================================================
+// Causation ID Middleware
+// =============================================================================
+
+// causationIDKey is the context key for causation ID.
+type causationIDKey struct{}
+
+// CausationIDFromContext returns the causation ID from context.
+func CausationIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(causationIDKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// WithCausationID returns a context with the causation ID set.
+func WithCausationID(ctx context.Context, causationID string) context.Context {
+	return context.WithValue(ctx, causationIDKey{}, causationID)
+}
+
+// CausationIDMiddleware creates middleware that propagates causation IDs.
+// The causation ID links events/commands to the command that caused them.
+// This is essential for tracking the chain of causality in event sourcing.
+func CausationIDMiddleware() Middleware {
+	return func(next MiddlewareFunc) MiddlewareFunc {
+		return func(ctx context.Context, cmd Command) (CommandResult, error) {
+			// Check if causation ID already exists in context
+			if CausationIDFromContext(ctx) != "" {
+				return next(ctx, cmd)
+			}
+
+			// Try to get from command
+			var causationID string
+			if base, ok := cmd.(interface{ GetCausationID() string }); ok {
+				causationID = base.GetCausationID()
+			}
+
+			// If command has a command ID, use it as causation for downstream
+			if causationID == "" {
+				if base, ok := cmd.(interface{ GetCommandID() string }); ok {
+					causationID = base.GetCommandID()
+				}
+			}
+
+			if causationID != "" {
+				ctx = WithCausationID(ctx, causationID)
+			}
+
+			return next(ctx, cmd)
+		}
+	}
+}
+
+// =============================================================================
+// Tenant Middleware
+// =============================================================================
+
 // TenantIDKey is the context key for tenant ID.
 type tenantIDKey struct{}
 
