@@ -95,6 +95,178 @@ func (a *AggregateBase) ClearUncommittedEvents() {
 }
 ```
 
+### Commands (v0.2.0)
+
+```go
+// Command represents intent to change state
+type Command interface {
+    CommandType() string
+    Validate() error
+}
+
+// CommandBase provides common command functionality
+type CommandBase struct {
+    id            string
+    correlationID string
+    causationID   string
+    tenantID      string
+    metadata      map[string]string
+}
+
+// Accessors for command metadata
+func (c *CommandBase) GetID() string
+func (c *CommandBase) SetID(id string)
+func (c *CommandBase) GetCorrelationID() string
+func (c *CommandBase) SetCorrelationID(id string)
+func (c *CommandBase) GetCausationID() string
+func (c *CommandBase) SetCausationID(id string)
+func (c *CommandBase) GetTenantID() string
+func (c *CommandBase) SetTenantID(id string)
+func (c *CommandBase) GetMetadata() map[string]string
+func (c *CommandBase) SetMetadata(m map[string]string)
+
+// CommandResult contains the result of command execution
+type CommandResult struct {
+    AggregateID string
+    Version     int64
+    Events      []interface{}
+    Data        interface{}
+}
+
+func NewSuccessResult(aggregateID string, version int64) CommandResult
+
+// IdempotentCommand provides custom idempotency keys
+type IdempotentCommand interface {
+    Command
+    IdempotencyKey() string
+}
+```
+
+### Command Bus (v0.2.0)
+
+```go
+// CommandBus routes commands to handlers
+type CommandBus struct {
+    handlers   map[string]CommandHandler
+    middleware []CommandMiddleware
+}
+
+func NewCommandBus() *CommandBus
+
+// Registration
+func (b *CommandBus) Register(handler CommandHandler)
+func (b *CommandBus) RegisterFunc(cmdType string, fn CommandHandlerFunc)
+
+// Middleware
+func (b *CommandBus) Use(middleware ...CommandMiddleware)
+
+// Dispatch
+func (b *CommandBus) Dispatch(ctx context.Context, cmd Command) (CommandResult, error)
+
+// CommandHandler interface
+type CommandHandler interface {
+    CommandType() string
+    Handle(ctx context.Context, cmd Command) (CommandResult, error)
+}
+
+// CommandHandlerFunc for function-based handlers
+type CommandHandlerFunc func(ctx context.Context, cmd Command) (CommandResult, error)
+
+// CommandMiddleware wraps command handling
+type CommandMiddleware func(CommandHandlerFunc) CommandHandlerFunc
+```
+
+### Generic Handler (v0.2.0)
+
+```go
+// GenericHandler provides type-safe command handling
+type GenericHandler[T Command] struct {
+    fn func(ctx context.Context, cmd T) (CommandResult, error)
+}
+
+func NewGenericHandler[T Command](
+    fn func(ctx context.Context, cmd T) (CommandResult, error),
+) *GenericHandler[T]
+
+func (h *GenericHandler[T]) CommandType() string
+func (h *GenericHandler[T]) Handle(ctx context.Context, cmd Command) (CommandResult, error)
+```
+
+### Aggregate Handler (v0.2.0)
+
+```go
+// AggregateHandler combines load/save with command handling
+type AggregateHandler[C Command, A Aggregate] struct {
+    store      AggregateStore
+    idFunc     func(C) string
+    factory    func() A
+    handleFunc func(ctx context.Context, agg A, cmd C) error
+}
+
+func NewAggregateHandler[C Command, A Aggregate](
+    store AggregateStore,
+    idFunc func(C) string,
+    factory func() A,
+    handleFunc func(ctx context.Context, agg A, cmd C) error,
+) *AggregateHandler[C, A]
+```
+
+### Built-in Middleware (v0.2.0)
+
+```go
+// Validation middleware - calls cmd.Validate()
+func ValidationMiddleware() CommandMiddleware
+
+// Recovery middleware - catches panics
+func RecoveryMiddleware() CommandMiddleware
+
+// Logging middleware - logs command execution
+func LoggingMiddleware(logger Logger) CommandMiddleware
+
+// Metrics middleware - records command metrics
+func MetricsMiddleware(metrics MetricsRecorder) CommandMiddleware
+
+// Timeout middleware - adds context timeout
+func TimeoutMiddleware(timeout time.Duration) CommandMiddleware
+
+// Retry middleware - retries on transient failures
+func RetryMiddleware(maxAttempts int, initialDelay time.Duration) CommandMiddleware
+
+// Correlation ID middleware - sets/generates correlation ID
+func CorrelationIDMiddleware(generator func() string) CommandMiddleware
+
+// Causation ID middleware - tracks causation chain
+func CausationIDMiddleware() CommandMiddleware
+
+// Tenant middleware - sets tenant ID from context
+func TenantMiddleware(resolver func(context.Context) string) CommandMiddleware
+
+// Idempotency middleware - prevents duplicate processing
+func IdempotencyMiddleware(config IdempotencyConfig) CommandMiddleware
+```
+
+### Idempotency Store (v0.2.0)
+
+```go
+// IdempotencyStore tracks processed commands
+type IdempotencyStore interface {
+    Store(ctx context.Context, key string, response []byte, expiration time.Duration) error
+    Get(ctx context.Context, key string) ([]byte, error)
+    Close() error
+}
+
+// IdempotencyConfig configures idempotency middleware
+type IdempotencyConfig struct {
+    Store      IdempotencyStore
+    KeyFunc    func(Command) string
+    TTL        time.Duration
+    Serializer func(CommandResult) []byte
+}
+
+func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig
+func GenerateIdempotencyKey(cmd Command) string
+```
+
 ### Events
 
 ```go
