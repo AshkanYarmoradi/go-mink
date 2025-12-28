@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -181,13 +182,24 @@ func (rm *OrderReadModel) Apply(event mink.StoredEvent) error {
 	defer rm.mu.Unlock()
 
 	// Extract order ID from stream ID (format: "Order-{id}")
-	orderID := event.StreamID[6:] // Remove "Order-" prefix
+	// Safe bounds checking to prevent panic on malformed stream IDs
+	const prefix = "Order-"
+	if len(event.StreamID) <= len(prefix) {
+		return fmt.Errorf("invalid stream ID format: %s", event.StreamID)
+	}
+	orderID := event.StreamID[len(prefix):]
 
 	switch event.Type {
 	case "OrderCreated":
+		// Deserialize event to get CustomerID
+		var created OrderCreated
+		if err := json.Unmarshal(event.Data, &created); err != nil {
+			return fmt.Errorf("failed to unmarshal OrderCreated: %w", err)
+		}
 		rm.orders[orderID] = &OrderSummary{
-			OrderID: orderID,
-			Status:  "Created",
+			OrderID:    orderID,
+			CustomerID: created.CustomerID,
+			Status:     "Created",
 		}
 	case "ItemAdded":
 		if summary, ok := rm.orders[orderID]; ok {
@@ -196,7 +208,13 @@ func (rm *OrderReadModel) Apply(event mink.StoredEvent) error {
 		}
 	case "OrderShipped":
 		if summary, ok := rm.orders[orderID]; ok {
+			// Deserialize event to get TrackingNumber
+			var shipped OrderShipped
+			if err := json.Unmarshal(event.Data, &shipped); err != nil {
+				return fmt.Errorf("failed to unmarshal OrderShipped: %w", err)
+			}
 			summary.Status = "Shipped"
+			summary.TrackingNumber = shipped.TrackingNumber
 		}
 	case "OrderCancelled":
 		if summary, ok := rm.orders[orderID]; ok {
