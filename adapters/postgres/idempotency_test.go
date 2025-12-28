@@ -25,6 +25,10 @@ func setupIdempotencyTestStore(t *testing.T) *IdempotencyStore {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = adapter.Close() })
 
+	// Initialize adapter to create schema
+	err = adapter.Initialize(context.Background())
+	require.NoError(t, err)
+
 	store := NewIdempotencyStoreFromAdapter(adapter)
 
 	// Initialize table

@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -285,11 +286,11 @@ func TestE2E_CommandBus_ConcurrentDispatch(t *testing.T) {
 	bus := NewCommandBus()
 	bus.Use(ValidationMiddleware())
 
-	var counter int
+	var counter int64
 
 	bus.RegisterFunc("E2ECreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
-		counter++
-		return NewSuccessResult("order-1", int64(counter)), nil
+		newVal := atomic.AddInt64(&counter, 1)
+		return NewSuccessResult("order-1", newVal), nil
 	})
 
 	// Dispatch multiple commands concurrently
