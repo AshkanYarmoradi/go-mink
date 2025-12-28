@@ -149,6 +149,7 @@ func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []ad
 
 	// Update stream info
 	stream.info.Version = currentVersion
+	stream.info.EventCount = int64(len(stream.events))
 	stream.info.UpdatedAt = now
 
 	// Notify subscribers (non-blocking)
