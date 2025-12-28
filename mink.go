@@ -139,11 +139,63 @@
 //	    WithTenantID("tenant-789")
 //
 //	err := store.Append(ctx, "Order-123", events, mink.WithAppendMetadata(metadata))
+//
+// # Commands and CQRS (v0.2.0)
+//
+// Define commands to encapsulate user intentions:
+//
+//	type CreateOrder struct {
+//	    mink.CommandBase
+//	    CustomerID string `json:"customerId"`
+//	}
+//
+//	func (c CreateOrder) CommandType() string { return "CreateOrder" }
+//	func (c CreateOrder) Validate() error {
+//	    if c.CustomerID == "" {
+//	        return mink.NewValidationError("CustomerID", "required")
+//	    }
+//	    return nil
+//	}
+//
+// Create a command bus with middleware:
+//
+//	bus := mink.NewCommandBus()
+//	bus.Use(mink.ValidationMiddleware())
+//	bus.Use(mink.RecoveryMiddleware(func(err error) { log.Error(err) }))
+//	bus.Use(mink.LoggingMiddleware(logger, nil))
+//
+// Register command handlers:
+//
+//	bus.Register("CreateOrder", func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+//	    c := cmd.(CreateOrder)
+//	    order := NewOrder(uuid.New().String())
+//	    order.Create(c.CustomerID)
+//	    if err := store.SaveAggregate(ctx, order); err != nil {
+//	        return mink.NewErrorResult(err), err
+//	    }
+//	    return mink.NewSuccessResult(order.AggregateID(), order.Version()), nil
+//	})
+//
+// Dispatch commands:
+//
+//	result, err := bus.Dispatch(ctx, CreateOrder{CustomerID: "cust-123"})
+//
+// # Idempotency
+//
+// Prevent duplicate command processing with idempotency:
+//
+//	idempotencyStore := memory.NewIdempotencyStore()
+//	config := mink.DefaultIdempotencyConfig(idempotencyStore)
+//	bus.Use(mink.IdempotencyMiddleware(config))
+//
+// Make commands idempotent by implementing IdempotentCommand:
+//
+//	func (c CreateOrder) IdempotencyKey() string { return c.RequestID }
 package mink
 
 // Version returns the library version string.
 func Version() string {
-	return "0.1.0"
+	return "0.2.0"
 }
 
 // BuildStreamID creates a stream ID from an aggregate type and ID.
