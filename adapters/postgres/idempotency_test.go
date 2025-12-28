@@ -89,7 +89,8 @@ func TestIdempotencyStore_PostgreSQL_Store(t *testing.T) {
 
 		retrieved, _ := store.Get(ctx, "pg-test-key-2")
 		require.NotNil(t, retrieved)
-		assert.Equal(t, []byte(`{"result":"success"}`), retrieved.Response)
+		// Compare JSON content (PostgreSQL JSONB may normalize formatting)
+		assert.JSONEq(t, `{"result":"success"}`, string(retrieved.Response))
 	})
 
 	t.Run("stores error information", func(t *testing.T) {
