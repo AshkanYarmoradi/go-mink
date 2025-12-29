@@ -7,13 +7,22 @@
 [![Build Status](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg)](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-90%25+-brightgreen)](https://github.com/AshkanYarmoradi/go-mink)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 
 ---
 
-## 🚀 Current Status: v0.1.0 (Phase 1 Complete)
+## 🚀 Current Status: v0.2.0 (Phase 2 Complete)
 
-Phase 1 (Foundation) is complete with:
+Phase 2 (CQRS & Commands) is complete with:
+- ✅ Command Bus with middleware pipeline
+- ✅ Generic command handlers with type safety
+- ✅ Aggregate handlers for domain operations
+- ✅ Idempotency middleware with PostgreSQL/Memory stores
+- ✅ Validation, Recovery, Logging, Metrics middleware
+- ✅ Correlation & Causation ID tracking
+- ✅ Retry, Timeout, and Tenant middleware
+
+**Phase 1 features included:**
 - ✅ Event Store with optimistic concurrency
 - ✅ PostgreSQL adapter (production-ready)
 - ✅ In-Memory adapter (for testing)
@@ -43,7 +52,9 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 🔌 **PostgreSQL Adapter** | ✅ v0.1.0 | Production-ready PostgreSQL support |
 | 🧪 **Memory Adapter** | ✅ v0.1.0 | In-memory adapter for testing |
 | 🧱 **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
-| 📋 **Command Bus** | 🔜 v0.2.0 | Full CQRS with command handlers and middleware |
+| 📋 **Command Bus** | ✅ v0.2.0 | Full CQRS with command handlers and middleware |
+| 🔐 **Idempotency** | ✅ v0.2.0 | Prevent duplicate command processing |
+| 🔗 **Correlation/Causation** | ✅ v0.2.0 | Distributed tracing support |
 | 📖 **Projections** | 🔜 v0.3.0 | Automatic projection management |
 | 🛠️ **CLI Tool** | 🔜 v0.4.0 | Code generation, migrations, and diagnostics |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
@@ -70,7 +81,7 @@ func main() {
     defer adapter.Close()
     
     // Create event store
-    store := mink.NewEventStore(adapter)
+    store := mink.New(adapter)
     
     // Create and populate an aggregate
     order := NewOrder("order-123")
@@ -83,8 +94,62 @@ func main() {
     // Load aggregate (events are replayed)
     loaded := NewOrder("order-123")
     store.LoadAggregate(ctx, loaded)
-    // loaded.Status == "Created"
-    // len(loaded.Items) == 1
+}
+```
+
+## CQRS with Command Bus (v0.2.0)
+
+```go
+package main
+
+import (
+    "context"
+    
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+)
+
+// Define a command
+type CreateOrder struct {
+    mink.CommandBase
+    CustomerID string `json:"customerId"`
+}
+
+func (c CreateOrder) CommandType() string { return "CreateOrder" }
+func (c CreateOrder) Validate() error {
+    if c.CustomerID == "" {
+        return mink.NewValidationError("CreateOrder", "CustomerID", "required")
+    }
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+    
+    // Create command bus with middleware
+    bus := mink.NewCommandBus()
+    bus.Use(mink.ValidationMiddleware())
+    bus.Use(mink.RecoveryMiddleware())
+    bus.Use(mink.CorrelationIDMiddleware(nil))
+    
+    // Add idempotency (prevents duplicate processing)
+    idempotencyStore := memory.NewIdempotencyStore()
+    bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(idempotencyStore)))
+    
+    // Register command handler
+    bus.RegisterFunc("CreateOrder", func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+        c := cmd.(CreateOrder)
+        // Process command...
+        return mink.NewSuccessResult("order-123", 1), nil
+    })
+    
+    // Dispatch command
+    result, err := bus.Dispatch(ctx, CreateOrder{CustomerID: "cust-456"})
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Created order: %s (version %d)\n", result.AggregateID, result.Version)
 }
 ```
 

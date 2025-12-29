@@ -66,40 +66,56 @@ store.LoadAggregate(ctx, loaded)
 
 ---
 
-## Phase 2: CQRS & Command Pattern (v0.2.0)
+## Phase 2: CQRS & Command Pattern (v0.2.0) ✅ COMPLETE
 
-**Timeline: 6-8 weeks**
+**Status: Released**
 
 ### Command Bus
-- [ ] Command interface design
-- [ ] Command handler registration
-- [ ] Command bus implementation
-- [ ] Command middleware pipeline
-- [ ] Validation middleware
+- [x] Command interface design
+- [x] Command handler registration (type-safe generic handlers)
+- [x] Command bus implementation
+- [x] Command middleware pipeline
+- [x] Validation middleware
+- [x] Recovery middleware (panic handling)
+- [x] Logging middleware
+- [x] Metrics middleware
+- [x] Timeout middleware
+- [x] Retry middleware
+- [x] Tenant middleware (multi-tenancy)
 
 ### Idempotency
-- [ ] Idempotency key generation
-- [ ] Idempotency store interface
-- [ ] PostgreSQL idempotency adapter
-- [ ] Idempotency middleware
+- [x] Idempotency key generation (configurable strategies)
+- [x] Idempotency store interface
+- [x] PostgreSQL idempotency adapter
+- [x] In-memory idempotency adapter (testing)
+- [x] Idempotency middleware
 
 ### Causation & Correlation
-- [ ] Enhanced metadata (correlation ID, causation ID)
-- [ ] Causation chain tracking
-- [ ] Request context propagation
+- [x] Enhanced metadata (correlation ID, causation ID)
+- [x] Correlation ID middleware
+- [x] Causation ID middleware
+- [x] Request context propagation
 
 ### Deliverables
 ```go
-// By end of v0.2.0, commands work:
+// v0.2.0 Command Bus implementation:
 bus := mink.NewCommandBus()
-bus.Register(&CreateOrderHandler{store: store})
-bus.Use(mink.ValidationMiddleware())
-bus.Use(mink.IdempotencyMiddleware(idempotencyStore))
 
-err := bus.Dispatch(ctx, CreateOrder{
-    CustomerID: "cust-123",
-    Items:      items,
-})
+// Register middleware
+bus.Use(mink.ValidationMiddleware())
+bus.Use(mink.RecoveryMiddleware())
+bus.Use(mink.CorrelationIDMiddleware(nil))
+bus.Use(mink.CausationIDMiddleware())
+bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(idempotencyStore)))
+
+// Register handlers (type-safe)
+bus.Register(mink.NewGenericHandler[CreateOrder](func(ctx context.Context, cmd CreateOrder) (mink.CommandResult, error) {
+    // Handle command...
+    return mink.NewSuccessResult("order-123", 1), nil
+}))
+
+// Dispatch
+result, err := bus.Dispatch(ctx, CreateOrder{CustomerID: "cust-123"})
 ```
 
 ---

@@ -228,3 +228,58 @@ type Migrator interface {
 	// MigrationVersion returns the current migration version.
 	MigrationVersion(ctx context.Context) (int, error)
 }
+
+// IdempotencyStore tracks processed commands to prevent duplicate processing.
+// Adapters may implement this to support command idempotency.
+type IdempotencyStore interface {
+	// Exists checks if a command with the given key was already processed.
+	Exists(ctx context.Context, key string) (bool, error)
+
+	// Store records that a command was processed.
+	Store(ctx context.Context, record *IdempotencyRecord) error
+
+	// Get retrieves the idempotency record for a key.
+	// Returns nil, nil if the key doesn't exist.
+	Get(ctx context.Context, key string) (*IdempotencyRecord, error)
+
+	// Delete removes an idempotency record.
+	Delete(ctx context.Context, key string) error
+
+	// Cleanup removes expired records.
+	Cleanup(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// IdempotencyRecord stores information about a processed command.
+type IdempotencyRecord struct {
+	// Key is the idempotency key.
+	Key string `json:"key"`
+
+	// CommandType is the type of the processed command.
+	CommandType string `json:"commandType"`
+
+	// AggregateID is the ID of the affected aggregate (if any).
+	AggregateID string `json:"aggregateId,omitempty"`
+
+	// Version is the aggregate version after processing (if any).
+	Version int64 `json:"version,omitempty"`
+
+	// Response contains serialized response data (optional).
+	Response []byte `json:"response,omitempty"`
+
+	// Error contains the error message if the command failed.
+	Error string `json:"error,omitempty"`
+
+	// Success indicates if the command was processed successfully.
+	Success bool `json:"success"`
+
+	// ProcessedAt is when the command was processed.
+	ProcessedAt time.Time `json:"processedAt"`
+
+	// ExpiresAt is when the record should expire.
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// IsExpired returns true if the record has expired.
+func (r *IdempotencyRecord) IsExpired() bool {
+	return time.Now().After(r.ExpiresAt)
+}

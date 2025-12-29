@@ -43,6 +43,26 @@ var (
 
 	// ErrAdapterClosed indicates the adapter has been closed.
 	ErrAdapterClosed = adapters.ErrAdapterClosed
+
+	// Command and handler related errors
+
+	// ErrHandlerNotFound indicates no handler is registered for a command type.
+	ErrHandlerNotFound = errors.New("mink: handler not found")
+
+	// ErrValidationFailed indicates command validation failed.
+	ErrValidationFailed = errors.New("mink: validation failed")
+
+	// ErrCommandAlreadyProcessed indicates an idempotent command was already processed.
+	ErrCommandAlreadyProcessed = errors.New("mink: command already processed")
+
+	// ErrNilCommand indicates a nil command was passed.
+	ErrNilCommand = errors.New("mink: nil command")
+
+	// ErrHandlerPanicked indicates a handler panicked during execution.
+	ErrHandlerPanicked = errors.New("mink: handler panicked")
+
+	// ErrCommandBusClosed indicates the command bus has been closed.
+	ErrCommandBusClosed = errors.New("mink: command bus closed")
 )
 
 // ConcurrencyError provides detailed information about a concurrency conflict.
@@ -157,4 +177,74 @@ func (e *EventTypeNotRegisteredError) Unwrap() error {
 // NewEventTypeNotRegisteredError creates a new EventTypeNotRegisteredError.
 func NewEventTypeNotRegisteredError(eventType string) *EventTypeNotRegisteredError {
 	return &EventTypeNotRegisteredError{EventType: eventType}
+}
+
+// HandlerNotFoundError provides detailed information about a missing handler.
+type HandlerNotFoundError struct {
+	CommandType string
+}
+
+// Error returns the error message.
+func (e *HandlerNotFoundError) Error() string {
+	return fmt.Sprintf("mink: no handler registered for command type %q", e.CommandType)
+}
+
+// Is reports whether this error matches the target error.
+func (e *HandlerNotFoundError) Is(target error) bool {
+	return target == ErrHandlerNotFound
+}
+
+// Unwrap returns the underlying error for errors.Unwrap().
+func (e *HandlerNotFoundError) Unwrap() error {
+	return ErrHandlerNotFound
+}
+
+// NewHandlerNotFoundError creates a new HandlerNotFoundError.
+func NewHandlerNotFoundError(cmdType string) *HandlerNotFoundError {
+	return &HandlerNotFoundError{CommandType: cmdType}
+}
+
+// PanicError provides detailed information about a handler panic.
+type PanicError struct {
+	CommandType string
+	Value       interface{}
+	Stack       string
+	// CommandData contains a sanitized JSON representation of the command for debugging.
+	// Sensitive fields should be masked by the caller before setting this field.
+	CommandData string
+}
+
+// Error returns the error message.
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("mink: handler panicked while processing %q: %v", e.CommandType, e.Value)
+}
+
+// Is reports whether this error matches the target error.
+func (e *PanicError) Is(target error) bool {
+	return target == ErrHandlerPanicked
+}
+
+// Unwrap returns the underlying error for errors.Unwrap().
+func (e *PanicError) Unwrap() error {
+	return ErrHandlerPanicked
+}
+
+// NewPanicError creates a new PanicError.
+func NewPanicError(cmdType string, value interface{}, stack string) *PanicError {
+	return &PanicError{
+		CommandType: cmdType,
+		Value:       value,
+		Stack:       stack,
+	}
+}
+
+// NewPanicErrorWithCommand creates a new PanicError with command data for debugging.
+// The commandData should be a sanitized representation of the command (sensitive fields masked).
+func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, commandData string) *PanicError {
+	return &PanicError{
+		CommandType: cmdType,
+		Value:       value,
+		Stack:       stack,
+		CommandData: commandData,
+	}
 }

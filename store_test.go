@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -676,4 +677,255 @@ func TestEventStore_NoopLogger(t *testing.T) {
 	logger.Info("test message", "key", "value")
 	logger.Warn("test message", "key", "value")
 	logger.Error("test message", "key", "value")
+}
+
+// =============================================================================
+// Additional edge case tests for uncovered code paths
+// =============================================================================
+
+// mockErrorAdapter is an adapter that returns errors for testing
+type mockErrorAdapter struct {
+	*memory.MemoryAdapter
+	loadErr       error
+	appendErr     error
+	streamInfoErr error
+}
+
+func newMockErrorAdapter() *mockErrorAdapter {
+	return &mockErrorAdapter{
+		MemoryAdapter: memory.NewAdapter(),
+	}
+}
+
+func (a *mockErrorAdapter) Load(ctx context.Context, streamID string, fromVersion int64) ([]adapters.StoredEvent, error) {
+	if a.loadErr != nil {
+		return nil, a.loadErr
+	}
+	return a.MemoryAdapter.Load(ctx, streamID, fromVersion)
+}
+
+func (a *mockErrorAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
+	if a.appendErr != nil {
+		return nil, a.appendErr
+	}
+	return a.MemoryAdapter.Append(ctx, streamID, events, expectedVersion)
+}
+
+func (a *mockErrorAdapter) GetStreamInfo(ctx context.Context, streamID string) (*adapters.StreamInfo, error) {
+	if a.streamInfoErr != nil {
+		return nil, a.streamInfoErr
+	}
+	return a.MemoryAdapter.GetStreamInfo(ctx, streamID)
+}
+
+func TestEventStore_LoadAggregate_AdapterLoadError(t *testing.T) {
+	adapter := newMockErrorAdapter()
+	adapter.loadErr = errors.New("load failed")
+	store := New(adapter)
+
+	order := NewStoreTestOrder("123")
+	err := store.LoadAggregate(context.Background(), order)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "load failed")
+}
+
+func TestEventStore_LoadFrom_AdapterLoadError(t *testing.T) {
+	adapter := newMockErrorAdapter()
+	adapter.loadErr = errors.New("load failed")
+	store := New(adapter)
+
+	_, err := store.LoadFrom(context.Background(), "Order-123", 0)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "load failed")
+}
+
+func TestEventStore_LoadRaw_AdapterLoadError(t *testing.T) {
+	adapter := newMockErrorAdapter()
+	adapter.loadErr = errors.New("load failed")
+	store := New(adapter)
+
+	_, err := store.LoadRaw(context.Background(), "Order-123", 0)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "load failed")
+}
+
+func TestEventStore_SaveAggregate_AdapterAppendError(t *testing.T) {
+	adapter := newMockErrorAdapter()
+	adapter.appendErr = errors.New("append failed")
+	store := New(adapter)
+
+	order := NewStoreTestOrder("123")
+	order.Create("customer-456")
+
+	err := store.SaveAggregate(context.Background(), order)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "append failed")
+}
+
+func TestEventStore_SaveAggregate_SerializeError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	failSerializer := &failingSerializer{}
+	store := New(adapter, WithSerializer(failSerializer))
+
+	order := NewStoreTestOrder("123")
+	order.Create("customer-456") // This creates an uncommitted event
+
+	err := store.SaveAggregate(context.Background(), order)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to serialize aggregate event")
+}
+
+// Aggregate that returns error on ApplyEvent
+type errorApplyAggregate struct {
+	AggregateBase
+	applyErr error
+}
+
+func newErrorApplyAggregate(id string) *errorApplyAggregate {
+	return &errorApplyAggregate{
+		AggregateBase: NewAggregateBase(id, "ErrorAggregate"),
+		applyErr:      errors.New("apply failed"),
+	}
+}
+
+func (a *errorApplyAggregate) ApplyEvent(event interface{}) error {
+	return a.applyErr
+}
+
+func TestEventStore_LoadAggregate_ApplyEventError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Create an event in the stream
+	events := []interface{}{
+		StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+	}
+	err := store.Append(ctx, "ErrorAggregate-123", events)
+	require.NoError(t, err)
+
+	// Try to load into an aggregate that fails on ApplyEvent
+	agg := newErrorApplyAggregate("123")
+	err = store.LoadAggregate(ctx, agg)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to apply event")
+}
+
+func TestEventStore_LoadAggregate_DeserializeEventError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Create an event in the stream
+	events := []interface{}{
+		StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+	}
+	err := store.Append(ctx, "Order-deser-fail", events)
+	require.NoError(t, err)
+
+	// Create new store with failing deserializer
+	failSerializer := &failingDeserializer{
+		JSONSerializer: NewJSONSerializer(),
+	}
+	store2 := New(adapter, WithSerializer(failSerializer))
+
+	order := NewStoreTestOrder("deser-fail")
+	err = store2.LoadAggregate(ctx, order)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to deserialize event")
+}
+
+func TestEventStore_LoadAggregate_DeserializeError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Store does NOT register the event type
+	// So when we try to deserialize, it will return a map, not the struct
+	events := []interface{}{
+		StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+	}
+	err := store.Append(ctx, "Order-123", events)
+	require.NoError(t, err)
+
+	// Create new store without registered events
+	store2 := New(adapter)
+	// Don't register StoreOrderCreated
+
+	// Load - this should work but return map[string]interface{} instead of struct
+	loadedEvents, err := store2.Load(ctx, "Order-123")
+	require.NoError(t, err)
+	// The deserialized data will be a map, not the original struct
+	assert.Len(t, loadedEvents, 1)
+}
+
+func TestEventStore_LoadFrom_DeserializeError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	ctx := context.Background()
+
+	// Store events
+	events := []interface{}{
+		StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+	}
+	err := store.Append(ctx, "Order-123", events)
+	require.NoError(t, err)
+
+	// Manually corrupt the data in the adapter - this is tricky to do
+	// So instead, let's test with a custom serializer that fails
+
+	// Create store with a serializer that fails on deserialize
+	failSerializer := &failingDeserializer{
+		JSONSerializer: NewJSONSerializer(),
+	}
+	store2 := New(adapter, WithSerializer(failSerializer))
+
+	_, err = store2.LoadFrom(ctx, "Order-123", 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to deserialize")
+}
+
+type failingDeserializer struct {
+	*JSONSerializer
+}
+
+func (s *failingDeserializer) Deserialize(data []byte, eventType string) (interface{}, error) {
+	return nil, errors.New("deserialize failed")
+}
+
+func TestEventStore_Append_SerializeError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	failSerializer := &failingSerializer{}
+	store := New(adapter, WithSerializer(failSerializer))
+	ctx := context.Background()
+
+	err := store.Append(ctx, "Order-123", []interface{}{
+		StoreOrderCreated{OrderID: "123"},
+	})
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to serialize")
+}
+
+type failingSerializer struct{}
+
+func (s *failingSerializer) Serialize(v interface{}) ([]byte, error) {
+	return nil, errors.New("serialize failed")
+}
+
+func (s *failingSerializer) Deserialize(data []byte, eventType string) (interface{}, error) {
+	return nil, errors.New("deserialize failed")
+}
+
+func (s *failingSerializer) Register(eventType string, example interface{}) {
+}
+
+func (s *failingSerializer) RegisterAll(examples ...interface{}) {
 }

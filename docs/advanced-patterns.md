@@ -16,9 +16,9 @@ permalink: /docs/advanced-patterns
 
 ---
 
-## Command Bus & CQRS
+## Command Bus & CQRS (v0.2.0) ✅
 
-Complete the CQRS pattern with first-class Command support.
+Complete CQRS pattern implementation with first-class Command support.
 
 ### Command Definition
 
@@ -26,294 +26,361 @@ Complete the CQRS pattern with first-class Command support.
 // Command represents intent to change state
 type Command interface {
     CommandType() string
-    AggregateID() string
     Validate() error
 }
 
-// CommandBase provides common functionality
+// CommandBase provides common functionality (embed in your commands)
 type CommandBase struct {
-    ID            string            `json:"id"`
-    CorrelationID string            `json:"correlationId"`
-    Metadata      map[string]string `json:"metadata"`
+    id            string
+    correlationID string
+    causationID   string
+    tenantID      string
+    metadata      map[string]string
 }
+
+// CommandBase methods
+func (c *CommandBase) GetID() string                   { return c.id }
+func (c *CommandBase) SetID(id string)                 { c.id = id }
+func (c *CommandBase) GetCorrelationID() string        { return c.correlationID }
+func (c *CommandBase) SetCorrelationID(id string)      { c.correlationID = id }
+func (c *CommandBase) GetCausationID() string          { return c.causationID }
+func (c *CommandBase) SetCausationID(id string)        { c.causationID = id }
+func (c *CommandBase) GetTenantID() string             { return c.tenantID }
+func (c *CommandBase) SetTenantID(id string)           { c.tenantID = id }
+func (c *CommandBase) GetMetadata() map[string]string  { return c.metadata }
+func (c *CommandBase) SetMetadata(m map[string]string) { c.metadata = m }
 
 // Example command with validation
 type CreateOrder struct {
-    CommandBase
-    CustomerID string `json:"customerId" validate:"required,uuid"`
-    Items      []Item `json:"items" validate:"required,min=1,dive"`
+    mink.CommandBase
+    CustomerID string `json:"customerId"`
+    Items      []Item `json:"items"`
 }
 
-func (c CreateOrder) CommandType() string  { return "CreateOrder" }
-func (c CreateOrder) AggregateID() string  { return "" } // New aggregate
+func (c CreateOrder) CommandType() string { return "CreateOrder" }
 func (c CreateOrder) Validate() error {
-    return validator.Validate(c)
+    if c.CustomerID == "" {
+        return mink.NewValidationError("CreateOrder", "CustomerID", "required")
+    }
+    return nil
 }
 ```
 
-### Command Handler
+### Command Handler (Type-Safe Generics)
 
 ```go
-// CommandHandler processes a specific command type
-type CommandHandler[C Command] interface {
-    Handle(ctx context.Context, cmd C) error
-}
+// GenericHandler provides type-safe command handling
+handler := mink.NewGenericHandler[CreateOrder](func(ctx context.Context, cmd CreateOrder) (mink.CommandResult, error) {
+    // Create aggregate and apply command
+    order := NewOrder(uuid.NewString())
+    if err := order.Create(cmd.CustomerID, cmd.Items); err != nil {
+        return mink.CommandResult{}, err
+    }
+    
+    // Persist using event store
+    if err := store.SaveAggregate(ctx, order); err != nil {
+        return mink.CommandResult{}, err
+    }
+    
+    return mink.NewSuccessResult(order.AggregateID(), order.Version()), nil
+})
 
-// Example handler
+// Or use struct-based handler implementing CommandHandler interface
 type CreateOrderHandler struct {
     store *mink.EventStore
 }
 
-func (h *CreateOrderHandler) Handle(ctx context.Context, cmd CreateOrder) error {
-    // Validate
-    if err := cmd.Validate(); err != nil {
-        return fmt.Errorf("validation failed: %w", err)
-    }
-    
-    // Create aggregate and apply command
-    order := NewOrder(uuid.NewString())
-    if err := order.Create(cmd.CustomerID, cmd.Items); err != nil {
-        return err
-    }
-    
-    // Persist
-    return h.store.SaveAggregate(ctx, order)
+func (h *CreateOrderHandler) CommandType() string { return "CreateOrder" }
+
+func (h *CreateOrderHandler) Handle(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+    c := cmd.(CreateOrder)
+    // ... implementation
+    return mink.NewSuccessResult("order-123", 1), nil
 }
+```
+
+### AggregateHandler (Combined Load/Save)
+
+```go
+// AggregateHandler automatically loads/saves aggregates
+handler := mink.NewAggregateHandler[CreateOrder, *Order](
+    store,
+    func(cmd CreateOrder) string {
+        return cmd.OrderID // Aggregate ID from command
+    },
+    func() *Order {
+        return NewOrder("") // Aggregate factory
+    },
+    func(ctx context.Context, agg *Order, cmd CreateOrder) error {
+        return agg.Create(cmd.CustomerID, cmd.Items)
+    },
+)
 ```
 
 ### Command Bus
 
 ```go
-// CommandBus routes commands to handlers
-type CommandBus struct {
-    handlers   map[string]interface{}
-    middleware []CommandMiddleware
-}
-
-func NewCommandBus() *CommandBus
-
-// Register handler for command type
-func (b *CommandBus) Register(cmdType string, handler interface{})
-
-// RegisterHandler with type safety using generics
-func Register[C Command](bus *CommandBus, handler CommandHandler[C])
-
-// Dispatch command to appropriate handler
-func (b *CommandBus) Dispatch(ctx context.Context, cmd Command) error {
-    // Run middleware chain
-    handler := b.handlers[cmd.CommandType()]
-    if handler == nil {
-        return ErrHandlerNotFound
-    }
-    
-    // Execute with middleware
-    return b.executeWithMiddleware(ctx, cmd, handler)
-}
-
-// Usage
+// Create command bus
 bus := mink.NewCommandBus()
-Register(bus, &CreateOrderHandler{store: store})
-Register(bus, &AddItemHandler{store: store})
 
-err := bus.Dispatch(ctx, CreateOrder{
+// Register handlers
+bus.Register(handler)                                    // Struct handler
+bus.RegisterFunc("CreateOrder", handleFunc)             // Function handler
+
+// Dispatch command
+result, err := bus.Dispatch(ctx, CreateOrder{
     CustomerID: "cust-123",
-    Items:      []Item{ {SKU: "WIDGET-01", Qty: 2} },
+    Items:      []Item{{SKU: "WIDGET-01", Qty: 2}},
 })
+
+// CommandResult contains execution results
+type CommandResult struct {
+    AggregateID string          // ID of affected aggregate
+    Version     int64           // New version after command
+    Events      []interface{}   // Events produced
+    Data        interface{}     // Optional return data
+}
+
+// Helper constructor
+result := mink.NewSuccessResult("order-123", 1)
 ```
 
-### Command Middleware
+### Command Middleware Pipeline
 
 ```go
-// CommandMiddleware wraps command handling
-type CommandMiddleware func(CommandHandlerFunc) CommandHandlerFunc
-type CommandHandlerFunc func(ctx context.Context, cmd Command) error
+bus := mink.NewCommandBus()
 
-// Logging middleware
-func LoggingMiddleware(logger Logger) CommandMiddleware {
-    return func(next CommandHandlerFunc) CommandHandlerFunc {
-        return func(ctx context.Context, cmd Command) error {
-            logger.Info("Handling command",
-                "type", cmd.CommandType(),
-                "aggregateId", cmd.AggregateID())
-            
-            start := time.Now()
-            err := next(ctx, cmd)
-            
-            logger.Info("Command completed",
-                "type", cmd.CommandType(),
-                "duration", time.Since(start),
-                "error", err)
-            return err
-        }
-    }
-}
-
-// Validation middleware
-func ValidationMiddleware() CommandMiddleware {
-    return func(next CommandHandlerFunc) CommandHandlerFunc {
-        return func(ctx context.Context, cmd Command) error {
-            if err := cmd.Validate(); err != nil {
-                return &ValidationError{Command: cmd.CommandType(), Err: err}
-            }
-            return next(ctx, cmd)
-        }
-    }
-}
-
-// Transaction middleware
-func TransactionMiddleware(db *sql.DB) CommandMiddleware {
-    return func(next CommandHandlerFunc) CommandHandlerFunc {
-        return func(ctx context.Context, cmd Command) error {
-            tx, _ := db.BeginTx(ctx, nil)
-            ctx = context.WithValue(ctx, txKey, tx)
-            
-            err := next(ctx, cmd)
-            if err != nil {
-                tx.Rollback()
-                return err
-            }
-            return tx.Commit()
-        }
-    }
-}
+// Add middleware (executed in order)
+bus.Use(mink.ValidationMiddleware())      // Validate commands
+bus.Use(mink.RecoveryMiddleware())        // Panic recovery
+bus.Use(mink.LoggingMiddleware(logger))   // Log commands
+bus.Use(mink.MetricsMiddleware(metrics))  // Record metrics
+bus.Use(mink.TimeoutMiddleware(5*time.Second))  // Timeout
+bus.Use(mink.RetryMiddleware(3, time.Second))   // Retry on failure
+bus.Use(mink.CorrelationIDMiddleware(nil))      // Auto-generate correlation ID
+bus.Use(mink.CausationIDMiddleware())           // Track causation chain
+bus.Use(mink.TenantMiddleware(func(ctx context.Context) string {
+    return ctx.Value("tenantID").(string)  // Multi-tenancy
+}))
 ```
+
+### Built-in Middleware Reference
+
+| Middleware | Description |
+|-----------|-------------|
+| `ValidationMiddleware()` | Calls `cmd.Validate()` before handling |
+| `RecoveryMiddleware()` | Catches panics and returns `PanicError` |
+| `LoggingMiddleware(logger)` | Logs command start/end with timing |
+| `MetricsMiddleware(metrics)` | Records command count, duration, errors |
+| `TimeoutMiddleware(duration)` | Adds context timeout |
+| `RetryMiddleware(attempts, delay)` | Retries on transient failures |
+| `CorrelationIDMiddleware(generator)` | Sets/generates correlation ID |
+| `CausationIDMiddleware()` | Tracks event causation chain |
+| `TenantMiddleware(resolver)` | Sets tenant ID from context |
+| `IdempotencyMiddleware(config)` | Prevents duplicate processing |
 
 ---
 
-## Idempotency
+## Idempotency (v0.2.0) ✅
 
 Prevent duplicate command processing - essential for reliability.
 
-### Idempotency Store
+### Idempotency Store Interface
 
 ```go
 // IdempotencyStore tracks processed commands
 type IdempotencyStore interface {
-    // Check if command was already processed
-    Exists(ctx context.Context, key string) (bool, error)
+    // Store records a command execution result
+    Store(ctx context.Context, key string, response []byte, expiration time.Duration) error
     
-    // Store result of command processing
-    Store(ctx context.Context, key string, result *IdempotencyRecord) error
+    // Get retrieves a previously stored result
+    Get(ctx context.Context, key string) ([]byte, error)
     
-    // Get previous result
-    Get(ctx context.Context, key string) (*IdempotencyRecord, error)
-    
-    // Cleanup expired entries
-    Cleanup(ctx context.Context, olderThan time.Duration) error
+    // Close releases resources
+    Close() error
+}
+```
+
+### In-Memory Store (Testing)
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+
+store := memory.NewIdempotencyStore()
+defer store.Close()
+
+// Use with middleware
+bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(store)))
+```
+
+### PostgreSQL Store (Production)
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+
+store, err := postgres.NewIdempotencyStore(connStr)
+if err != nil {
+    log.Fatal(err)
+}
+defer store.Close()
+
+// Initialize schema (run once)
+if err := store.Initialize(ctx); err != nil {
+    log.Fatal(err)
 }
 
-type IdempotencyRecord struct {
-    Key         string
-    CommandType string
-    Result      []byte // Serialized response
-    Error       string
-    ProcessedAt time.Time
-    ExpiresAt   time.Time
-}
+// Use with middleware
+bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(store)))
 ```
 
 ### Idempotency Key Generation
 
 ```go
-// IdempotentCommand provides idempotency key
+// Commands can implement IdempotentCommand for custom keys
 type IdempotentCommand interface {
     Command
     IdempotencyKey() string
 }
 
-// Auto-generate from command content
-func GenerateIdempotencyKey(cmd Command) string {
-    data, _ := json.Marshal(cmd)
-    hash := sha256.Sum256(data)
-    return fmt.Sprintf("%s:%s", cmd.CommandType(), hex.EncodeToString(hash[:16]))
-}
-
-// Or use explicit key
+// Example with explicit idempotency key
 type CreateOrder struct {
-    CommandBase
-    IdempotencyID string `json:"idempotencyId"` // Client-provided
+    mink.CommandBase
+    ClientRequestID string `json:"clientRequestId"` // Client-provided
+    CustomerID      string `json:"customerId"`
 }
 
 func (c CreateOrder) IdempotencyKey() string {
-    if c.IdempotencyID != "" {
-        return c.IdempotencyID
+    if c.ClientRequestID != "" {
+        return c.ClientRequestID
     }
-    return GenerateIdempotencyKey(c)
+    return "" // Fall back to auto-generation
 }
+
+// Auto-generated keys use SHA256 hash of command content
+// Format: "CreateOrder:<hash>" or "CreateOrder:type-only:<hash>" for fallback
 ```
 
-### Idempotency Middleware
+### Idempotency Configuration
 
 ```go
-// IdempotencyMiddleware prevents duplicate processing
-func IdempotencyMiddleware(store IdempotencyStore, ttl time.Duration) CommandMiddleware {
-    return func(next CommandHandlerFunc) CommandHandlerFunc {
-        return func(ctx context.Context, cmd Command) error {
-            // Get idempotency key
-            var key string
-            if ic, ok := cmd.(IdempotentCommand); ok {
-                key = ic.IdempotencyKey()
-            } else {
-                key = GenerateIdempotencyKey(cmd)
-            }
-            
-            // Check if already processed
-            if record, _ := store.Get(ctx, key); record != nil {
-                if record.Error != "" {
-                    return errors.New(record.Error)
-                }
-                return nil // Already succeeded
-            }
-            
-            // Process command
-            err := next(ctx, cmd)
-            
-            // Store result
-            record := &IdempotencyRecord{
-                Key:         key,
-                CommandType: cmd.CommandType(),
-                ProcessedAt: time.Now(),
-                ExpiresAt:   time.Now().Add(ttl),
-            }
-            if err != nil {
-                record.Error = err.Error()
-            }
-            store.Store(ctx, key, record)
-            
-            return err
-        }
-    }
+// IdempotencyConfig controls middleware behavior
+type IdempotencyConfig struct {
+    Store       IdempotencyStore        // Required: storage backend
+    KeyFunc     func(Command) string    // Optional: custom key generator
+    TTL         time.Duration           // Optional: result expiration (default: 24h)
+    Serializer  func(CommandResult) []byte  // Optional: result serializer
 }
+
+// Use default configuration
+config := mink.DefaultIdempotencyConfig(store)
+bus.Use(mink.IdempotencyMiddleware(config))
+
+// Or customize
+config := mink.IdempotencyConfig{
+    Store: store,
+    TTL:   1 * time.Hour,
+    KeyFunc: func(cmd mink.Command) string {
+        // Custom key generation
+        return fmt.Sprintf("%s:%s", cmd.CommandType(), extractKey(cmd))
+    },
+}
+bus.Use(mink.IdempotencyMiddleware(config))
 ```
 
-### PostgreSQL Implementation
+### Idempotency Flow
+
+```
+1. Command arrives
+2. IdempotencyMiddleware generates key
+3. Check if key exists in store
+   ├─ EXISTS: Return cached result (skip handler)
+   └─ NOT EXISTS: Continue to handler
+4. Handler processes command
+5. Store result with key and TTL
+6. Return result to caller
+```
+
+### PostgreSQL Schema
 
 ```sql
-CREATE TABLE mink_idempotency (
+-- Created by store.Initialize(ctx)
+CREATE TABLE IF NOT EXISTS mink_idempotency (
     key VARCHAR(255) PRIMARY KEY,
-    command_type VARCHAR(255) NOT NULL,
-    result JSONB,
-    error TEXT,
-    processed_at TIMESTAMPTZ NOT NULL,
+    response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX idx_idempotency_expires ON mink_idempotency(expires_at);
-
--- Cleanup job (run periodically)
-DELETE FROM mink_idempotency WHERE expires_at < NOW();
+CREATE INDEX IF NOT EXISTS idx_mink_idempotency_expires_at 
+    ON mink_idempotency(expires_at);
 ```
 
 ---
 
-## Saga / Process Manager
+## Correlation & Causation Tracking (v0.2.0) ✅
 
-Orchestrate long-running business processes across aggregates.
+Track request flow through distributed systems.
 
-### Saga Definition
+### Correlation ID
+
+Links all events/commands from a single external request.
 
 ```go
-// Saga coordinates multi-step distributed transactions
+// Middleware auto-generates or propagates correlation ID
+bus.Use(mink.CorrelationIDMiddleware(nil)) // Uses UUID generator
+
+// Or provide custom generator
+bus.Use(mink.CorrelationIDMiddleware(func() string {
+    return fmt.Sprintf("req-%d", time.Now().UnixNano())
+}))
+
+// Access in handler
+func (h *Handler) Handle(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+    correlationID := cmd.(interface{ GetCorrelationID() string }).GetCorrelationID()
+    // Use for logging, tracing, etc.
+}
+```
+
+### Causation ID
+
+Links events to the command/event that caused them.
+
+```go
+// Middleware automatically sets causation ID
+bus.Use(mink.CausationIDMiddleware())
+
+// Access in handler
+func (h *Handler) Handle(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+    causationID := cmd.(interface{ GetCausationID() string }).GetCausationID()
+    // The causation ID is the ID of the previous command in the chain
+}
+```
+
+### Metadata Propagation
+
+```go
+// Commands carry metadata through the system
+type CreateOrder struct {
+    mink.CommandBase
+    CustomerID string
+}
+
+// Set metadata before dispatch
+cmd := CreateOrder{CustomerID: "cust-123"}
+cmd.SetCorrelationID("external-request-id")
+cmd.SetMetadata(map[string]string{
+    "source": "web-api",
+    "version": "v2",
+})
+
+result, err := bus.Dispatch(ctx, cmd)
+```
+
+---
+
+## Saga / Process Manager (v0.5.0 - Planned)
+
+Orchestrate long-running business processes across aggregates.
 type Saga interface {
     // Unique identifier
     SagaID() string
