@@ -45,6 +45,15 @@ func getTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// newTestAdapter creates a new adapter for testing.
+// It requires a valid schema name and database connection.
+func newTestAdapter(t *testing.T, db *sql.DB, opts ...Option) *PostgresAdapter {
+	t.Helper()
+	adapter, err := NewAdapterWithDB(db, opts...)
+	require.NoError(t, err)
+	return adapter
+}
+
 // cleanupSchema drops the test schema.
 func cleanupSchema(t *testing.T, db *sql.DB, schema string) {
 	_, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
@@ -112,7 +121,8 @@ func TestNewAdapterWithDB(t *testing.T) {
 	defer db.Close()
 
 	t.Run("creates adapter with existing connection", func(t *testing.T) {
-		adapter := NewAdapterWithDB(db)
+		adapter, err := NewAdapterWithDB(db)
+		require.NoError(t, err)
 		require.NotNil(t, adapter)
 
 		assert.Equal(t, "mink", adapter.Schema())
@@ -120,8 +130,19 @@ func TestNewAdapterWithDB(t *testing.T) {
 	})
 
 	t.Run("applies options", func(t *testing.T) {
-		adapter := NewAdapterWithDB(db, WithSchema("test_schema"))
+		adapter, err := NewAdapterWithDB(db, WithSchema("test_schema"))
+		require.NoError(t, err)
 		assert.Equal(t, "test_schema", adapter.Schema())
+	})
+
+	t.Run("rejects invalid schema name", func(t *testing.T) {
+		_, err := NewAdapterWithDB(db, WithSchema("invalid-schema"))
+		assert.ErrorIs(t, err, ErrInvalidSchemaName)
+	})
+
+	t.Run("rejects nil database", func(t *testing.T) {
+		_, err := NewAdapterWithDB(nil)
+		assert.Error(t, err)
 	})
 }
 
@@ -136,7 +157,7 @@ func TestPostgresAdapter_Initialize(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 
 	t.Run("creates schema and tables", func(t *testing.T) {
 		err := adapter.Initialize(context.Background())
@@ -177,7 +198,7 @@ func TestPostgresAdapter_MigrationVersion(t *testing.T) {
 		schema := newTestSchema()
 		defer cleanupSchema(t, db, schema)
 
-		adapter := NewAdapterWithDB(db, WithSchema(schema))
+		adapter := newTestAdapter(t, db, WithSchema(schema))
 
 		version, err := adapter.MigrationVersion(context.Background())
 		require.NoError(t, err)
@@ -188,7 +209,7 @@ func TestPostgresAdapter_MigrationVersion(t *testing.T) {
 		schema := newTestSchema()
 		defer cleanupSchema(t, db, schema)
 
-		adapter := NewAdapterWithDB(db, WithSchema(schema))
+		adapter := newTestAdapter(t, db, WithSchema(schema))
 		require.NoError(t, adapter.Initialize(context.Background()))
 
 		version, err := adapter.MigrationVersion(context.Background())
@@ -208,7 +229,7 @@ func TestPostgresAdapter_Append(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -418,7 +439,7 @@ func TestPostgresAdapter_Load(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -503,7 +524,7 @@ func TestPostgresAdapter_GetStreamInfo(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -573,7 +594,7 @@ func TestPostgresAdapter_GetLastPosition(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -622,7 +643,7 @@ func TestPostgresAdapter_Snapshots(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -690,7 +711,7 @@ func TestPostgresAdapter_Checkpoints(t *testing.T) {
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter := newTestAdapter(t, db, WithSchema(schema))
 	require.NoError(t, adapter.Initialize(context.Background()))
 
 	ctx := context.Background()
@@ -794,7 +815,7 @@ func TestPostgresAdapter_Ping(t *testing.T) {
 	db := getTestDB(t)
 	defer db.Close()
 
-	adapter := NewAdapterWithDB(db)
+	adapter := newTestAdapter(t, db)
 
 	t.Run("ping healthy connection", func(t *testing.T) {
 		err := adapter.Ping(context.Background())
@@ -877,7 +898,10 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
 	}()
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
+	if err != nil {
+		b.Fatal(err)
+	}
 	_ = adapter.Initialize(context.Background())
 
 	ctx := context.Background()
@@ -904,7 +928,10 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
 	}()
 
-	adapter := NewAdapterWithDB(db, WithSchema(schema))
+	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
+	if err != nil {
+		b.Fatal(err)
+	}
 	_ = adapter.Initialize(context.Background())
 
 	ctx := context.Background()

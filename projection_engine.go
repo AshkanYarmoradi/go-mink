@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
 // ProjectionEngine manages the lifecycle of projections.
@@ -114,6 +116,20 @@ func DefaultAsyncOptions() AsyncOptions {
 		RetryPolicy:        ExponentialBackoffRetry(3, 100*time.Millisecond, 10*time.Second),
 		MaxRetries:         3,
 		StartFromBeginning: false,
+	}
+}
+
+// LiveOptions configures live projection behavior.
+type LiveOptions struct {
+	// BufferSize is the size of the event channel buffer.
+	// Default: 1000
+	BufferSize int
+}
+
+// DefaultLiveOptions returns the default live projection options.
+func DefaultLiveOptions() LiveOptions {
+	return LiveOptions{
+		BufferSize: 1000,
 	}
 }
 
@@ -235,14 +251,22 @@ func (e *ProjectionEngine) RegisterAsync(projection AsyncProjection, opts ...Asy
 	return nil
 }
 
-// RegisterLive registers a live projection.
+// RegisterLive registers a live projection with optional configuration.
 // Live projections receive events in real-time.
-func (e *ProjectionEngine) RegisterLive(projection LiveProjection) error {
+func (e *ProjectionEngine) RegisterLive(projection LiveProjection, opts ...LiveOptions) error {
 	if projection == nil {
 		return ErrNilProjection
 	}
 	if projection.Name() == "" {
 		return ErrEmptyProjectionName
+	}
+
+	options := DefaultLiveOptions()
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	if options.BufferSize <= 0 {
+		options.BufferSize = 1000
 	}
 
 	e.liveMu.Lock()
@@ -257,6 +281,7 @@ func (e *ProjectionEngine) RegisterLive(projection LiveProjection) error {
 		projection: projection,
 		engine:     e,
 		stopCh:     make(chan struct{}),
+		eventCh:    make(chan StoredEvent, options.BufferSize),
 		state:      ProjectionStateStopped,
 	}
 
@@ -690,28 +715,34 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 }
 
 // loadEventsFromPosition loads events starting from the given global position.
+// Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
 func (e *ProjectionEngine) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	// This is a simplified implementation that loads events across all streams.
-	// In production, you'd want to use a more efficient query or subscription.
 	adapter := e.store.Adapter()
 
 	// Check if adapter supports subscription
-	if subAdapter, ok := adapter.(SubscriptionAdapter); ok {
-		return e.loadEventsViaSubscription(ctx, subAdapter, fromPosition, limit)
+	if subAdapter, ok := adapter.(adapters.SubscriptionAdapter); ok {
+		events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+		if err != nil {
+			return nil, err
+		}
+		// Convert adapters.StoredEvent to mink.StoredEvent
+		result := make([]StoredEvent, len(events))
+		for i, ev := range events {
+			result[i] = StoredEvent{
+				ID:             ev.ID,
+				StreamID:       ev.StreamID,
+				Type:           ev.Type,
+				Data:           ev.Data,
+				Metadata:       Metadata(ev.Metadata),
+				Version:        ev.Version,
+				GlobalPosition: ev.GlobalPosition,
+				Timestamp:      ev.Timestamp,
+			}
+		}
+		return result, nil
 	}
 
-	// Fallback: This is inefficient but works for simple cases
-	// In a real implementation, you'd add a method to EventStoreAdapter for this
-	return nil, nil
-}
-
-// loadEventsViaSubscription loads events using the subscription adapter.
-func (e *ProjectionEngine) loadEventsViaSubscription(ctx context.Context, adapter SubscriptionAdapter, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	events, err := adapter.LoadFromPosition(ctx, fromPosition, limit)
-	if err != nil {
-		return nil, err
-	}
-	return events, nil
+	return nil, ErrSubscriptionNotSupported
 }
 
 // liveProjectionWorker manages a live projection's real-time processing.
@@ -752,12 +783,8 @@ func (w *liveProjectionWorker) setState(state ProjectionState) {
 func (e *ProjectionEngine) runLiveWorker(ctx context.Context, worker *liveProjectionWorker) {
 	defer e.wg.Done()
 
-	eventCh := make(chan StoredEvent, 1000)
-
-	worker.stateMu.Lock()
-	worker.eventCh = eventCh
-	worker.state = ProjectionStateRunning
-	worker.stateMu.Unlock()
+	// Mark as running - eventCh is already created at registration
+	worker.setState(ProjectionStateRunning)
 
 	for {
 		select {
@@ -770,7 +797,7 @@ func (e *ProjectionEngine) runLiveWorker(ctx context.Context, worker *liveProjec
 		case <-ctx.Done():
 			worker.setState(ProjectionStateStopped)
 			return
-		case event := <-eventCh:
+		case event := <-worker.eventCh:
 			func() {
 				defer func() {
 					if r := recover(); r != nil {

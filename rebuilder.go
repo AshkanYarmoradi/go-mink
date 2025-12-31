@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
 // ProjectionRebuilder rebuilds projections from scratch.
@@ -346,16 +348,34 @@ func (r *ProjectionRebuilder) processInlineBatch(ctx context.Context, projection
 }
 
 // loadEventsFromPosition loads events from a global position.
+// Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
 func (r *ProjectionRebuilder) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
 	adapter := r.store.Adapter()
 
 	// Check if adapter supports subscription (has LoadFromPosition)
-	if subAdapter, ok := adapter.(SubscriptionAdapter); ok {
-		return subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+	if subAdapter, ok := adapter.(adapters.SubscriptionAdapter); ok {
+		events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+		if err != nil {
+			return nil, err
+		}
+		// Convert adapters.StoredEvent to mink.StoredEvent
+		result := make([]StoredEvent, len(events))
+		for i, e := range events {
+			result[i] = StoredEvent{
+				ID:             e.ID,
+				StreamID:       e.StreamID,
+				Type:           e.Type,
+				Data:           e.Data,
+				Metadata:       Metadata(e.Metadata),
+				Version:        e.Version,
+				GlobalPosition: e.GlobalPosition,
+				Timestamp:      e.Timestamp,
+			}
+		}
+		return result, nil
 	}
 
-	// Fallback: return empty (not ideal, but prevents errors)
-	return nil, nil
+	return nil, ErrSubscriptionNotSupported
 }
 
 // containsString checks if a slice contains a string.

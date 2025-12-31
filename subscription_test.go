@@ -173,7 +173,7 @@ func TestCatchupSubscription(t *testing.T) {
 	store := &EventStore{}
 
 	t.Run("creates subscription", func(t *testing.T) {
-		sub, err := NewCatchupSubscription(store, nil, 0)
+		sub, err := NewCatchupSubscription(store, 0)
 		require.NoError(t, err)
 		assert.NotNil(t, sub)
 		assert.NotNil(t, sub.Events())
@@ -182,13 +182,18 @@ func TestCatchupSubscription(t *testing.T) {
 	t.Run("creates subscription with options", func(t *testing.T) {
 		opts := DefaultSubscriptionOptions()
 		opts.BufferSize = 100
-		sub, err := NewCatchupSubscription(store, nil, 0, opts)
+		sub, err := NewCatchupSubscription(store, 0, opts)
 		require.NoError(t, err)
 		assert.NotNil(t, sub)
 	})
 
+	t.Run("returns error for nil store", func(t *testing.T) {
+		_, err := NewCatchupSubscription(nil, 0)
+		assert.ErrorIs(t, err, ErrNilStore)
+	})
+
 	t.Run("close is idempotent", func(t *testing.T) {
-		sub, _ := NewCatchupSubscription(store, nil, 0)
+		sub, _ := NewCatchupSubscription(store, 0)
 		err := sub.Close()
 		require.NoError(t, err)
 
@@ -198,14 +203,19 @@ func TestCatchupSubscription(t *testing.T) {
 	})
 
 	t.Run("Err returns nil initially", func(t *testing.T) {
-		sub, _ := NewCatchupSubscription(store, nil, 0)
+		sub, _ := NewCatchupSubscription(store, 0)
 		assert.Nil(t, sub.Err())
 	})
 
 	t.Run("setErr sets the error", func(t *testing.T) {
-		sub, _ := NewCatchupSubscription(store, nil, 0)
+		sub, _ := NewCatchupSubscription(store, 0)
 		expectedErr := assert.AnError
 		sub.setErr(expectedErr)
 		assert.Equal(t, expectedErr, sub.Err())
+	})
+
+	t.Run("Position returns current position", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, 42)
+		assert.Equal(t, uint64(42), sub.Position())
 	})
 }

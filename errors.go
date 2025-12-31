@@ -32,6 +32,9 @@ var (
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
 
+	// ErrNilStore indicates a nil event store was passed.
+	ErrNilStore = errors.New("mink: nil event store")
+
 	// ErrEmptyStreamID indicates an empty stream ID was provided.
 	ErrEmptyStreamID = adapters.ErrEmptyStreamID
 
@@ -43,6 +46,9 @@ var (
 
 	// ErrAdapterClosed indicates the adapter has been closed.
 	ErrAdapterClosed = adapters.ErrAdapterClosed
+
+	// ErrSubscriptionNotSupported indicates the adapter does not support subscriptions.
+	ErrSubscriptionNotSupported = errors.New("mink: adapter does not support subscriptions")
 
 	// Command and handler related errors
 

@@ -147,6 +147,10 @@ type EventStoreAdapter interface {
 // SubscriptionAdapter provides event subscription capabilities.
 // Adapters may optionally implement this interface for real-time event streaming.
 type SubscriptionAdapter interface {
+	// LoadFromPosition loads events starting from a global position.
+	// This is used by projection engines to catch up on historical events.
+	LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+
 	// SubscribeAll subscribes to all events across all streams.
 	// Events are delivered starting from the specified global position.
 	SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)

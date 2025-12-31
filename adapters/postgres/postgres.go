@@ -6,12 +6,32 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// schemaNamePattern validates PostgreSQL schema names.
+// Schema names must start with a letter or underscore and contain only
+// alphanumeric characters and underscores.
+var schemaNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
+func validateSchemaName(schema string) error {
+	if schema == "" {
+		return fmt.Errorf("%w: schema name cannot be empty", ErrInvalidSchemaName)
+	}
+	if len(schema) > 63 {
+		return fmt.Errorf("%w: schema name exceeds 63 characters", ErrInvalidSchemaName)
+	}
+	if !schemaNamePattern.MatchString(schema) {
+		return fmt.Errorf("%w: schema name contains invalid characters", ErrInvalidSchemaName)
+	}
+	return nil
+}
 
 // Version constants for optimistic concurrency control.
 const (
@@ -29,6 +49,7 @@ var (
 	ErrConcurrencyConflict = adapters.ErrConcurrencyConflict
 	ErrStreamNotFound      = adapters.ErrStreamNotFound
 	ErrInvalidVersion      = adapters.ErrInvalidVersion
+	ErrInvalidSchemaName   = fmt.Errorf("mink/postgres: invalid schema name")
 )
 
 // Ensure PostgresAdapter implements required interfaces.
@@ -113,11 +134,22 @@ func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
 		opt(adapter)
 	}
 
+	// Validate schema name to prevent SQL injection
+	if err := validateSchemaName(adapter.schema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return adapter, nil
 }
 
 // NewAdapterWithDB creates a new adapter with an existing database connection.
-func NewAdapterWithDB(db *sql.DB, opts ...Option) *PostgresAdapter {
+// Returns an error if the schema name is invalid.
+func NewAdapterWithDB(db *sql.DB, opts ...Option) (*PostgresAdapter, error) {
+	if db == nil {
+		return nil, fmt.Errorf("mink/postgres: database connection is nil")
+	}
+
 	adapter := &PostgresAdapter{
 		db:     db,
 		schema: "mink",
@@ -127,7 +159,12 @@ func NewAdapterWithDB(db *sql.DB, opts ...Option) *PostgresAdapter {
 		opt(adapter)
 	}
 
-	return adapter
+	// Validate schema name to prevent SQL injection
+	if err := validateSchemaName(adapter.schema); err != nil {
+		return nil, err
+	}
+
+	return adapter, nil
 }
 
 // Initialize creates the required database schema and tables.

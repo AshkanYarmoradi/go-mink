@@ -130,41 +130,157 @@ type EventSubscriber interface {
 }
 
 // CatchupSubscription provides catch-up subscription functionality.
-// It first reads historical events, then switches to live subscription.
+// It first reads historical events from the event store, then switches to
+// polling for new events. This ensures no events are missed during the transition.
 type CatchupSubscription struct {
-	store      *EventStore
-	subscriber EventSubscriber
-	opts       SubscriptionOptions
+	store    *EventStore
+	opts     SubscriptionOptions
+	position uint64
 
 	eventCh chan StoredEvent
 	stopCh  chan struct{}
 	errMu   sync.RWMutex
 	err     error
 	closed  bool
+	started bool
 }
 
 // NewCatchupSubscription creates a new catch-up subscription.
-// It will read all historical events from the start position, then subscribe for live updates.
+// Call Start() to begin receiving events from the specified position.
 func NewCatchupSubscription(
 	store *EventStore,
-	subscriber EventSubscriber,
 	fromPosition uint64,
 	opts ...SubscriptionOptions,
 ) (*CatchupSubscription, error) {
+	if store == nil {
+		return nil, ErrNilStore
+	}
+
 	options := DefaultSubscriptionOptions()
 	if len(opts) > 0 {
 		options = opts[0]
 	}
 
 	s := &CatchupSubscription{
-		store:      store,
-		subscriber: subscriber,
-		opts:       options,
-		eventCh:    make(chan StoredEvent, options.BufferSize),
-		stopCh:     make(chan struct{}),
+		store:    store,
+		opts:     options,
+		position: fromPosition,
+		eventCh:  make(chan StoredEvent, options.BufferSize),
+		stopCh:   make(chan struct{}),
 	}
 
 	return s, nil
+}
+
+// Start begins the catch-up subscription with the specified poll interval.
+// It first catches up on historical events, then polls for new events.
+func (s *CatchupSubscription) Start(ctx context.Context, pollInterval time.Duration) error {
+	s.errMu.Lock()
+	if s.started {
+		s.errMu.Unlock()
+		return nil
+	}
+	if s.closed {
+		s.errMu.Unlock()
+		return ErrAdapterClosed
+	}
+	s.started = true
+	s.errMu.Unlock()
+
+	go s.run(ctx, pollInterval)
+	return nil
+}
+
+func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duration) {
+	defer close(s.eventCh)
+
+	// Get subscription adapter
+	adapter := s.store.Adapter()
+	subAdapter, ok := adapter.(SubscriptionAdapter)
+	if !ok {
+		s.setErr(ErrSubscriptionNotSupported)
+		return
+	}
+
+	// Phase 1: Catch up on historical events
+	for {
+		select {
+		case <-ctx.Done():
+			s.setErr(ctx.Err())
+			return
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		events, err := subAdapter.LoadFromPosition(ctx, s.position, 100)
+		if err != nil {
+			s.setErr(err)
+			return
+		}
+
+		if len(events) == 0 {
+			break // Caught up, switch to polling
+		}
+
+		for _, event := range events {
+			if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
+				s.position = event.GlobalPosition
+				continue
+			}
+
+			select {
+			case s.eventCh <- event:
+				s.position = event.GlobalPosition
+			case <-ctx.Done():
+				s.setErr(ctx.Err())
+				return
+			case <-s.stopCh:
+				return
+			}
+		}
+	}
+
+	// Phase 2: Poll for new events
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.setErr(ctx.Err())
+			return
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			events, err := subAdapter.LoadFromPosition(ctx, s.position, 100)
+			if err != nil {
+				// Retry on error unless configured not to
+				if !s.opts.RetryOnError {
+					s.setErr(err)
+					return
+				}
+				continue
+			}
+
+			for _, event := range events {
+				if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
+					s.position = event.GlobalPosition
+					continue
+				}
+
+				select {
+				case s.eventCh <- event:
+					s.position = event.GlobalPosition
+				case <-ctx.Done():
+					s.setErr(ctx.Err())
+					return
+				case <-s.stopCh:
+					return
+				}
+			}
+		}
+	}
 }
 
 // Events returns the channel for receiving events.
@@ -193,7 +309,13 @@ func (s *CatchupSubscription) Err() error {
 	return s.err
 }
 
-// setErr sets the error that caused the subscription to close.
+// Position returns the current position of the subscription.
+func (s *CatchupSubscription) Position() uint64 {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.position
+}
+
 func (s *CatchupSubscription) setErr(err error) {
 	s.errMu.Lock()
 	s.err = err
