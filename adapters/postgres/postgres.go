@@ -43,9 +43,10 @@ var (
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
 type PostgresAdapter struct {
-	db     *sql.DB
-	schema string
-	closed bool
+	db                *sql.DB
+	schema            string
+	closed            bool
+	healthCheckCancel context.CancelFunc
 }
 
 // Option configures a PostgresAdapter.
@@ -76,6 +77,23 @@ func WithMaxIdleConnections(n int) Option {
 func WithConnectionMaxLifetime(d time.Duration) Option {
 	return func(a *PostgresAdapter) {
 		a.db.SetConnMaxLifetime(d)
+	}
+}
+
+// WithConnectionMaxIdleTime sets the maximum idle time for connections.
+func WithConnectionMaxIdleTime(d time.Duration) Option {
+	return func(a *PostgresAdapter) {
+		a.db.SetConnMaxIdleTime(d)
+	}
+}
+
+// WithHealthCheck enables periodic connection pool health checking.
+// The health check runs at the specified interval and validates connections.
+func WithHealthCheck(interval time.Duration) Option {
+	return func(a *PostgresAdapter) {
+		ctx, cancel := context.WithCancel(context.Background())
+		a.healthCheckCancel = cancel
+		go a.runHealthCheck(ctx, interval)
 	}
 }
 
@@ -437,9 +455,12 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 	return 0, nil
 }
 
-// Close releases the database connection.
+// Close releases the database connection and stops health checking.
 func (a *PostgresAdapter) Close() error {
 	a.closed = true
+	if a.healthCheckCancel != nil {
+		a.healthCheckCancel()
+	}
 	return a.db.Close()
 }
 
@@ -555,6 +576,30 @@ func (a *PostgresAdapter) Ping(ctx context.Context) error {
 	return a.db.PingContext(ctx)
 }
 
+// runHealthCheck periodically validates database connections.
+func (a *PostgresAdapter) runHealthCheck(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.closed {
+				return
+			}
+			// Ping validates the connection and removes stale connections from pool
+			_ = a.db.PingContext(ctx)
+		}
+	}
+}
+
+// Stats returns connection pool statistics.
+func (a *PostgresAdapter) Stats() sql.DBStats {
+	return a.db.Stats()
+}
+
 // DB returns the underlying database connection.
 func (a *PostgresAdapter) DB() *sql.DB {
 	return a.db
@@ -639,10 +684,8 @@ func (a *PostgresAdapter) checkVersion(streamID string, expected, current int64,
 }
 
 // extractCategory extracts the category from a stream ID.
+// The category is the portion before the first hyphen (e.g., "Order" from "Order-123").
 func extractCategory(streamID string) string {
 	parts := strings.SplitN(streamID, "-", 2)
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return ""
+	return parts[0]
 }

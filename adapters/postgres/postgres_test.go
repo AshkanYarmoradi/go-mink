@@ -921,3 +921,88 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 		_, _ = adapter.Load(ctx, "Order-bench", 0)
 	}
 }
+
+func TestPostgresAdapter_WithHealthCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	t.Run("enables periodic health checking", func(t *testing.T) {
+		adapter, err := NewAdapter(connStr,
+			WithHealthCheck(50*time.Millisecond),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, adapter)
+
+		// Let health check run a few cycles
+		time.Sleep(150 * time.Millisecond)
+
+		// Verify adapter still works
+		err = adapter.Ping(context.Background())
+		require.NoError(t, err)
+
+		// Close stops health check
+		err = adapter.Close()
+		require.NoError(t, err)
+	})
+}
+
+func TestPostgresAdapter_Stats(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	t.Run("returns connection pool statistics", func(t *testing.T) {
+		stats := adapter.Stats()
+
+		// MaxOpenConnections should be the default (0 = unlimited) or a positive number
+		assert.GreaterOrEqual(t, stats.MaxOpenConnections, 0)
+	})
+
+	t.Run("stats reflect pool usage", func(t *testing.T) {
+		// Force a connection by pinging
+		err := adapter.Ping(context.Background())
+		require.NoError(t, err)
+
+		stats := adapter.Stats()
+		// After ping, we should have at least 1 open connection
+		assert.GreaterOrEqual(t, stats.OpenConnections, 1)
+	})
+}
+
+func TestPostgresAdapter_WithConnectionMaxIdleTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	t.Run("sets connection max idle time", func(t *testing.T) {
+		adapter, err := NewAdapter(connStr,
+			WithConnectionMaxIdleTime(5*time.Minute),
+		)
+		require.NoError(t, err)
+		defer adapter.Close()
+
+		// Verify adapter is functional
+		err = adapter.Ping(context.Background())
+		require.NoError(t, err)
+	})
+}
