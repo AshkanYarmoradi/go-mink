@@ -28,8 +28,8 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
 
-	// Clean up
-	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_test.events CASCADE")
+	// Clean up both tables
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_test.events, mink_sub_test.streams CASCADE")
 
 	// Append some events
 	events := []adapters.EventRecord{
@@ -40,6 +40,11 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 	_, err = adapter.Append(ctx, "Test-001", events, NoStream)
 	require.NoError(t, err)
 
+	// Get all events first to know actual positions
+	allEvents, err := adapter.LoadFromPosition(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, allEvents, 3)
+
 	t.Run("loads events from position 0", func(t *testing.T) {
 		loaded, err := adapter.LoadFromPosition(ctx, 0, 100)
 		require.NoError(t, err)
@@ -47,7 +52,9 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 	})
 
 	t.Run("loads events from specific position", func(t *testing.T) {
-		loaded, err := adapter.LoadFromPosition(ctx, 1, 100)
+		// Load from after the first event's position
+		firstEventPos := allEvents[0].GlobalPosition
+		loaded, err := adapter.LoadFromPosition(ctx, firstEventPos, 100)
 		require.NoError(t, err)
 		assert.Len(t, loaded, 2)
 	})
@@ -90,8 +97,8 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
 
-	// Clean up
-	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_all_test.events CASCADE")
+	// Clean up both tables
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_all_test.events, mink_sub_all_test.streams CASCADE")
 
 	// Append some events
 	events := []adapters.EventRecord{
@@ -142,8 +149,8 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
 
-	// Clean up
-	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_stream_test.events CASCADE")
+	// Clean up both tables
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_stream_test.events, mink_sub_stream_test.streams CASCADE")
 
 	// Append events to multiple streams
 	events1 := []adapters.EventRecord{{Type: "Event1", Data: []byte(`{}`)}}
@@ -185,8 +192,8 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
 
-	// Clean up
-	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_cat_test.events CASCADE")
+	// Clean up both tables
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_cat_test.events, mink_sub_cat_test.streams CASCADE")
 
 	// Append events to different categories
 	_, _ = adapter.Append(ctx, "Order-001", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, NoStream)
