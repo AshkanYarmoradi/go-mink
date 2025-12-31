@@ -138,6 +138,26 @@ func TestSnapshotRecord(t *testing.T) {
 	})
 }
 
+func TestIdempotencyRecord_IsExpired(t *testing.T) {
+	t.Run("not expired when ExpiresAt is in the future", func(t *testing.T) {
+		record := &IdempotencyRecord{
+			Key:         "test-key",
+			ExpiresAt:   time.Now().Add(time.Hour),
+			ProcessedAt: time.Now(),
+		}
+		assert.False(t, record.IsExpired())
+	})
+
+	t.Run("expired when ExpiresAt is in the past", func(t *testing.T) {
+		record := &IdempotencyRecord{
+			Key:         "test-key",
+			ExpiresAt:   time.Now().Add(-time.Hour),
+			ProcessedAt: time.Now().Add(-2 * time.Hour),
+		}
+		assert.True(t, record.IsExpired())
+	})
+}
+
 func TestErrorMessages(t *testing.T) {
 	t.Run("ErrConcurrencyConflict message", func(t *testing.T) {
 		assert.Equal(t, "mink: concurrency conflict", ErrConcurrencyConflict.Error())

@@ -52,6 +52,28 @@ func TestIdempotencyStore_Initialize(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestIdempotencyStore_WithOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	t.Run("WithIdempotencyTable option", func(t *testing.T) {
+		adapter, err := NewAdapter(connStr)
+		require.NoError(t, err)
+		defer adapter.Close()
+
+		store := NewIdempotencyStore(adapter.db,
+			WithIdempotencySchema("mink"),
+			WithIdempotencyTable("custom_idempotency"))
+		assert.Equal(t, "mink.custom_idempotency", store.fullTableName())
+	})
+}
+
 func TestIdempotencyStore_PostgreSQL_Store(t *testing.T) {
 	store := setupIdempotencyTestStore(t)
 	ctx := context.Background()

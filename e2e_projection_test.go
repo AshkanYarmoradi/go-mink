@@ -530,6 +530,9 @@ func TestE2E_Phase3_CompleteProjectionFlow(t *testing.T) {
 	// --- Phase 2: Verify live projection received events ---
 	t.Log("Phase 2: Verifying live projection received events...")
 
+	// Wait for live projection to process events
+	time.Sleep(100 * time.Millisecond)
+
 	// Live projection should have received events
 	// Total events: 3 orders × (1 create + items) = 1+1 + 1+2 + 1+3 = 9 events
 	assert.GreaterOrEqual(t, liveProjection.EventCount(), 3, "Live projection should have received events")

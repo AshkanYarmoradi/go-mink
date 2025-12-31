@@ -173,6 +173,14 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 		assert.Len(t, received, 1)
 		assert.Equal(t, "Event1", received[0].Type)
 	})
+
+	t.Run("fails when closed", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.SubscribeStream(context.Background(), "Stream-001", 0)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
 }
 
 func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
@@ -213,6 +221,14 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 		}
 
 		assert.Len(t, received, 2)
+	})
+
+	t.Run("fails when closed", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.SubscribeCategory(context.Background(), "Order", 0)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 

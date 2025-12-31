@@ -27,6 +27,34 @@ func TestNewIdempotencyStore(t *testing.T) {
 
 		assert.Equal(t, 48*time.Hour, store.maxAge)
 	})
+
+	t.Run("WithCleanupInterval starts background cleanup", func(t *testing.T) {
+		ctx := context.Background()
+		// Use a very short interval for testing
+		store := NewIdempotencyStore(
+			WithCleanupInterval(50*time.Millisecond),
+			WithMaxAge(10*time.Millisecond),
+		)
+		defer store.Close()
+
+		// Store an already-expired record
+		record := &adapters.IdempotencyRecord{
+			Key:         "cleanup-test-key",
+			CommandType: "TestCommand",
+			Success:     true,
+			ProcessedAt: time.Now().Add(-time.Hour),
+			ExpiresAt:   time.Now().Add(-time.Hour),
+		}
+		err := store.Store(ctx, record)
+		require.NoError(t, err)
+		assert.Equal(t, 1, store.Len())
+
+		// Wait for cleanup to run
+		time.Sleep(100 * time.Millisecond)
+
+		// Record should be cleaned up
+		assert.Equal(t, 0, store.Len())
+	})
 }
 
 func TestIdempotencyStore_Store(t *testing.T) {
