@@ -39,62 +39,81 @@ Events Stream                    Read Models
                                 └─────────────────┘
 ```
 
-## Projection Strategies
+## Projection Interfaces
+
+### Base Projection Interface
+
+All projections implement the base `Projection` interface:
+
+```go
+type Projection interface {
+    // Name returns a unique identifier for this projection
+    Name() string
+    
+    // HandledEvents returns the list of event types this projection handles
+    HandledEvents() []string
+    
+    // Apply processes a single event
+    Apply(ctx context.Context, event StoredEvent) error
+}
+```
 
 ### 1. Inline Projections
 
-Updated in the same transaction as events - **strongly consistent**.
+Updated synchronously when events are appended - **strongly consistent**.
 
 ```go
 type InlineProjection interface {
     Projection
-    
-    // Called within event store transaction
-    ApplyInTransaction(ctx context.Context, tx Transaction, event StoredEvent) error
+    // Inline projections are processed in the same execution context
 }
 
-// Example: Order Summary projection
+// Example: Order Summary projection using ProjectionBase
 type OrderSummaryProjection struct {
-    repo ReadModelRepository
+    mink.ProjectionBase  // Embeds name and handled events
+    repo *mink.InMemoryRepository[OrderSummary]
 }
 
-func (p *OrderSummaryProjection) Name() string {
-    return "OrderSummary"
+func NewOrderSummaryProjection(repo *mink.InMemoryRepository[OrderSummary]) *OrderSummaryProjection {
+    return &OrderSummaryProjection{
+        ProjectionBase: mink.NewProjectionBase("OrderSummary", 
+            "OrderCreated", "ItemAdded", "OrderShipped"),
+        repo: repo,
+    }
 }
 
-func (p *OrderSummaryProjection) HandledEvents() []string {
-    return []string{"OrderCreated", "ItemAdded", "OrderShipped"}
-}
-
-func (p *OrderSummaryProjection) ApplyInTransaction(
-    ctx context.Context, 
-    tx Transaction, 
-    event StoredEvent,
-) error {
+func (p *OrderSummaryProjection) Apply(ctx context.Context, event mink.StoredEvent) error {
     switch event.Type {
     case "OrderCreated":
         var e OrderCreated
-        json.Unmarshal(event.Data, &e)
-        return tx.Insert(ctx, &OrderSummary{
-            ID:         e.OrderID,
+        if err := json.Unmarshal(event.Data, &e); err != nil {
+            return err
+        }
+        return p.repo.Insert(ctx, &OrderSummary{
+            OrderID:    e.OrderID,
             CustomerID: e.CustomerID,
             Status:     "Created",
-            ItemCount:  0,
-            CreatedAt:  event.Timestamp,
+            CreatedAt:  e.CreatedAt,
         })
         
     case "ItemAdded":
         var e ItemAdded
-        json.Unmarshal(event.Data, &e)
-        return tx.Update(ctx, event.StreamID.ID, func(m *OrderSummary) {
-            m.ItemCount++
-            m.TotalAmount += e.Price * float64(e.Quantity)
+        if err := json.Unmarshal(event.Data, &e); err != nil {
+            return err
+        }
+        return p.repo.Update(ctx, e.OrderID, func(s *OrderSummary) {
+            s.ItemCount += e.Quantity
+            s.TotalAmount += e.Price * float64(e.Quantity)
         })
         
     case "OrderShipped":
-        return tx.Update(ctx, event.StreamID.ID, func(m *OrderSummary) {
-            m.Status = "Shipped"
-            m.ShippedAt = &event.Timestamp
+        var e OrderShipped
+        if err := json.Unmarshal(event.Data, &e); err != nil {
+            return err
+        }
+        return p.repo.Update(ctx, e.OrderID, func(s *OrderSummary) {
+            s.Status = "Shipped"
+            s.ShippedAt = &e.ShippedAt
         })
     }
     return nil
@@ -109,24 +128,31 @@ Processed in the background - **eventually consistent** but more scalable.
 type AsyncProjection interface {
     Projection
     
-    // Async projections can batch events
+    // Batch processing for efficiency
     ApplyBatch(ctx context.Context, events []StoredEvent) error
     
-    // Checkpoint management
-    GetCheckpoint() uint64
-    SetCheckpoint(position uint64) error
+    // Batch configuration
+    BatchSize() int
 }
 
-// Example: Analytics projection
-type OrderAnalyticsProjection struct {
-    db         *sql.DB
-    checkpoint uint64
+// Example using AsyncProjectionBase
+type AnalyticsProjection struct {
+    mink.AsyncProjectionBase
+    db *sql.DB
 }
 
-func (p *OrderAnalyticsProjection) ApplyBatch(
-    ctx context.Context, 
-    events []StoredEvent,
-) error {
+func NewAnalyticsProjection(db *sql.DB) *AnalyticsProjection {
+    return &AnalyticsProjection{
+        AsyncProjectionBase: mink.NewAsyncProjectionBase(
+            "Analytics",
+            100, // batch size
+            "OrderCreated", "OrderCompleted",
+        ),
+        db: db,
+    }
+}
+
+func (p *AnalyticsProjection) ApplyBatch(ctx context.Context, events []mink.StoredEvent) error {
     tx, _ := p.db.BeginTx(ctx, nil)
     defer tx.Rollback()
     
@@ -134,29 +160,13 @@ func (p *OrderAnalyticsProjection) ApplyBatch(
         switch event.Type {
         case "OrderCreated":
             tx.Exec(`
-                INSERT INTO daily_order_stats (date, order_count, revenue)
-                VALUES ($1, 1, 0)
+                INSERT INTO daily_stats (date, order_count)
+                VALUES ($1, 1)
                 ON CONFLICT (date) DO UPDATE 
-                SET order_count = daily_order_stats.order_count + 1
+                SET order_count = daily_stats.order_count + 1
             `, event.Timestamp.Truncate(24*time.Hour))
-            
-        case "OrderCompleted":
-            var e OrderCompleted
-            json.Unmarshal(event.Data, &e)
-            tx.Exec(`
-                UPDATE daily_order_stats 
-                SET revenue = revenue + $1
-                WHERE date = $2
-            `, e.TotalAmount, event.Timestamp.Truncate(24*time.Hour))
         }
     }
-    
-    // Save checkpoint
-    tx.Exec(`
-        UPDATE projection_checkpoints 
-        SET position = $1 
-        WHERE name = $2
-    `, events[len(events)-1].GlobalPosition, p.Name())
     
     return tx.Commit()
 }
@@ -172,152 +182,310 @@ type LiveProjection interface {
     
     // Called for each event in real-time
     OnEvent(ctx context.Context, event StoredEvent)
-    
-    // No persistence, in-memory only
-    IsTransient() bool
 }
 
-// Example: Real-time dashboard
+// Example using LiveProjectionBase
 type DashboardProjection struct {
-    broadcast chan<- DashboardUpdate
+    mink.LiveProjectionBase
 }
 
-func (p *DashboardProjection) OnEvent(ctx context.Context, event StoredEvent) {
-    switch event.Type {
-    case "OrderCreated":
-        p.broadcast <- DashboardUpdate{
-            Type:    "new_order",
-            OrderID: event.StreamID.ID,
-        }
-    case "OrderShipped":
-        p.broadcast <- DashboardUpdate{
-            Type:    "order_shipped",
-            OrderID: event.StreamID.ID,
-        }
+func NewDashboardProjection() *DashboardProjection {
+    return &DashboardProjection{
+        LiveProjectionBase: mink.NewLiveProjectionBase(
+            "Dashboard",
+            "OrderCreated", "OrderShipped",
+        ),
     }
+}
+
+func (p *DashboardProjection) OnEvent(ctx context.Context, event mink.StoredEvent) {
+    p.Send(fmt.Sprintf("Event %s on stream %s", event.Type, event.StreamID))
+}
+
+// Consume updates
+func (p *DashboardProjection) Updates() <-chan string {
+    return p.LiveProjectionBase.Updates()
 }
 ```
 
-## Projection Registration
+## Projection Engine
+
+The `ProjectionEngine` orchestrates all projection types:
 
 ```go
-// Register projections with the engine
-engine := go-mink.NewProjectionEngine(store)
+// Create checkpoint store for async projections
+checkpointStore := memory.NewCheckpointStore()
 
-// Inline - same transaction
-engine.RegisterInline(&OrderSummaryProjection{})
+// Create projection engine
+engine := mink.NewProjectionEngine(store,
+    mink.WithCheckpointStore(checkpointStore),
+)
 
-// Async - background processing
-engine.RegisterAsync(&OrderAnalyticsProjection{}, go-mink.AsyncOptions{
-    BatchSize:     100,
-    BatchTimeout:  time.Second,
-    Workers:       4,
-    RetryPolicy:   go-mink.ExponentialBackoff(3),
-})
+// Register inline projection (synchronous)
+summaryProjection := NewOrderSummaryProjection(repo)
+if err := engine.RegisterInline(summaryProjection); err != nil {
+    log.Fatal(err)
+}
 
-// Live - real-time
-engine.RegisterLive(&DashboardProjection{})
+// Register async projection (background)
+analyticsProjection := NewAnalyticsProjection(db)
+if err := engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
+    BatchSize:    100,
+    Interval:     time.Second,
+    Workers:      4,
+    RetryPolicy:  mink.NewExponentialBackoffRetry(100*time.Millisecond, 5*time.Second, 3),
+}); err != nil {
+    log.Fatal(err)
+}
 
-// Start projection engine
-engine.Start(ctx)
+// Register live projection (real-time)
+dashboardProjection := NewDashboardProjection()
+if err := engine.RegisterLive(dashboardProjection); err != nil {
+    log.Fatal(err)
+}
+
+// Start the engine
+if err := engine.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+defer engine.Stop(ctx)
+
+// Process events through projections
+events, _ := store.LoadRaw(ctx, streamID, 0)
+engine.ProcessInlineProjections(ctx, events)
+engine.NotifyLiveProjections(ctx, events)
+```
+
+### Projection Status
+
+Monitor projection health:
+
+```go
+// Get single projection status
+status, err := engine.GetStatus("OrderSummary")
+fmt.Printf("State: %s, Position: %d, Lag: %d\n", 
+    status.State, status.Position, status.Lag)
+
+// Get all projection statuses
+statuses := engine.GetAllStatuses()
+for name, status := range statuses {
+    fmt.Printf("%s: %s (error: %v)\n", name, status.State, status.LastError)
+}
 ```
 
 ## Read Model Repository
 
+Generic repository for read model storage:
+
 ```go
-// Generic read model repository
+// Interface definition
 type ReadModelRepository[T any] interface {
-    // Get by ID
-    Get(ctx context.Context, id string) (*T, error)
-    
-    // Get multiple by IDs
-    GetMany(ctx context.Context, ids []string) ([]*T, error)
-    
-    // Query with filters
-    Query(ctx context.Context, query Query) ([]*T, error)
-    
-    // Insert new read model
     Insert(ctx context.Context, model *T) error
-    
-    // Update existing
+    Get(ctx context.Context, id string) (*T, error)
     Update(ctx context.Context, id string, fn func(*T)) error
-    
-    // Delete
     Delete(ctx context.Context, id string) error
+    Query(ctx context.Context, query Query) ([]*T, error)
+    FindOne(ctx context.Context, query Query) (*T, error)
+    Count(ctx context.Context, query Query) (int, error)
+    Exists(ctx context.Context, id string) (bool, error)
+    GetAll(ctx context.Context) ([]*T, error)
+    Clear(ctx context.Context) error
 }
 
-// Query builder
-type Query struct {
-    Filters  []Filter
-    OrderBy  []OrderBy
-    Limit    int
-    Offset   int
-}
-
-// Usage
-type OrderSummaryRepo = ReadModelRepository[OrderSummary]
-
-repo := postgres.NewReadModelRepository[OrderSummary](db, "order_summaries")
-
-// Query orders
-orders, _ := repo.Query(ctx, go-mink.Query{
-    Filters: []go-mink.Filter{
-        {Field: "status", Op: "=", Value: "Pending"},
-        {Field: "total_amount", Op: ">", Value: 100},
-    },
-    OrderBy: []go-mink.OrderBy{ {Field: "created_at", Desc: true} },
-    Limit:   10,
+// In-memory implementation (great for testing)
+repo := mink.NewInMemoryRepository[OrderSummary](func(o *OrderSummary) string {
+    return o.OrderID  // ID extractor function
 })
+
+// CRUD operations
+repo.Insert(ctx, &OrderSummary{OrderID: "order-1", Status: "Created"})
+
+summary, err := repo.Get(ctx, "order-1")
+
+repo.Update(ctx, "order-1", func(s *OrderSummary) {
+    s.Status = "Shipped"
+})
+
+repo.Delete(ctx, "order-1")
+```
+
+### Query Builder
+
+Fluent query construction:
+
+```go
+// Build a query
+query := mink.NewQuery().
+    Where("Status", mink.Eq, "Pending").
+    And("TotalAmount", mink.Gt, 100.0).
+    OrderByDesc("CreatedAt").
+    WithPagination(10, 0)  // limit 10, offset 0
+
+// Execute query
+orders, err := repo.Query(ctx, query)
+
+// Find single result
+order, err := repo.FindOne(ctx, query)
+
+// Count matching records
+count, err := repo.Count(ctx, query)
+```
+
+### Filter Operators
+
+```go
+// Available filter operators
+mink.Eq       // Equal
+mink.NotEq    // Not equal
+mink.Gt       // Greater than
+mink.Gte      // Greater than or equal
+mink.Lt       // Less than
+mink.Lte      // Less than or equal
+mink.In       // In list
+mink.Contains // Contains substring
+```
+
+## Subscription System
+
+Subscribe to events for projections:
+
+```go
+// Event filters
+typeFilter := mink.NewEventTypeFilter("OrderCreated", "OrderShipped")
+categoryFilter := mink.NewCategoryFilter("Order")
+compositeFilter := mink.NewCompositeFilter(typeFilter, categoryFilter)
+
+// Subscription options
+opts := mink.SubscriptionOptions{
+    FromPosition: 0,                    // Start position
+    Filter:       compositeFilter,      // Event filter
+    BufferSize:   100,                  // Channel buffer
+}
+
+// Create subscription (requires SubscriptionAdapter)
+sub, err := mink.NewCatchupSubscription(adapter, opts)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Start receiving events
+eventCh, err := sub.Subscribe(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+for event := range eventCh {
+    fmt.Printf("Received: %s at position %d\n", event.Type, event.GlobalPosition)
+}
 ```
 
 ## Projection Rebuilding
 
+Rebuild projections from the event log:
+
 ```go
-// Rebuild projection from scratch
-rebuilder := go-mink.NewProjectionRebuilder(store)
+// Create rebuilder
+rebuilder := mink.NewProjectionRebuilder(store, checkpointStore)
+
+// Create progress callback
+progress := &mink.RebuildProgress{
+    OnProgress: func(processed, total uint64) {
+        pct := float64(processed) / float64(total) * 100
+        fmt.Printf("Progress: %.1f%% (%d/%d)\n", pct, processed, total)
+    },
+    OnComplete: func() {
+        fmt.Println("Rebuild complete!")
+    },
+    OnError: func(err error) {
+        fmt.Printf("Error: %v\n", err)
+    },
+}
 
 // Rebuild single projection
-err := rebuilder.Rebuild(ctx, "OrderSummary", go-mink.RebuildOptions{
+err := rebuilder.Rebuild(ctx, summaryProjection, mink.RebuildOptions{
     BatchSize: 1000,
-    Parallel:  true,
-    OnProgress: func(processed, total uint64) {
-        fmt.Printf("Progress: %d/%d\n", processed, total)
-    },
+    Progress:  progress,
 })
 
 // Rebuild all projections
-err := rebuilder.RebuildAll(ctx)
+err := rebuilder.RebuildAll(ctx, []mink.Projection{
+    summaryProjection,
+    analyticsProjection,
+}, mink.RebuildOptions{BatchSize: 1000})
 ```
 
-## Schema Generation
+### Parallel Rebuilding
+
+Rebuild multiple projections concurrently:
 
 ```go
-// Auto-generate read model schemas
-type OrderSummary struct {
-    ID          string    `go-mink:"pk"`
-    CustomerID  string    `go-mink:"index"`
-    Status      string    `go-mink:"index"`
-    ItemCount   int
-    TotalAmount float64
-    CreatedAt   time.Time `go-mink:"index"`
-    ShippedAt   *time.Time
+parallelRebuilder := mink.NewParallelRebuilder(store, checkpointStore, 4) // 4 workers
+
+err := parallelRebuilder.RebuildAll(ctx, []mink.Projection{
+    summaryProjection,
+    analyticsProjection,
+    reportProjection,
+}, mink.RebuildOptions{
+    BatchSize: 1000,
+})
+```
+
+### Clearable Projections
+
+Projections that can be cleared before rebuild:
+
+```go
+type Clearable interface {
+    Clear(ctx context.Context) error
 }
 
-// Generate migration
-migration := go-mink.GenerateSchema[OrderSummary]("order_summaries")
-// CREATE TABLE order_summaries (
-//     id VARCHAR(255) PRIMARY KEY,
-//     customer_id VARCHAR(255),
-//     status VARCHAR(255),
-//     item_count INT,
-//     total_amount DECIMAL,
-//     created_at TIMESTAMPTZ,
-//     shipped_at TIMESTAMPTZ
-// );
-// CREATE INDEX idx_order_summaries_customer_id ON order_summaries(customer_id);
-// CREATE INDEX idx_order_summaries_status ON order_summaries(status);
-// CREATE INDEX idx_order_summaries_created_at ON order_summaries(created_at);
+// Implement on your projection
+func (p *OrderSummaryProjection) Clear(ctx context.Context) error {
+    return p.repo.Clear(ctx)
+}
+
+// Rebuilder automatically clears if projection implements Clearable
 ```
+
+## Retry Policy
+
+Configure retry behavior for async projections:
+
+```go
+// Exponential backoff with jitter
+retryPolicy := mink.NewExponentialBackoffRetry(
+    100*time.Millisecond,  // Initial delay
+    5*time.Second,         // Max delay
+    3,                     // Max attempts
+)
+
+engine.RegisterAsync(projection, mink.AsyncOptions{
+    RetryPolicy: retryPolicy,
+})
+```
+
+## Checkpoint Storage
+
+Checkpoints track projection progress:
+
+```go
+// In-memory checkpoint store (for testing)
+checkpointStore := memory.NewCheckpointStore()
+
+// Get/Set checkpoints
+pos, err := checkpointStore.GetCheckpoint(ctx, "OrderSummary")
+err = checkpointStore.SetCheckpoint(ctx, "OrderSummary", 100)
+
+// Get checkpoint with timestamp
+pos, timestamp, err := checkpointStore.GetCheckpointWithTimestamp(ctx, "OrderSummary")
+
+// List all checkpoints
+checkpoints, err := checkpointStore.GetAllCheckpoints(ctx)
+```
+
+## Complete Example
+
+See the [projections example](https://github.com/AshkanYarmoradi/go-mink/tree/main/examples/projections) for a complete working demonstration.
 
 ---
 

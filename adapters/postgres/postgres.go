@@ -33,11 +33,12 @@ var (
 
 // Ensure PostgresAdapter implements required interfaces.
 var (
-	_ adapters.EventStoreAdapter = (*PostgresAdapter)(nil)
-	_ adapters.SnapshotAdapter   = (*PostgresAdapter)(nil)
-	_ adapters.CheckpointAdapter = (*PostgresAdapter)(nil)
-	_ adapters.HealthChecker     = (*PostgresAdapter)(nil)
-	_ adapters.Migrator          = (*PostgresAdapter)(nil)
+	_ adapters.EventStoreAdapter   = (*PostgresAdapter)(nil)
+	_ adapters.SubscriptionAdapter = (*PostgresAdapter)(nil)
+	_ adapters.SnapshotAdapter     = (*PostgresAdapter)(nil)
+	_ adapters.CheckpointAdapter   = (*PostgresAdapter)(nil)
+	_ adapters.HealthChecker       = (*PostgresAdapter)(nil)
+	_ adapters.Migrator            = (*PostgresAdapter)(nil)
 )
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
