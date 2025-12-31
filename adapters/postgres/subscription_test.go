@@ -29,7 +29,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 	require.NoError(t, adapter.Initialize(ctx))
 
 	// Clean up
-	adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_test.events CASCADE")
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_test.events CASCADE")
 
 	// Append some events
 	events := []adapters.EventRecord{
@@ -91,7 +91,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 	require.NoError(t, adapter.Initialize(ctx))
 
 	// Clean up
-	adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_all_test.events CASCADE")
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_all_test.events CASCADE")
 
 	// Append some events
 	events := []adapters.EventRecord{
@@ -143,13 +143,13 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 	require.NoError(t, adapter.Initialize(ctx))
 
 	// Clean up
-	adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_stream_test.events CASCADE")
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_stream_test.events CASCADE")
 
 	// Append events to multiple streams
 	events1 := []adapters.EventRecord{{Type: "Event1", Data: []byte(`{}`)}}
 	events2 := []adapters.EventRecord{{Type: "Event2", Data: []byte(`{}`)}}
-	adapter.Append(ctx, "Stream-001", events1, NoStream)
-	adapter.Append(ctx, "Stream-002", events2, NoStream)
+	_, _ = adapter.Append(ctx, "Stream-001", events1, NoStream)
+	_, _ = adapter.Append(ctx, "Stream-002", events2, NoStream)
 
 	t.Run("subscribes to specific stream", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -186,12 +186,12 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 	require.NoError(t, adapter.Initialize(ctx))
 
 	// Clean up
-	adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_cat_test.events CASCADE")
+	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_cat_test.events CASCADE")
 
 	// Append events to different categories
-	adapter.Append(ctx, "Order-001", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, NoStream)
-	adapter.Append(ctx, "Order-002", []adapters.EventRecord{{Type: "OrderShipped", Data: []byte(`{}`)}}, NoStream)
-	adapter.Append(ctx, "Customer-001", []adapters.EventRecord{{Type: "CustomerRegistered", Data: []byte(`{}`)}}, NoStream)
+	_, _ = adapter.Append(ctx, "Order-001", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, NoStream)
+	_, _ = adapter.Append(ctx, "Order-002", []adapters.EventRecord{{Type: "OrderShipped", Data: []byte(`{}`)}}, NoStream)
+	_, _ = adapter.Append(ctx, "Customer-001", []adapters.EventRecord{{Type: "CustomerRegistered", Data: []byte(`{}`)}}, NoStream)
 
 	t.Run("subscribes to category", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

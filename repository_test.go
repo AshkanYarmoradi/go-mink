@@ -46,9 +46,9 @@ func TestInMemoryRepository_GetMany(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert some items
-	repo.Insert(ctx, &TestReadModel{ID: "1", Name: "One"})
-	repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Two"})
-	repo.Insert(ctx, &TestReadModel{ID: "3", Name: "Three"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "One"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Two"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "3", Name: "Three"})
 
 	t.Run("returns existing items, ignores missing", func(t *testing.T) {
 		results, err := repo.GetMany(ctx, []string{"1", "missing", "3"})
@@ -78,7 +78,7 @@ func TestInMemoryRepository_Insert(t *testing.T) {
 
 	t.Run("returns ErrAlreadyExists for duplicate", func(t *testing.T) {
 		model := &TestReadModel{ID: "dup", Name: "First"}
-		repo.Insert(ctx, model)
+		_ = repo.Insert(ctx, model)
 
 		err := repo.Insert(ctx, &TestReadModel{ID: "dup", Name: "Second"})
 		assert.ErrorIs(t, err, ErrAlreadyExists)
@@ -93,7 +93,7 @@ func TestInMemoryRepository_Update(t *testing.T) {
 	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
 
-	repo.Insert(ctx, &TestReadModel{ID: "upd", Name: "Original", Count: 1})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "upd", Name: "Original", Count: 1})
 
 	t.Run("updates existing item", func(t *testing.T) {
 		err := repo.Update(ctx, "upd", func(m *TestReadModel) {
@@ -129,7 +129,7 @@ func TestInMemoryRepository_Upsert(t *testing.T) {
 	})
 
 	t.Run("updates when exists", func(t *testing.T) {
-		repo.Insert(ctx, &TestReadModel{ID: "ups2", Name: "Original"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "ups2", Name: "Original"})
 
 		err := repo.Upsert(ctx, &TestReadModel{ID: "ups2", Name: "Updated"})
 		require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestInMemoryRepository_Delete(t *testing.T) {
 	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
 
-	repo.Insert(ctx, &TestReadModel{ID: "del", Name: "ToDelete"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "del", Name: "ToDelete"})
 
 	t.Run("deletes existing item", func(t *testing.T) {
 		err := repo.Delete(ctx, "del")
@@ -164,9 +164,9 @@ func TestInMemoryRepository_Clear(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert some items
-	repo.Insert(ctx, &TestReadModel{ID: "1"})
-	repo.Insert(ctx, &TestReadModel{ID: "2"})
-	repo.Insert(ctx, &TestReadModel{ID: "3"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "3"})
 
 	assert.Equal(t, 3, repo.Len())
 
@@ -184,8 +184,8 @@ func TestInMemoryRepository_Count(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 
-	repo.Insert(ctx, &TestReadModel{ID: "1"})
-	repo.Insert(ctx, &TestReadModel{ID: "2"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2"})
 
 	count, err = repo.Count(ctx, Query{})
 	require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestInMemoryRepository_Find(t *testing.T) {
 
 	// Insert items
 	for i := 0; i < 10; i++ {
-		repo.Insert(ctx, &TestReadModel{ID: string(rune('A' + i)), Count: i})
+		_ = repo.Insert(ctx, &TestReadModel{ID: string(rune('A' + i)), Count: i})
 	}
 
 	t.Run("returns all with empty query", func(t *testing.T) {
@@ -242,8 +242,8 @@ func TestInMemoryRepository_FindOne(t *testing.T) {
 	})
 
 	t.Run("returns first item", func(t *testing.T) {
-		repo.Insert(ctx, &TestReadModel{ID: "1", Name: "First"})
-		repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Second"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "First"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Second"})
 
 		result, err := repo.FindOne(ctx, Query{})
 		require.NoError(t, err)
@@ -255,9 +255,9 @@ func TestInMemoryRepository_DeleteMany(t *testing.T) {
 	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
 
-	repo.Insert(ctx, &TestReadModel{ID: "1"})
-	repo.Insert(ctx, &TestReadModel{ID: "2"})
-	repo.Insert(ctx, &TestReadModel{ID: "3"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "3"})
 
 	deleted, err := repo.DeleteMany(ctx, Query{})
 	require.NoError(t, err)

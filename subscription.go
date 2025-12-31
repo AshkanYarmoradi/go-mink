@@ -134,7 +134,6 @@ type EventSubscriber interface {
 type CatchupSubscription struct {
 	store      *EventStore
 	subscriber EventSubscriber
-	filter     EventFilter
 	opts       SubscriptionOptions
 
 	eventCh chan StoredEvent
@@ -204,10 +203,8 @@ func (s *CatchupSubscription) setErr(err error) {
 // PollingSubscription polls the event store for new events.
 // This is a fallback when push-based subscriptions aren't available.
 type PollingSubscription struct {
-	store    *EventStore
-	streamID string // Empty for all streams
-	category string // Empty if not category subscription
-	opts     SubscriptionOptions
+	store *EventStore
+	opts  SubscriptionOptions
 
 	eventCh  chan StoredEvent
 	stopCh   chan struct{}

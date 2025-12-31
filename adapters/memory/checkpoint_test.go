@@ -20,7 +20,7 @@ func TestCheckpointStore_GetCheckpoint(t *testing.T) {
 	})
 
 	t.Run("returns stored position", func(t *testing.T) {
-		store.SetCheckpoint(ctx, "TestProjection", 100)
+		_ = store.SetCheckpoint(ctx, "TestProjection", 100)
 		pos, err := store.GetCheckpoint(ctx, "TestProjection")
 		require.NoError(t, err)
 		assert.Equal(t, uint64(100), pos)
@@ -40,8 +40,8 @@ func TestCheckpointStore_SetCheckpoint(t *testing.T) {
 	})
 
 	t.Run("updates existing checkpoint", func(t *testing.T) {
-		store.SetCheckpoint(ctx, "UpdateProj", 10)
-		store.SetCheckpoint(ctx, "UpdateProj", 20)
+		_ = store.SetCheckpoint(ctx, "UpdateProj", 10)
+		_ = store.SetCheckpoint(ctx, "UpdateProj", 20)
 
 		pos, _ := store.GetCheckpoint(ctx, "UpdateProj")
 		assert.Equal(t, uint64(20), pos)
@@ -52,7 +52,7 @@ func TestCheckpointStore_DeleteCheckpoint(t *testing.T) {
 	store := NewCheckpointStore()
 	ctx := context.Background()
 
-	store.SetCheckpoint(ctx, "ToDelete", 100)
+	_ = store.SetCheckpoint(ctx, "ToDelete", 100)
 
 	t.Run("deletes existing checkpoint", func(t *testing.T) {
 		err := store.DeleteCheckpoint(ctx, "ToDelete")
@@ -79,9 +79,9 @@ func TestCheckpointStore_GetAllCheckpoints(t *testing.T) {
 	})
 
 	t.Run("returns all checkpoints", func(t *testing.T) {
-		store.SetCheckpoint(ctx, "Proj1", 10)
-		store.SetCheckpoint(ctx, "Proj2", 20)
-		store.SetCheckpoint(ctx, "Proj3", 30)
+		_ = store.SetCheckpoint(ctx, "Proj1", 10)
+		_ = store.SetCheckpoint(ctx, "Proj2", 20)
+		_ = store.SetCheckpoint(ctx, "Proj3", 30)
 
 		checkpoints, err := store.GetAllCheckpoints(ctx)
 		require.NoError(t, err)
@@ -96,8 +96,8 @@ func TestCheckpointStore_Clear(t *testing.T) {
 	store := NewCheckpointStore()
 	ctx := context.Background()
 
-	store.SetCheckpoint(ctx, "Proj1", 10)
-	store.SetCheckpoint(ctx, "Proj2", 20)
+	_ = store.SetCheckpoint(ctx, "Proj1", 10)
+	_ = store.SetCheckpoint(ctx, "Proj2", 20)
 
 	assert.Equal(t, 2, store.Len())
 
@@ -112,14 +112,14 @@ func TestCheckpointStore_Len(t *testing.T) {
 
 	assert.Equal(t, 0, store.Len())
 
-	store.SetCheckpoint(ctx, "Proj1", 10)
+	_ = store.SetCheckpoint(ctx, "Proj1", 10)
 	assert.Equal(t, 1, store.Len())
 
-	store.SetCheckpoint(ctx, "Proj2", 20)
+	_ = store.SetCheckpoint(ctx, "Proj2", 20)
 	assert.Equal(t, 2, store.Len())
 
 	// Updating doesn't increase count
-	store.SetCheckpoint(ctx, "Proj1", 100)
+	_ = store.SetCheckpoint(ctx, "Proj1", 100)
 	assert.Equal(t, 2, store.Len())
 }
 
@@ -135,7 +135,7 @@ func TestCheckpointStore_GetCheckpointWithTimestamp(t *testing.T) {
 
 	t.Run("returns checkpoint with timestamp", func(t *testing.T) {
 		before := time.Now()
-		store.SetCheckpoint(ctx, "WithTimestamp", 42)
+		_ = store.SetCheckpoint(ctx, "WithTimestamp", 42)
 		after := time.Now()
 
 		cp, err := store.GetCheckpointWithTimestamp(ctx, "WithTimestamp")
@@ -158,7 +158,7 @@ func TestCheckpointStore_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(idx int) {
 			for j := 0; j < 100; j++ {
-				store.SetCheckpoint(ctx, "ConcurrentProj", uint64(idx*100+j))
+				_ = store.SetCheckpoint(ctx, "ConcurrentProj", uint64(idx*100+j))
 			}
 			done <- true
 		}(i)

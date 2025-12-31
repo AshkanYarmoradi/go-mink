@@ -299,7 +299,7 @@ func TestProjectionEngine_RegisterInline(t *testing.T) {
 
 	t.Run("rejects duplicate projection", func(t *testing.T) {
 		projection := newTestInlineProjection("DuplicateInline")
-		engine.RegisterInline(projection)
+		_ = engine.RegisterInline(projection)
 
 		err := engine.RegisterInline(projection)
 		assert.ErrorIs(t, err, ErrProjectionAlreadyRegistered)
@@ -334,7 +334,7 @@ func TestProjectionEngine_RegisterAsync(t *testing.T) {
 
 	t.Run("rejects duplicate projection", func(t *testing.T) {
 		projection := newTestAsyncProjection("DuplicateAsync")
-		engine.RegisterAsync(projection)
+		_ = engine.RegisterAsync(projection)
 
 		err := engine.RegisterAsync(projection)
 		assert.ErrorIs(t, err, ErrProjectionAlreadyRegistered)
@@ -358,7 +358,7 @@ func TestProjectionEngine_RegisterLive(t *testing.T) {
 
 	t.Run("rejects duplicate projection", func(t *testing.T) {
 		projection := newTestLiveProjection("DuplicateLive", true)
-		engine.RegisterLive(projection)
+		_ = engine.RegisterLive(projection)
 
 		err := engine.RegisterLive(projection)
 		assert.ErrorIs(t, err, ErrProjectionAlreadyRegistered)
@@ -371,7 +371,7 @@ func TestProjectionEngine_Unregister(t *testing.T) {
 
 	t.Run("unregisters inline projection", func(t *testing.T) {
 		projection := newTestInlineProjection("UnregInline")
-		engine.RegisterInline(projection)
+		_ = engine.RegisterInline(projection)
 
 		err := engine.Unregister("UnregInline")
 		require.NoError(t, err)
@@ -383,7 +383,7 @@ func TestProjectionEngine_Unregister(t *testing.T) {
 
 	t.Run("unregisters async projection", func(t *testing.T) {
 		projection := newTestAsyncProjection("UnregAsync")
-		engine.RegisterAsync(projection)
+		_ = engine.RegisterAsync(projection)
 
 		err := engine.Unregister("UnregAsync")
 		require.NoError(t, err)
@@ -391,7 +391,7 @@ func TestProjectionEngine_Unregister(t *testing.T) {
 
 	t.Run("unregisters live projection", func(t *testing.T) {
 		projection := newTestLiveProjection("UnregLive", true)
-		engine.RegisterLive(projection)
+		_ = engine.RegisterLive(projection)
 
 		err := engine.Unregister("UnregLive")
 		require.NoError(t, err)
@@ -428,7 +428,7 @@ func TestProjectionEngine_Start(t *testing.T) {
 		assert.True(t, engine.IsRunning())
 
 		// Stop it
-		engine.Stop(context.Background())
+		_ = engine.Stop(context.Background())
 		assert.False(t, engine.IsRunning())
 	})
 
@@ -438,8 +438,8 @@ func TestProjectionEngine_Start(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		engine.Start(ctx)
-		defer engine.Stop(context.Background())
+		_ = engine.Start(ctx)
+		defer func() { _ = engine.Stop(context.Background()) }()
 
 		err := engine.Start(ctx)
 		assert.ErrorIs(t, err, ErrProjectionEngineAlreadyRunning)
@@ -462,12 +462,12 @@ func TestProjectionEngine_Stop(t *testing.T) {
 
 		// Register a projection
 		projection := newTestAsyncProjection("AsyncStop")
-		engine.RegisterAsync(projection)
+		_ = engine.RegisterAsync(projection)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		engine.Start(ctx)
+		_ = engine.Start(ctx)
 		assert.True(t, engine.IsRunning())
 
 		// Stop with a reasonable timeout
@@ -486,7 +486,7 @@ func TestProjectionEngine_GetStatus(t *testing.T) {
 
 	t.Run("returns status for registered projection", func(t *testing.T) {
 		projection := newTestAsyncProjection("StatusAsync")
-		engine.RegisterAsync(projection)
+		_ = engine.RegisterAsync(projection)
 
 		status, err := engine.GetStatus("StatusAsync")
 		require.NoError(t, err)
@@ -496,7 +496,7 @@ func TestProjectionEngine_GetStatus(t *testing.T) {
 
 	t.Run("returns status for live projection", func(t *testing.T) {
 		projection := newTestLiveProjection("StatusLive", true)
-		engine.RegisterLive(projection)
+		_ = engine.RegisterLive(projection)
 
 		status, err := engine.GetStatus("StatusLive")
 		require.NoError(t, err)
@@ -506,7 +506,7 @@ func TestProjectionEngine_GetStatus(t *testing.T) {
 
 	t.Run("returns status for inline projection", func(t *testing.T) {
 		projection := newTestInlineProjection("StatusInline")
-		engine.RegisterInline(projection)
+		_ = engine.RegisterInline(projection)
 
 		status, err := engine.GetStatus("StatusInline")
 		require.NoError(t, err)
@@ -525,9 +525,9 @@ func TestProjectionEngine_GetAllStatuses(t *testing.T) {
 	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
 
 	// Register various projections
-	engine.RegisterInline(newTestInlineProjection("Inline1"))
-	engine.RegisterAsync(newTestAsyncProjection("Async1"))
-	engine.RegisterLive(newTestLiveProjection("Live1", true))
+	_ = engine.RegisterInline(newTestInlineProjection("Inline1"))
+	_ = engine.RegisterAsync(newTestAsyncProjection("Async1"))
+	_ = engine.RegisterLive(newTestLiveProjection("Live1", true))
 
 	statuses := engine.GetAllStatuses()
 	assert.Len(t, statuses, 3)
@@ -548,8 +548,8 @@ func TestProjectionEngine_ProcessInlineProjections(t *testing.T) {
 
 	projection1 := newTestInlineProjection("Inline1", "OrderCreated")
 	projection2 := newTestInlineProjection("Inline2") // Handles all events
-	engine.RegisterInline(projection1)
-	engine.RegisterInline(projection2)
+	_ = engine.RegisterInline(projection1)
+	_ = engine.RegisterInline(projection2)
 
 	events := []StoredEvent{
 		{ID: "1", Type: "OrderCreated", Data: []byte("{}")},
@@ -573,7 +573,7 @@ func TestProjectionEngine_ProcessInlineProjections(t *testing.T) {
 	t.Run("stops on error", func(t *testing.T) {
 		errorProjection := newTestInlineProjection("ErrorProj")
 		errorProjection.SetError(assert.AnError)
-		engine.RegisterInline(errorProjection)
+		_ = engine.RegisterInline(errorProjection)
 
 		newEvents := []StoredEvent{
 			{ID: "3", Type: "OrderCreated", Data: []byte("{}")},
@@ -589,14 +589,14 @@ func TestProjectionEngine_NotifyLiveProjections(t *testing.T) {
 	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
 
 	projection := newTestLiveProjection("Live1", true, "OrderCreated")
-	engine.RegisterLive(projection)
+	_ = engine.RegisterLive(projection)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Start engine to activate live projections
-	engine.Start(ctx)
-	defer engine.Stop(context.Background())
+	_ = engine.Start(ctx)
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	// Wait a bit for the worker to start
 	time.Sleep(50 * time.Millisecond)
@@ -634,7 +634,7 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 		projection := newTestAsyncProjection("AsyncWorkerTest", "ProjectionTestEvent")
 		opts := DefaultAsyncOptions()
 		opts.PollInterval = 20 * time.Millisecond
-		engine.RegisterAsync(projection, opts)
+		_ = engine.RegisterAsync(projection, opts)
 
 		// Start the engine
 		ctx, cancel := context.WithCancel(context.Background())
@@ -642,7 +642,7 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 
 		err := engine.Start(ctx)
 		require.NoError(t, err)
-		defer engine.Stop(context.Background())
+		defer func() { _ = engine.Stop(context.Background()) }()
 
 		// Append an event
 		err = store.Append(ctx, "Order-123", []interface{}{&ProjectionTestEvent{OrderID: "123"}})
@@ -659,17 +659,17 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 	t.Run("async worker handles stop gracefully", func(t *testing.T) {
 		projection := newTestAsyncProjection("AsyncStopTest")
 		engine2 := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
-		engine2.RegisterAsync(projection)
+		_ = engine2.RegisterAsync(projection)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		engine2.Start(ctx)
+		_ = engine2.Start(ctx)
 
 		// Stop via context cancel
 		cancel()
 		time.Sleep(50 * time.Millisecond)
 
 		// Stop via Stop method
-		engine2.Stop(context.Background())
+		_ = engine2.Stop(context.Background())
 	})
 
 	t.Run("async worker handles checkpoint", func(t *testing.T) {
@@ -679,7 +679,7 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 		opts.StartFromBeginning = true
 
 		engine3 := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
-		engine3.RegisterAsync(projection, opts)
+		_ = engine3.RegisterAsync(projection, opts)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		err := engine3.Start(ctx)
@@ -687,7 +687,7 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 
 		time.Sleep(60 * time.Millisecond)
 		cancel()
-		engine3.Stop(context.Background())
+		_ = engine3.Stop(context.Background())
 	})
 }
 

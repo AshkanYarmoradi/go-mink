@@ -475,7 +475,7 @@ func TestE2E_Phase3_CompleteProjectionFlow(t *testing.T) {
 	// Start the projection engine
 	err = engine.Start(ctx)
 	require.NoError(t, err)
-	defer engine.Stop(context.Background())
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	// Give workers time to start
 	time.Sleep(50 * time.Millisecond)
@@ -611,7 +611,7 @@ func TestE2E_Phase3_CompleteProjectionFlow(t *testing.T) {
 	assert.True(t, engine.IsRunning())
 
 	// Cleanup
-	engine.Stop(context.Background())
+	_ = engine.Stop(context.Background())
 
 	t.Log("E2E Phase 3 projection flow test completed successfully!")
 }
@@ -711,18 +711,18 @@ func TestE2E_Phase3_MultipleProjectionTypes(t *testing.T) {
 	engine := NewProjectionEngine(store, WithCheckpointStore(checkpointStore))
 
 	// Register all projection types
-	engine.RegisterInline(NewE2EInlineProjection(inlineRM))
+	_ = engine.RegisterInline(NewE2EInlineProjection(inlineRM))
 
 	asyncOpts := DefaultAsyncOptions()
 	asyncOpts.PollInterval = 20 * time.Millisecond
-	engine.RegisterAsync(NewE2EAsyncProjection(asyncRM), asyncOpts)
+	_ = engine.RegisterAsync(NewE2EAsyncProjection(asyncRM), asyncOpts)
 
-	engine.RegisterLive(NewE2ELiveProjection(liveRM))
+	_ = engine.RegisterLive(NewE2ELiveProjection(liveRM))
 
 	// Start engine
 	err := engine.Start(ctx)
 	require.NoError(t, err)
-	defer engine.Stop(context.Background())
+	defer func() { _ = engine.Stop(context.Background()) }()
 
 	time.Sleep(30 * time.Millisecond)
 
@@ -773,7 +773,7 @@ func TestE2E_Phase3_ErrorHandling(t *testing.T) {
 	}
 
 	engine := NewProjectionEngine(store, WithCheckpointStore(newE2ECheckpointStore()))
-	engine.RegisterInline(failingProjection)
+	_ = engine.RegisterInline(failingProjection)
 
 	// Create events
 	events := []StoredEvent{
@@ -826,7 +826,7 @@ func TestE2E_Phase3_CheckpointRecovery(t *testing.T) {
 	checkpointStore := newE2ECheckpointStore()
 
 	// Simulate previous run processed up to position 5
-	checkpointStore.SetCheckpoint(ctx, "RecoveryProjection", 5)
+	_ = checkpointStore.SetCheckpoint(ctx, "RecoveryProjection", 5)
 
 	// Verify checkpoint persisted
 	pos, err := checkpointStore.GetCheckpoint(ctx, "RecoveryProjection")
@@ -843,7 +843,7 @@ func TestE2E_Phase3_CheckpointRecovery(t *testing.T) {
 
 	opts := DefaultAsyncOptions()
 	opts.StartFromBeginning = false // Should resume from checkpoint
-	engine.RegisterAsync(asyncProj, opts)
+	_ = engine.RegisterAsync(asyncProj, opts)
 
 	// Verify the async projection would start from checkpoint position
 	// (The actual resumption is handled by the async worker using the checkpoint store)
