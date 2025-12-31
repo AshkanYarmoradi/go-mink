@@ -1,6 +1,7 @@
 package mink
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -122,6 +123,50 @@ func TestPollingSubscription(t *testing.T) {
 		sub := NewPollingSubscription(store, 0)
 		assert.Nil(t, sub.Err())
 	})
+
+	t.Run("setErr sets the error", func(t *testing.T) {
+		sub := NewPollingSubscription(store, 0)
+		expectedErr := assert.AnError
+		sub.setErr(expectedErr)
+		assert.Equal(t, expectedErr, sub.Err())
+	})
+
+	t.Run("Start and poll context cancellation", func(t *testing.T) {
+		sub := NewPollingSubscription(store, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Start polling
+		sub.Start(ctx, 10*time.Millisecond)
+
+		// Wait a bit, then cancel
+		time.Sleep(25 * time.Millisecond)
+		cancel()
+
+		// Wait for poll to stop
+		time.Sleep(25 * time.Millisecond)
+
+		// The error should be set to context.Canceled
+		assert.ErrorIs(t, sub.Err(), context.Canceled)
+	})
+
+	t.Run("Start and poll stop via Close", func(t *testing.T) {
+		sub := NewPollingSubscription(store, 0)
+		ctx := context.Background()
+
+		// Start polling
+		sub.Start(ctx, 10*time.Millisecond)
+
+		// Wait a bit, then close
+		time.Sleep(25 * time.Millisecond)
+		err := sub.Close()
+		require.NoError(t, err)
+
+		// Wait for poll to stop
+		time.Sleep(25 * time.Millisecond)
+
+		// No error expected for normal close
+		assert.Nil(t, sub.Err())
+	})
 }
 
 func TestCatchupSubscription(t *testing.T) {
@@ -155,5 +200,12 @@ func TestCatchupSubscription(t *testing.T) {
 	t.Run("Err returns nil initially", func(t *testing.T) {
 		sub, _ := NewCatchupSubscription(store, nil, 0)
 		assert.Nil(t, sub.Err())
+	})
+
+	t.Run("setErr sets the error", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, nil, 0)
+		expectedErr := assert.AnError
+		sub.setErr(expectedErr)
+		assert.Equal(t, expectedErr, sub.Err())
 	})
 }

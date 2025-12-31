@@ -206,3 +206,52 @@ func TestSentinelErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestProjectionError(t *testing.T) {
+	t.Run("Error message", func(t *testing.T) {
+		cause := errors.New("database error")
+		err := NewProjectionError("OrderSummary", "OrderCreated", 42, cause)
+
+		assert.Contains(t, err.Error(), "OrderSummary")
+		assert.Contains(t, err.Error(), "OrderCreated")
+		assert.Contains(t, err.Error(), "42")
+		assert.Contains(t, err.Error(), "database error")
+	})
+
+	t.Run("Is ErrProjectionFailed", func(t *testing.T) {
+		err := NewProjectionError("OrderSummary", "OrderCreated", 42, errors.New("fail"))
+
+		assert.True(t, errors.Is(err, ErrProjectionFailed))
+		assert.False(t, errors.Is(err, ErrStreamNotFound))
+	})
+
+	t.Run("Unwrap returns cause", func(t *testing.T) {
+		cause := errors.New("original error")
+		err := NewProjectionError("OrderSummary", "OrderCreated", 42, cause)
+
+		assert.Equal(t, cause, errors.Unwrap(err))
+	})
+
+	t.Run("errors.As extracts details", func(t *testing.T) {
+		cause := errors.New("fail")
+		err := NewProjectionError("MyProjection", "MyEvent", 100, cause)
+
+		var projErr *ProjectionError
+		require.True(t, errors.As(err, &projErr))
+		assert.Equal(t, "MyProjection", projErr.ProjectionName)
+		assert.Equal(t, "MyEvent", projErr.EventType)
+		assert.Equal(t, uint64(100), projErr.Position)
+		assert.Equal(t, cause, projErr.Cause)
+	})
+
+	t.Run("NewProjectionError creates correct error", func(t *testing.T) {
+		cause := errors.New("test cause")
+		err := NewProjectionError("TestProj", "TestEvent", 999, cause)
+
+		assert.NotNil(t, err)
+		assert.Equal(t, "TestProj", err.ProjectionName)
+		assert.Equal(t, "TestEvent", err.EventType)
+		assert.Equal(t, uint64(999), err.Position)
+		assert.Equal(t, cause, err.Cause)
+	})
+}

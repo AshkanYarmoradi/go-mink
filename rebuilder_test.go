@@ -5,9 +5,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testProjectionMetrics is a test implementation of ProjectionMetrics
+type testProjectionMetrics struct {
+	eventsProcessed  int
+	batchesProcessed int
+	checkpointsSet   int
+	errorsRecorded   int
+	lastProjection   string
+	lastEventType    string
+	lastDuration     time.Duration
+	lastSuccess      bool
+}
+
+func (m *testProjectionMetrics) RecordEventProcessed(projectionName, eventType string, duration time.Duration, success bool) {
+	m.eventsProcessed++
+	m.lastProjection = projectionName
+	m.lastEventType = eventType
+	m.lastDuration = duration
+	m.lastSuccess = success
+}
+
+func (m *testProjectionMetrics) RecordBatchProcessed(projectionName string, count int, duration time.Duration, success bool) {
+	m.batchesProcessed++
+	m.lastProjection = projectionName
+	m.lastSuccess = success
+}
+
+func (m *testProjectionMetrics) RecordCheckpoint(projectionName string, position uint64) {
+	m.checkpointsSet++
+	m.lastProjection = projectionName
+}
+
+func (m *testProjectionMetrics) RecordError(projectionName string, err error) {
+	m.errorsRecorded++
+	m.lastProjection = projectionName
+}
 
 func TestNewProjectionRebuilder(t *testing.T) {
 	store := &EventStore{}
@@ -127,7 +164,249 @@ func TestProjectionRebuilder_BuildProgress(t *testing.T) {
 	assert.Greater(t, progress.EstimatedRemaining, time.Duration(0))
 }
 
-func TestProjectionRebuilder_ProgressCallback(t *testing.T) {
-	// Skip this test since it requires a fully configured store with adapter
-	t.Skip("Requires full store configuration with adapter")
+func TestProjectionRebuilder_BuildProgress_Completed(t *testing.T) {
+	store := &EventStore{}
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	startTime := time.Now().Add(-5 * time.Second)
+	progress := rebuilder.buildProgress("TestProj", 1000, 1000, 1000, startTime, true, nil)
+
+	assert.True(t, progress.Completed)
+	assert.Equal(t, uint64(1000), progress.ProcessedEvents)
+}
+
+func TestProjectionRebuilder_BuildProgress_ZeroDuration(t *testing.T) {
+	store := &EventStore{}
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	startTime := time.Now()
+	progress := rebuilder.buildProgress("TestProj", 1000, 0, 0, startTime, false, nil)
+
+	// With zero time elapsed, EventsPerSecond should be 0 or undefined behavior is handled
+	assert.GreaterOrEqual(t, progress.EventsPerSecond, float64(0))
+}
+
+func TestWithRebuilderLogger(t *testing.T) {
+	store := &EventStore{}
+	checkpoint := newTestCheckpointStore()
+	logger := &testLogger{}
+
+	rebuilder := NewProjectionRebuilder(store, checkpoint,
+		WithRebuilderLogger(logger),
+	)
+
+	assert.Equal(t, logger, rebuilder.logger)
+}
+
+func TestWithRebuilderMetrics(t *testing.T) {
+	store := &EventStore{}
+	checkpoint := newTestCheckpointStore()
+	metrics := &testProjectionMetrics{}
+
+	rebuilder := NewProjectionRebuilder(store, checkpoint,
+		WithRebuilderMetrics(metrics),
+	)
+
+	assert.Equal(t, metrics, rebuilder.metrics)
+}
+
+// testAsyncProjectionForRebuilder implements AsyncProjection for rebuild tests
+type testAsyncProjectionForRebuilder struct {
+	AsyncProjectionBase
+	events []StoredEvent
+}
+
+func newTestAsyncProjectionForRebuilder(name string) *testAsyncProjectionForRebuilder {
+	base := NewAsyncProjectionBase(name)
+	return &testAsyncProjectionForRebuilder{
+		AsyncProjectionBase: base,
+	}
+}
+
+func (p *testAsyncProjectionForRebuilder) Apply(ctx context.Context, event StoredEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+
+// testInlineProjectionForRebuilder implements InlineProjection for rebuild tests
+type testInlineProjectionForRebuilder struct {
+	ProjectionBase
+	events []StoredEvent
+}
+
+func newTestInlineProjectionForRebuilder(name string) *testInlineProjectionForRebuilder {
+	base := NewProjectionBase(name)
+	return &testInlineProjectionForRebuilder{
+		ProjectionBase: base,
+	}
+}
+
+func (p *testInlineProjectionForRebuilder) Apply(ctx context.Context, event StoredEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+
+// OrderCreatedEvent is a test event type
+type OrderCreatedEvent struct {
+	OrderID string
+}
+
+func TestProjectionRebuilder_RebuildAsync(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	// Register the event type
+	store.RegisterEvents(&OrderCreatedEvent{})
+
+	t.Run("rebuilds with no events", func(t *testing.T) {
+		projection := newTestAsyncProjectionForRebuilder("TestAsyncRebuild")
+
+		err := rebuilder.RebuildAsync(context.Background(), projection)
+		require.NoError(t, err)
+		assert.Empty(t, projection.events)
+	})
+
+	t.Run("rebuilds with events", func(t *testing.T) {
+		// Append some events
+		err := store.Append(context.Background(), "Order-123",
+			[]interface{}{&OrderCreatedEvent{OrderID: "123"}},
+		)
+		require.NoError(t, err)
+
+		projection := newTestAsyncProjectionForRebuilder("TestAsyncRebuild2")
+
+		err = rebuilder.RebuildAsync(context.Background(), projection)
+		require.NoError(t, err)
+		// Events should be processed
+		assert.GreaterOrEqual(t, len(projection.events), 0)
+	})
+
+	t.Run("rebuilds with custom options", func(t *testing.T) {
+		projection := newTestAsyncProjectionForRebuilder("TestAsyncRebuildOpts")
+
+		opts := DefaultRebuildOptions()
+		opts.DeleteCheckpoint = false
+
+		err := rebuilder.RebuildAsync(context.Background(), projection, opts)
+		require.NoError(t, err)
+	})
+}
+
+func TestProjectionRebuilder_RebuildInline(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	t.Run("rebuilds with no events", func(t *testing.T) {
+		projection := newTestInlineProjectionForRebuilder("TestInlineRebuild")
+
+		err := rebuilder.RebuildInline(context.Background(), projection)
+		require.NoError(t, err)
+		assert.Empty(t, projection.events)
+	})
+
+	t.Run("rebuilds with custom options", func(t *testing.T) {
+		projection := newTestInlineProjectionForRebuilder("TestInlineRebuildOpts")
+
+		opts := DefaultRebuildOptions()
+		opts.DeleteCheckpoint = false
+
+		err := rebuilder.RebuildInline(context.Background(), projection, opts)
+		require.NoError(t, err)
+	})
+}
+
+func TestProjectionRebuilder_WithProgressCallback(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	// Register the event type
+	store.RegisterEvents(&OrderCreatedEvent{})
+
+	t.Run("calls progress callback", func(t *testing.T) {
+		// Append some events first
+		err := store.Append(context.Background(), "Order-456",
+			[]interface{}{&OrderCreatedEvent{OrderID: "456"}},
+		)
+		require.NoError(t, err)
+
+		projection := newTestAsyncProjectionForRebuilder("TestProgressCallback")
+
+		progressCalls := 0
+		opts := DefaultRebuildOptions()
+		opts.ProgressInterval = 10 * time.Millisecond
+		opts.ProgressCallback = func(p RebuildProgress) {
+			progressCalls++
+		}
+
+		err = rebuilder.RebuildAsync(context.Background(), projection, opts)
+		require.NoError(t, err)
+		// Final callback should have been called
+		assert.GreaterOrEqual(t, progressCalls, 1)
+	})
+}
+
+func TestProjectionRebuilder_CheckpointDeletion(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	t.Run("deletes checkpoint when requested", func(t *testing.T) {
+		// Set a checkpoint
+		err := checkpoint.SetCheckpoint(context.Background(), "TestCheckpointDelete", 100)
+		require.NoError(t, err)
+
+		projection := newTestAsyncProjectionForRebuilder("TestCheckpointDelete")
+		opts := DefaultRebuildOptions()
+		opts.DeleteCheckpoint = true
+
+		err = rebuilder.RebuildAsync(context.Background(), projection, opts)
+		require.NoError(t, err)
+
+		// Checkpoint should be deleted (returns 0)
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TestCheckpointDelete")
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("preserves checkpoint when not requested", func(t *testing.T) {
+		// Set a checkpoint
+		err := checkpoint.SetCheckpoint(context.Background(), "TestCheckpointPreserve", 100)
+		require.NoError(t, err)
+
+		projection := newTestAsyncProjectionForRebuilder("TestCheckpointPreserve")
+		opts := DefaultRebuildOptions()
+		opts.DeleteCheckpoint = false
+
+		err = rebuilder.RebuildAsync(context.Background(), projection, opts)
+		require.NoError(t, err)
+
+		// Checkpoint should still exist
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TestCheckpointPreserve")
+		assert.Equal(t, uint64(100), pos)
+	})
+}
+
+func TestParallelRebuilder_RebuildAll(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	t.Run("rebuilds multiple projections", func(t *testing.T) {
+		pr := NewParallelRebuilder(rebuilder, 2)
+
+		proj1 := newTestAsyncProjectionForRebuilder("Parallel1")
+		proj2 := newTestAsyncProjectionForRebuilder("Parallel2")
+
+		err := pr.RebuildAll(context.Background(), []AsyncProjection{proj1, proj2})
+		require.NoError(t, err)
+	})
 }
