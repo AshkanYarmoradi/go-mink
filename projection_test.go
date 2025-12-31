@@ -383,7 +383,7 @@ func TestProjectionEngine_Start(t *testing.T) {
 
 	t.Run("starts successfully with checkpoint store", func(t *testing.T) {
 		engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
-		
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -398,7 +398,7 @@ func TestProjectionEngine_Start(t *testing.T) {
 
 	t.Run("rejects double start", func(t *testing.T) {
 		engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
-		
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 

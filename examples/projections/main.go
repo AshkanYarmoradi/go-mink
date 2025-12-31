@@ -16,9 +16,9 @@ import (
 
 // OrderCreated is emitted when a new order is created.
 type OrderCreated struct {
-	OrderID    string  `json:"orderId"`
-	CustomerID string  `json:"customerId"`
-	Amount     float64 `json:"amount"`
+	OrderID    string    `json:"orderId"`
+	CustomerID string    `json:"customerId"`
+	Amount     float64   `json:"amount"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
@@ -40,12 +40,12 @@ type OrderShipped struct {
 
 // OrderSummary is a read model representing an order summary.
 type OrderSummary struct {
-	OrderID     string    `json:"orderId"`
-	CustomerID  string    `json:"customerId"`
-	Status      string    `json:"status"`
-	ItemCount   int       `json:"itemCount"`
-	TotalAmount float64   `json:"totalAmount"`
-	CreatedAt   time.Time `json:"createdAt"`
+	OrderID     string     `json:"orderId"`
+	CustomerID  string     `json:"customerId"`
+	Status      string     `json:"status"`
+	ItemCount   int        `json:"itemCount"`
+	TotalAmount float64    `json:"totalAmount"`
+	CreatedAt   time.Time  `json:"createdAt"`
 	ShippedAt   *time.Time `json:"shippedAt,omitempty"`
 }
 

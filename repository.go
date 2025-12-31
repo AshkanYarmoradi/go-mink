@@ -239,9 +239,9 @@ type ReadModelID interface {
 // InMemoryRepository provides an in-memory implementation of ReadModelRepository.
 // Useful for testing and prototyping.
 type InMemoryRepository[T any] struct {
-	data   map[string]*T
-	mu     sync.RWMutex
-	getID  func(*T) string
+	data  map[string]*T
+	mu    sync.RWMutex
+	getID func(*T) string
 }
 
 // NewInMemoryRepository creates a new in-memory repository.

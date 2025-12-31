@@ -719,10 +719,10 @@ type liveProjectionWorker struct {
 	projection LiveProjection
 	engine     *ProjectionEngine
 
-	stopCh   chan struct{}
-	eventCh  chan StoredEvent
-	state    ProjectionState
-	stateMu  sync.RWMutex
+	stopCh    chan struct{}
+	eventCh   chan StoredEvent
+	state     ProjectionState
+	stateMu   sync.RWMutex
 	lastError error
 }
 

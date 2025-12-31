@@ -132,16 +132,16 @@ type EventSubscriber interface {
 // CatchupSubscription provides catch-up subscription functionality.
 // It first reads historical events, then switches to live subscription.
 type CatchupSubscription struct {
-	store       *EventStore
-	subscriber  EventSubscriber
-	filter      EventFilter
-	opts        SubscriptionOptions
-	
-	eventCh  chan StoredEvent
-	stopCh   chan struct{}
-	errMu    sync.RWMutex
-	err      error
-	closed   bool
+	store      *EventStore
+	subscriber EventSubscriber
+	filter     EventFilter
+	opts       SubscriptionOptions
+
+	eventCh chan StoredEvent
+	stopCh  chan struct{}
+	errMu   sync.RWMutex
+	err     error
+	closed  bool
 }
 
 // NewCatchupSubscription creates a new catch-up subscription.
@@ -209,12 +209,12 @@ type PollingSubscription struct {
 	category string // Empty if not category subscription
 	opts     SubscriptionOptions
 
-	eventCh      chan StoredEvent
-	stopCh       chan struct{}
-	position     uint64
-	errMu        sync.RWMutex
-	err          error
-	closed       bool
+	eventCh  chan StoredEvent
+	stopCh   chan struct{}
+	position uint64
+	errMu    sync.RWMutex
+	err      error
+	closed   bool
 }
 
 // NewPollingSubscription creates a new polling subscription.
