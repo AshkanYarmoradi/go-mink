@@ -879,6 +879,94 @@ func TestMemoryAdapter_SubscribeCategory_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestMemoryAdapter_LoadFromPosition(t *testing.T) {
+	t.Run("returns events from position", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Create some events
+		for i := 0; i < 5; i++ {
+			_, err := adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+				{Type: "OrderCreated", Data: []byte(`{}`)},
+			}, mink.AnyVersion)
+			require.NoError(t, err)
+		}
+
+		// Load from position 2
+		events, err := adapter.LoadFromPosition(ctx, 2, 10)
+		require.NoError(t, err)
+		assert.Len(t, events, 3) // Events 3, 4, 5
+		assert.Equal(t, uint64(3), events[0].GlobalPosition)
+	})
+
+	t.Run("returns empty when no events after position", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, err := adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		require.NoError(t, err)
+
+		events, err := adapter.LoadFromPosition(ctx, 10, 10)
+		require.NoError(t, err)
+		assert.Empty(t, events)
+	})
+
+	t.Run("respects limit", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Create 10 events
+		for i := 0; i < 10; i++ {
+			_, err := adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+				{Type: "OrderCreated", Data: []byte(`{}`)},
+			}, mink.AnyVersion)
+			require.NoError(t, err)
+		}
+
+		// Load with limit of 3
+		events, err := adapter.LoadFromPosition(ctx, 0, 3)
+		require.NoError(t, err)
+		assert.Len(t, events, 3)
+	})
+
+	t.Run("uses default limit when 0 or negative", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, err := adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		require.NoError(t, err)
+
+		events, err := adapter.LoadFromPosition(ctx, 0, 0)
+		require.NoError(t, err)
+		assert.Len(t, events, 1)
+
+		events, err = adapter.LoadFromPosition(ctx, 0, -1)
+		require.NoError(t, err)
+		assert.Len(t, events, 1)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		adapter := NewAdapter()
+		_ = adapter.Close()
+
+		_, err := adapter.LoadFromPosition(context.Background(), 0, 10)
+		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+	})
+
+	t.Run("respects context cancellation", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := adapter.LoadFromPosition(ctx, 0, 10)
+		assert.Error(t, err)
+	})
+}
+
 func TestConcurrencyError(t *testing.T) {
 	t.Run("Error message contains details", func(t *testing.T) {
 		err := NewConcurrencyError("Order-123", 5, 7)

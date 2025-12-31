@@ -252,8 +252,37 @@ func (s *PollingSubscription) poll(ctx context.Context, interval time.Duration) 
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			// This would need adapter support for loading from global position
-			// For now, this is a placeholder implementation
+			// Load events from current position using SubscriptionAdapter if available
+			adapter := s.store.Adapter()
+			subAdapter, ok := adapter.(SubscriptionAdapter)
+			if !ok {
+				// Adapter doesn't support subscription, skip this poll cycle
+				continue
+			}
+
+			events, err := subAdapter.LoadFromPosition(ctx, s.position, 100)
+			if err != nil {
+				// On error, continue polling (could add retry logic here)
+				continue
+			}
+
+			for _, event := range events {
+				// Apply filter if configured
+				if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
+					s.position = event.GlobalPosition
+					continue
+				}
+
+				select {
+				case s.eventCh <- event:
+					s.position = event.GlobalPosition
+				case <-ctx.Done():
+					s.setErr(ctx.Err())
+					return
+				case <-s.stopCh:
+					return
+				}
+			}
 		}
 	}
 }

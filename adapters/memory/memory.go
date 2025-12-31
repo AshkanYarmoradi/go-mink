@@ -248,6 +248,37 @@ func (a *MemoryAdapter) Close() error {
 	return nil
 }
 
+// LoadFromPosition loads events starting from a global position.
+// This is used by projection engines to catch up on historical events.
+func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.closed {
+		return nil, adapters.ErrAdapterClosed
+	}
+
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	var events []adapters.StoredEvent
+	for _, event := range a.globalEvents {
+		if event.GlobalPosition > fromPosition {
+			events = append(events, event)
+			if len(events) >= limit {
+				break
+			}
+		}
+	}
+
+	return events, nil
+}
+
 // SubscribeAll subscribes to all events across all streams.
 func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {

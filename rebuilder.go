@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -318,7 +319,7 @@ func (r *ProjectionRebuilder) processAsyncBatch(ctx context.Context, projection 
 
 	// Try batch processing first
 	err := projection.ApplyBatch(ctx, filteredEvents)
-	if err == ErrNotImplemented {
+	if errors.Is(err, ErrNotImplemented) {
 		// Fall back to sequential processing
 		for _, event := range filteredEvents {
 			if err := projection.Apply(ctx, event); err != nil {
