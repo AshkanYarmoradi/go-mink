@@ -22,7 +22,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, stream_id, version, type, data, metadata, global_position, timestamp
+		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM %s.events
 		WHERE global_position > $1
 		ORDER BY global_position ASC
@@ -116,7 +116,7 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 		defer close(ch)
 
 		query := fmt.Sprintf(`
-			SELECT id, stream_id, version, type, data, metadata, global_position, timestamp
+			SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 			FROM %s.events
 			WHERE global_position > $1 AND stream_id LIKE $2
 			ORDER BY global_position ASC
