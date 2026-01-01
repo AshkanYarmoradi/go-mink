@@ -16,6 +16,143 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Unit tests for quoting functions
+
+func TestQuoteIdentifier(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple identifier",
+			input:    "users",
+			expected: `"users"`,
+		},
+		{
+			name:     "identifier with underscore",
+			input:    "user_events",
+			expected: `"user_events"`,
+		},
+		{
+			name:     "identifier with numbers",
+			input:    "events2024",
+			expected: `"events2024"`,
+		},
+		{
+			name:     "reserved word",
+			input:    "select",
+			expected: `"select"`,
+		},
+		{
+			name:     "another reserved word",
+			input:    "table",
+			expected: `"table"`,
+		},
+		{
+			name:     "identifier with double quote",
+			input:    `my"table`,
+			expected: `"my""table"`,
+		},
+		{
+			name:     "identifier with multiple double quotes",
+			input:    `a"b"c`,
+			expected: `"a""b""c"`,
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: `""`,
+		},
+		{
+			name:     "identifier with spaces",
+			input:    "my table",
+			expected: `"my table"`,
+		},
+		{
+			name:     "identifier with special characters",
+			input:    "table-name",
+			expected: `"table-name"`,
+		},
+		{
+			name:     "uppercase identifier",
+			input:    "MyTable",
+			expected: `"MyTable"`,
+		},
+		{
+			name:     "SQL injection attempt",
+			input:    "users; DROP TABLE users; --",
+			expected: `"users; DROP TABLE users; --"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := quoteIdentifier(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestQuoteQualifiedTable(t *testing.T) {
+	tests := []struct {
+		name     string
+		schema   string
+		table    string
+		expected string
+	}{
+		{
+			name:     "simple schema and table",
+			schema:   "public",
+			table:    "users",
+			expected: `"public"."users"`,
+		},
+		{
+			name:     "custom schema",
+			schema:   "mink",
+			table:    "events",
+			expected: `"mink"."events"`,
+		},
+		{
+			name:     "schema with underscore",
+			schema:   "my_schema",
+			table:    "my_table",
+			expected: `"my_schema"."my_table"`,
+		},
+		{
+			name:     "reserved words",
+			schema:   "select",
+			table:    "from",
+			expected: `"select"."from"`,
+		},
+		{
+			name:     "with double quotes",
+			schema:   `my"schema`,
+			table:    `my"table`,
+			expected: `"my""schema"."my""table"`,
+		},
+		{
+			name:     "SQL injection in schema",
+			schema:   "public; DROP SCHEMA public; --",
+			table:    "users",
+			expected: `"public; DROP SCHEMA public; --"."users"`,
+		},
+		{
+			name:     "SQL injection in table",
+			schema:   "public",
+			table:    "users; DROP TABLE users; --",
+			expected: `"public"."users; DROP TABLE users; --"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := quoteQualifiedTable(tt.schema, tt.table)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // getTestDB returns a database connection for testing.
 // Set TEST_DATABASE_URL environment variable to run integration tests.
 func getTestDB(t *testing.T) *sql.DB {

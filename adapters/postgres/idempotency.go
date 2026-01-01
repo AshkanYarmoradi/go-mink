@@ -106,8 +106,8 @@ func (s *IdempotencyStore) Initialize(ctx context.Context) error {
 			expires_at TIMESTAMPTZ NOT NULL
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_` + s.table + `_expires_at ON ` + tableQ + ` (expires_at);
-		CREATE INDEX IF NOT EXISTS idx_` + s.table + `_processed_at ON ` + tableQ + ` (processed_at);
+		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_expires_at") + ` ON ` + tableQ + ` (expires_at);
+		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_processed_at") + ` ON ` + tableQ + ` (processed_at);
 	`
 
 	_, err := s.db.ExecContext(ctx, query)

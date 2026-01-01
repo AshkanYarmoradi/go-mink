@@ -239,11 +239,13 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	}
 
 	// Create indexes
+	streamsTableQ := quoteQualifiedTable(a.schema, "streams")
+	eventsTableQ := quoteQualifiedTable(a.schema, "events")
 	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_streams_category ON ` + schemaQ + `.streams(category)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_stream ON ` + schemaQ + `.events(stream_id, version)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_type ON ` + schemaQ + `.events(event_type)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON ` + schemaQ + `.events(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_streams_category ON ` + streamsTableQ + `(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_stream ON ` + eventsTableQ + `(stream_id, version)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_type ON ` + eventsTableQ + `(event_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON ` + eventsTableQ + `(timestamp)`,
 	}
 
 	for _, idx := range indexes {
