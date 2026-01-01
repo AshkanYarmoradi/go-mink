@@ -1118,7 +1118,10 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 
 	schema := newTestSchema()
 	defer func() {
-		schemaQ := quoteIdentifier(schema)
+		schemaQ, err := safeSchemaIdentifier(schema)
+		if err != nil {
+			return
+		}
 		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	}()
 
