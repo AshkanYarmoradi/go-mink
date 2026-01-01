@@ -527,7 +527,6 @@ func (a *MemoryAdapter) StreamCount() int {
 	return len(a.streams)
 }
 
-
 // notifySubscribers sends events to all subscribers.
 func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) {
 	a.subscribersMu.RLock()
@@ -557,4 +556,3 @@ func (a *MemoryAdapter) removeSubscriber(ch chan adapters.StoredEvent) {
 		}
 	}
 }
-
