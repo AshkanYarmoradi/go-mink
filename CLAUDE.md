@@ -1,6 +1,6 @@
-# CLAUDE.md - Instructions for Claude AI
+# CLAUDE.md
 
-This file provides guidance for Claude when working on the go-mink codebase.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Summary
 
@@ -10,17 +10,17 @@ go-mink is an Event Sourcing and CQRS library for Go (like MartenDB for .NET).
 
 ```bash
 # Run tests
-go test -short ./...          # Unit tests only
-go test ./...                 # All tests (needs PostgreSQL)
+go test -short ./...                    # Unit tests only
+go test ./...                           # All tests (needs PostgreSQL)
+go test -v -run TestName ./pkg/...      # Run a single test
 
-# Format code
+# Format and lint
 go fmt ./...
-
-# Lint
 golangci-lint run
 
 # Start test database
 docker run -d --name mink-pg -e POSTGRES_PASSWORD=mink -p 5432:5432 postgres:16
+export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmode=disable"
 ```
 
 ## Architecture
@@ -33,13 +33,35 @@ Commands → Command Bus → Aggregate → Events → Event Store
                                              Read Models → Queries
 ```
 
+## Key File Locations
+
+- Core types: `event.go`, `aggregate.go`, `command.go`, `projection.go`
+- Event store: `store.go`
+- Command bus: `bus.go`, `handler.go`, `middleware.go`
+- Adapters: `adapters/postgres/postgres.go`, `adapters/memory/memory.go`
+- Idempotency: `idempotency.go`, `adapters/*/idempotency.go`
+- Subscriptions: `subscription.go`, `adapters/postgres/subscription.go`
+- Errors: `errors.go`, `adapters/adapter.go` (sentinel errors)
+
 ## Core Interfaces to Know
 
 ```go
-// Adapters implement this
+// Adapters implement this (adapters/adapter.go)
 type EventStoreAdapter interface {
-    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+    Append(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64) ([]StoredEvent, error)
     Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
+    GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+    GetLastPosition(ctx context.Context) (uint64, error)
+    Initialize(ctx context.Context) error
+    Close() error
+}
+
+// Optional subscription support (adapters/adapter.go)
+type SubscriptionAdapter interface {
+    LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+    SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+    SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+    SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 }
 
 // Domain models implement this
@@ -51,6 +73,14 @@ type Aggregate interface {
     UncommittedEvents() []interface{}
     ClearUncommittedEvents()
 }
+```
+
+## Version Constants
+
+```go
+AnyVersion   = -1  // Skip version check
+NoStream     = 0   // Stream must not exist
+StreamExists = -2  // Stream must exist
 ```
 
 ## Code Style Rules
@@ -86,12 +116,15 @@ Given(t, aggregate, previousEvents...).
 
 ## Current Development Phase
 
-**Phase 1 (v0.1.0)**: Core Foundation
-- Event types: `EventData`, `StoredEvent`, `Metadata`
-- `Aggregate` interface and `AggregateBase`
-- `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
-- PostgreSQL adapter with optimistic concurrency
-- In-memory adapter for testing
+**Phase 3 (v0.3.0)**: Projections - IN PROGRESS
+- Projection interfaces: `InlineProjection`, `AsyncProjection`, `LiveProjection`
+- `ProjectionEngine` with worker pool
+- Checkpoint management and rebuilding
+- Event subscriptions (`SubscribeAll`, `SubscribeStream`, `SubscribeCategory`)
+
+**Completed phases**:
+- Phase 1: Event types, Aggregate, EventStore, PostgreSQL/Memory adapters
+- Phase 2: Command Bus, handlers, middleware (Validation, Recovery, Idempotency, Correlation)
 
 ## Don't Do
 

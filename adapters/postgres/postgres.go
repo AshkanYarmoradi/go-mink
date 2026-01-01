@@ -6,12 +6,32 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// schemaNamePattern validates PostgreSQL schema names.
+// Schema names must start with a letter or underscore and contain only
+// alphanumeric characters and underscores.
+var schemaNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
+func validateSchemaName(schema string) error {
+	if schema == "" {
+		return fmt.Errorf("%w: schema name cannot be empty", ErrInvalidSchemaName)
+	}
+	if len(schema) > 63 {
+		return fmt.Errorf("%w: schema name exceeds 63 characters", ErrInvalidSchemaName)
+	}
+	if !schemaNamePattern.MatchString(schema) {
+		return fmt.Errorf("%w: schema name contains invalid characters", ErrInvalidSchemaName)
+	}
+	return nil
+}
 
 // Version constants for optimistic concurrency control.
 const (
@@ -29,22 +49,25 @@ var (
 	ErrConcurrencyConflict = adapters.ErrConcurrencyConflict
 	ErrStreamNotFound      = adapters.ErrStreamNotFound
 	ErrInvalidVersion      = adapters.ErrInvalidVersion
+	ErrInvalidSchemaName   = fmt.Errorf("mink/postgres: invalid schema name")
 )
 
 // Ensure PostgresAdapter implements required interfaces.
 var (
-	_ adapters.EventStoreAdapter = (*PostgresAdapter)(nil)
-	_ adapters.SnapshotAdapter   = (*PostgresAdapter)(nil)
-	_ adapters.CheckpointAdapter = (*PostgresAdapter)(nil)
-	_ adapters.HealthChecker     = (*PostgresAdapter)(nil)
-	_ adapters.Migrator          = (*PostgresAdapter)(nil)
+	_ adapters.EventStoreAdapter   = (*PostgresAdapter)(nil)
+	_ adapters.SubscriptionAdapter = (*PostgresAdapter)(nil)
+	_ adapters.SnapshotAdapter     = (*PostgresAdapter)(nil)
+	_ adapters.CheckpointAdapter   = (*PostgresAdapter)(nil)
+	_ adapters.HealthChecker       = (*PostgresAdapter)(nil)
+	_ adapters.Migrator            = (*PostgresAdapter)(nil)
 )
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
 type PostgresAdapter struct {
-	db     *sql.DB
-	schema string
-	closed bool
+	db                *sql.DB
+	schema            string
+	closed            bool
+	healthCheckCancel context.CancelFunc
 }
 
 // Option configures a PostgresAdapter.
@@ -78,6 +101,23 @@ func WithConnectionMaxLifetime(d time.Duration) Option {
 	}
 }
 
+// WithConnectionMaxIdleTime sets the maximum idle time for connections.
+func WithConnectionMaxIdleTime(d time.Duration) Option {
+	return func(a *PostgresAdapter) {
+		a.db.SetConnMaxIdleTime(d)
+	}
+}
+
+// WithHealthCheck enables periodic connection pool health checking.
+// The health check runs at the specified interval and validates connections.
+func WithHealthCheck(interval time.Duration) Option {
+	return func(a *PostgresAdapter) {
+		ctx, cancel := context.WithCancel(context.Background())
+		a.healthCheckCancel = cancel
+		go a.runHealthCheck(ctx, interval)
+	}
+}
+
 // NewAdapter creates a new PostgreSQL event store adapter.
 func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
 	db, err := sql.Open("pgx", connStr)
@@ -94,11 +134,22 @@ func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
 		opt(adapter)
 	}
 
+	// Validate schema name to prevent SQL injection
+	if err := validateSchemaName(adapter.schema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return adapter, nil
 }
 
 // NewAdapterWithDB creates a new adapter with an existing database connection.
-func NewAdapterWithDB(db *sql.DB, opts ...Option) *PostgresAdapter {
+// Returns an error if the schema name is invalid.
+func NewAdapterWithDB(db *sql.DB, opts ...Option) (*PostgresAdapter, error) {
+	if db == nil {
+		return nil, fmt.Errorf("mink/postgres: database connection is nil")
+	}
+
 	adapter := &PostgresAdapter{
 		db:     db,
 		schema: "mink",
@@ -108,7 +159,12 @@ func NewAdapterWithDB(db *sql.DB, opts ...Option) *PostgresAdapter {
 		opt(adapter)
 	}
 
-	return adapter
+	// Validate schema name to prevent SQL injection
+	if err := validateSchemaName(adapter.schema); err != nil {
+		return nil, err
+	}
+
+	return adapter, nil
 }
 
 // Initialize creates the required database schema and tables.
@@ -436,9 +492,12 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 	return 0, nil
 }
 
-// Close releases the database connection.
+// Close releases the database connection and stops health checking.
 func (a *PostgresAdapter) Close() error {
 	a.closed = true
+	if a.healthCheckCancel != nil {
+		a.healthCheckCancel()
+	}
 	return a.db.Close()
 }
 
@@ -554,6 +613,30 @@ func (a *PostgresAdapter) Ping(ctx context.Context) error {
 	return a.db.PingContext(ctx)
 }
 
+// runHealthCheck periodically validates database connections.
+func (a *PostgresAdapter) runHealthCheck(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.closed {
+				return
+			}
+			// Ping validates the connection and removes stale connections from pool
+			_ = a.db.PingContext(ctx)
+		}
+	}
+}
+
+// Stats returns connection pool statistics.
+func (a *PostgresAdapter) Stats() sql.DBStats {
+	return a.db.Stats()
+}
+
 // DB returns the underlying database connection.
 func (a *PostgresAdapter) DB() *sql.DB {
 	return a.db
@@ -638,10 +721,18 @@ func (a *PostgresAdapter) checkVersion(streamID string, expected, current int64,
 }
 
 // extractCategory extracts the category from a stream ID.
+// Stream IDs are expected to follow the format "Category-ID" (e.g., "Order-123").
+// The category is the portion before the first hyphen.
+//
+// Behavior:
+//   - "Order-123" returns "Order"
+//   - "User-abc-def" returns "User" (only splits on first hyphen)
+//   - "NoHyphen" returns "NoHyphen" (entire ID if no hyphen)
+//   - "" returns "" (empty string for empty input)
 func extractCategory(streamID string) string {
-	parts := strings.SplitN(streamID, "-", 2)
-	if len(parts) > 0 {
-		return parts[0]
+	if streamID == "" {
+		return ""
 	}
-	return ""
+	parts := strings.SplitN(streamID, "-", 2)
+	return parts[0]
 }

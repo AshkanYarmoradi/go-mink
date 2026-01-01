@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-01-XX
+
+### Added
+
+#### Projection System
+- `Projection` interface - Base interface for all projection types
+- `InlineProjection` interface - Synchronous projections in same transaction
+- `AsyncProjection` interface - Background projections with checkpointing
+- `LiveProjection` interface - Real-time projections with change notifications
+- `ProjectionBase` - Embeddable base struct with name and event filtering
+- `AsyncProjectionBase` - Base for async projections with batch support
+- `LiveProjectionBase` - Base for live projections with update channels
+- `ProjectionState` enum - NotStarted, Running, Paused, Stopped, Faulted
+- `ProjectionStatus` - Runtime status with position, lag, and error info
+- `CheckpointStore` interface - Checkpoint persistence abstraction
+
+#### Projection Engine
+- `ProjectionEngine` - Central orchestrator for all projection types
+- `RegisterInline()` - Register synchronous projections
+- `RegisterAsync()` - Register background projections with options
+- `RegisterLive()` - Register real-time projections
+- `Start()/Stop()` - Lifecycle management
+- `ProcessInlineProjections()` - Manual inline processing trigger
+- `NotifyLiveProjections()` - Send events to live projections
+- `GetStatus()/GetAllStatuses()` - Query projection health
+- `WithCheckpointStore()` - Engine configuration option
+- `AsyncOptions` - Configure batch size, interval, workers
+
+#### Read Model Repository
+- `ReadModelRepository[T]` interface - Generic read model storage
+- `InMemoryRepository[T]` - In-memory implementation for testing
+- `Insert()/Get()/Update()/Delete()` - CRUD operations
+- `Query()/FindOne()` - Query with filters
+- `Count()/Exists()` - Aggregate queries
+- `GetAll()/Clear()` - Bulk operations
+
+#### Query Builder
+- `Query` struct - Fluent query construction
+- `Where()` - Add filter conditions
+- `And()` - Combine multiple filters
+- `OrderByAsc()/OrderByDesc()` - Sorting
+- `WithLimit()/WithOffset()` - Pagination
+- `WithPagination()` - Combined limit/offset
+- `Filter` struct with operators (Eq, NotEq, Gt, Gte, Lt, Lte, In, Contains)
+
+#### Subscription System
+- `Subscription` interface - Event subscription abstraction
+- `SubscriptionOptions` - Configure from position, filters, buffer size
+- `EventFilter` interface - Filter events in subscriptions
+- `EventTypeFilter` - Filter by event type(s)
+- `CategoryFilter` - Filter by stream category
+- `CompositeFilter` - Combine multiple filters (AND logic)
+- `CatchupSubscription` - Subscribe with catch-up from position
+- `PollingSubscription` - Poll-based subscription for adapters without push
+
+#### Projection Rebuilding
+- `ProjectionRebuilder` - Rebuild projections from event log
+- `Rebuild()` - Single projection rebuild
+- `RebuildAll()` - Rebuild all projections
+- `RebuildProgress` - Track rebuild progress with callbacks
+- `RebuildOptions` - Configure batch size, parallelism
+- `ParallelRebuilder` - Concurrent multi-projection rebuilding
+- `Clearable` interface - Projections that can be cleared before rebuild
+
+#### Retry Policy
+- `RetryPolicy` interface - Customizable retry behavior
+- `ExponentialBackoffRetry` - Exponential backoff with jitter
+- Configurable initial delay, max delay, max attempts
+
+#### Adapters
+- `memory.NewCheckpointStore()` - In-memory checkpoint storage
+- `postgres.LoadFromPosition()` - Load all events from global position
+- `postgres.SubscribeAll()` - Subscribe to all events
+- `postgres.SubscribeStream()` - Subscribe to specific stream
+- `postgres.SubscribeCategory()` - Subscribe to stream category
+- `adapters.CheckpointAdapter` interface - Checkpoint storage contract
+- `adapters.SubscriptionAdapter` interface - Subscription capabilities contract
+
+#### Errors
+- `ErrNilProjection` - Nil projection registration attempt
+- `ErrEmptyProjectionName` - Empty projection name
+- `ErrProjectionNotFound` - Projection lookup failure
+- `ErrProjectionAlreadyRegistered` - Duplicate projection name
+- `ErrProjectionEngineAlreadyRunning` - Double start attempt
+- `ErrProjectionEngineStopped` - Operation on stopped engine
+- `ErrNoCheckpointStore` - Async projection without checkpoint store
+- `ErrNotImplemented` - Feature not implemented
+- `ErrProjectionFailed` - Projection processing failure
+- `ProjectionError` - Detailed error with projection name and event info
+
+### Changed
+- Version updated to 0.3.0
+
 ## [0.2.0] - 2025-01-XX
 
 ### Added

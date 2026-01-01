@@ -32,6 +32,9 @@ var (
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
 
+	// ErrNilStore indicates a nil event store was passed.
+	ErrNilStore = errors.New("mink: nil event store")
+
 	// ErrEmptyStreamID indicates an empty stream ID was provided.
 	ErrEmptyStreamID = adapters.ErrEmptyStreamID
 
@@ -43,6 +46,9 @@ var (
 
 	// ErrAdapterClosed indicates the adapter has been closed.
 	ErrAdapterClosed = adapters.ErrAdapterClosed
+
+	// ErrSubscriptionNotSupported indicates the adapter does not support subscriptions.
+	ErrSubscriptionNotSupported = errors.New("mink: adapter does not support subscriptions")
 
 	// Command and handler related errors
 
@@ -246,5 +252,70 @@ func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, c
 		Value:       value,
 		Stack:       stack,
 		CommandData: commandData,
+	}
+}
+
+// Projection-related errors
+
+var (
+	// ErrNilProjection indicates a nil projection was passed.
+	ErrNilProjection = errors.New("mink: nil projection")
+
+	// ErrEmptyProjectionName indicates a projection has no name.
+	ErrEmptyProjectionName = errors.New("mink: projection name is required")
+
+	// ErrProjectionNotFound indicates the requested projection does not exist.
+	ErrProjectionNotFound = errors.New("mink: projection not found")
+
+	// ErrProjectionAlreadyRegistered indicates a projection with the same name is already registered.
+	ErrProjectionAlreadyRegistered = errors.New("mink: projection already registered")
+
+	// ErrProjectionEngineAlreadyRunning indicates the projection engine is already running.
+	ErrProjectionEngineAlreadyRunning = errors.New("mink: projection engine already running")
+
+	// ErrProjectionEngineStopped indicates the projection engine has been stopped.
+	ErrProjectionEngineStopped = errors.New("mink: projection engine stopped")
+
+	// ErrNoCheckpointStore indicates no checkpoint store was configured.
+	ErrNoCheckpointStore = errors.New("mink: checkpoint store is required")
+
+	// ErrNotImplemented indicates a method is not implemented.
+	ErrNotImplemented = errors.New("mink: not implemented")
+
+	// ErrProjectionFailed indicates a projection failed to process an event.
+	ErrProjectionFailed = errors.New("mink: projection failed")
+)
+
+// ProjectionError provides detailed information about a projection failure.
+type ProjectionError struct {
+	ProjectionName string
+	EventType      string
+	Position       uint64
+	Cause          error
+}
+
+// Error returns the error message.
+func (e *ProjectionError) Error() string {
+	return fmt.Sprintf("mink: projection %q failed at position %d processing event %q: %v",
+		e.ProjectionName, e.Position, e.EventType, e.Cause)
+}
+
+// Is reports whether this error matches the target error.
+func (e *ProjectionError) Is(target error) bool {
+	return target == ErrProjectionFailed
+}
+
+// Unwrap returns the underlying cause for errors.Unwrap().
+func (e *ProjectionError) Unwrap() error {
+	return e.Cause
+}
+
+// NewProjectionError creates a new ProjectionError.
+func NewProjectionError(projectionName, eventType string, position uint64, cause error) *ProjectionError {
+	return &ProjectionError{
+		ProjectionName: projectionName,
+		EventType:      eventType,
+		Position:       position,
+		Cause:          cause,
 	}
 }

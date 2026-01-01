@@ -65,19 +65,39 @@ The heart of go-mink - manages event persistence and retrieval.
 // Core interface - adapters implement this
 type EventStoreAdapter interface {
     // Append events to a stream
-    Append(ctx context.Context, streamID StreamID, events []EventData, 
-           expectedVersion int64) error
-    
+    Append(ctx context.Context, streamID string, events []EventRecord,
+           expectedVersion int64) ([]StoredEvent, error)
+
     // Load events from a stream
-    Load(ctx context.Context, streamID StreamID, 
+    Load(ctx context.Context, streamID string,
          fromVersion int64) ([]StoredEvent, error)
-    
-    // Subscribe to all events (for projections)
-    SubscribeAll(ctx context.Context, fromPosition uint64) 
-                 (<-chan StoredEvent, error)
-    
+
+    // Get stream metadata
+    GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+
     // Get global position
     GetLastPosition(ctx context.Context) (uint64, error)
+
+    // Initialize schema
+    Initialize(ctx context.Context) error
+
+    // Close releases resources
+    Close() error
+}
+
+// SubscriptionAdapter provides event subscription capabilities (optional)
+type SubscriptionAdapter interface {
+    // LoadFromPosition loads events starting from a global position
+    LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+
+    // Subscribe to all events (for projections)
+    SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+
+    // Subscribe to a specific stream
+    SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+
+    // Subscribe to a stream category
+    SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 }
 ```
 
