@@ -280,7 +280,7 @@ func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint6
 }
 
 // SubscribeAll subscribes to all events across all streams.
-func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan adapters.StoredEvent, error) {
+func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -291,8 +291,14 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (
 		return nil, adapters.ErrAdapterClosed
 	}
 
+	// Apply options
+	bufferSize := 100
+	if len(opts) > 0 && opts[0].BufferSize > 0 {
+		bufferSize = opts[0].BufferSize
+	}
+
 	// Create buffered channel for subscriber
-	ch := make(chan adapters.StoredEvent, 100)
+	ch := make(chan adapters.StoredEvent, bufferSize)
 
 	// Send historical events
 	for _, event := range a.globalEvents {
@@ -323,18 +329,24 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (
 }
 
 // SubscribeStream subscribes to events from a specific stream.
-func (a *MemoryAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan adapters.StoredEvent, error) {
+func (a *MemoryAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	allEvents, err := a.SubscribeAll(ctx, 0)
+	allEvents, err := a.SubscribeAll(ctx, 0, opts...)
 	if err != nil {
 		return nil, err
 	}
 
+	// Apply options for filter channel
+	bufferSize := 100
+	if len(opts) > 0 && opts[0].BufferSize > 0 {
+		bufferSize = opts[0].BufferSize
+	}
+
 	// Filter events for specific stream
-	ch := make(chan adapters.StoredEvent, 100)
+	ch := make(chan adapters.StoredEvent, bufferSize)
 	go func() {
 		defer close(ch)
 		for event := range allEvents {
@@ -352,18 +364,24 @@ func (a *MemoryAdapter) SubscribeStream(ctx context.Context, streamID string, fr
 }
 
 // SubscribeCategory subscribes to all events from streams in a category.
-func (a *MemoryAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan adapters.StoredEvent, error) {
+func (a *MemoryAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	allEvents, err := a.SubscribeAll(ctx, fromPosition)
+	allEvents, err := a.SubscribeAll(ctx, fromPosition, opts...)
 	if err != nil {
 		return nil, err
 	}
 
+	// Apply options for filter channel
+	bufferSize := 100
+	if len(opts) > 0 && opts[0].BufferSize > 0 {
+		bufferSize = opts[0].BufferSize
+	}
+
 	// Filter events for specific category
-	ch := make(chan adapters.StoredEvent, 100)
+	ch := make(chan adapters.StoredEvent, bufferSize)
 	go func() {
 		defer close(ch)
 		for event := range allEvents {

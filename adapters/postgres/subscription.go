@@ -5,13 +5,57 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
-// Default polling interval for subscriptions.
-const defaultPollInterval = 100 * time.Millisecond
+// Default values for subscriptions.
+const (
+	defaultPollInterval       = 100 * time.Millisecond
+	defaultSubscriptionBuffer = 100
+	defaultMaxRetries         = 5
+)
+
+// subscriptionConfig holds the resolved configuration for a subscription.
+type subscriptionConfig struct {
+	bufferSize   int
+	pollInterval time.Duration
+	maxRetries   int
+	onError      func(err error)
+}
+
+// newSubscriptionConfig creates a config from options with defaults applied.
+func newSubscriptionConfig(opts []adapters.SubscriptionOptions) subscriptionConfig {
+	cfg := subscriptionConfig{
+		bufferSize:   defaultSubscriptionBuffer,
+		pollInterval: defaultPollInterval,
+		maxRetries:   defaultMaxRetries,
+	}
+
+	if len(opts) > 0 {
+		opt := opts[0]
+		if opt.BufferSize > 0 {
+			cfg.bufferSize = opt.BufferSize
+		}
+		if opt.PollInterval > 0 {
+			cfg.pollInterval = opt.PollInterval
+		}
+		cfg.onError = opt.OnError
+	}
+
+	return cfg
+}
+
+// handleError calls the error handler or logs the error.
+func (c *subscriptionConfig) handleError(err error, context string) {
+	if c.onError != nil {
+		c.onError(err)
+	} else {
+		log.Printf("mink/postgres: subscription error (%s): %v", context, err)
+	}
+}
 
 // LoadFromPosition loads events starting from a global position.
 // This is used by projection engines to catch up on historical events.
@@ -43,19 +87,22 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 // SubscribeAll subscribes to all events across all streams.
 // Events are delivered starting from the specified global position.
 // This uses polling-based subscription with continuous updates.
-func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan adapters.StoredEvent, error) {
+// Optional SubscriptionOptions can be provided to configure behavior.
+func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if a.closed {
 		return nil, ErrAdapterClosed
 	}
 
-	ch := make(chan adapters.StoredEvent, 100)
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
 	go func() {
 		defer close(ch)
-		ticker := time.NewTicker(defaultPollInterval)
+		ticker := time.NewTicker(cfg.pollInterval)
 		defer ticker.Stop()
 
 		currentPosition := fromPosition
+		consecutiveErrors := 0
 
 		for {
 			// Check for shutdown before polling
@@ -66,8 +113,13 @@ func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64)
 			}
 
 			// Load events from current position
-			events, err := a.LoadFromPosition(ctx, currentPosition, 100)
+			events, err := a.LoadFromPosition(ctx, currentPosition, cfg.bufferSize)
 			if err != nil {
+				consecutiveErrors++
+				if consecutiveErrors >= cfg.maxRetries {
+					cfg.handleError(err, "SubscribeAll")
+					consecutiveErrors = 0 // Reset after logging
+				}
 				// On error, wait and retry (unless context is cancelled)
 				select {
 				case <-ctx.Done():
@@ -76,6 +128,7 @@ func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64)
 					continue
 				}
 			}
+			consecutiveErrors = 0
 
 			// Send events to channel
 			for _, event := range events {
@@ -104,19 +157,22 @@ func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64)
 
 // SubscribeStream subscribes to events from a specific stream.
 // Events are delivered starting from the specified version with continuous polling.
-func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan adapters.StoredEvent, error) {
+// Optional SubscriptionOptions can be provided to configure behavior.
+func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if a.closed {
 		return nil, ErrAdapterClosed
 	}
 
-	ch := make(chan adapters.StoredEvent, 100)
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
 	go func() {
 		defer close(ch)
-		ticker := time.NewTicker(defaultPollInterval)
+		ticker := time.NewTicker(cfg.pollInterval)
 		defer ticker.Stop()
 
 		currentVersion := fromVersion
+		consecutiveErrors := 0
 
 		for {
 			// Check for shutdown before polling
@@ -129,6 +185,11 @@ func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, 
 			// Load events from current version
 			events, err := a.Load(ctx, streamID, currentVersion)
 			if err != nil {
+				consecutiveErrors++
+				if consecutiveErrors >= cfg.maxRetries {
+					cfg.handleError(err, fmt.Sprintf("SubscribeStream(%s)", streamID))
+					consecutiveErrors = 0
+				}
 				// On error, wait and retry (unless context is cancelled)
 				select {
 				case <-ctx.Done():
@@ -137,6 +198,7 @@ func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, 
 					continue
 				}
 			}
+			consecutiveErrors = 0
 
 			// Send events to channel
 			for _, event := range events {
@@ -165,19 +227,22 @@ func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, 
 
 // SubscribeCategory subscribes to all events from streams in a category.
 // Events are delivered starting from the specified global position with continuous polling.
-func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan adapters.StoredEvent, error) {
+// Optional SubscriptionOptions can be provided to configure behavior.
+func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if a.closed {
 		return nil, ErrAdapterClosed
 	}
 
-	ch := make(chan adapters.StoredEvent, 100)
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
 	go func() {
 		defer close(ch)
-		ticker := time.NewTicker(defaultPollInterval)
+		ticker := time.NewTicker(cfg.pollInterval)
 		defer ticker.Stop()
 
 		currentPosition := fromPosition
+		consecutiveErrors := 0
 
 		for {
 			// Check for shutdown before polling
@@ -188,8 +253,13 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 			}
 
 			// Load events for this category
-			events, err := a.loadCategoryEvents(ctx, category, currentPosition, 100)
+			events, err := a.loadCategoryEvents(ctx, category, currentPosition, cfg.bufferSize)
 			if err != nil {
+				consecutiveErrors++
+				if consecutiveErrors >= cfg.maxRetries {
+					cfg.handleError(err, fmt.Sprintf("SubscribeCategory(%s)", category))
+					consecutiveErrors = 0
+				}
 				// On error, wait and retry (unless context is cancelled)
 				select {
 				case <-ctx.Done():
@@ -198,6 +268,7 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 					continue
 				}
 			}
+			consecutiveErrors = 0
 
 			// Send events to channel
 			for _, event := range events {

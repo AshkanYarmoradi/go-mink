@@ -144,6 +144,22 @@ type EventStoreAdapter interface {
 	Close() error
 }
 
+// SubscriptionOptions configures subscription behavior.
+// Adapters may support additional options beyond these common ones.
+type SubscriptionOptions struct {
+	// BufferSize is the size of the event channel buffer.
+	// Default: 100
+	BufferSize int
+
+	// PollInterval is how often to poll for new events (for polling-based adapters).
+	// Default: 100ms
+	PollInterval time.Duration
+
+	// OnError is called when an error occurs during subscription.
+	// If nil, errors may be logged or silently retried depending on the adapter.
+	OnError func(err error)
+}
+
 // SubscriptionAdapter provides event subscription capabilities.
 // Adapters may optionally implement this interface for real-time event streaming.
 type SubscriptionAdapter interface {
@@ -153,15 +169,18 @@ type SubscriptionAdapter interface {
 
 	// SubscribeAll subscribes to all events across all streams.
 	// Events are delivered starting from the specified global position.
-	SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)
+	// Optional SubscriptionOptions can be provided to configure behavior.
+	SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 
 	// SubscribeStream subscribes to events from a specific stream.
 	// Events are delivered starting from the specified version.
-	SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan StoredEvent, error)
+	// Optional SubscriptionOptions can be provided to configure behavior.
+	SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 
 	// SubscribeCategory subscribes to all events from streams in a category.
 	// Events are delivered starting from the specified global position.
-	SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan StoredEvent, error)
+	// Optional SubscriptionOptions can be provided to configure behavior.
+	SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 }
 
 // SnapshotAdapter stores aggregate snapshots for faster loading.

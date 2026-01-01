@@ -721,8 +721,18 @@ func (a *PostgresAdapter) checkVersion(streamID string, expected, current int64,
 }
 
 // extractCategory extracts the category from a stream ID.
-// The category is the portion before the first hyphen (e.g., "Order" from "Order-123").
+// Stream IDs are expected to follow the format "Category-ID" (e.g., "Order-123").
+// The category is the portion before the first hyphen.
+//
+// Behavior:
+//   - "Order-123" returns "Order"
+//   - "User-abc-def" returns "User" (only splits on first hyphen)
+//   - "NoHyphen" returns "NoHyphen" (entire ID if no hyphen)
+//   - "" returns "" (empty string for empty input)
 func extractCategory(streamID string) string {
+	if streamID == "" {
+		return ""
+	}
 	parts := strings.SplitN(streamID, "-", 2)
 	return parts[0]
 }
