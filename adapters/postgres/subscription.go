@@ -68,12 +68,13 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 		limit = 1000
 	}
 
-	query := fmt.Sprintf(`
+	schemaQ := quoteIdentifier(a.schema)
+	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
-		FROM %s.events
+		FROM ` + schemaQ + `.events
 		WHERE global_position > $1
 		ORDER BY global_position ASC
-		LIMIT $2`, a.schema)
+		LIMIT $2`
 
 	rows, err := a.db.QueryContext(ctx, query, fromPosition, limit)
 	if err != nil {
@@ -297,12 +298,13 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 
 // loadCategoryEvents loads events for a specific category from a position.
 func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category string, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
-	query := fmt.Sprintf(`
+	schemaQ := quoteIdentifier(a.schema)
+	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
-		FROM %s.events
+		FROM ` + schemaQ + `.events
 		WHERE global_position > $1 AND stream_id LIKE $2
 		ORDER BY global_position ASC
-		LIMIT $3`, a.schema)
+		LIMIT $3`
 
 	rows, err := a.db.QueryContext(ctx, query, fromPosition, category+"-%", limit)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -74,13 +75,22 @@ func MustPostgresDB(ctx context.Context, connStr string) *sql.DB {
 	return db
 }
 
+// quoteIdentifier quotes a PostgreSQL identifier using double quotes.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // CleanupSchema drops a schema and all its objects.
+// The schema name should come from UniqueSchema() which generates safe names.
 func CleanupSchema(ctx context.Context, db *sql.DB, schema string) error {
-	_, err := db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+	schemaQ := quoteIdentifier(schema)
+	_, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+schemaQ+` CASCADE`)
 	return err
 }
 
 // UniqueSchema generates a unique schema name for testing.
+// The generated names contain only alphanumeric characters and underscores,
+// making them safe for use in SQL queries.
 func UniqueSchema(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
 }

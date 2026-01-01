@@ -56,11 +56,14 @@ func newTestAdapter(t *testing.T, db *sql.DB, opts ...Option) *PostgresAdapter {
 
 // cleanupSchema drops the test schema.
 func cleanupSchema(t *testing.T, db *sql.DB, schema string) {
-	_, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+	schemaQ := quoteIdentifier(schema)
+	_, err := db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	require.NoError(t, err)
 }
 
 // newTestSchema creates a unique test schema name.
+// The generated names contain only alphanumeric characters and underscores,
+// making them safe for use in SQL queries.
 func newTestSchema() string {
 	return fmt.Sprintf("test_%d", time.Now().UnixNano())
 }
@@ -895,7 +898,8 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 
 	schema := newTestSchema()
 	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+		schemaQ := quoteIdentifier(schema)
+		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	}()
 
 	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
@@ -925,7 +929,8 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 
 	schema := newTestSchema()
 	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+		schemaQ := quoteIdentifier(schema)
+		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	}()
 
 	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
