@@ -61,6 +61,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
+          exclude: "*/examples/*,*/testing/*"
 
       - name: Stop test infrastructure
         if: always()
