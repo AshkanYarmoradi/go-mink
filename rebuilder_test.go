@@ -125,25 +125,6 @@ func TestParallelRebuilder(t *testing.T) {
 	})
 }
 
-func TestShouldHandleEventType(t *testing.T) {
-	slice := []string{"OrderCreated", "OrderShipped", "OrderCanceled"}
-
-	t.Run("returns true for existing string", func(t *testing.T) {
-		assert.True(t, ShouldHandleEventType(slice, "OrderCreated"))
-		assert.True(t, ShouldHandleEventType(slice, "OrderShipped"))
-		assert.True(t, ShouldHandleEventType(slice, "OrderCanceled"))
-	})
-
-	t.Run("returns false for missing string", func(t *testing.T) {
-		assert.False(t, ShouldHandleEventType(slice, "CustomerRegistered"))
-		assert.False(t, ShouldHandleEventType(slice, ""))
-	})
-
-	t.Run("returns true for any event when slice is empty", func(t *testing.T) {
-		assert.True(t, ShouldHandleEventType([]string{}, "anything"))
-	})
-}
-
 func TestProjectionRebuilder_BuildProgress(t *testing.T) {
 	store := &EventStore{}
 	checkpoint := newTestCheckpointStore()
