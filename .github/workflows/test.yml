@@ -56,6 +56,12 @@ jobs:
             echo "✅ Coverage ${COVERAGE}% meets the required threshold of ${THRESHOLD}%"
           fi
 
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+
       - name: Stop test infrastructure
         if: always()
         run: docker compose -f docker-compose.test.yml down
