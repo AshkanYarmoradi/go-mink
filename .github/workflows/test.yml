@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-
 # Environment variables shared across all jobs
 env:
   TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
@@ -20,6 +17,8 @@ jobs:
   test:
     name: Test with Coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout code
@@ -77,6 +76,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout code
@@ -97,6 +98,8 @@ jobs:
   build:
     name: Build (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
