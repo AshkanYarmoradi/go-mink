@@ -35,7 +35,7 @@ Phase 3 (Projections & Read Models) is complete with:
 - ✅ Checkpoint management for async projections
 - ✅ Projection rebuilding (single and parallel)
 - ✅ Retry policies with exponential backoff
-- ✅ 95%+ test coverage
+- ✅ 90%+ test coverage
 
 **Previous phases included:**
 - ✅ Event Store with optimistic concurrency (v0.1.0)
