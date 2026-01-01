@@ -62,21 +62,6 @@ func NewIdempotencyStoreFromAdapter(adapter *PostgresAdapter, opts ...Idempotenc
 	return NewIdempotencyStore(adapter.db, allOpts...)
 }
 
-// validateIdentifier checks if a name is a valid PostgreSQL identifier.
-// This helps prevent SQL injection when using identifiers in queries.
-func validateIdentifier(name, kind string) error {
-	if name == "" {
-		return fmt.Errorf("mink/postgres/idempotency: %s name cannot be empty", kind)
-	}
-	if len(name) > 63 {
-		return fmt.Errorf("mink/postgres/idempotency: %s name exceeds 63 characters", kind)
-	}
-	if !schemaNamePattern.MatchString(name) {
-		return fmt.Errorf("mink/postgres/idempotency: %s name contains invalid characters", kind)
-	}
-	return nil
-}
-
 // fullTableName returns the fully qualified and quoted table name.
 func (s *IdempotencyStore) fullTableName() string {
 	return quoteQualifiedTable(s.schema, s.table)

@@ -42,16 +42,34 @@ func safeSchemaIdentifier(schema string) (string, error) {
 	return quoteIdentifier(schema), nil
 }
 
+// isValidIdentifier checks if a name is a valid PostgreSQL identifier.
+// Returns empty string if valid, or an error message describing the issue.
+func isValidIdentifier(name string) string {
+	if name == "" {
+		return "cannot be empty"
+	}
+	if len(name) > 63 {
+		return "exceeds 63 characters"
+	}
+	if !schemaNamePattern.MatchString(name) {
+		return "contains invalid characters"
+	}
+	return ""
+}
+
 // validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
 func validateSchemaName(schema string) error {
-	if schema == "" {
-		return fmt.Errorf("%w: schema name cannot be empty", ErrInvalidSchemaName)
+	if reason := isValidIdentifier(schema); reason != "" {
+		return fmt.Errorf("%w: schema name %s", ErrInvalidSchemaName, reason)
 	}
-	if len(schema) > 63 {
-		return fmt.Errorf("%w: schema name exceeds 63 characters", ErrInvalidSchemaName)
-	}
-	if !schemaNamePattern.MatchString(schema) {
-		return fmt.Errorf("%w: schema name contains invalid characters", ErrInvalidSchemaName)
+	return nil
+}
+
+// validateIdentifier checks if a name is a valid PostgreSQL identifier.
+// This helps prevent SQL injection when using identifiers in queries.
+func validateIdentifier(name, kind string) error {
+	if reason := isValidIdentifier(name); reason != "" {
+		return fmt.Errorf("mink/postgres: %s name %s", kind, reason)
 	}
 	return nil
 }

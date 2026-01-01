@@ -104,14 +104,20 @@ func runPollingLoop[P any](
 		}
 		consecutiveErrors = 0
 
-		// Send events to channel and update position
+		// Send events to channel
 		for _, event := range events {
 			select {
 			case ch <- event:
-				currentPosition = newPosition
+				// Event delivered successfully
 			case <-ctx.Done():
 				return
 			}
+		}
+
+		// Update position only after entire batch is successfully delivered
+		// This ensures no events are skipped if context is cancelled mid-batch
+		if len(events) > 0 {
+			currentPosition = newPosition
 		}
 
 		// Wait for next poll cycle if no events
@@ -133,9 +139,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 		return nil, ErrAdapterClosed
 	}
 
-	if limit <= 0 {
-		limit = 1000
-	}
+	limit = adapters.DefaultLimit(limit, 1000)
 
 	schemaQ, err := safeSchemaIdentifier(a.schema)
 	if err != nil {

@@ -724,3 +724,4 @@ func TestMinkSubscriptionAdapter(t *testing.T) {
 		assert.Len(t, events, 2)
 	})
 }
+

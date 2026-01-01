@@ -28,6 +28,17 @@ var (
 	_ adapters.HealthChecker       = (*MemoryAdapter)(nil)
 )
 
+// Default values for subscriptions.
+const defaultSubscriptionBuffer = 100
+
+// getBufferSize extracts buffer size from options or returns the default.
+func getBufferSize(opts []adapters.SubscriptionOptions) int {
+	if len(opts) > 0 && opts[0].BufferSize > 0 {
+		return opts[0].BufferSize
+	}
+	return defaultSubscriptionBuffer
+}
+
 // MemoryAdapter is an in-memory implementation of EventStoreAdapter.
 // It is thread-safe and suitable for unit testing.
 type MemoryAdapter struct {
@@ -262,9 +273,7 @@ func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint6
 		return nil, adapters.ErrAdapterClosed
 	}
 
-	if limit <= 0 {
-		limit = 1000
-	}
+	limit = adapters.DefaultLimit(limit, 1000)
 
 	var events []adapters.StoredEvent
 	for _, event := range a.globalEvents {
@@ -292,10 +301,7 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	}
 
 	// Apply options
-	bufferSize := 100
-	if len(opts) > 0 && opts[0].BufferSize > 0 {
-		bufferSize = opts[0].BufferSize
-	}
+	bufferSize := getBufferSize(opts)
 
 	// Create buffered channel for subscriber
 	ch := make(chan adapters.StoredEvent, bufferSize)
@@ -340,10 +346,7 @@ func (a *MemoryAdapter) SubscribeStream(ctx context.Context, streamID string, fr
 	}
 
 	// Apply options for filter channel
-	bufferSize := 100
-	if len(opts) > 0 && opts[0].BufferSize > 0 {
-		bufferSize = opts[0].BufferSize
-	}
+	bufferSize := getBufferSize(opts)
 
 	// Filter events for specific stream
 	ch := make(chan adapters.StoredEvent, bufferSize)
@@ -375,10 +378,7 @@ func (a *MemoryAdapter) SubscribeCategory(ctx context.Context, category string, 
 	}
 
 	// Apply options for filter channel
-	bufferSize := 100
-	if len(opts) > 0 && opts[0].BufferSize > 0 {
-		bufferSize = opts[0].BufferSize
-	}
+	bufferSize := getBufferSize(opts)
 
 	// Filter events for specific category
 	ch := make(chan adapters.StoredEvent, bufferSize)
