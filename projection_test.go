@@ -12,193 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Test Projections ---
-
-// testInlineProjection is a test inline projection.
-type testInlineProjection struct {
-	ProjectionBase
-	events []StoredEvent
-	mu     sync.Mutex
-	err    error
-}
-
-func newTestInlineProjection(name string, handledEvents ...string) *testInlineProjection {
-	return &testInlineProjection{
-		ProjectionBase: NewProjectionBase(name, handledEvents...),
-		events:         make([]StoredEvent, 0),
-	}
-}
-
-func (p *testInlineProjection) Apply(ctx context.Context, event StoredEvent) error {
-	if p.err != nil {
-		return p.err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, event)
-	return nil
-}
-
-func (p *testInlineProjection) Events() []StoredEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := make([]StoredEvent, len(p.events))
-	copy(result, p.events)
-	return result
-}
-
-func (p *testInlineProjection) SetError(err error) {
-	p.err = err
-}
-
-// testAsyncProjection is a test async projection.
-type testAsyncProjection struct {
-	AsyncProjectionBase
-	events        []StoredEvent
-	mu            sync.Mutex
-	applyErr      error
-	batchApplyErr error
-	supportsBatch bool
-}
-
-func newTestAsyncProjection(name string, handledEvents ...string) *testAsyncProjection {
-	return &testAsyncProjection{
-		AsyncProjectionBase: NewAsyncProjectionBase(name, handledEvents...),
-		events:              make([]StoredEvent, 0),
-		supportsBatch:       false,
-	}
-}
-
-func (p *testAsyncProjection) Apply(ctx context.Context, event StoredEvent) error {
-	if p.applyErr != nil {
-		return p.applyErr
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, event)
-	return nil
-}
-
-func (p *testAsyncProjection) ApplyBatch(ctx context.Context, events []StoredEvent) error {
-	if !p.supportsBatch {
-		return ErrNotImplemented
-	}
-	if p.batchApplyErr != nil {
-		return p.batchApplyErr
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, events...)
-	return nil
-}
-
-func (p *testAsyncProjection) Events() []StoredEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := make([]StoredEvent, len(p.events))
-	copy(result, p.events)
-	return result
-}
-
-func (p *testAsyncProjection) EnableBatch() {
-	p.supportsBatch = true
-}
-
-// testLiveProjection is a test live projection.
-type testLiveProjection struct {
-	LiveProjectionBase
-	events    []StoredEvent
-	mu        sync.Mutex
-	eventChan chan StoredEvent
-}
-
-func newTestLiveProjection(name string, transient bool, handledEvents ...string) *testLiveProjection {
-	return &testLiveProjection{
-		LiveProjectionBase: NewLiveProjectionBase(name, transient, handledEvents...),
-		events:             make([]StoredEvent, 0),
-		eventChan:          make(chan StoredEvent, 100),
-	}
-}
-
-func (p *testLiveProjection) OnEvent(ctx context.Context, event StoredEvent) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, event)
-
-	// Non-blocking send to channel for testing
-	select {
-	case p.eventChan <- event:
-	default:
-	}
-}
-
-func (p *testLiveProjection) Events() []StoredEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := make([]StoredEvent, len(p.events))
-	copy(result, p.events)
-	return result
-}
-
-func (p *testLiveProjection) WaitForEvent(timeout time.Duration) (StoredEvent, bool) {
-	select {
-	case event := <-p.eventChan:
-		return event, true
-	case <-time.After(timeout):
-		return StoredEvent{}, false
-	}
-}
-
-// --- In-Memory Checkpoint Store for Testing ---
-
-type testCheckpointStore struct {
-	checkpoints map[string]uint64
-	mu          sync.RWMutex
-	setErr      error
-	getErr      error
-}
-
-func newTestCheckpointStore() *testCheckpointStore {
-	return &testCheckpointStore{
-		checkpoints: make(map[string]uint64),
-	}
-}
-
-func (s *testCheckpointStore) GetCheckpoint(ctx context.Context, projectionName string) (uint64, error) {
-	if s.getErr != nil {
-		return 0, s.getErr
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.checkpoints[projectionName], nil
-}
-
-func (s *testCheckpointStore) SetCheckpoint(ctx context.Context, projectionName string, position uint64) error {
-	if s.setErr != nil {
-		return s.setErr
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.checkpoints[projectionName] = position
-	return nil
-}
-
-func (s *testCheckpointStore) DeleteCheckpoint(ctx context.Context, projectionName string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.checkpoints, projectionName)
-	return nil
-}
-
-func (s *testCheckpointStore) GetAllCheckpoints(ctx context.Context) (map[string]uint64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make(map[string]uint64, len(s.checkpoints))
-	for k, v := range s.checkpoints {
-		result[k] = v
-	}
-	return result, nil
-}
+// Test projections, checkpoint store, logger, and metrics are defined in test_helpers_test.go
 
 // --- Projection Tests ---
 
@@ -799,33 +613,11 @@ func TestDefaultLiveOptions(t *testing.T) {
 	assert.Equal(t, 1000, opts.BufferSize)
 }
 
-// projTestLogger is a simple logger for projection engine tests
-type projTestLogger struct {
-	debugLogs []string
-	infoLogs  []string
-	warnLogs  []string
-	errorLogs []string
-}
-
-func (l *projTestLogger) Debug(msg string, args ...interface{}) {
-	l.debugLogs = append(l.debugLogs, msg)
-}
-
-func (l *projTestLogger) Info(msg string, args ...interface{}) {
-	l.infoLogs = append(l.infoLogs, msg)
-}
-
-func (l *projTestLogger) Warn(msg string, args ...interface{}) {
-	l.warnLogs = append(l.warnLogs, msg)
-}
-
-func (l *projTestLogger) Error(msg string, args ...interface{}) {
-	l.errorLogs = append(l.errorLogs, msg)
-}
+// testLogger is defined in test_helpers_test.go
 
 func TestProjectionEngine_WithLogger(t *testing.T) {
 	store := &EventStore{}
-	logger := &projTestLogger{}
+	logger := newTestLogger()
 	engine := NewProjectionEngine(store,
 		WithCheckpointStore(newTestCheckpointStore()),
 		WithProjectionLogger(logger),
@@ -875,7 +667,7 @@ func TestAsyncProjectionWorker_ProcessBatch_WithCheckpoint(t *testing.T) {
 	store := New(adapter)
 	store.RegisterEvents(&ProjectionTestEvent{})
 	checkpoint := newTestCheckpointStore()
-	logger := &testLogger{}
+	logger := newTestLogger()
 	engine := NewProjectionEngine(store,
 		WithCheckpointStore(checkpoint),
 		WithProjectionLogger(logger),

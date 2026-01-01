@@ -131,26 +131,11 @@ func TestRecoveryMiddleware(t *testing.T) {
 	})
 }
 
-type testLogger struct {
-	infoLogs  []string
-	errorLogs []string
-	warnLogs  []string
-}
-
-func (l *testLogger) Debug(msg string, args ...interface{}) {}
-func (l *testLogger) Info(msg string, args ...interface{}) {
-	l.infoLogs = append(l.infoLogs, msg)
-}
-func (l *testLogger) Warn(msg string, args ...interface{}) {
-	l.warnLogs = append(l.warnLogs, msg)
-}
-func (l *testLogger) Error(msg string, args ...interface{}) {
-	l.errorLogs = append(l.errorLogs, msg)
-}
+// testLogger is defined in test_helpers_test.go
 
 func TestLoggingMiddleware(t *testing.T) {
 	t.Run("logs successful command", func(t *testing.T) {
-		logger := &testLogger{}
+		logger := newTestLogger()
 		mw := NewLoggingMiddleware(logger).Middleware()
 
 		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
@@ -165,7 +150,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	})
 
 	t.Run("logs failed command", func(t *testing.T) {
-		logger := &testLogger{}
+		logger := newTestLogger()
 		mw := NewLoggingMiddleware(logger).Middleware()
 		handlerErr := errors.New("handler error")
 
@@ -180,7 +165,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	})
 
 	t.Run("logs command with error result", func(t *testing.T) {
-		logger := &testLogger{}
+		logger := newTestLogger()
 		mw := NewLoggingMiddleware(logger).Middleware()
 
 		handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
