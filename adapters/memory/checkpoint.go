@@ -33,7 +33,7 @@ func NewCheckpointStore() *CheckpointStore {
 
 // GetCheckpoint retrieves the current position for a projection.
 // Returns 0 if no checkpoint exists.
-func (s *CheckpointStore) GetCheckpoint(ctx context.Context, projectionName string) (uint64, error) {
+func (s *CheckpointStore) GetCheckpoint(_ context.Context, projectionName string) (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -44,7 +44,7 @@ func (s *CheckpointStore) GetCheckpoint(ctx context.Context, projectionName stri
 }
 
 // SetCheckpoint stores the position for a projection.
-func (s *CheckpointStore) SetCheckpoint(ctx context.Context, projectionName string, position uint64) error {
+func (s *CheckpointStore) SetCheckpoint(_ context.Context, projectionName string, position uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -57,7 +57,7 @@ func (s *CheckpointStore) SetCheckpoint(ctx context.Context, projectionName stri
 }
 
 // DeleteCheckpoint removes a checkpoint for a projection.
-func (s *CheckpointStore) DeleteCheckpoint(ctx context.Context, projectionName string) error {
+func (s *CheckpointStore) DeleteCheckpoint(_ context.Context, projectionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

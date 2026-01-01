@@ -166,7 +166,15 @@ func (r *exponentialBackoffRetry) ShouldRetry(attempt int, err error) bool {
 }
 
 func (r *exponentialBackoffRetry) Delay(attempt int) time.Duration {
-	delay := r.baseDelay * (1 << uint(attempt))
+	// Clamp attempt to valid range to avoid integer overflow
+	if attempt < 0 {
+		attempt = 0
+	}
+	// Cap the shift amount to prevent overflow (max 62 for int64 duration)
+	if attempt > 62 {
+		return r.maxDelay
+	}
+	delay := r.baseDelay * (1 << uint(attempt)) // #nosec G115 - attempt is clamped to 0-62
 	if delay > r.maxDelay {
 		delay = r.maxDelay
 	}
