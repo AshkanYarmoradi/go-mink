@@ -958,3 +958,176 @@ func TestNoopLogger(t *testing.T) {
 		logger.Error("test with args", "error", assert.AnError)
 	})
 }
+
+func TestEventStore_LoadEventsFromPosition(t *testing.T) {
+	t.Run("successfully loads events from position", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		ctx := context.Background()
+
+		// Append some events to create a stream
+		events1 := []interface{}{StoreOrderCreated{OrderID: "123", CustomerID: "456"}}
+		err := store.Append(ctx, "Order-123", events1)
+		require.NoError(t, err)
+
+		events2 := []interface{}{StoreItemAdded{OrderID: "123", SKU: "SKU-001", Quantity: 2, Price: 29.99}}
+		err = store.Append(ctx, "Order-123", events2)
+		require.NoError(t, err)
+
+		events3 := []interface{}{StoreOrderShipped{OrderID: "123"}}
+		err = store.Append(ctx, "Order-123", events3)
+		require.NoError(t, err)
+
+		// Load events from position 0 (should get all 3)
+		loaded, err := store.LoadEventsFromPosition(ctx, 0, 100)
+		require.NoError(t, err)
+		assert.Len(t, loaded, 3)
+		assert.Equal(t, "StoreOrderCreated", loaded[0].Type)
+		assert.Equal(t, "StoreItemAdded", loaded[1].Type)
+		assert.Equal(t, "StoreOrderShipped", loaded[2].Type)
+	})
+
+	t.Run("loads events from specific position", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		ctx := context.Background()
+
+		// Append events
+		events := []interface{}{
+			StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+			StoreItemAdded{OrderID: "123", SKU: "SKU-001", Quantity: 2, Price: 29.99},
+			StoreOrderShipped{OrderID: "123"},
+		}
+		err := store.Append(ctx, "Order-123", events)
+		require.NoError(t, err)
+
+		// Load from position 1 (should skip the first event)
+		loaded, err := store.LoadEventsFromPosition(ctx, 1, 100)
+		require.NoError(t, err)
+		assert.Len(t, loaded, 2)
+		assert.Equal(t, "StoreItemAdded", loaded[0].Type)
+		assert.Equal(t, "StoreOrderShipped", loaded[1].Type)
+	})
+
+	t.Run("respects limit parameter", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		ctx := context.Background()
+
+		// Append multiple events
+		events := []interface{}{
+			StoreOrderCreated{OrderID: "123", CustomerID: "456"},
+			StoreItemAdded{OrderID: "123", SKU: "SKU-001", Quantity: 2, Price: 29.99},
+			StoreItemAdded{OrderID: "123", SKU: "SKU-002", Quantity: 1, Price: 19.99},
+			StoreOrderShipped{OrderID: "123"},
+		}
+		err := store.Append(ctx, "Order-123", events)
+		require.NoError(t, err)
+
+		// Load with limit of 2
+		loaded, err := store.LoadEventsFromPosition(ctx, 0, 2)
+		require.NoError(t, err)
+		assert.Len(t, loaded, 2)
+	})
+
+	t.Run("returns empty slice when no events after position", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		ctx := context.Background()
+
+		// Append one event
+		events := []interface{}{StoreOrderCreated{OrderID: "123", CustomerID: "456"}}
+		err := store.Append(ctx, "Order-123", events)
+		require.NoError(t, err)
+
+		// Load from position after all events
+		loaded, err := store.LoadEventsFromPosition(ctx, 100, 100)
+		require.NoError(t, err)
+		assert.Len(t, loaded, 0)
+	})
+
+	t.Run("converts metadata correctly", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		ctx := context.Background()
+
+		// Append event with metadata
+		metadata := Metadata{}.
+			WithUserID("user-123").
+			WithCorrelationID("corr-456").
+			WithCausationID("cause-789").
+			WithTenantID("tenant-abc")
+		events := []interface{}{StoreOrderCreated{OrderID: "123", CustomerID: "456"}}
+		err := store.Append(ctx, "Order-123", events, WithAppendMetadata(metadata))
+		require.NoError(t, err)
+
+		// Load and verify metadata is converted
+		loaded, err := store.LoadEventsFromPosition(ctx, 0, 100)
+		require.NoError(t, err)
+		require.Len(t, loaded, 1)
+		assert.Equal(t, "user-123", loaded[0].Metadata.UserID)
+		assert.Equal(t, "corr-456", loaded[0].Metadata.CorrelationID)
+		assert.Equal(t, "cause-789", loaded[0].Metadata.CausationID)
+		assert.Equal(t, "tenant-abc", loaded[0].Metadata.TenantID)
+	})
+
+	t.Run("returns ErrSubscriptionNotSupported for non-subscription adapter", func(t *testing.T) {
+		// Use a mock adapter that only implements EventStoreAdapter (not SubscriptionAdapter)
+		adapter := &basicEventStoreAdapter{}
+		store := New(adapter)
+		ctx := context.Background()
+
+		_, err := store.LoadEventsFromPosition(ctx, 0, 100)
+		assert.ErrorIs(t, err, ErrSubscriptionNotSupported)
+	})
+
+	t.Run("propagates error from adapter", func(t *testing.T) {
+		expectedErr := errors.New("adapter error")
+		adapter := &mockLoadFromPositionErrorAdapter{
+			MemoryAdapter: memory.NewAdapter(),
+			loadErr:       expectedErr,
+		}
+		store := New(adapter)
+		ctx := context.Background()
+
+		_, err := store.LoadEventsFromPosition(ctx, 0, 100)
+		assert.ErrorIs(t, err, expectedErr)
+	})
+}
+
+// basicEventStoreAdapter implements only EventStoreAdapter, not SubscriptionAdapter
+type basicEventStoreAdapter struct{}
+
+func (a *basicEventStoreAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *basicEventStoreAdapter) Load(ctx context.Context, streamID string, fromVersion int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *basicEventStoreAdapter) GetStreamInfo(ctx context.Context, streamID string) (*adapters.StreamInfo, error) {
+	return nil, nil
+}
+
+func (a *basicEventStoreAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func (a *basicEventStoreAdapter) Initialize(ctx context.Context) error {
+	return nil
+}
+
+func (a *basicEventStoreAdapter) Close() error {
+	return nil
+}
+
+// mockLoadFromPositionErrorAdapter wraps a memory adapter and returns an error on LoadFromPosition
+type mockLoadFromPositionErrorAdapter struct {
+	*memory.MemoryAdapter
+	loadErr error
+}
+
+func (a *mockLoadFromPositionErrorAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	return nil, a.loadErr
+}
