@@ -136,6 +136,10 @@ func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
 
 	// Validate schema name to prevent SQL injection
 	if err := validateSchemaName(adapter.schema); err != nil {
+		// Cancel health check goroutine if it was started
+		if adapter.healthCheckCancel != nil {
+			adapter.healthCheckCancel()
+		}
 		_ = db.Close()
 		return nil, err
 	}
@@ -161,6 +165,10 @@ func NewAdapterWithDB(db *sql.DB, opts ...Option) (*PostgresAdapter, error) {
 
 	// Validate schema name to prevent SQL injection
 	if err := validateSchemaName(adapter.schema); err != nil {
+		// Cancel health check goroutine if it was started
+		if adapter.healthCheckCancel != nil {
+			adapter.healthCheckCancel()
+		}
 		return nil, err
 	}
 
