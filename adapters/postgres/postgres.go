@@ -487,6 +487,11 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 	}
 
 	if pos.Valid {
+		// Safe conversion: BIGSERIAL values are always positive,
+		// but we check defensively to avoid integer overflow
+		if pos.Int64 < 0 {
+			return 0, fmt.Errorf("mink/postgres: invalid negative position value: %d", pos.Int64)
+		}
 		return uint64(pos.Int64), nil
 	}
 	return 0, nil
@@ -581,6 +586,11 @@ func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName stri
 	}
 
 	if pos.Valid {
+		// Safe conversion: BIGSERIAL values are always positive,
+		// but we check defensively to avoid integer overflow
+		if pos.Int64 < 0 {
+			return 0, fmt.Errorf("mink/postgres: invalid negative position value: %d", pos.Int64)
+		}
 		return uint64(pos.Int64), nil
 	}
 	return 0, nil
