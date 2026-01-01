@@ -85,14 +85,28 @@ type EventStoreAdapter interface {
 ```go
 // SubscriptionAdapter provides event subscription capabilities.
 type SubscriptionAdapter interface {
+    // LoadFromPosition loads events starting from a global position.
+    // This is used by projection engines to catch up on historical events.
+    LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+
     // SubscribeAll subscribes to all events across all streams.
-    SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)
+    // Optional SubscriptionOptions can be provided to configure buffer size, poll interval, etc.
+    SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 
     // SubscribeStream subscribes to events from a specific stream.
-    SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan StoredEvent, error)
+    // Optional SubscriptionOptions can be provided to configure behavior.
+    SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 
     // SubscribeCategory subscribes to all events from streams in a category.
-    SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan StoredEvent, error)
+    // Optional SubscriptionOptions can be provided to configure behavior.
+    SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+}
+
+// SubscriptionOptions configures subscription behavior.
+type SubscriptionOptions struct {
+    BufferSize   int           // Channel buffer size (default: 100)
+    PollInterval time.Duration // Polling interval for polling-based subscriptions
+    OnError      func(error)   // Error callback for non-fatal errors
 }
 ```
 

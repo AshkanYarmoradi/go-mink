@@ -46,10 +46,22 @@ Commands → Command Bus → Aggregate → Events → Event Store
 ## Core Interfaces to Know
 
 ```go
-// Adapters implement this
+// Adapters implement this (adapters/adapter.go)
 type EventStoreAdapter interface {
-    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+    Append(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64) ([]StoredEvent, error)
     Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
+    GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+    GetLastPosition(ctx context.Context) (uint64, error)
+    Initialize(ctx context.Context) error
+    Close() error
+}
+
+// Optional subscription support (adapters/adapter.go)
+type SubscriptionAdapter interface {
+    LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+    SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+    SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+    SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
 }
 
 // Domain models implement this
