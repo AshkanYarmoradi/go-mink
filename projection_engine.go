@@ -311,9 +311,9 @@ func (e *ProjectionEngine) Unregister(name string) error {
 	// Try async projections
 	e.asyncMu.Lock()
 	if worker, exists := e.asyncProjections[name]; exists {
-		if worker.state == ProjectionStateRunning {
+		worker.closeOnce.Do(func() {
 			close(worker.stopCh)
-		}
+		})
 		delete(e.asyncProjections, name)
 		e.asyncMu.Unlock()
 		e.logger.Info("Unregistered async projection", "name", name)
@@ -324,9 +324,9 @@ func (e *ProjectionEngine) Unregister(name string) error {
 	// Try live projections
 	e.liveMu.Lock()
 	if worker, exists := e.liveProjections[name]; exists {
-		if worker.state == ProjectionStateRunning {
+		worker.closeOnce.Do(func() {
 			close(worker.stopCh)
-		}
+		})
 		delete(e.liveProjections, name)
 		e.liveMu.Unlock()
 		e.logger.Info("Unregistered live projection", "name", name)
@@ -523,13 +523,17 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 				continue
 			}
 
-			// Non-blocking send to avoid slowing down writes
+			// Block until the event is delivered or the context is cancelled.
+			// This avoids silently dropping events, at the cost of applying
+			// backpressure to callers when live projections are slow.
 			select {
 			case eventCh <- event:
-			default:
-				e.logger.Warn("Live projection event channel full, dropping event",
+			case <-ctx.Done():
+				e.logger.Warn("Context cancelled while delivering live projection event, dropping event",
 					"projection", worker.projection.Name(),
-					"eventType", event.Type)
+					"eventType", event.Type,
+					"error", ctx.Err())
+				return
 			}
 		}
 	}
@@ -556,6 +560,7 @@ type asyncProjectionWorker struct {
 	engine     *ProjectionEngine
 
 	stopCh          chan struct{}
+	closeOnce       sync.Once
 	state           ProjectionState
 	stateMu         sync.RWMutex
 	lastPosition    uint64
@@ -657,6 +662,12 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 	}
 
 	if len(events) == 0 {
+		// No new events at this position; back off briefly to avoid tight polling loops.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 		return nil
 	}
 
@@ -669,8 +680,20 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 	}
 
 	if len(filteredEvents) == 0 {
-		// Update position even if no events were handled
-		worker.lastPosition = events[len(events)-1].GlobalPosition
+		// Update checkpoint and position even if no events were handled
+		newPosition := events[len(events)-1].GlobalPosition
+		if e.checkpointStore != nil {
+			if err := e.checkpointStore.SetCheckpoint(ctx, worker.projection.Name(), newPosition); err != nil {
+				e.logger.Error("Failed to save checkpoint", "projection", worker.projection.Name(), "error", err)
+			} else {
+				e.metrics.RecordCheckpoint(worker.projection.Name(), newPosition)
+			}
+		}
+
+		worker.stateMu.Lock()
+		worker.lastPosition = newPosition
+		worker.lastProcessedAt = time.Now()
+		worker.stateMu.Unlock()
 		return nil
 	}
 
@@ -751,6 +774,7 @@ type liveProjectionWorker struct {
 	engine     *ProjectionEngine
 
 	stopCh    chan struct{}
+	closeOnce sync.Once
 	eventCh   chan StoredEvent
 	state     ProjectionState
 	stateMu   sync.RWMutex
