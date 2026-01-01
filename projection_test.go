@@ -1201,3 +1201,61 @@ func TestNoopProjectionMetrics(t *testing.T) {
 		metrics.RecordError("test", nil)
 	})
 }
+
+// --- Test ShouldHandleEventType ---
+
+func TestShouldHandleEventType(t *testing.T) {
+	t.Run("returns true when event type is in handled events list", func(t *testing.T) {
+		handledEvents := []string{"OrderCreated", "OrderShipped", "OrderCanceled"}
+
+		assert.True(t, ShouldHandleEventType(handledEvents, "OrderCreated"))
+		assert.True(t, ShouldHandleEventType(handledEvents, "OrderShipped"))
+		assert.True(t, ShouldHandleEventType(handledEvents, "OrderCanceled"))
+	})
+
+	t.Run("returns false when event type is not in handled events list", func(t *testing.T) {
+		handledEvents := []string{"OrderCreated", "OrderShipped", "OrderCanceled"}
+
+		assert.False(t, ShouldHandleEventType(handledEvents, "CustomerRegistered"))
+		assert.False(t, ShouldHandleEventType(handledEvents, "PaymentReceived"))
+		assert.False(t, ShouldHandleEventType(handledEvents, "InventoryUpdated"))
+	})
+
+	t.Run("returns true for any event when handled events list is empty", func(t *testing.T) {
+		// Empty list means handle all events
+		assert.True(t, ShouldHandleEventType([]string{}, "OrderCreated"))
+		assert.True(t, ShouldHandleEventType([]string{}, "CustomerRegistered"))
+		assert.True(t, ShouldHandleEventType([]string{}, "AnyEventType"))
+	})
+
+	t.Run("returns true for any event when handled events list is nil", func(t *testing.T) {
+		// Nil list should behave same as empty list
+		assert.True(t, ShouldHandleEventType(nil, "OrderCreated"))
+		assert.True(t, ShouldHandleEventType(nil, "CustomerRegistered"))
+	})
+
+	t.Run("handles empty event type string", func(t *testing.T) {
+		handledEvents := []string{"OrderCreated", "OrderShipped"}
+
+		// Empty string not in list
+		assert.False(t, ShouldHandleEventType(handledEvents, ""))
+
+		// Empty string in empty list (handles all)
+		assert.True(t, ShouldHandleEventType([]string{}, ""))
+	})
+
+	t.Run("handles single event in list", func(t *testing.T) {
+		handledEvents := []string{"OrderCreated"}
+
+		assert.True(t, ShouldHandleEventType(handledEvents, "OrderCreated"))
+		assert.False(t, ShouldHandleEventType(handledEvents, "OrderShipped"))
+	})
+
+	t.Run("is case sensitive", func(t *testing.T) {
+		handledEvents := []string{"OrderCreated"}
+
+		assert.True(t, ShouldHandleEventType(handledEvents, "OrderCreated"))
+		assert.False(t, ShouldHandleEventType(handledEvents, "ordercreated"))
+		assert.False(t, ShouldHandleEventType(handledEvents, "ORDERCREATED"))
+	})
+}

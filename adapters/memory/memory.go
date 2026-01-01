@@ -39,6 +39,25 @@ func getBufferSize(opts []adapters.SubscriptionOptions) int {
 	return defaultSubscriptionBuffer
 }
 
+// filterEvents creates a filtered event channel from a source channel.
+// This is a shared helper used by SubscribeStream and SubscribeCategory.
+func filterEvents(ctx context.Context, source <-chan adapters.StoredEvent, bufferSize int, filter func(adapters.StoredEvent) bool) <-chan adapters.StoredEvent {
+	ch := make(chan adapters.StoredEvent, bufferSize)
+	go func() {
+		defer close(ch)
+		for event := range source {
+			if filter(event) {
+				select {
+				case ch <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return ch
+}
+
 // MemoryAdapter is an in-memory implementation of EventStoreAdapter.
 // It is thread-safe and suitable for unit testing.
 type MemoryAdapter struct {
@@ -345,25 +364,10 @@ func (a *MemoryAdapter) SubscribeStream(ctx context.Context, streamID string, fr
 		return nil, err
 	}
 
-	// Apply options for filter channel
 	bufferSize := getBufferSize(opts)
-
-	// Filter events for specific stream
-	ch := make(chan adapters.StoredEvent, bufferSize)
-	go func() {
-		defer close(ch)
-		for event := range allEvents {
-			if event.StreamID == streamID && event.Version > fromVersion {
-				select {
-				case ch <- event:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
-	return ch, nil
+	return filterEvents(ctx, allEvents, bufferSize, func(e adapters.StoredEvent) bool {
+		return e.StreamID == streamID && e.Version > fromVersion
+	}), nil
 }
 
 // SubscribeCategory subscribes to all events from streams in a category.
@@ -377,25 +381,10 @@ func (a *MemoryAdapter) SubscribeCategory(ctx context.Context, category string, 
 		return nil, err
 	}
 
-	// Apply options for filter channel
 	bufferSize := getBufferSize(opts)
-
-	// Filter events for specific category
-	ch := make(chan adapters.StoredEvent, bufferSize)
-	go func() {
-		defer close(ch)
-		for event := range allEvents {
-			if adapters.ExtractCategory(event.StreamID) == category {
-				select {
-				case ch <- event:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
-	return ch, nil
+	return filterEvents(ctx, allEvents, bufferSize, func(e adapters.StoredEvent) bool {
+		return adapters.ExtractCategory(e.StreamID) == category
+	}), nil
 }
 
 // SaveSnapshot stores a snapshot for the given stream.
@@ -538,7 +527,6 @@ func (a *MemoryAdapter) StreamCount() int {
 	return len(a.streams)
 }
 
-
 // notifySubscribers sends events to all subscribers.
 func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) {
 	a.subscribersMu.RLock()
@@ -568,4 +556,3 @@ func (a *MemoryAdapter) removeSubscriber(ch chan adapters.StoredEvent) {
 		}
 	}
 }
-

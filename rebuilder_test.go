@@ -125,25 +125,6 @@ func TestParallelRebuilder(t *testing.T) {
 	})
 }
 
-func TestContainsString(t *testing.T) {
-	slice := []string{"OrderCreated", "OrderShipped", "OrderCanceled"}
-
-	t.Run("returns true for existing string", func(t *testing.T) {
-		assert.True(t, containsString(slice, "OrderCreated"))
-		assert.True(t, containsString(slice, "OrderShipped"))
-		assert.True(t, containsString(slice, "OrderCanceled"))
-	})
-
-	t.Run("returns false for missing string", func(t *testing.T) {
-		assert.False(t, containsString(slice, "CustomerRegistered"))
-		assert.False(t, containsString(slice, ""))
-	})
-
-	t.Run("returns false for empty slice", func(t *testing.T) {
-		assert.False(t, containsString([]string{}, "anything"))
-	})
-}
-
 func TestProjectionRebuilder_BuildProgress(t *testing.T) {
 	store := &EventStore{}
 	checkpoint := newTestCheckpointStore()

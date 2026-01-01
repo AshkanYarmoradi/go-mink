@@ -332,3 +332,26 @@ func convertStoredEventFromAdapter(s adapters.StoredEvent) StoredEvent {
 		Timestamp:      s.Timestamp,
 	}
 }
+
+// LoadEventsFromPosition loads events starting from a global position.
+// Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
+// This is a helper method used by ProjectionEngine and ProjectionRebuilder.
+func (s *EventStore) LoadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	// Check if adapter supports subscription
+	subAdapter, ok := s.adapter.(adapters.SubscriptionAdapter)
+	if !ok {
+		return nil, ErrSubscriptionNotSupported
+	}
+
+	events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert adapters.StoredEvent to mink.StoredEvent
+	result := make([]StoredEvent, len(events))
+	for i, e := range events {
+		result[i] = convertStoredEventFromAdapter(e)
+	}
+	return result, nil
+}
