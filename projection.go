@@ -241,3 +241,18 @@ func NewLiveProjectionBase(name string, transient bool, handledEvents ...string)
 func (p *LiveProjectionBase) IsTransient() bool {
 	return p.transient
 }
+
+// ShouldHandleEventType checks if an event type should be handled given a list of handled events.
+// Returns true if handledEvents is empty (meaning all events are handled) or if eventType is in the list.
+// This is a utility function used by projection engine and rebuilder to filter events.
+func ShouldHandleEventType(handledEvents []string, eventType string) bool {
+	if len(handledEvents) == 0 {
+		return true // Empty list means handle all events
+	}
+	for _, et := range handledEvents {
+		if et == eventType {
+			return true
+		}
+	}
+	return false
+}

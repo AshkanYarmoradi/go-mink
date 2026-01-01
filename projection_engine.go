@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
 // ProjectionEngine manages the lifecycle of projections.
@@ -552,16 +550,7 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 
 // shouldHandleEvent checks if a projection should handle the given event type.
 func shouldHandleEvent(projection Projection, eventType string) bool {
-	handledEvents := projection.HandledEvents()
-	if len(handledEvents) == 0 {
-		return true // Empty list means handle all events
-	}
-	for _, et := range handledEvents {
-		if et == eventType {
-			return true
-		}
-	}
-	return false
+	return ShouldHandleEventType(projection.HandledEvents(), eventType)
 }
 
 // asyncProjectionWorker manages an async projection's background processing.
@@ -751,32 +740,7 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 // loadEventsFromPosition loads events starting from the given global position.
 // Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
 func (e *ProjectionEngine) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	adapter := e.store.Adapter()
-
-	// Check if adapter supports subscription
-	if subAdapter, ok := adapter.(adapters.SubscriptionAdapter); ok {
-		events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
-		if err != nil {
-			return nil, err
-		}
-		// Convert adapters.StoredEvent to mink.StoredEvent
-		result := make([]StoredEvent, len(events))
-		for i, ev := range events {
-			result[i] = StoredEvent{
-				ID:             ev.ID,
-				StreamID:       ev.StreamID,
-				Type:           ev.Type,
-				Data:           ev.Data,
-				Metadata:       Metadata(ev.Metadata),
-				Version:        ev.Version,
-				GlobalPosition: ev.GlobalPosition,
-				Timestamp:      ev.Timestamp,
-			}
-		}
-		return result, nil
-	}
-
-	return nil, ErrSubscriptionNotSupported
+	return e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
 }
 
 // liveProjectionWorker manages a live projection's real-time processing.

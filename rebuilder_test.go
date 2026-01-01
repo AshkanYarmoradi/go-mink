@@ -125,22 +125,22 @@ func TestParallelRebuilder(t *testing.T) {
 	})
 }
 
-func TestContainsString(t *testing.T) {
+func TestShouldHandleEventType(t *testing.T) {
 	slice := []string{"OrderCreated", "OrderShipped", "OrderCanceled"}
 
 	t.Run("returns true for existing string", func(t *testing.T) {
-		assert.True(t, containsString(slice, "OrderCreated"))
-		assert.True(t, containsString(slice, "OrderShipped"))
-		assert.True(t, containsString(slice, "OrderCanceled"))
+		assert.True(t, ShouldHandleEventType(slice, "OrderCreated"))
+		assert.True(t, ShouldHandleEventType(slice, "OrderShipped"))
+		assert.True(t, ShouldHandleEventType(slice, "OrderCanceled"))
 	})
 
 	t.Run("returns false for missing string", func(t *testing.T) {
-		assert.False(t, containsString(slice, "CustomerRegistered"))
-		assert.False(t, containsString(slice, ""))
+		assert.False(t, ShouldHandleEventType(slice, "CustomerRegistered"))
+		assert.False(t, ShouldHandleEventType(slice, ""))
 	})
 
-	t.Run("returns false for empty slice", func(t *testing.T) {
-		assert.False(t, containsString([]string{}, "anything"))
+	t.Run("returns true for any event when slice is empty", func(t *testing.T) {
+		assert.True(t, ShouldHandleEventType([]string{}, "anything"))
 	})
 }
 
