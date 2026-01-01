@@ -2,12 +2,27 @@
 
 **A Comprehensive Event Sourcing & CQRS Toolkit for Go**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/AshkanYarmoradi/go-mink.svg)](https://pkg.go.dev/github.com/AshkanYarmoradi/go-mink)
-[![Go Report Card](https://goreportcard.com/badge/github.com/AshkanYarmoradi/go-mink)](https://goreportcard.com/report/github.com/AshkanYarmoradi/go-mink)
-[![Build Status](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg)](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml)
-[![codecov](https://codecov.io/gh/AshkanYarmoradi/go-mink/graph/badge.svg?token=ZCB3IDSI2Q)](https://codecov.io/gh/AshkanYarmoradi/go-mink)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/AshkanYarmoradi/go-mink"><img src="https://pkg.go.dev/badge/github.com/AshkanYarmoradi/go-mink.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/AshkanYarmoradi/go-mink"><img src="https://goreportcard.com/badge/github.com/AshkanYarmoradi/go-mink" alt="Go Report Card"></a>
+  <a href="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml"><img src="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg" alt="Build Status"></a>
+  <a href="https://codecov.io/gh/AshkanYarmoradi/go-mink"><img src="https://codecov.io/gh/AshkanYarmoradi/go-mink/graph/badge.svg?token=ZCB3IDSI2Q" alt="codecov"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
+</p>
+
+<p align="center">
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=alert_status" alt="Quality Gate Status"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=reliability_rating" alt="Reliability Rating"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=security_rating" alt="Security Rating"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=sqale_rating" alt="Maintainability Rating"></a>
+</p>
+
+<p align="center">
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=bugs" alt="Bugs"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=vulnerabilities" alt="Vulnerabilities"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink"><img src="https://sonarcloud.io/api/project_badges/measure?project=AshkanYarmoradi_go-mink&metric=sqale_index" alt="Technical Debt"></a>
+</p>
 
 ---
 
