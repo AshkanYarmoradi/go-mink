@@ -4,7 +4,6 @@ package memory
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,10 +12,11 @@ import (
 )
 
 // Version constants for optimistic concurrency control.
+// These are re-exported from the adapters package for convenience.
 const (
-	AnyVersion   int64 = -1
-	NoStream     int64 = 0
-	StreamExists int64 = -2
+	AnyVersion   = adapters.AnyVersion
+	NoStream     = adapters.NoStream
+	StreamExists = adapters.StreamExists
 )
 
 // Ensure MemoryAdapter implements all required interfaces.
@@ -103,13 +103,13 @@ func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []ad
 	}
 
 	// Check expected version
-	if err := a.checkVersion(streamID, expectedVersion, currentVersion, exists); err != nil {
+	if err := adapters.CheckVersion(streamID, expectedVersion, currentVersion, exists); err != nil {
 		return nil, err
 	}
 
 	// Create stream if it doesn't exist
 	if !exists {
-		category := extractCategory(streamID)
+		category := adapters.ExtractCategory(streamID)
 		stream = &streamData{
 			info: adapters.StreamInfo{
 				StreamID:  streamID,
@@ -385,7 +385,7 @@ func (a *MemoryAdapter) SubscribeCategory(ctx context.Context, category string, 
 	go func() {
 		defer close(ch)
 		for event := range allEvents {
-			if extractCategory(event.StreamID) == category {
+			if adapters.ExtractCategory(event.StreamID) == category {
 				select {
 				case ch <- event:
 				case <-ctx.Done():
@@ -538,32 +538,6 @@ func (a *MemoryAdapter) StreamCount() int {
 	return len(a.streams)
 }
 
-// checkVersion validates the expected version against the current version.
-func (a *MemoryAdapter) checkVersion(streamID string, expected, current int64, exists bool) error {
-	switch expected {
-	case AnyVersion:
-		// No check needed
-		return nil
-	case NoStream:
-		if exists {
-			return NewConcurrencyError(streamID, expected, current)
-		}
-		return nil
-	case StreamExists:
-		if !exists {
-			return NewStreamNotFoundError(streamID)
-		}
-		return nil
-	default:
-		if expected < 0 {
-			return adapters.ErrInvalidVersion
-		}
-		if current != expected {
-			return NewConcurrencyError(streamID, expected, current)
-		}
-		return nil
-	}
-}
 
 // notifySubscribers sends events to all subscribers.
 func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) {
@@ -595,12 +569,3 @@ func (a *MemoryAdapter) removeSubscriber(ch chan adapters.StoredEvent) {
 	}
 }
 
-// extractCategory extracts the category from a stream ID.
-// Stream IDs are expected to be in the format "Category-ID".
-func extractCategory(streamID string) string {
-	parts := strings.SplitN(streamID, "-", 2)
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return ""
-}

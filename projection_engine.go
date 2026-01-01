@@ -197,14 +197,23 @@ func (r *noRetry) Delay(attempt int) time.Duration {
 	return 0
 }
 
-// RegisterInline registers an inline projection.
-// Inline projections are processed synchronously with event appends.
-func (e *ProjectionEngine) RegisterInline(projection InlineProjection) error {
+// validateProjection checks if a projection is valid for registration.
+// Returns an error if the projection is nil or has an empty name.
+func validateProjection(projection Projection) error {
 	if projection == nil {
 		return ErrNilProjection
 	}
 	if projection.Name() == "" {
 		return ErrEmptyProjectionName
+	}
+	return nil
+}
+
+// RegisterInline registers an inline projection.
+// Inline projections are processed synchronously with event appends.
+func (e *ProjectionEngine) RegisterInline(projection InlineProjection) error {
+	if err := validateProjection(projection); err != nil {
+		return err
 	}
 
 	e.inlineMu.Lock()
@@ -225,11 +234,8 @@ func (e *ProjectionEngine) RegisterInline(projection InlineProjection) error {
 // RegisterAsync registers an async projection with the given options.
 // Async projections are processed in background workers.
 func (e *ProjectionEngine) RegisterAsync(projection AsyncProjection, opts ...AsyncOptions) error {
-	if projection == nil {
-		return ErrNilProjection
-	}
-	if projection.Name() == "" {
-		return ErrEmptyProjectionName
+	if err := validateProjection(projection); err != nil {
+		return err
 	}
 
 	options := DefaultAsyncOptions()
@@ -262,11 +268,8 @@ func (e *ProjectionEngine) RegisterAsync(projection AsyncProjection, opts ...Asy
 // RegisterLive registers a live projection with optional configuration.
 // Live projections receive events in real-time.
 func (e *ProjectionEngine) RegisterLive(projection LiveProjection, opts ...LiveOptions) error {
-	if projection == nil {
-		return ErrNilProjection
-	}
-	if projection.Name() == "" {
-		return ErrEmptyProjectionName
+	if err := validateProjection(projection); err != nil {
+		return err
 	}
 
 	options := DefaultLiveOptions()

@@ -126,19 +126,7 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 	defer s.mu.Unlock()
 
 	// Make a copy to avoid external modifications
-	recordCopy := &adapters.IdempotencyRecord{
-		Key:         record.Key,
-		CommandType: record.CommandType,
-		AggregateID: record.AggregateID,
-		Version:     record.Version,
-		Response:    record.Response,
-		Success:     record.Success,
-		Error:       record.Error,
-		ProcessedAt: record.ProcessedAt,
-		ExpiresAt:   record.ExpiresAt,
-	}
-
-	s.records[record.Key] = recordCopy
+	s.records[record.Key] = adapters.CopyIdempotencyRecord(record)
 	return nil
 }
 
@@ -159,19 +147,7 @@ func (s *IdempotencyStore) Get(ctx context.Context, key string) (*adapters.Idemp
 	}
 
 	// Return a copy to avoid external modifications
-	recordCopy := &adapters.IdempotencyRecord{
-		Key:         record.Key,
-		CommandType: record.CommandType,
-		AggregateID: record.AggregateID,
-		Version:     record.Version,
-		Response:    record.Response,
-		Success:     record.Success,
-		Error:       record.Error,
-		ProcessedAt: record.ProcessedAt,
-		ExpiresAt:   record.ExpiresAt,
-	}
-
-	return recordCopy, nil
+	return adapters.CopyIdempotencyRecord(record), nil
 }
 
 // Delete removes an idempotency record by key.
