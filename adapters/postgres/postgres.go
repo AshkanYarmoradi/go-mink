@@ -32,6 +32,16 @@ func quoteQualifiedTable(schema, table string) string {
 	return quoteIdentifier(schema) + "." + quoteIdentifier(table)
 }
 
+// safeSchemaIdentifier validates and quotes a schema name for safe use in SQL.
+// This combines validation and quoting to provide defense-in-depth against SQL injection.
+// Returns the quoted schema identifier and any validation error.
+func safeSchemaIdentifier(schema string) (string, error) {
+	if err := validateSchemaName(schema); err != nil {
+		return "", err
+	}
+	return quoteIdentifier(schema), nil
+}
+
 // validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
 func validateSchemaName(schema string) error {
 	if schema == "" {
@@ -195,10 +205,15 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 
 // Migrate runs database migrations.
 func (a *PostgresAdapter) Migrate(ctx context.Context) error {
-	schemaQ := quoteIdentifier(a.schema)
+	// Validate and quote schema name at point of use for defense-in-depth.
+	// This ensures safety even if adapter state is modified after construction.
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema for migration: %w", err)
+	}
 
 	// Create schema
-	_, err := a.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schemaQ)
+	_, err = a.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schemaQ)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to create schema: %w", err)
 	}
@@ -328,7 +343,10 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	// Get current stream version with lock
 	var currentVersion int64
 	var streamExists bool
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 
 	err = tx.QueryRowContext(ctx, `
 		SELECT version FROM `+schemaQ+`.streams 
@@ -423,7 +441,10 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 		return nil, ErrEmptyStreamID
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT global_position, event_id, stream_id, version, event_type, data, metadata, timestamp
 		FROM `+schemaQ+`.events
@@ -475,10 +496,13 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 		return nil, ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var info adapters.StreamInfo
 	// Query stream info and count events in one query using a subquery
-	err := a.db.QueryRowContext(ctx, `
+	err = a.db.QueryRowContext(ctx, `
 		SELECT s.stream_id, s.category, s.version, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM `+schemaQ+`.events e WHERE e.stream_id = s.stream_id) as event_count
 		FROM `+schemaQ+`.streams s
@@ -507,9 +531,12 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 		return 0, ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var pos sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `
+	err = a.db.QueryRowContext(ctx, `
 		SELECT MAX(global_position) FROM `+schemaQ+`.events`).Scan(&pos)
 	if err != nil {
 		return 0, fmt.Errorf("mink/postgres: failed to get last position: %w", err)
@@ -541,8 +568,11 @@ func (a *PostgresAdapter) SaveSnapshot(ctx context.Context, streamID string, ver
 		return ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
-	_, err := a.db.ExecContext(ctx, `
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
 		INSERT INTO `+schemaQ+`.snapshots (stream_id, version, data)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (stream_id) DO UPDATE SET
@@ -562,9 +592,12 @@ func (a *PostgresAdapter) LoadSnapshot(ctx context.Context, streamID string) (*a
 		return nil, ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var snapshot adapters.SnapshotRecord
-	err := a.db.QueryRowContext(ctx, `
+	err = a.db.QueryRowContext(ctx, `
 		SELECT stream_id, version, data
 		FROM `+schemaQ+`.snapshots
 		WHERE stream_id = $1`, streamID).Scan(
@@ -589,8 +622,11 @@ func (a *PostgresAdapter) DeleteSnapshot(ctx context.Context, streamID string) e
 		return ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
-	_, err := a.db.ExecContext(ctx, `
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
 		DELETE FROM `+schemaQ+`.snapshots WHERE stream_id = $1`, streamID)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to delete snapshot: %w", err)
@@ -605,9 +641,12 @@ func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName stri
 		return 0, ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var pos sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `
+	err = a.db.QueryRowContext(ctx, `
 		SELECT position FROM `+schemaQ+`.checkpoints
 		WHERE projection_name = $1`, projectionName).Scan(&pos)
 
@@ -635,8 +674,11 @@ func (a *PostgresAdapter) SetCheckpoint(ctx context.Context, projectionName stri
 		return ErrAdapterClosed
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
-	_, err := a.db.ExecContext(ctx, `
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
 		INSERT INTO `+schemaQ+`.checkpoints (projection_name, position)
 		VALUES ($1, $2)
 		ON CONFLICT (projection_name) DO UPDATE SET

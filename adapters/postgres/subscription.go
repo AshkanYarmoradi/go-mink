@@ -68,7 +68,10 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 		limit = 1000
 	}
 
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM ` + schemaQ + `.events
@@ -298,7 +301,10 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 
 // loadCategoryEvents loads events for a specific category from a position.
 func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category string, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
-	schemaQ := quoteIdentifier(a.schema)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM ` + schemaQ + `.events

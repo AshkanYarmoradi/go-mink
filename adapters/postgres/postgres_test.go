@@ -153,6 +153,89 @@ func TestQuoteQualifiedTable(t *testing.T) {
 	}
 }
 
+func TestSafeSchemaIdentifier(t *testing.T) {
+	tests := []struct {
+		name        string
+		schema      string
+		expected    string
+		expectError bool
+	}{
+		{
+			name:        "valid simple schema",
+			schema:      "public",
+			expected:    `"public"`,
+			expectError: false,
+		},
+		{
+			name:        "valid schema with underscore",
+			schema:      "my_schema",
+			expected:    `"my_schema"`,
+			expectError: false,
+		},
+		{
+			name:        "valid schema starting with underscore",
+			schema:      "_private",
+			expected:    `"_private"`,
+			expectError: false,
+		},
+		{
+			name:        "empty schema",
+			schema:      "",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with special characters",
+			schema:      "my-schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with spaces",
+			schema:      "my schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with double quotes",
+			schema:      `my"schema`,
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "SQL injection attempt",
+			schema:      "public; DROP SCHEMA public; --",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema starting with number",
+			schema:      "123schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema exceeding max length",
+			schema:      "this_schema_name_is_way_too_long_and_exceeds_the_maximum_allowed_length_of_63_characters",
+			expected:    "",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := safeSchemaIdentifier(tt.schema)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Empty(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
 // getTestDB returns a database connection for testing.
 // Set TEST_DATABASE_URL environment variable to run integration tests.
 func getTestDB(t *testing.T) *sql.DB {
