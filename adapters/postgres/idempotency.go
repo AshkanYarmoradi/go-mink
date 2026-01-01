@@ -77,9 +77,9 @@ func validateIdentifier(name, kind string) error {
 	return nil
 }
 
-// fullTableName returns the fully qualified table name.
+// fullTableName returns the fully qualified and quoted table name.
 func (s *IdempotencyStore) fullTableName() string {
-	return fmt.Sprintf("%s.%s", s.schema, s.table)
+	return quoteQualifiedTable(s.schema, s.table)
 }
 
 // Initialize creates the idempotency table if it doesn't exist.
@@ -92,8 +92,9 @@ func (s *IdempotencyStore) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
+	tableQ := s.fullTableName()
+	query := `
+		CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
 			key VARCHAR(255) PRIMARY KEY,
 			command_type VARCHAR(255) NOT NULL,
 			aggregate_id VARCHAR(255),
@@ -105,9 +106,9 @@ func (s *IdempotencyStore) Initialize(ctx context.Context) error {
 			expires_at TIMESTAMPTZ NOT NULL
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_%s_expires_at ON %s (expires_at);
-		CREATE INDEX IF NOT EXISTS idx_%s_processed_at ON %s (processed_at);
-	`, s.fullTableName(), s.table, s.fullTableName(), s.table, s.fullTableName())
+		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_expires_at") + ` ON ` + tableQ + ` (expires_at);
+		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_processed_at") + ` ON ` + tableQ + ` (processed_at);
+	`
 
 	_, err := s.db.ExecContext(ctx, query)
 	if err != nil {
@@ -119,12 +120,13 @@ func (s *IdempotencyStore) Initialize(ctx context.Context) error {
 
 // Exists checks if a record with the given key exists and is not expired.
 func (s *IdempotencyStore) Exists(ctx context.Context, key string) (bool, error) {
-	query := fmt.Sprintf(`
+	tableQ := s.fullTableName()
+	query := `
 		SELECT EXISTS(
-			SELECT 1 FROM %s 
+			SELECT 1 FROM ` + tableQ + ` 
 			WHERE key = $1 AND expires_at > NOW()
 		)
-	`, s.fullTableName())
+	`
 
 	var exists bool
 	err := s.db.QueryRowContext(ctx, query, key).Scan(&exists)
@@ -148,8 +150,9 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 		}
 	}
 
-	query := fmt.Sprintf(`
-		INSERT INTO %s (
+	tableQ := s.fullTableName()
+	query := `
+		INSERT INTO ` + tableQ + ` (
 			key, command_type, aggregate_id, version, response, error, success, processed_at, expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (key) DO UPDATE SET
@@ -161,7 +164,7 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 			success = EXCLUDED.success,
 			processed_at = EXCLUDED.processed_at,
 			expires_at = EXCLUDED.expires_at
-	`, s.fullTableName())
+	`
 
 	var nullableResponse interface{}
 	if responseJSON != nil {
@@ -204,11 +207,12 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 // Get retrieves an idempotency record by key.
 // Returns nil, nil if the record doesn't exist or is expired.
 func (s *IdempotencyStore) Get(ctx context.Context, key string) (*adapters.IdempotencyRecord, error) {
-	query := fmt.Sprintf(`
+	tableQ := s.fullTableName()
+	query := `
 		SELECT key, command_type, aggregate_id, version, response, error, success, processed_at, expires_at
-		FROM %s
+		FROM ` + tableQ + `
 		WHERE key = $1 AND expires_at > NOW()
-	`, s.fullTableName())
+	`
 
 	var record adapters.IdempotencyRecord
 	var aggregateID sql.NullString
@@ -257,7 +261,8 @@ func (s *IdempotencyStore) Get(ctx context.Context, key string) (*adapters.Idemp
 
 // Delete removes an idempotency record by key.
 func (s *IdempotencyStore) Delete(ctx context.Context, key string) error {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE key = $1`, s.fullTableName())
+	tableQ := s.fullTableName()
+	query := `DELETE FROM ` + tableQ + ` WHERE key = $1`
 
 	_, err := s.db.ExecContext(ctx, query, key)
 	if err != nil {
@@ -272,10 +277,11 @@ func (s *IdempotencyStore) Delete(ctx context.Context, key string) error {
 func (s *IdempotencyStore) Cleanup(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 
-	query := fmt.Sprintf(`
-		DELETE FROM %s 
+	tableQ := s.fullTableName()
+	query := `
+		DELETE FROM ` + tableQ + ` 
 		WHERE processed_at < $1 OR expires_at < NOW()
-	`, s.fullTableName())
+	`
 
 	result, err := s.db.ExecContext(ctx, query, cutoff)
 	if err != nil {
@@ -293,7 +299,8 @@ func (s *IdempotencyStore) Cleanup(ctx context.Context, olderThan time.Duration)
 // Count returns the total number of records in the store.
 // Useful for testing and monitoring.
 func (s *IdempotencyStore) Count(ctx context.Context) (int64, error) {
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, s.fullTableName())
+	tableQ := s.fullTableName()
+	query := `SELECT COUNT(*) FROM ` + tableQ
 
 	var count int64
 	err := s.db.QueryRowContext(ctx, query).Scan(&count)
@@ -307,7 +314,8 @@ func (s *IdempotencyStore) Count(ctx context.Context) (int64, error) {
 // Clear removes all records from the store.
 // Useful for testing.
 func (s *IdempotencyStore) Clear(ctx context.Context) error {
-	query := fmt.Sprintf(`TRUNCATE TABLE %s`, s.fullTableName())
+	tableQ := s.fullTableName()
+	query := `TRUNCATE TABLE ` + tableQ
 
 	_, err := s.db.ExecContext(ctx, query)
 	if err != nil {

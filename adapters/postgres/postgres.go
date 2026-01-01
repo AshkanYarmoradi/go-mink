@@ -19,6 +19,29 @@ import (
 // alphanumeric characters and underscores.
 var schemaNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+// quoteIdentifier quotes a PostgreSQL identifier (schema, table, column name)
+// using double quotes. This prevents SQL injection by ensuring the identifier
+// is treated as a literal name, not as SQL syntax.
+// PostgreSQL identifier quoting: wrap in double quotes, escape internal quotes by doubling.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// quoteQualifiedTable returns a properly quoted schema.table identifier.
+func quoteQualifiedTable(schema, table string) string {
+	return quoteIdentifier(schema) + "." + quoteIdentifier(table)
+}
+
+// safeSchemaIdentifier validates and quotes a schema name for safe use in SQL.
+// This combines validation and quoting to provide defense-in-depth against SQL injection.
+// Returns the quoted schema identifier and any validation error.
+func safeSchemaIdentifier(schema string) (string, error) {
+	if err := validateSchemaName(schema); err != nil {
+		return "", err
+	}
+	return quoteIdentifier(schema), nil
+}
+
 // validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
 func validateSchemaName(schema string) error {
 	if schema == "" {
@@ -182,22 +205,29 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 
 // Migrate runs database migrations.
 func (a *PostgresAdapter) Migrate(ctx context.Context) error {
+	// Validate and quote schema name at point of use for defense-in-depth.
+	// This ensures safety even if adapter state is modified after construction.
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema for migration: %w", err)
+	}
+
 	// Create schema
-	_, err := a.db.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, a.schema))
+	_, err = a.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schemaQ)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to create schema: %w", err)
 	}
 
 	// Create streams table
-	streamsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.streams (
+	streamsSQL := `
+		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.streams (
 			id              BIGSERIAL PRIMARY KEY,
 			stream_id       VARCHAR(500) NOT NULL UNIQUE,
 			category        VARCHAR(250) NOT NULL,
 			version         BIGINT NOT NULL DEFAULT 0,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`, a.schema)
+		)`
 
 	_, err = a.db.ExecContext(ctx, streamsSQL)
 	if err != nil {
@@ -205,8 +235,8 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	}
 
 	// Create events table
-	eventsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.events (
+	eventsSQL := `
+		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.events (
 			global_position BIGSERIAL PRIMARY KEY,
 			stream_id       VARCHAR(500) NOT NULL,
 			version         BIGINT NOT NULL,
@@ -216,7 +246,7 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 			metadata        JSONB,
 			timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(stream_id, version)
-		)`, a.schema)
+		)`
 
 	_, err = a.db.ExecContext(ctx, eventsSQL)
 	if err != nil {
@@ -224,11 +254,13 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	}
 
 	// Create indexes
+	streamsTableQ := quoteQualifiedTable(a.schema, "streams")
+	eventsTableQ := quoteQualifiedTable(a.schema, "events")
 	indexes := []string{
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_streams_category ON %s.streams(category)`, a.schema),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_events_stream ON %s.events(stream_id, version)`, a.schema),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_events_type ON %s.events(event_type)`, a.schema),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON %s.events(timestamp)`, a.schema),
+		`CREATE INDEX IF NOT EXISTS idx_streams_category ON ` + streamsTableQ + `(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_stream ON ` + eventsTableQ + `(stream_id, version)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_type ON ` + eventsTableQ + `(event_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON ` + eventsTableQ + `(timestamp)`,
 	}
 
 	for _, idx := range indexes {
@@ -239,13 +271,13 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	}
 
 	// Create snapshots table
-	snapshotsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.snapshots (
+	snapshotsSQL := `
+		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.snapshots (
 			stream_id       VARCHAR(500) PRIMARY KEY,
 			version         BIGINT NOT NULL,
 			data            BYTEA NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`, a.schema)
+		)`
 
 	_, err = a.db.ExecContext(ctx, snapshotsSQL)
 	if err != nil {
@@ -253,12 +285,12 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	}
 
 	// Create checkpoints table
-	checkpointsSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.checkpoints (
+	checkpointsSQL := `
+		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.checkpoints (
 			projection_name VARCHAR(500) PRIMARY KEY,
 			position        BIGINT NOT NULL DEFAULT 0,
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`, a.schema)
+		)`
 
 	_, err = a.db.ExecContext(ctx, checkpointsSQL)
 	if err != nil {
@@ -272,11 +304,11 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 func (a *PostgresAdapter) MigrationVersion(ctx context.Context) (int, error) {
 	// For now, return 1 if tables exist
 	var exists bool
-	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
+	err := a.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables 
-			WHERE table_schema = '%s' AND table_name = 'events'
-		)`, a.schema)).Scan(&exists)
+			WHERE table_schema = $1 AND table_name = 'events'
+		)`, a.schema).Scan(&exists)
 
 	if err != nil {
 		return 0, err
@@ -311,11 +343,15 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	// Get current stream version with lock
 	var currentVersion int64
 	var streamExists bool
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT version FROM %s.streams 
+	err = tx.QueryRowContext(ctx, `
+		SELECT version FROM `+schemaQ+`.streams 
 		WHERE stream_id = $1 
-		FOR UPDATE`, a.schema), streamID).Scan(&currentVersion)
+		FOR UPDATE`, streamID).Scan(&currentVersion)
 
 	if err == sql.ErrNoRows {
 		streamExists = false
@@ -334,9 +370,9 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	// Create stream if it doesn't exist
 	category := extractCategory(streamID)
 	if !streamExists {
-		_, err = tx.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO %s.streams (stream_id, category, version)
-			VALUES ($1, $2, 0)`, a.schema), streamID, category)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO `+schemaQ+`.streams (stream_id, category, version)
+			VALUES ($1, $2, 0)`, streamID, category)
 		if err != nil {
 			return nil, fmt.Errorf("mink/postgres: failed to create stream: %w", err)
 		}
@@ -356,10 +392,10 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 		var eventID string
 		var timestamp time.Time
 
-		err = tx.QueryRowContext(ctx, fmt.Sprintf(`
-			INSERT INTO %s.events (stream_id, version, event_type, data, metadata)
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO `+schemaQ+`.events (stream_id, version, event_type, data, metadata)
 			VALUES ($1, $2, $3, $4, $5)
-			RETURNING global_position, event_id, timestamp`, a.schema),
+			RETURNING global_position, event_id, timestamp`,
 			streamID, currentVersion, event.Type, event.Data, metadataJSON,
 		).Scan(&globalPosition, &eventID, &timestamp)
 
@@ -380,10 +416,10 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	}
 
 	// Update stream version
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE %s.streams 
+	_, err = tx.ExecContext(ctx, `
+		UPDATE `+schemaQ+`.streams 
 		SET version = $1, updated_at = NOW()
-		WHERE stream_id = $2`, a.schema), currentVersion, streamID)
+		WHERE stream_id = $2`, currentVersion, streamID)
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to update stream version: %w", err)
 	}
@@ -405,11 +441,15 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 		return nil, ErrEmptyStreamID
 	}
 
-	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	rows, err := a.db.QueryContext(ctx, `
 		SELECT global_position, event_id, stream_id, version, event_type, data, metadata, timestamp
-		FROM %s.events
+		FROM `+schemaQ+`.events
 		WHERE stream_id = $1 AND version > $2
-		ORDER BY version`, a.schema), streamID, fromVersion)
+		ORDER BY version`, streamID, fromVersion)
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load events: %w", err)
 	}
@@ -456,13 +496,17 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 		return nil, ErrAdapterClosed
 	}
 
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var info adapters.StreamInfo
 	// Query stream info and count events in one query using a subquery
-	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
+	err = a.db.QueryRowContext(ctx, `
 		SELECT s.stream_id, s.category, s.version, s.created_at, s.updated_at,
-		       (SELECT COUNT(*) FROM %s.events e WHERE e.stream_id = s.stream_id) as event_count
-		FROM %s.streams s
-		WHERE s.stream_id = $1`, a.schema, a.schema), streamID).Scan(
+		       (SELECT COUNT(*) FROM `+schemaQ+`.events e WHERE e.stream_id = s.stream_id) as event_count
+		FROM `+schemaQ+`.streams s
+		WHERE s.stream_id = $1`, streamID).Scan(
 		&info.StreamID,
 		&info.Category,
 		&info.Version,
@@ -487,9 +531,13 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 		return 0, ErrAdapterClosed
 	}
 
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var pos sql.NullInt64
-	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT MAX(global_position) FROM %s.events`, a.schema)).Scan(&pos)
+	err = a.db.QueryRowContext(ctx, `
+		SELECT MAX(global_position) FROM `+schemaQ+`.events`).Scan(&pos)
 	if err != nil {
 		return 0, fmt.Errorf("mink/postgres: failed to get last position: %w", err)
 	}
@@ -520,13 +568,17 @@ func (a *PostgresAdapter) SaveSnapshot(ctx context.Context, streamID string, ver
 		return ErrAdapterClosed
 	}
 
-	_, err := a.db.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s.snapshots (stream_id, version, data)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
+		INSERT INTO `+schemaQ+`.snapshots (stream_id, version, data)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (stream_id) DO UPDATE SET
 			version = EXCLUDED.version,
 			data = EXCLUDED.data,
-			created_at = NOW()`, a.schema), streamID, version, data)
+			created_at = NOW()`, streamID, version, data)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to save snapshot: %w", err)
 	}
@@ -540,11 +592,15 @@ func (a *PostgresAdapter) LoadSnapshot(ctx context.Context, streamID string) (*a
 		return nil, ErrAdapterClosed
 	}
 
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var snapshot adapters.SnapshotRecord
-	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
+	err = a.db.QueryRowContext(ctx, `
 		SELECT stream_id, version, data
-		FROM %s.snapshots
-		WHERE stream_id = $1`, a.schema), streamID).Scan(
+		FROM `+schemaQ+`.snapshots
+		WHERE stream_id = $1`, streamID).Scan(
 		&snapshot.StreamID,
 		&snapshot.Version,
 		&snapshot.Data,
@@ -566,8 +622,12 @@ func (a *PostgresAdapter) DeleteSnapshot(ctx context.Context, streamID string) e
 		return ErrAdapterClosed
 	}
 
-	_, err := a.db.ExecContext(ctx, fmt.Sprintf(`
-		DELETE FROM %s.snapshots WHERE stream_id = $1`, a.schema), streamID)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
+		DELETE FROM `+schemaQ+`.snapshots WHERE stream_id = $1`, streamID)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to delete snapshot: %w", err)
 	}
@@ -581,10 +641,14 @@ func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName stri
 		return 0, ErrAdapterClosed
 	}
 
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
 	var pos sql.NullInt64
-	err := a.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT position FROM %s.checkpoints
-		WHERE projection_name = $1`, a.schema), projectionName).Scan(&pos)
+	err = a.db.QueryRowContext(ctx, `
+		SELECT position FROM `+schemaQ+`.checkpoints
+		WHERE projection_name = $1`, projectionName).Scan(&pos)
 
 	if err == sql.ErrNoRows {
 		return 0, nil
@@ -610,12 +674,16 @@ func (a *PostgresAdapter) SetCheckpoint(ctx context.Context, projectionName stri
 		return ErrAdapterClosed
 	}
 
-	_, err := a.db.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s.checkpoints (projection_name, position)
+	schemaQ, err := safeSchemaIdentifier(a.schema)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: invalid schema: %w", err)
+	}
+	_, err = a.db.ExecContext(ctx, `
+		INSERT INTO `+schemaQ+`.checkpoints (projection_name, position)
 		VALUES ($1, $2)
 		ON CONFLICT (projection_name) DO UPDATE SET
 			position = EXCLUDED.position,
-			updated_at = NOW()`, a.schema), projectionName, position)
+			updated_at = NOW()`, projectionName, position)
 	if err != nil {
 		return fmt.Errorf("mink/postgres: failed to set checkpoint: %w", err)
 	}

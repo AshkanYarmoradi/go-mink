@@ -16,6 +16,226 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Unit tests for quoting functions
+
+func TestQuoteIdentifier(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple identifier",
+			input:    "users",
+			expected: `"users"`,
+		},
+		{
+			name:     "identifier with underscore",
+			input:    "user_events",
+			expected: `"user_events"`,
+		},
+		{
+			name:     "identifier with numbers",
+			input:    "events2024",
+			expected: `"events2024"`,
+		},
+		{
+			name:     "reserved word",
+			input:    "select",
+			expected: `"select"`,
+		},
+		{
+			name:     "another reserved word",
+			input:    "table",
+			expected: `"table"`,
+		},
+		{
+			name:     "identifier with double quote",
+			input:    `my"table`,
+			expected: `"my""table"`,
+		},
+		{
+			name:     "identifier with multiple double quotes",
+			input:    `a"b"c`,
+			expected: `"a""b""c"`,
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: `""`,
+		},
+		{
+			name:     "identifier with spaces",
+			input:    "my table",
+			expected: `"my table"`,
+		},
+		{
+			name:     "identifier with special characters",
+			input:    "table-name",
+			expected: `"table-name"`,
+		},
+		{
+			name:     "uppercase identifier",
+			input:    "MyTable",
+			expected: `"MyTable"`,
+		},
+		{
+			name:     "SQL injection attempt",
+			input:    "users; DROP TABLE users; --",
+			expected: `"users; DROP TABLE users; --"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := quoteIdentifier(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestQuoteQualifiedTable(t *testing.T) {
+	tests := []struct {
+		name     string
+		schema   string
+		table    string
+		expected string
+	}{
+		{
+			name:     "simple schema and table",
+			schema:   "public",
+			table:    "users",
+			expected: `"public"."users"`,
+		},
+		{
+			name:     "custom schema",
+			schema:   "mink",
+			table:    "events",
+			expected: `"mink"."events"`,
+		},
+		{
+			name:     "schema with underscore",
+			schema:   "my_schema",
+			table:    "my_table",
+			expected: `"my_schema"."my_table"`,
+		},
+		{
+			name:     "reserved words",
+			schema:   "select",
+			table:    "from",
+			expected: `"select"."from"`,
+		},
+		{
+			name:     "with double quotes",
+			schema:   `my"schema`,
+			table:    `my"table`,
+			expected: `"my""schema"."my""table"`,
+		},
+		{
+			name:     "SQL injection in schema",
+			schema:   "public; DROP SCHEMA public; --",
+			table:    "users",
+			expected: `"public; DROP SCHEMA public; --"."users"`,
+		},
+		{
+			name:     "SQL injection in table",
+			schema:   "public",
+			table:    "users; DROP TABLE users; --",
+			expected: `"public"."users; DROP TABLE users; --"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := quoteQualifiedTable(tt.schema, tt.table)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestSafeSchemaIdentifier(t *testing.T) {
+	tests := []struct {
+		name        string
+		schema      string
+		expected    string
+		expectError bool
+	}{
+		{
+			name:        "valid simple schema",
+			schema:      "public",
+			expected:    `"public"`,
+			expectError: false,
+		},
+		{
+			name:        "valid schema with underscore",
+			schema:      "my_schema",
+			expected:    `"my_schema"`,
+			expectError: false,
+		},
+		{
+			name:        "valid schema starting with underscore",
+			schema:      "_private",
+			expected:    `"_private"`,
+			expectError: false,
+		},
+		{
+			name:        "empty schema",
+			schema:      "",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with special characters",
+			schema:      "my-schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with spaces",
+			schema:      "my schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema with double quotes",
+			schema:      `my"schema`,
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "SQL injection attempt",
+			schema:      "public; DROP SCHEMA public; --",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema starting with number",
+			schema:      "123schema",
+			expected:    "",
+			expectError: true,
+		},
+		{
+			name:        "schema exceeding max length",
+			schema:      "this_schema_name_is_way_too_long_and_exceeds_the_maximum_allowed_length_of_63_characters",
+			expected:    "",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := safeSchemaIdentifier(tt.schema)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Empty(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
 // getTestDB returns a database connection for testing.
 // Set TEST_DATABASE_URL environment variable to run integration tests.
 func getTestDB(t *testing.T) *sql.DB {
@@ -56,11 +276,14 @@ func newTestAdapter(t *testing.T, db *sql.DB, opts ...Option) *PostgresAdapter {
 
 // cleanupSchema drops the test schema.
 func cleanupSchema(t *testing.T, db *sql.DB, schema string) {
-	_, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+	schemaQ := quoteIdentifier(schema)
+	_, err := db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	require.NoError(t, err)
 }
 
 // newTestSchema creates a unique test schema name.
+// The generated names contain only alphanumeric characters and underscores,
+// making them safe for use in SQL queries.
 func newTestSchema() string {
 	return fmt.Sprintf("test_%d", time.Now().UnixNano())
 }
@@ -895,7 +1118,11 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 
 	schema := newTestSchema()
 	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+		schemaQ, err := safeSchemaIdentifier(schema)
+		if err != nil {
+			return
+		}
+		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	}()
 
 	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
@@ -925,7 +1152,11 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 
 	schema := newTestSchema()
 	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+		schemaQ, err := safeSchemaIdentifier(schema)
+		if err != nil {
+			return
+		}
+		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 	}()
 
 	adapter, err := NewAdapterWithDB(db, WithSchema(schema))

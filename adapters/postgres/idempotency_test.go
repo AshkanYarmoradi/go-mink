@@ -70,7 +70,7 @@ func TestIdempotencyStore_WithOptions(t *testing.T) {
 		store := NewIdempotencyStore(adapter.db,
 			WithIdempotencySchema("mink"),
 			WithIdempotencyTable("custom_idempotency"))
-		assert.Equal(t, "mink.custom_idempotency", store.fullTableName())
+		assert.Equal(t, `"mink"."custom_idempotency"`, store.fullTableName())
 	})
 }
 
