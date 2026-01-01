@@ -5,30 +5,28 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/AshkanYarmoradi/go-mink.svg)](https://pkg.go.dev/github.com/AshkanYarmoradi/go-mink)
 [![Go Report Card](https://goreportcard.com/badge/github.com/AshkanYarmoradi/go-mink)](https://goreportcard.com/report/github.com/AshkanYarmoradi/go-mink)
 [![Build Status](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg)](https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml)
-[![Coverage](https://img.shields.io/badge/coverage-90%25+-brightgreen)](https://github.com/AshkanYarmoradi/go-mink)
+[![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/AshkanYarmoradi/go-mink)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 
 ---
 
-## 🚀 Current Status: v0.2.0 (Phase 2 Complete)
+## 🚀 Current Status: v0.3.0 (Phase 3 Complete)
 
-Phase 2 (CQRS & Commands) is complete with:
-- ✅ Command Bus with middleware pipeline
-- ✅ Generic command handlers with type safety
-- ✅ Aggregate handlers for domain operations
-- ✅ Idempotency middleware with PostgreSQL/Memory stores
-- ✅ Validation, Recovery, Logging, Metrics middleware
-- ✅ Correlation & Causation ID tracking
-- ✅ Retry, Timeout, and Tenant middleware
+Phase 3 (Projections & Read Models) is complete with:
+- ✅ Projection Engine (inline, async, live projections)
+- ✅ Read Model Repository with fluent query builder
+- ✅ Event subscriptions (catch-up, polling, filtered)
+- ✅ Checkpoint management for async projections
+- ✅ Projection rebuilding (single and parallel)
+- ✅ Retry policies with exponential backoff
+- ✅ 95%+ test coverage
 
-**Phase 1 features included:**
-- ✅ Event Store with optimistic concurrency
-- ✅ PostgreSQL adapter (production-ready)
-- ✅ In-Memory adapter (for testing)
-- ✅ Aggregate base implementation
-- ✅ JSON serialization with type registry
-- ✅ 90%+ test coverage
+**Previous phases included:**
+- ✅ Event Store with optimistic concurrency (v0.1.0)
+- ✅ PostgreSQL & In-Memory adapters (v0.1.0)
+- ✅ Command Bus with middleware pipeline (v0.2.0)
+- ✅ Idempotency, Validation, Correlation tracking (v0.2.0)
 
 ---
 
@@ -55,7 +53,9 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 📋 **Command Bus** | ✅ v0.2.0 | Full CQRS with command handlers and middleware |
 | 🔐 **Idempotency** | ✅ v0.2.0 | Prevent duplicate command processing |
 | 🔗 **Correlation/Causation** | ✅ v0.2.0 | Distributed tracing support |
-| 📖 **Projections** | 🔜 v0.3.0 | Automatic projection management |
+| 📖 **Projections** | ✅ v0.3.0 | Inline, async, and live projection engine |
+| 📊 **Read Models** | ✅ v0.3.0 | Generic repository with query builder |
+| 📡 **Subscriptions** | ✅ v0.3.0 | Catch-up and polling event subscriptions |
 | 🛠️ **CLI Tool** | 🔜 v0.4.0 | Code generation, migrations, and diagnostics |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
 | 🔄 **Sagas** | 🔜 v0.5.0 | Process manager for long-running workflows |
@@ -150,6 +150,71 @@ func main() {
     }
     
     fmt.Printf("Created order: %s (version %d)\n", result.AggregateID, result.Version)
+}
+```
+
+## Projections & Read Models (v0.3.0)
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+)
+
+// Define a read model
+type OrderSummary struct {
+    OrderID    string
+    CustomerID string
+    Status     string
+    ItemCount  int
+    Total      float64
+}
+
+// Define a projection
+type OrderSummaryProjection struct {
+    mink.ProjectionBase
+    repo *mink.InMemoryRepository[OrderSummary]
+}
+
+func (p *OrderSummaryProjection) Apply(ctx context.Context, event mink.StoredEvent) error {
+    // Transform events into read model updates
+    // ...
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Create projection engine
+    checkpointStore := memory.NewCheckpointStore()
+    engine := mink.NewProjectionEngine(store,
+        mink.WithCheckpointStore(checkpointStore),
+    )
+
+    // Register projections
+    repo := mink.NewInMemoryRepository[OrderSummary](func(o *OrderSummary) string {
+        return o.OrderID
+    })
+    engine.RegisterInline(&OrderSummaryProjection{repo: repo})
+
+    // Start engine
+    engine.Start(ctx)
+    defer engine.Stop(ctx)
+
+    // Query read models with fluent API
+    orders, _ := repo.Query(ctx, mink.NewQuery().
+        Where("Status", mink.Eq, "Pending").
+        OrderByDesc("Total").
+        WithLimit(10))
+
+    // Rebuild projections when needed
+    rebuilder := mink.NewProjectionRebuilder(store, checkpointStore)
+    rebuilder.RebuildInline(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 }
 ```
 
