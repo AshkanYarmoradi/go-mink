@@ -374,3 +374,77 @@ func TestQueryResult(t *testing.T) {
 	assert.Equal(t, int64(100), result.TotalCount)
 	assert.True(t, result.HasMore)
 }
+
+func TestInMemoryRepository_Exists(t *testing.T) {
+	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+	ctx := context.Background()
+
+	t.Run("returns false for missing item", func(t *testing.T) {
+		exists, err := repo.Exists(ctx, "missing")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("returns true for existing item", func(t *testing.T) {
+		_ = repo.Insert(ctx, &TestReadModel{ID: "exists", Name: "Test"})
+
+		exists, err := repo.Exists(ctx, "exists")
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("returns false after delete", func(t *testing.T) {
+		_ = repo.Insert(ctx, &TestReadModel{ID: "del", Name: "ToDelete"})
+		_ = repo.Delete(ctx, "del")
+
+		exists, err := repo.Exists(ctx, "del")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+}
+
+func TestInMemoryRepository_GetAll(t *testing.T) {
+	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+	ctx := context.Background()
+
+	t.Run("returns empty slice when empty", func(t *testing.T) {
+		results, err := repo.GetAll(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+
+	t.Run("returns all items", func(t *testing.T) {
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "One"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Two"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "3", Name: "Three"})
+
+		results, err := repo.GetAll(ctx)
+		require.NoError(t, err)
+		assert.Len(t, results, 3)
+
+		// Verify all items are present (order may vary)
+		ids := make(map[string]bool)
+		for _, r := range results {
+			ids[r.ID] = true
+		}
+		assert.True(t, ids["1"])
+		assert.True(t, ids["2"])
+		assert.True(t, ids["3"])
+	})
+
+	t.Run("returns updated count after changes", func(t *testing.T) {
+		repo2 := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+
+		_ = repo2.Insert(ctx, &TestReadModel{ID: "a"})
+		_ = repo2.Insert(ctx, &TestReadModel{ID: "b"})
+
+		results, _ := repo2.GetAll(ctx)
+		assert.Len(t, results, 2)
+
+		_ = repo2.Delete(ctx, "a")
+
+		results, _ = repo2.GetAll(ctx)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "b", results[0].ID)
+	})
+}

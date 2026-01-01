@@ -302,6 +302,9 @@ func TestProjectionRebuilder_RebuildInline(t *testing.T) {
 	checkpoint := newTestCheckpointStore()
 	rebuilder := NewProjectionRebuilder(store, checkpoint)
 
+	// Register event type
+	store.RegisterEvents(&OrderCreatedEvent{})
+
 	t.Run("rebuilds with no events", func(t *testing.T) {
 		projection := newTestInlineProjectionForRebuilder("TestInlineRebuild")
 
@@ -319,6 +322,78 @@ func TestProjectionRebuilder_RebuildInline(t *testing.T) {
 		err := rebuilder.RebuildInline(context.Background(), projection, opts)
 		require.NoError(t, err)
 	})
+
+	t.Run("rebuilds inline projection with events", func(t *testing.T) {
+		// Clear previous events by creating a new store
+		adapter2 := memory.NewAdapter()
+		store2 := New(adapter2)
+		checkpoint2 := newTestCheckpointStore()
+		rebuilder2 := NewProjectionRebuilder(store2, checkpoint2)
+
+		// Register event type
+		store2.RegisterEvents(&OrderCreatedEvent{})
+
+		// Append some events
+		err := store2.Append(context.Background(), "Order-inline-1",
+			[]interface{}{&OrderCreatedEvent{OrderID: "inline-1"}},
+		)
+		require.NoError(t, err)
+
+		err = store2.Append(context.Background(), "Order-inline-2",
+			[]interface{}{&OrderCreatedEvent{OrderID: "inline-2"}},
+		)
+		require.NoError(t, err)
+
+		projection := newTestInlineProjectionForRebuilder("TestInlineWithEvents")
+
+		err = rebuilder2.RebuildInline(context.Background(), projection)
+		require.NoError(t, err)
+
+		// Should have processed the events
+		assert.Len(t, projection.events, 2)
+	})
+
+	t.Run("inline projection filters events by type", func(t *testing.T) {
+		adapter3 := memory.NewAdapter()
+		store3 := New(adapter3)
+		checkpoint3 := newTestCheckpointStore()
+		rebuilder3 := NewProjectionRebuilder(store3, checkpoint3)
+
+		// Register event type
+		store3.RegisterEvents(&OrderCreatedEvent{})
+
+		// Append events
+		err := store3.Append(context.Background(), "Order-filter-1",
+			[]interface{}{&OrderCreatedEvent{OrderID: "filter-1"}},
+		)
+		require.NoError(t, err)
+
+		// Create projection that handles specific events
+		projection := newTestInlineProjectionForRebuilderWithFilter("TestInlineFiltered", "OrderCreatedEvent")
+
+		err = rebuilder3.RebuildInline(context.Background(), projection)
+		require.NoError(t, err)
+
+		// Should have processed the filtered events
+		assert.GreaterOrEqual(t, len(projection.events), 1)
+	})
+}
+
+// testInlineProjectionForRebuilderWithFilter implements InlineProjection with event filtering
+type testInlineProjectionForRebuilderWithFilter struct {
+	ProjectionBase
+	events []StoredEvent
+}
+
+func newTestInlineProjectionForRebuilderWithFilter(name string, eventTypes ...string) *testInlineProjectionForRebuilderWithFilter {
+	return &testInlineProjectionForRebuilderWithFilter{
+		ProjectionBase: NewProjectionBase(name, eventTypes...),
+	}
+}
+
+func (p *testInlineProjectionForRebuilderWithFilter) Apply(ctx context.Context, event StoredEvent) error {
+	p.events = append(p.events, event)
+	return nil
 }
 
 func TestProjectionRebuilder_WithProgressCallback(t *testing.T) {

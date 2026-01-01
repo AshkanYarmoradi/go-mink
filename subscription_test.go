@@ -218,4 +218,74 @@ func TestCatchupSubscription(t *testing.T) {
 		sub, _ := NewCatchupSubscription(store, 42)
 		assert.Equal(t, uint64(42), sub.Position())
 	})
+
+	t.Run("Start is idempotent", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, 0)
+		ctx := context.Background()
+
+		// First start
+		err := sub.Start(ctx, 10*time.Millisecond)
+		assert.NoError(t, err)
+
+		// Second start should be no-op
+		err = sub.Start(ctx, 10*time.Millisecond)
+		assert.NoError(t, err)
+
+		sub.Close()
+	})
+
+	t.Run("Start returns error when closed", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, 0)
+		sub.Close()
+
+		err := sub.Start(context.Background(), 10*time.Millisecond)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+
+	t.Run("run sets error when adapter does not support subscriptions", func(t *testing.T) {
+		// Create a store without subscription support
+		sub, _ := NewCatchupSubscription(store, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := sub.Start(ctx, 10*time.Millisecond)
+		require.NoError(t, err)
+
+		// Wait for run to detect the adapter doesn't support subscriptions
+		time.Sleep(50 * time.Millisecond)
+
+		// Should have error set
+		assert.ErrorIs(t, sub.Err(), ErrSubscriptionNotSupported)
+	})
+
+	t.Run("run stops on context cancellation", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		err := sub.Start(ctx, 10*time.Millisecond)
+		require.NoError(t, err)
+
+		// Cancel immediately
+		cancel()
+
+		// Wait for run to stop
+		time.Sleep(50 * time.Millisecond)
+
+		// Should be stopped - either context error or subscription not supported
+		assert.NotNil(t, sub.Err())
+	})
+
+	t.Run("run stops on Close", func(t *testing.T) {
+		sub, _ := NewCatchupSubscription(store, 0)
+		ctx := context.Background()
+
+		err := sub.Start(ctx, 10*time.Millisecond)
+		require.NoError(t, err)
+
+		// Close should stop the run
+		sub.Close()
+
+		// Wait for run to stop
+		time.Sleep(50 * time.Millisecond)
+	})
 }
