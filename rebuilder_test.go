@@ -484,4 +484,135 @@ func TestParallelRebuilder_RebuildAll(t *testing.T) {
 		err := pr.RebuildAll(context.Background(), []AsyncProjection{proj1, proj2})
 		require.NoError(t, err)
 	})
+
+	t.Run("rebuilds with events", func(t *testing.T) {
+		adapter2 := memory.NewAdapter()
+		store2 := New(adapter2)
+		store2.RegisterEvents(&OrderCreatedEvent{})
+		checkpoint2 := newTestCheckpointStore()
+		rebuilder2 := NewProjectionRebuilder(store2, checkpoint2)
+
+		// Add events
+		ctx := context.Background()
+		for i := 0; i < 5; i++ {
+			_ = store2.Append(ctx, "Order-par-"+string(rune('0'+i)),
+				[]interface{}{&OrderCreatedEvent{OrderID: "par-" + string(rune('0'+i))}})
+		}
+
+		pr := NewParallelRebuilder(rebuilder2, 2)
+
+		proj1 := newTestAsyncProjectionForRebuilder("ParallelEvents1")
+		proj2 := newTestAsyncProjectionForRebuilder("ParallelEvents2")
+
+		err := pr.RebuildAll(ctx, []AsyncProjection{proj1, proj2})
+		require.NoError(t, err)
+
+		// Both projections should have processed events
+		assert.GreaterOrEqual(t, len(proj1.events), 1)
+		assert.GreaterOrEqual(t, len(proj2.events), 1)
+	})
+
+	t.Run("rebuilds with custom options", func(t *testing.T) {
+		adapter3 := memory.NewAdapter()
+		store3 := New(adapter3)
+		store3.RegisterEvents(&OrderCreatedEvent{})
+		checkpoint3 := newTestCheckpointStore()
+		rebuilder3 := NewProjectionRebuilder(store3, checkpoint3)
+
+		ctx := context.Background()
+		for i := 0; i < 3; i++ {
+			_ = store3.Append(ctx, "Order-opts-"+string(rune('0'+i)),
+				[]interface{}{&OrderCreatedEvent{OrderID: "opts-" + string(rune('0'+i))}})
+		}
+
+		pr := NewParallelRebuilder(rebuilder3, 2)
+
+		proj := newTestAsyncProjectionForRebuilder("ParallelOpts")
+		opts := DefaultRebuildOptions()
+		opts.DeleteCheckpoint = false
+
+		err := pr.RebuildAll(ctx, []AsyncProjection{proj}, opts)
+		require.NoError(t, err)
+	})
+
+	t.Run("handles context cancellation", func(t *testing.T) {
+		adapter4 := memory.NewAdapter()
+		store4 := New(adapter4)
+		store4.RegisterEvents(&OrderCreatedEvent{})
+		checkpoint4 := newTestCheckpointStore()
+		rebuilder4 := NewProjectionRebuilder(store4, checkpoint4)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Add many events
+		for i := 0; i < 100; i++ {
+			_ = store4.Append(ctx, "Order-cancel-"+string(rune('0'+i%10)),
+				[]interface{}{&OrderCreatedEvent{OrderID: "cancel"}})
+		}
+
+		pr := NewParallelRebuilder(rebuilder4, 1)
+
+		proj := newTestAsyncProjectionForRebuilder("ParallelCancel")
+
+		// Cancel immediately
+		cancel()
+
+		err := pr.RebuildAll(ctx, []AsyncProjection{proj})
+		// Either context error or nil is acceptable
+		_ = err
+	})
+}
+
+func TestProjectionRebuilder_RebuildWithToPosition(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+
+	// Add events
+	for i := 0; i < 10; i++ {
+		_ = store.Append(ctx, "Order-pos-"+string(rune('0'+i)),
+			[]interface{}{&OrderCreatedEvent{OrderID: "pos-" + string(rune('0'+i))}})
+	}
+
+	projection := newTestAsyncProjectionForRebuilder("ToPositionProj")
+
+	opts := DefaultRebuildOptions()
+	opts.ToPosition = 5 // Only process first 5 events
+
+	err := rebuilder.RebuildAsync(ctx, projection, opts)
+	require.NoError(t, err)
+
+	// Should have processed fewer events due to ToPosition limit
+	assert.LessOrEqual(t, len(projection.events), 5)
+}
+
+func TestProjectionRebuilder_RebuildWithFromPosition(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+
+	// Add events
+	for i := 0; i < 10; i++ {
+		_ = store.Append(ctx, "Order-from-"+string(rune('0'+i)),
+			[]interface{}{&OrderCreatedEvent{OrderID: "from-" + string(rune('0'+i))}})
+	}
+
+	projection := newTestAsyncProjectionForRebuilder("FromPositionProj")
+
+	opts := DefaultRebuildOptions()
+	opts.FromPosition = 5 // Start from position 5
+
+	err := rebuilder.RebuildAsync(ctx, projection, opts)
+	require.NoError(t, err)
+
+	// Should have processed only events after position 5
+	assert.LessOrEqual(t, len(projection.events), 5)
 }

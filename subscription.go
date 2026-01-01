@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
 // Subscription represents an active event subscription.
@@ -194,10 +196,15 @@ func (s *CatchupSubscription) Start(ctx context.Context, pollInterval time.Durat
 func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duration) {
 	defer close(s.eventCh)
 
-	// Get subscription adapter
+	// Get subscription adapter - try mink.SubscriptionAdapter first, then adapters.SubscriptionAdapter
 	adapter := s.store.Adapter()
-	subAdapter, ok := adapter.(SubscriptionAdapter)
-	if !ok {
+	var subAdapter subscriptionAdapterWrapper
+
+	if sa, ok := adapter.(SubscriptionAdapter); ok {
+		subAdapter = &minkSubscriptionAdapter{sa}
+	} else if aa, ok := adapter.(adapters.SubscriptionAdapter); ok {
+		subAdapter = &adaptersSubscriptionAdapter{aa}
+	} else {
 		s.setErr(ErrSubscriptionNotSupported)
 		return
 	}
@@ -376,8 +383,13 @@ func (s *PollingSubscription) poll(ctx context.Context, interval time.Duration) 
 		case <-ticker.C:
 			// Load events from current position using SubscriptionAdapter if available
 			adapter := s.store.Adapter()
-			subAdapter, ok := adapter.(SubscriptionAdapter)
-			if !ok {
+			var subAdapter subscriptionAdapterWrapper
+
+			if sa, ok := adapter.(SubscriptionAdapter); ok {
+				subAdapter = &minkSubscriptionAdapter{sa}
+			} else if aa, ok := adapter.(adapters.SubscriptionAdapter); ok {
+				subAdapter = &adaptersSubscriptionAdapter{aa}
+			} else {
 				// Adapter doesn't support subscription, skip this poll cycle
 				continue
 			}
@@ -439,4 +451,38 @@ func (s *PollingSubscription) setErr(err error) {
 	s.errMu.Lock()
 	s.err = err
 	s.errMu.Unlock()
+}
+
+// subscriptionAdapterWrapper provides a unified interface for subscription adapters.
+// This allows CatchupSubscription to work with both mink.SubscriptionAdapter and
+// adapters.SubscriptionAdapter implementations.
+type subscriptionAdapterWrapper interface {
+	LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
+}
+
+// minkSubscriptionAdapter wraps a mink.SubscriptionAdapter.
+type minkSubscriptionAdapter struct {
+	adapter SubscriptionAdapter
+}
+
+func (w *minkSubscriptionAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	return w.adapter.LoadFromPosition(ctx, fromPosition, limit)
+}
+
+// adaptersSubscriptionAdapter wraps an adapters.SubscriptionAdapter and converts events.
+type adaptersSubscriptionAdapter struct {
+	adapter adapters.SubscriptionAdapter
+}
+
+func (w *adaptersSubscriptionAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	events, err := w.adapter.LoadFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]StoredEvent, len(events))
+	for i, e := range events {
+		result[i] = convertStoredEventFromAdapter(e)
+	}
+	return result, nil
 }

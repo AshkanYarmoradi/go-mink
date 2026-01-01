@@ -615,6 +615,350 @@ func TestProjectionEngine_NotifyLiveProjections(t *testing.T) {
 	assert.Equal(t, "OrderCreated", event.Type)
 }
 
+func TestProjectionEngine_RegisterLive_WithOptions(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	t.Run("registers live projection with custom buffer size", func(t *testing.T) {
+		projection := newTestLiveProjection("LiveWithOpts", true, "OrderCreated")
+		opts := LiveOptions{BufferSize: 500}
+		err := engine.RegisterLive(projection, opts)
+		require.NoError(t, err)
+	})
+
+	t.Run("registers live projection with zero buffer size uses default", func(t *testing.T) {
+		projection := newTestLiveProjection("LiveZeroBuffer", true)
+		opts := LiveOptions{BufferSize: 0}
+		err := engine.RegisterLive(projection, opts)
+		require.NoError(t, err)
+	})
+
+	t.Run("registers live projection with negative buffer size uses default", func(t *testing.T) {
+		projection := newTestLiveProjection("LiveNegBuffer", true)
+		opts := LiveOptions{BufferSize: -100}
+		err := engine.RegisterLive(projection, opts)
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects projection with empty name", func(t *testing.T) {
+		projection := newTestLiveProjection("", true)
+		err := engine.RegisterLive(projection)
+		assert.ErrorIs(t, err, ErrEmptyProjectionName)
+	})
+}
+
+func TestProjectionEngine_RegisterInline_EmptyName(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store)
+
+	projection := newTestInlineProjection("")
+	err := engine.RegisterInline(projection)
+	assert.ErrorIs(t, err, ErrEmptyProjectionName)
+}
+
+func TestProjectionEngine_RegisterAsync_EmptyName(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store)
+
+	projection := newTestAsyncProjection("")
+	err := engine.RegisterAsync(projection)
+	assert.ErrorIs(t, err, ErrEmptyProjectionName)
+}
+
+func TestProjectionEngine_Stop_Timeout(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	// Register projections
+	_ = engine.RegisterAsync(newTestAsyncProjection("AsyncStopTimeout"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = engine.Start(ctx)
+
+	// Stop with very short timeout (should still succeed for memory adapter)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer stopCancel()
+
+	err := engine.Stop(stopCtx)
+	require.NoError(t, err)
+}
+
+func TestProjectionEngine_LiveProjection_WithEvents(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	projection := newTestLiveProjection("LiveWithEvents", true, "ProjectionTestEvent")
+	_ = engine.RegisterLive(projection)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = engine.Start(ctx)
+	defer func() { _ = engine.Stop(context.Background()) }()
+
+	// Wait for live worker to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Append event
+	err := store.Append(ctx, "Order-live-1", []interface{}{&ProjectionTestEvent{OrderID: "live-1"}})
+	require.NoError(t, err)
+
+	// Notify live projections
+	events := []StoredEvent{
+		{ID: "1", Type: "ProjectionTestEvent", Data: []byte("{}")},
+	}
+	engine.NotifyLiveProjections(ctx, events)
+
+	// Wait for processing
+	_, received := projection.WaitForEvent(200 * time.Millisecond)
+	assert.True(t, received)
+}
+
+func TestProjectionEngine_NotifyLiveProjections_NoProjections(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	ctx := context.Background()
+	events := []StoredEvent{{ID: "1", Type: "Test"}}
+
+	// Should not panic with no live projections
+	engine.NotifyLiveProjections(ctx, events)
+}
+
+func TestProjectionEngine_NotifyLiveProjections_NotRunning(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	projection := newTestLiveProjection("LiveNotRunning", true)
+	_ = engine.RegisterLive(projection)
+
+	ctx := context.Background()
+	events := []StoredEvent{{ID: "1", Type: "Test"}}
+
+	// Should not panic when engine is not running
+	engine.NotifyLiveProjections(ctx, events)
+}
+
+func TestProjectionEngine_AsyncWorker_BatchProcessing(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	checkpoint := newTestCheckpointStore()
+	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+
+	projection := newTestAsyncProjection("AsyncBatch", "ProjectionTestEvent")
+	projection.EnableBatch() // Enable batch processing
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Append events before starting
+	for i := 0; i < 5; i++ {
+		_ = store.Append(ctx, "Order-batch-"+string(rune('0'+i)), []interface{}{&ProjectionTestEvent{OrderID: "batch"}})
+	}
+
+	_ = engine.Start(ctx)
+
+	// Wait for processing
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_AsyncWorker_RetryPolicy(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+
+	projection := newTestAsyncProjection("AsyncRetry")
+	opts := DefaultAsyncOptions()
+	opts.RetryPolicy = NoRetry()
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_ = engine.Start(ctx)
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+}
+
+// Test for DefaultLiveOptions
+func TestDefaultLiveOptions(t *testing.T) {
+	opts := DefaultLiveOptions()
+	assert.Equal(t, 1000, opts.BufferSize)
+}
+
+// projTestLogger is a simple logger for projection engine tests
+type projTestLogger struct {
+	debugLogs []string
+	infoLogs  []string
+	warnLogs  []string
+	errorLogs []string
+}
+
+func (l *projTestLogger) Debug(msg string, args ...interface{}) {
+	l.debugLogs = append(l.debugLogs, msg)
+}
+
+func (l *projTestLogger) Info(msg string, args ...interface{}) {
+	l.infoLogs = append(l.infoLogs, msg)
+}
+
+func (l *projTestLogger) Warn(msg string, args ...interface{}) {
+	l.warnLogs = append(l.warnLogs, msg)
+}
+
+func (l *projTestLogger) Error(msg string, args ...interface{}) {
+	l.errorLogs = append(l.errorLogs, msg)
+}
+
+func TestProjectionEngine_WithLogger(t *testing.T) {
+	store := &EventStore{}
+	logger := &projTestLogger{}
+	engine := NewProjectionEngine(store,
+		WithCheckpointStore(newTestCheckpointStore()),
+		WithProjectionLogger(logger),
+	)
+
+	projection := newTestAsyncProjection("LoggedProj")
+	_ = engine.RegisterAsync(projection)
+
+	assert.Contains(t, logger.infoLogs, "Registered async projection")
+}
+
+func TestProjectionEngine_ProcessInlineProjections_EmptyEvents(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store)
+
+	projection := newTestInlineProjection("EmptyEvents")
+	_ = engine.RegisterInline(projection)
+
+	err := engine.ProcessInlineProjections(context.Background(), []StoredEvent{})
+	require.NoError(t, err)
+	assert.Empty(t, projection.Events())
+}
+
+func TestProjectionEngine_ProcessInlineProjections_NoProjections(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store)
+
+	events := []StoredEvent{{ID: "1", Type: "Test"}}
+	err := engine.ProcessInlineProjections(context.Background(), events)
+	require.NoError(t, err)
+}
+
+func TestProjectionEngine_GetStatus_InlineActive(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store)
+
+	projection := newTestInlineProjection("InlineActive")
+	_ = engine.RegisterInline(projection)
+
+	status, err := engine.GetStatus("InlineActive")
+	require.NoError(t, err)
+	assert.Equal(t, ProjectionStateRunning, status.State) // Inline is always "running"
+}
+
+func TestAsyncProjectionWorker_ProcessBatch_WithCheckpoint(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	checkpoint := newTestCheckpointStore()
+	logger := &testLogger{}
+	engine := NewProjectionEngine(store,
+		WithCheckpointStore(checkpoint),
+		WithProjectionLogger(logger),
+	)
+
+	projection := newTestAsyncProjection("CheckpointProj", "ProjectionTestEvent")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	opts.StartFromBeginning = true
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Append events
+	_ = store.Append(ctx, "Order-cp-1", []interface{}{&ProjectionTestEvent{OrderID: "cp1"}})
+
+	_ = engine.Start(ctx)
+
+	// Wait for checkpoint to be saved
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Verify checkpoint was saved
+	pos, _ := checkpoint.GetCheckpoint(context.Background(), "CheckpointProj")
+	assert.Greater(t, pos, uint64(0))
+}
+
+// Test projection filtering
+func TestProjectionEngine_AsyncWorker_EventFiltering(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	checkpoint := newTestCheckpointStore()
+	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+
+	// Projection only handles specific events
+	projection := newTestAsyncProjection("FilteredAsync", "DifferentEventType")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	opts.StartFromBeginning = true
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Append event of different type
+	_ = store.Append(ctx, "Order-filter-1", []interface{}{&ProjectionTestEvent{OrderID: "filter1"}})
+
+	_ = engine.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Projection should not have received the event (different type)
+	assert.Empty(t, projection.Events())
+}
+
+// Test context cancellation during NotifyLiveProjections
+func TestProjectionEngine_NotifyLiveProjections_ContextCancel(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	projection := newTestLiveProjection("LiveCancel", true)
+	_ = engine.RegisterLive(projection)
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	_ = engine.Start(runCtx)
+	time.Sleep(50 * time.Millisecond)
+
+	// Create context that's already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	events := []StoredEvent{{ID: "1", Type: "Test"}}
+	engine.NotifyLiveProjections(ctx, events)
+
+	runCancel()
+	_ = engine.Stop(context.Background())
+}
+
 // --- Test Async Workers with Real Store ---
 
 // ProjectionTestEvent is a test event type for projection tests

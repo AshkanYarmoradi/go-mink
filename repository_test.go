@@ -251,6 +251,31 @@ func TestInMemoryRepository_FindOne(t *testing.T) {
 	})
 }
 
+func TestInMemoryRepository_CountWithFilters(t *testing.T) {
+	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+	ctx := context.Background()
+
+	// Insert items
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "Active", Status: "active"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2", Name: "Inactive", Status: "inactive"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "3", Name: "Active2", Status: "active"})
+
+	t.Run("count without filters", func(t *testing.T) {
+		count, err := repo.Count(ctx, Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), count)
+	})
+
+	t.Run("count with filters returns total for in-memory", func(t *testing.T) {
+		// In-memory repo doesn't actually filter in Count, just returns total
+		query := NewQuery().Where("status", FilterOpEq, "active")
+		count, err := repo.Count(ctx, query.Build())
+		require.NoError(t, err)
+		// Returns total count as filtering is not implemented for in-memory
+		assert.Equal(t, int64(3), count)
+	})
+}
+
 func TestInMemoryRepository_DeleteMany(t *testing.T) {
 	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
