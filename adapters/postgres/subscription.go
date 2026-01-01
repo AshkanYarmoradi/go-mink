@@ -57,6 +57,81 @@ func (c *subscriptionConfig) handleError(err error, context string) {
 	}
 }
 
+// eventLoader is a function that loads events and returns the new position.
+// The position type is generic to support both uint64 (global position) and int64 (version).
+type eventLoader[P any] func(ctx context.Context, position P) ([]adapters.StoredEvent, P, error)
+
+// runPollingLoop runs a generic polling loop for subscriptions.
+// It handles error retries, context cancellation, and event delivery.
+func runPollingLoop[P any](
+	ctx context.Context,
+	cfg subscriptionConfig,
+	ch chan adapters.StoredEvent,
+	errorContext string,
+	initialPosition P,
+	loader eventLoader[P],
+) {
+	defer close(ch)
+	ticker := time.NewTicker(cfg.pollInterval)
+	defer ticker.Stop()
+
+	currentPosition := initialPosition
+	consecutiveErrors := 0
+
+	for {
+		// Check for shutdown before polling
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Load events from current position
+		events, newPosition, err := loader(ctx, currentPosition)
+		if err != nil {
+			consecutiveErrors++
+			if consecutiveErrors >= cfg.maxRetries {
+				cfg.handleError(err, errorContext)
+				consecutiveErrors = 0 // Reset after logging
+			}
+			// On error, wait and retry (unless context is cancelled)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+		consecutiveErrors = 0
+
+		// Send events to channel
+		for _, event := range events {
+			select {
+			case ch <- event:
+				// Event delivered successfully
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Update position only after entire batch is successfully delivered
+		// This ensures no events are skipped if context is cancelled mid-batch
+		if len(events) > 0 {
+			currentPosition = newPosition
+		}
+
+		// Wait for next poll cycle if no events
+		if len(events) == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Continue polling
+			}
+		}
+	}
+}
+
 // LoadFromPosition loads events starting from a global position.
 // This is used by projection engines to catch up on historical events.
 func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
@@ -64,9 +139,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 		return nil, ErrAdapterClosed
 	}
 
-	if limit <= 0 {
-		limit = 1000
-	}
+	limit = adapters.DefaultLimit(limit, 1000)
 
 	schemaQ, err := safeSchemaIdentifier(a.schema)
 	if err != nil {
@@ -100,61 +173,19 @@ func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64,
 	cfg := newSubscriptionConfig(opts)
 	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
-	go func() {
-		defer close(ch)
-		ticker := time.NewTicker(cfg.pollInterval)
-		defer ticker.Stop()
-
-		currentPosition := fromPosition
-		consecutiveErrors := 0
-
-		for {
-			// Check for shutdown before polling
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Load events from current position
-			events, err := a.LoadFromPosition(ctx, currentPosition, cfg.bufferSize)
-			if err != nil {
-				consecutiveErrors++
-				if consecutiveErrors >= cfg.maxRetries {
-					cfg.handleError(err, "SubscribeAll")
-					consecutiveErrors = 0 // Reset after logging
-				}
-				// On error, wait and retry (unless context is cancelled)
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					continue
-				}
-			}
-			consecutiveErrors = 0
-
-			// Send events to channel
-			for _, event := range events {
-				select {
-				case ch <- event:
-					currentPosition = event.GlobalPosition
-				case <-ctx.Done():
-					return
-				}
-			}
-
-			// Wait for next poll cycle if no events, otherwise continue immediately
-			if len(events) == 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					// Continue polling
-				}
-			}
+	loader := func(ctx context.Context, position uint64) ([]adapters.StoredEvent, uint64, error) {
+		events, err := a.LoadFromPosition(ctx, position, cfg.bufferSize)
+		if err != nil {
+			return nil, position, err
 		}
-	}()
+		newPosition := position
+		if len(events) > 0 {
+			newPosition = events[len(events)-1].GlobalPosition
+		}
+		return events, newPosition, nil
+	}
+
+	go runPollingLoop(ctx, cfg, ch, "SubscribeAll", fromPosition, loader)
 
 	return ch, nil
 }
@@ -170,61 +201,19 @@ func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, 
 	cfg := newSubscriptionConfig(opts)
 	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
-	go func() {
-		defer close(ch)
-		ticker := time.NewTicker(cfg.pollInterval)
-		defer ticker.Stop()
-
-		currentVersion := fromVersion
-		consecutiveErrors := 0
-
-		for {
-			// Check for shutdown before polling
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Load events from current version
-			events, err := a.Load(ctx, streamID, currentVersion)
-			if err != nil {
-				consecutiveErrors++
-				if consecutiveErrors >= cfg.maxRetries {
-					cfg.handleError(err, fmt.Sprintf("SubscribeStream(%s)", streamID))
-					consecutiveErrors = 0
-				}
-				// On error, wait and retry (unless context is cancelled)
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					continue
-				}
-			}
-			consecutiveErrors = 0
-
-			// Send events to channel
-			for _, event := range events {
-				select {
-				case ch <- event:
-					currentVersion = event.Version + 1
-				case <-ctx.Done():
-					return
-				}
-			}
-
-			// Wait for next poll cycle if no events
-			if len(events) == 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					// Continue polling
-				}
-			}
+	loader := func(ctx context.Context, version int64) ([]adapters.StoredEvent, int64, error) {
+		events, err := a.Load(ctx, streamID, version)
+		if err != nil {
+			return nil, version, err
 		}
-	}()
+		newVersion := version
+		if len(events) > 0 {
+			newVersion = events[len(events)-1].Version
+		}
+		return events, newVersion, nil
+	}
+
+	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeStream(%s)", streamID), fromVersion, loader)
 
 	return ch, nil
 }
@@ -240,61 +229,19 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 	cfg := newSubscriptionConfig(opts)
 	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
 
-	go func() {
-		defer close(ch)
-		ticker := time.NewTicker(cfg.pollInterval)
-		defer ticker.Stop()
-
-		currentPosition := fromPosition
-		consecutiveErrors := 0
-
-		for {
-			// Check for shutdown before polling
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Load events for this category
-			events, err := a.loadCategoryEvents(ctx, category, currentPosition, cfg.bufferSize)
-			if err != nil {
-				consecutiveErrors++
-				if consecutiveErrors >= cfg.maxRetries {
-					cfg.handleError(err, fmt.Sprintf("SubscribeCategory(%s)", category))
-					consecutiveErrors = 0
-				}
-				// On error, wait and retry (unless context is cancelled)
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					continue
-				}
-			}
-			consecutiveErrors = 0
-
-			// Send events to channel
-			for _, event := range events {
-				select {
-				case ch <- event:
-					currentPosition = event.GlobalPosition
-				case <-ctx.Done():
-					return
-				}
-			}
-
-			// Wait for next poll cycle if no events
-			if len(events) == 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					// Continue polling
-				}
-			}
+	loader := func(ctx context.Context, position uint64) ([]adapters.StoredEvent, uint64, error) {
+		events, err := a.loadCategoryEvents(ctx, category, position, cfg.bufferSize)
+		if err != nil {
+			return nil, position, err
 		}
-	}()
+		newPosition := position
+		if len(events) > 0 {
+			newPosition = events[len(events)-1].GlobalPosition
+		}
+		return events, newPosition, nil
+	}
+
+	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeCategory(%s)", category), fromPosition, loader)
 
 	return ch, nil
 }

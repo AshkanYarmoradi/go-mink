@@ -675,3 +675,53 @@ func TestPollingSubscription_Integration(t *testing.T) {
 		}
 	})
 }
+
+// testMinkSubscriptionAdapter implements SubscriptionAdapter for testing minkSubscriptionAdapter
+type testMinkSubscriptionAdapter struct {
+	events []StoredEvent
+}
+
+func (m *testMinkSubscriptionAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	var result []StoredEvent
+	for _, e := range m.events {
+		if e.GlobalPosition > fromPosition {
+			result = append(result, e)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *testMinkSubscriptionAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (m *testMinkSubscriptionAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (m *testMinkSubscriptionAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+// TestMinkSubscriptionAdapter tests the minkSubscriptionAdapter wrapper
+func TestMinkSubscriptionAdapter(t *testing.T) {
+	t.Run("LoadFromPosition delegates to underlying adapter", func(t *testing.T) {
+		ctx := context.Background()
+
+		mockAdapter := &testMinkSubscriptionAdapter{
+			events: []StoredEvent{
+				{ID: "1", StreamID: "Order-1", Type: "CatchupTestEvent", GlobalPosition: 1},
+				{ID: "2", StreamID: "Order-2", Type: "CatchupTestEvent", GlobalPosition: 2},
+			},
+		}
+
+		wrapper := &minkSubscriptionAdapter{adapter: mockAdapter}
+		events, err := wrapper.LoadFromPosition(ctx, 0, 10)
+		require.NoError(t, err)
+		assert.Len(t, events, 2)
+	})
+}
+

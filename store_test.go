@@ -929,3 +929,32 @@ func (s *failingSerializer) Register(eventType string, example interface{}) {
 
 func (s *failingSerializer) RegisterAll(examples ...interface{}) {
 }
+
+// TestNoopLogger tests that noopLogger methods don't panic
+func TestNoopLogger(t *testing.T) {
+	logger := &noopLogger{}
+
+	t.Run("Debug does nothing", func(t *testing.T) {
+		// Should not panic
+		logger.Debug("test message")
+		logger.Debug("test with args", "key", "value")
+	})
+
+	t.Run("Info does nothing", func(t *testing.T) {
+		// Should not panic
+		logger.Info("test message")
+		logger.Info("test with args", "key", "value", "num", 42)
+	})
+
+	t.Run("Warn does nothing", func(t *testing.T) {
+		// Should not panic
+		logger.Warn("test message")
+		logger.Warn("test with args", "key", "value")
+	})
+
+	t.Run("Error does nothing", func(t *testing.T) {
+		// Should not panic
+		logger.Error("test message")
+		logger.Error("test with args", "error", assert.AnError)
+	})
+}

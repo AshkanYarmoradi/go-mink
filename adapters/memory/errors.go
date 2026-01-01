@@ -1,79 +1,39 @@
 package memory
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
 // Sentinel errors for the memory adapter.
-// These are local errors that are compatible with the adapters package errors via errors.Is().
+// These are aliases to the adapters package errors for compatibility with errors.Is().
 var (
 	// ErrAdapterClosed is returned when an operation is attempted on a closed adapter.
-	ErrAdapterClosed = errors.New("mink/memory: adapter is closed")
+	ErrAdapterClosed = adapters.ErrAdapterClosed
 
 	// ErrEmptyStreamID is returned when an empty stream ID is provided.
-	ErrEmptyStreamID = errors.New("mink/memory: stream ID is required")
+	ErrEmptyStreamID = adapters.ErrEmptyStreamID
 
 	// ErrNoEvents is returned when attempting to append zero events.
-	ErrNoEvents = errors.New("mink/memory: no events to append")
+	ErrNoEvents = adapters.ErrNoEvents
 
 	// ErrConcurrencyConflict is returned when optimistic concurrency check fails.
-	ErrConcurrencyConflict = errors.New("mink/memory: concurrency conflict")
+	ErrConcurrencyConflict = adapters.ErrConcurrencyConflict
 
 	// ErrStreamNotFound is returned when a stream does not exist.
-	ErrStreamNotFound = errors.New("mink/memory: stream not found")
+	ErrStreamNotFound = adapters.ErrStreamNotFound
 
 	// ErrInvalidVersion is returned when an invalid version is specified.
-	ErrInvalidVersion = errors.New("mink/memory: invalid version")
+	ErrInvalidVersion = adapters.ErrInvalidVersion
 )
 
-// ConcurrencyError provides details about a concurrency conflict.
-type ConcurrencyError struct {
-	StreamID        string
-	ExpectedVersion int64
-	ActualVersion   int64
-}
+// ConcurrencyError is an alias for adapters.ConcurrencyError for backward compatibility.
+type ConcurrencyError = adapters.ConcurrencyError
 
-// NewConcurrencyError creates a new ConcurrencyError.
-func NewConcurrencyError(streamID string, expected, actual int64) *ConcurrencyError {
-	return &ConcurrencyError{
-		StreamID:        streamID,
-		ExpectedVersion: expected,
-		ActualVersion:   actual,
-	}
-}
+// StreamNotFoundError is an alias for adapters.StreamNotFoundError for backward compatibility.
+type StreamNotFoundError = adapters.StreamNotFoundError
 
-// Error implements the error interface.
-func (e *ConcurrencyError) Error() string {
-	return fmt.Sprintf("mink/memory: concurrency conflict on stream %q: expected version %d, got %d",
-		e.StreamID, e.ExpectedVersion, e.ActualVersion)
-}
+// NewConcurrencyError is an alias for adapters.NewConcurrencyError for backward compatibility.
+var NewConcurrencyError = adapters.NewConcurrencyError
 
-// Is implements errors.Is compatibility.
-// Returns true for both local ErrConcurrencyConflict and adapters.ErrConcurrencyConflict.
-func (e *ConcurrencyError) Is(target error) bool {
-	return target == ErrConcurrencyConflict || target == adapters.ErrConcurrencyConflict
-}
-
-// StreamNotFoundError provides details about a missing stream.
-type StreamNotFoundError struct {
-	StreamID string
-}
-
-// NewStreamNotFoundError creates a new StreamNotFoundError.
-func NewStreamNotFoundError(streamID string) *StreamNotFoundError {
-	return &StreamNotFoundError{StreamID: streamID}
-}
-
-// Error implements the error interface.
-func (e *StreamNotFoundError) Error() string {
-	return fmt.Sprintf("mink/memory: stream %q not found", e.StreamID)
-}
-
-// Is implements errors.Is compatibility.
-// Returns true for both local ErrStreamNotFound and adapters.ErrStreamNotFound.
-func (e *StreamNotFoundError) Is(target error) bool {
-	return target == ErrStreamNotFound || target == adapters.ErrStreamNotFound
-}
+// NewStreamNotFoundError is an alias for adapters.NewStreamNotFoundError for backward compatibility.
+var NewStreamNotFoundError = adapters.NewStreamNotFoundError

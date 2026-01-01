@@ -1099,7 +1099,7 @@ func TestExtractCategory(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.streamID, func(t *testing.T) {
-			result := extractCategory(tc.streamID)
+			result := adapters.ExtractCategory(tc.streamID)
 			assert.Equal(t, tc.expected, result)
 		})
 	}

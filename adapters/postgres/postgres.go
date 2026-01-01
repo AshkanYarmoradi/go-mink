@@ -42,25 +42,44 @@ func safeSchemaIdentifier(schema string) (string, error) {
 	return quoteIdentifier(schema), nil
 }
 
+// isValidIdentifier checks if a name is a valid PostgreSQL identifier.
+// Returns empty string if valid, or an error message describing the issue.
+func isValidIdentifier(name string) string {
+	if name == "" {
+		return "cannot be empty"
+	}
+	if len(name) > 63 {
+		return "exceeds 63 characters"
+	}
+	if !schemaNamePattern.MatchString(name) {
+		return "contains invalid characters"
+	}
+	return ""
+}
+
 // validateSchemaName checks if the schema name is a valid PostgreSQL identifier.
 func validateSchemaName(schema string) error {
-	if schema == "" {
-		return fmt.Errorf("%w: schema name cannot be empty", ErrInvalidSchemaName)
+	if reason := isValidIdentifier(schema); reason != "" {
+		return fmt.Errorf("%w: schema name %s", ErrInvalidSchemaName, reason)
 	}
-	if len(schema) > 63 {
-		return fmt.Errorf("%w: schema name exceeds 63 characters", ErrInvalidSchemaName)
-	}
-	if !schemaNamePattern.MatchString(schema) {
-		return fmt.Errorf("%w: schema name contains invalid characters", ErrInvalidSchemaName)
+	return nil
+}
+
+// validateIdentifier checks if a name is a valid PostgreSQL identifier.
+// This helps prevent SQL injection when using identifiers in queries.
+func validateIdentifier(name, kind string) error {
+	if reason := isValidIdentifier(name); reason != "" {
+		return fmt.Errorf("mink/postgres: %s name %s", kind, reason)
 	}
 	return nil
 }
 
 // Version constants for optimistic concurrency control.
+// These are re-exported from the adapters package for convenience.
 const (
-	AnyVersion   int64 = -1
-	NoStream     int64 = 0
-	StreamExists int64 = -2
+	AnyVersion   = adapters.AnyVersion
+	NoStream     = adapters.NoStream
+	StreamExists = adapters.StreamExists
 )
 
 // Sentinel errors for the postgres adapter.
@@ -363,12 +382,12 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	}
 
 	// Check expected version
-	if err := a.checkVersion(streamID, expectedVersion, currentVersion, streamExists); err != nil {
+	if err := adapters.CheckVersion(streamID, expectedVersion, currentVersion, streamExists); err != nil {
 		return nil, err
 	}
 
 	// Create stream if it doesn't exist
-	category := extractCategory(streamID)
+	category := adapters.ExtractCategory(streamID)
 	if !streamExists {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO `+schemaQ+`.streams (stream_id, category, version)
@@ -446,7 +465,7 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 		return nil, fmt.Errorf("mink/postgres: invalid schema: %w", err)
 	}
 	rows, err := a.db.QueryContext(ctx, `
-		SELECT global_position, event_id, stream_id, version, event_type, data, metadata, timestamp
+		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM `+schemaQ+`.events
 		WHERE stream_id = $1 AND version > $2
 		ORDER BY version`, streamID, fromVersion)
@@ -455,39 +474,7 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 	}
 	defer rows.Close()
 
-	events := make([]adapters.StoredEvent, 0)
-	for rows.Next() {
-		var event adapters.StoredEvent
-		var metadataJSON []byte
-
-		err := rows.Scan(
-			&event.GlobalPosition,
-			&event.ID,
-			&event.StreamID,
-			&event.Version,
-			&event.Type,
-			&event.Data,
-			&metadataJSON,
-			&event.Timestamp,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("mink/postgres: failed to scan event: %w", err)
-		}
-
-		if len(metadataJSON) > 0 {
-			if err := json.Unmarshal(metadataJSON, &event.Metadata); err != nil {
-				return nil, fmt.Errorf("mink/postgres: failed to unmarshal metadata: %w", err)
-			}
-		}
-
-		events = append(events, event)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("mink/postgres: error iterating events: %w", err)
-	}
-
-	return events, nil
+	return a.scanEvents(rows)
 }
 
 // GetStreamInfo returns metadata about a stream.
@@ -516,7 +503,7 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, NewStreamNotFoundError(streamID)
+		return nil, adapters.NewStreamNotFoundError(streamID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to get stream info: %w", err)
@@ -733,92 +720,14 @@ func (a *PostgresAdapter) Schema() string {
 	return a.schema
 }
 
-// ConcurrencyError provides details about a concurrency conflict.
-type ConcurrencyError struct {
-	StreamID        string
-	ExpectedVersion int64
-	ActualVersion   int64
-}
+// ConcurrencyError is an alias for adapters.ConcurrencyError for backward compatibility.
+type ConcurrencyError = adapters.ConcurrencyError
 
-// NewConcurrencyError creates a new ConcurrencyError.
-func NewConcurrencyError(streamID string, expected, actual int64) *ConcurrencyError {
-	return &ConcurrencyError{
-		StreamID:        streamID,
-		ExpectedVersion: expected,
-		ActualVersion:   actual,
-	}
-}
+// StreamNotFoundError is an alias for adapters.StreamNotFoundError for backward compatibility.
+type StreamNotFoundError = adapters.StreamNotFoundError
 
-// Error implements the error interface.
-func (e *ConcurrencyError) Error() string {
-	return fmt.Sprintf("mink/postgres: concurrency conflict on stream %q: expected version %d, got %d",
-		e.StreamID, e.ExpectedVersion, e.ActualVersion)
-}
+// NewConcurrencyError is an alias for adapters.NewConcurrencyError for backward compatibility.
+var NewConcurrencyError = adapters.NewConcurrencyError
 
-// Is implements errors.Is compatibility.
-func (e *ConcurrencyError) Is(target error) bool {
-	return target == ErrConcurrencyConflict
-}
-
-// StreamNotFoundError provides details about a missing stream.
-type StreamNotFoundError struct {
-	StreamID string
-}
-
-// NewStreamNotFoundError creates a new StreamNotFoundError.
-func NewStreamNotFoundError(streamID string) *StreamNotFoundError {
-	return &StreamNotFoundError{StreamID: streamID}
-}
-
-// Error implements the error interface.
-func (e *StreamNotFoundError) Error() string {
-	return fmt.Sprintf("mink/postgres: stream %q not found", e.StreamID)
-}
-
-// Is implements errors.Is compatibility.
-func (e *StreamNotFoundError) Is(target error) bool {
-	return target == ErrStreamNotFound
-}
-
-// checkVersion validates the expected version against the current version.
-func (a *PostgresAdapter) checkVersion(streamID string, expected, current int64, exists bool) error {
-	switch expected {
-	case AnyVersion:
-		return nil
-	case NoStream:
-		if exists {
-			return NewConcurrencyError(streamID, expected, current)
-		}
-		return nil
-	case StreamExists:
-		if !exists {
-			return NewStreamNotFoundError(streamID)
-		}
-		return nil
-	default:
-		if expected < 0 {
-			return ErrInvalidVersion
-		}
-		if current != expected {
-			return NewConcurrencyError(streamID, expected, current)
-		}
-		return nil
-	}
-}
-
-// extractCategory extracts the category from a stream ID.
-// Stream IDs are expected to follow the format "Category-ID" (e.g., "Order-123").
-// The category is the portion before the first hyphen.
-//
-// Behavior:
-//   - "Order-123" returns "Order"
-//   - "User-abc-def" returns "User" (only splits on first hyphen)
-//   - "NoHyphen" returns "NoHyphen" (entire ID if no hyphen)
-//   - "" returns "" (empty string for empty input)
-func extractCategory(streamID string) string {
-	if streamID == "" {
-		return ""
-	}
-	parts := strings.SplitN(streamID, "-", 2)
-	return parts[0]
-}
+// NewStreamNotFoundError is an alias for adapters.NewStreamNotFoundError for backward compatibility.
+var NewStreamNotFoundError = adapters.NewStreamNotFoundError
