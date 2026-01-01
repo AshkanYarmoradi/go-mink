@@ -147,6 +147,20 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/memory
 | [📖 API Reference](/docs/api-design) | Complete API documentation |
 | [🗺️ Roadmap](/docs/roadmap) | What's coming next |
 
+### Learn Event Sourcing
+
+{: .no_toc }
+
+ 
+
+| Guide | Description |
+
+|:------|:------------|
+
+| [📝 Blog Series](/blog) | 8-part series on Event Sourcing & CQRS with go-mink |
+
+
+
 </div>
 
 ---
