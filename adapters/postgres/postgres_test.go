@@ -333,6 +333,21 @@ func TestNewAdapter(t *testing.T) {
 		// Either connection fails or ping fails
 		assert.Error(t, err)
 	})
+
+	t.Run("returns error for invalid schema name", func(t *testing.T) {
+		adapter, err := NewAdapter(connStr, WithSchema("invalid-schema"))
+		assert.ErrorIs(t, err, ErrInvalidSchemaName)
+		assert.Nil(t, adapter)
+	})
+
+	t.Run("returns error for invalid schema with health check", func(t *testing.T) {
+		adapter, err := NewAdapter(connStr,
+			WithSchema("invalid-schema"),
+			WithHealthCheck(time.Minute),
+		)
+		assert.ErrorIs(t, err, ErrInvalidSchemaName)
+		assert.Nil(t, adapter)
+	})
 }
 
 func TestNewAdapterWithDB(t *testing.T) {

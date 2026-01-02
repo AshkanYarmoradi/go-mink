@@ -188,51 +188,104 @@ rebuilder.Rebuild(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 
 ---
 
-## Phase 4: Developer Experience (v0.4.0)
+## Phase 4: Developer Experience (v0.4.0) ✅ COMPLETE
 
-**Timeline: 6-8 weeks**
+**Status: Released**
 
 ### CLI Tool
-- [ ] `mink init` - Project scaffolding
-- [ ] `mink generate` - Code generation
-- [ ] `mink migrate` - Schema management
-- [ ] `mink projection` - Projection management
-- [ ] `mink stream` - Stream inspection
-- [ ] `mink diagnose` - Health checks
-- [ ] `mink schema` - Event schema management
+- [ ] `mink init` - Project scaffolding (deferred to v0.5.0)
+- [ ] `mink generate` - Code generation (deferred to v0.5.0)
+- [ ] `mink migrate` - Schema management (deferred to v0.5.0)
+- [ ] `mink projection` - Projection management (deferred to v0.5.0)
+- [ ] `mink stream` - Stream inspection (deferred to v0.5.0)
+- [ ] `mink diagnose` - Health checks (deferred to v0.5.0)
+- [ ] `mink schema` - Event schema management (deferred to v0.5.0)
 
 ### Additional Serializers
-- [ ] Protocol Buffers support
-- [ ] MessagePack support
-- [ ] Custom serializer interface
+- [ ] Protocol Buffers support (planned for v0.5.0)
+- [x] MessagePack support (`serializer/msgpack`)
+- [x] Custom serializer interface
 
 ### Middleware & Observability
-- [ ] Logging middleware
-- [ ] Metrics middleware (Prometheus)
-- [ ] Tracing middleware (OpenTelemetry)
-- [ ] Retry middleware
+- [x] Logging middleware (in core)
+- [x] Metrics middleware (Prometheus) - `middleware/metrics`
+- [x] Tracing middleware (OpenTelemetry) - `middleware/tracing`
+- [x] Retry middleware (in core)
 
 ### Testing Utilities
-- [ ] BDD-style test fixtures (Given/When/Then)
-- [ ] Event assertions
-- [ ] Event diffing
-- [ ] Projection test helpers
-- [ ] Saga test fixtures
-- [ ] Test containers integration
+- [x] BDD-style test fixtures (Given/When/Then) - `testing/bdd`
+- [x] Event assertions - `testing/assertions`
+- [x] Event diffing - `testing/assertions`
+- [x] Projection test helpers - `testing/projections`
+- [x] Saga test fixtures - `testing/sagas`
+- [x] Test containers integration - `testing/containers`
 
 ### Documentation
-- [ ] API reference docs
-- [ ] Getting started guide
-- [ ] Tutorial: Building an e-commerce app
-- [ ] Architecture decision records
+- [x] API reference docs (code documentation)
+- [x] Testing guide updates
+- [ ] Tutorial: Building an e-commerce app (deferred)
+- [ ] Architecture decision records (deferred)
 
 ### Deliverables
-```bash
-# By end of v0.4.0, CLI works:
-$ mink init myapp
-$ mink generate aggregate Order
-$ mink migrate up
-$ mink projection rebuild OrderSummary
+```go
+// v0.4.0 Testing utilities:
+import (
+    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
+    "github.com/AshkanYarmoradi/go-mink/testing/projections"
+    "github.com/AshkanYarmoradi/go-mink/testing/sagas"
+    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+)
+
+// BDD test fixtures
+bdd.Given(t, NewOrder("order-123")).
+    When(CreateOrderCommand{CustomerID: "cust-456"}).
+    Then(OrderCreated{OrderID: "order-123", CustomerID: "cust-456"})
+
+// Event assertions
+assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
+diff := assertions.DiffEvents(expected, actual)
+
+// Projection test helpers
+projections.NewProjectionTestFixture[OrderSummary](t).
+    GivenEvents(storedEvents...).
+    ThenReadModel(func(rm *OrderSummary) {
+        assert.Equal(t, "order-123", rm.ID)
+    })
+
+// Saga test fixtures
+sagas.NewSagaTestFixture(t, saga).
+    GivenEvents(events...).
+    ThenCommands(expectedCommands...).
+    ThenCompleted()
+
+// Test containers
+container := containers.StartPostgres(t)
+db := container.MustDB(ctx)
+
+// v0.4.0 Observability:
+import (
+    "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+    "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+)
+
+// OpenTelemetry tracing
+tracer := tracing.NewTracer(tracing.WithServiceName("order-service"))
+bus.Use(tracing.CommandMiddleware(tracer))
+tracedStore := tracing.NewEventStoreMiddleware(adapter, tracer)
+
+// Prometheus metrics
+m := metrics.New(metrics.WithMetricsServiceName("order-service"))
+m.MustRegister()
+bus.Use(m.CommandMiddleware())
+metricsStore := m.WrapEventStore(adapter)
+
+// v0.4.0 MessagePack serializer:
+import "github.com/AshkanYarmoradi/go-mink/serializer/msgpack"
+
+serializer := msgpack.NewSerializer()
+serializer.Register("OrderCreated", OrderCreated{})
+data, _ := serializer.Serialize(event)
 ```
 
 ---
