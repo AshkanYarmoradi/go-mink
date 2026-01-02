@@ -883,5 +883,5 @@ func (s *errorSaga) Name() string { return "ErrorSaga" }
 func (s *errorSaga) HandleEvent(ctx context.Context, event mink.StoredEvent) ([]mink.Command, error) {
 	return nil, errors.New("saga error")
 }
-func (s *errorSaga) IsComplete() bool    { return false }
+func (s *errorSaga) IsComplete() bool   { return false }
 func (s *errorSaga) State() interface{} { return nil }
