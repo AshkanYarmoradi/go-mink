@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -13,107 +12,14 @@ import (
 
 	"github.com/AshkanYarmoradi/go-mink"
 	"github.com/AshkanYarmoradi/go-mink/adapters"
+	minktest "github.com/AshkanYarmoradi/go-mink/testing/testutil"
 )
 
-// =============================================================================
-// Test Types
-// =============================================================================
+// Ensure MockProjection implements mink.InlineProjection
+var _ mink.InlineProjection = (*minktest.MockProjection)(nil)
 
-type testCommand struct {
-	id   string
-	fail bool
-}
-
-func (c *testCommand) AggregateID() string   { return c.id }
-func (c *testCommand) AggregateType() string { return "Test" }
-func (c *testCommand) CommandType() string   { return "TestCommand" }
-func (c *testCommand) Validate() error {
-	if c.fail {
-		return errors.New("validation failed")
-	}
-	return nil
-}
-
-type mockAdapter struct {
-	appendErr error
-	loadErr   error
-	events    []adapters.StoredEvent
-}
-
-func (m *mockAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
-	if m.appendErr != nil {
-		return nil, m.appendErr
-	}
-	stored := make([]adapters.StoredEvent, len(events))
-	for i, e := range events {
-		stored[i] = adapters.StoredEvent{
-			ID:             "event-" + e.Type,
-			StreamID:       streamID,
-			Type:           e.Type,
-			Data:           e.Data,
-			Version:        int64(i + 1),
-			GlobalPosition: uint64(i + 1),
-			Timestamp:      time.Now(),
-		}
-	}
-	return stored, nil
-}
-
-func (m *mockAdapter) Load(ctx context.Context, streamID string, fromVersion int64) ([]adapters.StoredEvent, error) {
-	if m.loadErr != nil {
-		return nil, m.loadErr
-	}
-	return m.events, nil
-}
-
-func (m *mockAdapter) GetStreamInfo(ctx context.Context, streamID string) (*adapters.StreamInfo, error) {
-	return &adapters.StreamInfo{
-		StreamID:   streamID,
-		Version:    int64(len(m.events)),
-		EventCount: int64(len(m.events)),
-	}, nil
-}
-
-func (m *mockAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
-	if len(m.events) == 0 {
-		return 0, nil
-	}
-	return m.events[len(m.events)-1].GlobalPosition, nil
-}
-
-func (m *mockAdapter) Initialize(ctx context.Context) error {
-	return nil
-}
-
-func (m *mockAdapter) Close() error {
-	return nil
-}
-
-type mockProjection struct {
-	name     string
-	events   []string
-	applyErr error
-	applied  []mink.StoredEvent
-}
-
-func (p *mockProjection) Name() string {
-	return p.name
-}
-
-func (p *mockProjection) HandledEvents() []string {
-	return p.events
-}
-
-func (p *mockProjection) Apply(ctx context.Context, event mink.StoredEvent) error {
-	p.applied = append(p.applied, event)
-	return p.applyErr
-}
-
-// Ensure mockProjection implements mink.InlineProjection
-var _ mink.InlineProjection = (*mockProjection)(nil)
-
-// Ensure mockAdapter implements adapters.EventStoreAdapter
-var _ adapters.EventStoreAdapter = (*mockAdapter)(nil)
+// Ensure MockAdapter implements adapters.EventStoreAdapter
+var _ adapters.EventStoreAdapter = (*minktest.MockAdapter)(nil)
 
 // =============================================================================
 // Metrics Tests
@@ -184,7 +90,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
-		cmd := &testCommand{id: "test-123"}
+		cmd := &minktest.TestCommand{ID: "test-123"}
 
 		handler := middleware(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
 			return mink.NewSuccessResult("test-123", 1), nil
@@ -206,7 +112,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
-		cmd := &testCommand{id: "test-123"}
+		cmd := &minktest.TestCommand{ID: "test-123"}
 		expectedErr := errors.New("command failed")
 
 		handler := middleware(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
@@ -229,7 +135,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
-		cmd := &testCommand{id: "test-123"}
+		cmd := &minktest.TestCommand{ID: "test-123"}
 
 		inFlightDuringExecution := float64(-1)
 
@@ -260,7 +166,7 @@ func TestEventStoreMiddleware_Append(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{}
+		adapter := &minktest.MockAdapter{}
 		middleware := m.WrapEventStore(adapter)
 
 		events := []adapters.EventRecord{
@@ -289,7 +195,7 @@ func TestEventStoreMiddleware_Append(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{appendErr: errors.New("append failed")}
+		adapter := &minktest.MockAdapter{AppendErr: errors.New("append failed")}
 		middleware := m.WrapEventStore(adapter)
 
 		_, err := middleware.Append(context.Background(), "order-123", []adapters.EventRecord{}, mink.NoStream)
@@ -311,8 +217,8 @@ func TestEventStoreMiddleware_Load(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{
-			events: []adapters.StoredEvent{
+		adapter := &minktest.MockAdapter{
+			Events: []adapters.StoredEvent{
 				{ID: "event-1", Type: "OrderCreated"},
 				{ID: "event-2", Type: "ItemAdded"},
 			},
@@ -337,7 +243,7 @@ func TestEventStoreMiddleware_Load(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{loadErr: errors.New("load failed")}
+		adapter := &minktest.MockAdapter{LoadErr: errors.New("load failed")}
 		middleware := m.WrapEventStore(adapter)
 
 		_, err := middleware.Load(context.Background(), "order-123", 0)
@@ -356,8 +262,8 @@ func TestEventStoreMiddleware_GetStreamInfo(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{
-			events: []adapters.StoredEvent{
+		adapter := &minktest.MockAdapter{
+			Events: []adapters.StoredEvent{
 				{ID: "event-1", Type: "OrderCreated", Version: 1},
 				{ID: "event-2", Type: "ItemAdded", Version: 2},
 			},
@@ -377,8 +283,8 @@ func TestEventStoreMiddleware_GetLastPosition(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{
-			events: []adapters.StoredEvent{
+		adapter := &minktest.MockAdapter{
+			Events: []adapters.StoredEvent{
 				{ID: "event-1", GlobalPosition: 100},
 			},
 		}
@@ -397,7 +303,7 @@ func TestEventStoreMiddleware_Initialize(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		adapter := &mockAdapter{}
+		adapter := &minktest.MockAdapter{}
 		middleware := m.WrapEventStore(adapter)
 
 		err := middleware.Initialize(context.Background())
@@ -413,7 +319,7 @@ func TestEventStoreMiddleware_Initialize(t *testing.T) {
 func TestProjectionMiddleware(t *testing.T) {
 	t.Run("Name delegates to underlying projection", func(t *testing.T) {
 		m := New()
-		projection := &mockProjection{name: "TestProjection"}
+		projection := &minktest.MockProjection{ProjectionName: "TestProjection"}
 		middleware := m.WrapProjection(projection)
 
 		assert.Equal(t, "TestProjection", middleware.Name())
@@ -421,7 +327,7 @@ func TestProjectionMiddleware(t *testing.T) {
 
 	t.Run("HandledEvents delegates to underlying projection", func(t *testing.T) {
 		m := New()
-		projection := &mockProjection{events: []string{"Event1", "Event2"}}
+		projection := &minktest.MockProjection{EventTypes: []string{"Event1", "Event2"}}
 		middleware := m.WrapProjection(projection)
 
 		assert.Equal(t, []string{"Event1", "Event2"}, middleware.HandledEvents())
@@ -432,7 +338,7 @@ func TestProjectionMiddleware(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		projection := &mockProjection{name: "OrderProjection"}
+		projection := &minktest.MockProjection{ProjectionName: "OrderProjection"}
 		middleware := m.WrapProjection(projection)
 
 		event := mink.StoredEvent{
@@ -460,9 +366,9 @@ func TestProjectionMiddleware(t *testing.T) {
 		registry := prometheus.NewRegistry()
 		_ = m.Register(registry)
 
-		projection := &mockProjection{
-			name:     "OrderProjection",
-			applyErr: errors.New("apply failed"),
+		projection := &minktest.MockProjection{
+			ProjectionName: "OrderProjection",
+			ApplyErr:       errors.New("apply failed"),
 		}
 		middleware := m.WrapProjection(projection)
 
