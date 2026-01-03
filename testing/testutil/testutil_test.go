@@ -128,7 +128,7 @@ func TestOrder_Create(t *testing.T) {
 
 	t.Run("fails if already created", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
+		_ = order.Create("customer-456")
 		order.ClearUncommittedEvents()
 
 		err := order.Create("customer-789")
@@ -140,7 +140,7 @@ func TestOrder_Create(t *testing.T) {
 func TestOrder_AddItem(t *testing.T) {
 	t.Run("adds item successfully", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
+		_ = order.Create("customer-456")
 		order.ClearUncommittedEvents()
 
 		err := order.AddItem("SKU-001", 2, 29.99)
@@ -162,8 +162,8 @@ func TestOrder_AddItem(t *testing.T) {
 func TestOrder_Ship(t *testing.T) {
 	t.Run("ships order successfully", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
-		order.AddItem("SKU-001", 2, 29.99)
+		_ = order.Create("customer-456")
+		_ = order.AddItem("SKU-001", 2, 29.99)
 		order.ClearUncommittedEvents()
 
 		err := order.Ship("TRACK-123")
@@ -175,7 +175,7 @@ func TestOrder_Ship(t *testing.T) {
 
 	t.Run("fails if no items", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
+		_ = order.Create("customer-456")
 
 		err := order.Ship("TRACK-123")
 
@@ -193,9 +193,9 @@ func TestOrder_Ship(t *testing.T) {
 
 	t.Run("fails if already shipped", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
-		order.AddItem("SKU-001", 2, 29.99)
-		order.Ship("TRACK-123")
+		_ = order.Create("customer-456")
+		_ = order.AddItem("SKU-001", 2, 29.99)
+		_ = order.Ship("TRACK-123")
 		order.ClearUncommittedEvents()
 
 		err := order.Ship("TRACK-456")
@@ -208,7 +208,7 @@ func TestOrder_Ship(t *testing.T) {
 func TestOrder_Cancel(t *testing.T) {
 	t.Run("cancels order successfully", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
+		_ = order.Create("customer-456")
 		order.ClearUncommittedEvents()
 
 		err := order.Cancel("Customer request")
@@ -220,9 +220,9 @@ func TestOrder_Cancel(t *testing.T) {
 
 	t.Run("fails if shipped", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
-		order.AddItem("SKU-001", 2, 29.99)
-		order.Ship("TRACK-123")
+		_ = order.Create("customer-456")
+		_ = order.AddItem("SKU-001", 2, 29.99)
+		_ = order.Ship("TRACK-123")
 
 		err := order.Cancel("Customer request")
 
@@ -231,8 +231,8 @@ func TestOrder_Cancel(t *testing.T) {
 
 	t.Run("fails if already cancelled", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
-		order.Cancel("First cancel")
+		_ = order.Create("customer-456")
+		_ = order.Cancel("First cancel")
 
 		err := order.Cancel("Second cancel")
 
@@ -243,9 +243,9 @@ func TestOrder_Cancel(t *testing.T) {
 func TestOrder_TotalAmount(t *testing.T) {
 	t.Run("calculates total correctly", func(t *testing.T) {
 		order := NewOrder("order-123")
-		order.Create("customer-456")
-		order.AddItem("SKU-001", 2, 29.99)
-		order.AddItem("SKU-002", 1, 49.99)
+		_ = order.Create("customer-456")
+		_ = order.AddItem("SKU-001", 2, 29.99)
+		_ = order.AddItem("SKU-002", 1, 49.99)
 
 		total := order.TotalAmount()
 
@@ -374,7 +374,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 
 	t.Run("applies ItemAdded", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
@@ -393,7 +393,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 
 	t.Run("applies OrderShipped", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
@@ -413,7 +413,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 
 	t.Run("applies OrderCancelled", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
@@ -460,7 +460,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	t.Run("returns error for invalid OrderShipped JSON", func(t *testing.T) {
 		rm := NewOrderReadModel()
 		// First create the order so it exists
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
@@ -522,7 +522,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 
 	t.Run("handles unknown event type gracefully", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
@@ -543,12 +543,12 @@ func TestOrderReadModel_Apply(t *testing.T) {
 
 	t.Run("increments update count", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
 		})
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "ItemAdded",
 			Data:     []byte(`{}`),
@@ -571,12 +571,12 @@ func TestOrderReadModel_Get(t *testing.T) {
 func TestOrderReadModel_Count(t *testing.T) {
 	t.Run("returns correct count", func(t *testing.T) {
 		rm := NewOrderReadModel()
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-1",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-1","customerId":"customer-1"}`),
 		})
-		rm.Apply(mink.StoredEvent{
+		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-2",
 			Type:     "OrderCreated",
 			Data:     []byte(`{"orderId":"order-2","customerId":"customer-2"}`),

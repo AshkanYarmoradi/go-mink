@@ -38,20 +38,20 @@ type ProductPriceChanged struct {
 }
 
 type ProductInventoryUpdated struct {
-	ProductID    string    `json:"productId" msgpack:"productId"`
-	WarehouseID  string    `json:"warehouseId" msgpack:"warehouseId"`
-	OldQuantity  int       `json:"oldQuantity" msgpack:"oldQuantity"`
-	NewQuantity  int       `json:"newQuantity" msgpack:"newQuantity"`
-	Reason       string    `json:"reason" msgpack:"reason"`
-	UpdatedAt    time.Time `json:"updatedAt" msgpack:"updatedAt"`
+	ProductID   string    `json:"productId" msgpack:"productId"`
+	WarehouseID string    `json:"warehouseId" msgpack:"warehouseId"`
+	OldQuantity int       `json:"oldQuantity" msgpack:"oldQuantity"`
+	NewQuantity int       `json:"newQuantity" msgpack:"newQuantity"`
+	Reason      string    `json:"reason" msgpack:"reason"`
+	UpdatedAt   time.Time `json:"updatedAt" msgpack:"updatedAt"`
 }
 
 type LargeEvent struct {
-	ID          string            `json:"id" msgpack:"id"`
-	Data        []byte            `json:"data" msgpack:"data"`
-	Attributes  map[string]string `json:"attributes" msgpack:"attributes"`
-	Numbers     []int64           `json:"numbers" msgpack:"numbers"`
-	Nested      NestedData        `json:"nested" msgpack:"nested"`
+	ID         string            `json:"id" msgpack:"id"`
+	Data       []byte            `json:"data" msgpack:"data"`
+	Attributes map[string]string `json:"attributes" msgpack:"attributes"`
+	Numbers    []int64           `json:"numbers" msgpack:"numbers"`
+	Nested     NestedData        `json:"nested" msgpack:"nested"`
 }
 
 type NestedData struct {

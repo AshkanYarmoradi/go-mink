@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testContextKey is a custom type for context keys to satisfy SA1029
+type testContextKey string
+
+const testKey testContextKey = "key"
+
 // =============================================================================
 // Mock testing.TB for testing failure cases
 // =============================================================================
@@ -234,7 +239,7 @@ func TestTestSaga(t *testing.T) {
 func TestSagaTestFixture_WithContext(t *testing.T) {
 	t.Run("sets custom context", func(t *testing.T) {
 		saga := newTestOrderFulfillmentSaga("saga-123")
-		ctx := context.WithValue(context.Background(), "key", "value")
+		ctx := context.WithValue(context.Background(), testKey, "value")
 
 		fixture := TestSaga(t, saga).WithContext(ctx)
 
@@ -509,7 +514,7 @@ func TestTimeoutFixture_WithContext(t *testing.T) {
 		saga := &testTimeoutSaga{
 			testOrderFulfillmentSaga: *newTestOrderFulfillmentSaga("saga-123"),
 		}
-		ctx := context.WithValue(context.Background(), "key", "value")
+		ctx := context.WithValue(context.Background(), testKey, "value")
 
 		fixture := TestTimeout(t, saga).WithContext(ctx)
 

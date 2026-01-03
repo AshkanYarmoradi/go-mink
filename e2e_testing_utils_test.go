@@ -592,7 +592,7 @@ func TestE2E_Tracing_CompleteWorkflow(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exporter),
 	)
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	// Create tracer with our provider
 	tracer := tracing.NewTracer(
@@ -654,7 +654,7 @@ func TestE2E_FullStack_AllComponentsTogether(t *testing.T) {
 	// 2. Setup tracing
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 	tracer := tracing.NewTracer(tracing.WithTracerProvider(tp))
 
 	// 3. Setup msgpack serializer

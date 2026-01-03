@@ -181,7 +181,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 	t.Run("records successful command", func(t *testing.T) {
 		m := New(WithNamespace("cmd_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
 		cmd := &testCommand{id: "test-123"}
@@ -203,7 +203,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 	t.Run("records failed command", func(t *testing.T) {
 		m := New(WithNamespace("cmd_fail"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
 		cmd := &testCommand{id: "test-123"}
@@ -226,7 +226,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 	t.Run("tracks in-flight commands", func(t *testing.T) {
 		m := New(WithNamespace("cmd_inflight"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		middleware := m.CommandMiddleware()
 		cmd := &testCommand{id: "test-123"}
@@ -239,7 +239,7 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 			return mink.NewSuccessResult("test-123", 1), nil
 		})
 
-		handler(context.Background(), cmd)
+		_, _ = handler(context.Background(), cmd)
 
 		// Should be 1 during execution
 		assert.Equal(t, float64(1), inFlightDuringExecution)
@@ -258,7 +258,7 @@ func TestEventStoreMiddleware_Append(t *testing.T) {
 	t.Run("records successful append", func(t *testing.T) {
 		m := New(WithNamespace("es_append_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{}
 		middleware := m.WrapEventStore(adapter)
@@ -287,7 +287,7 @@ func TestEventStoreMiddleware_Append(t *testing.T) {
 	t.Run("records failed append", func(t *testing.T) {
 		m := New(WithNamespace("es_append_fail"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{appendErr: errors.New("append failed")}
 		middleware := m.WrapEventStore(adapter)
@@ -309,7 +309,7 @@ func TestEventStoreMiddleware_Load(t *testing.T) {
 	t.Run("records successful load", func(t *testing.T) {
 		m := New(WithNamespace("es_load_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{
 			events: []adapters.StoredEvent{
@@ -335,7 +335,7 @@ func TestEventStoreMiddleware_Load(t *testing.T) {
 	t.Run("records failed load", func(t *testing.T) {
 		m := New(WithNamespace("es_load_fail"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{loadErr: errors.New("load failed")}
 		middleware := m.WrapEventStore(adapter)
@@ -354,7 +354,7 @@ func TestEventStoreMiddleware_GetStreamInfo(t *testing.T) {
 	t.Run("records successful get stream info", func(t *testing.T) {
 		m := New(WithNamespace("es_info_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{
 			events: []adapters.StoredEvent{
@@ -375,7 +375,7 @@ func TestEventStoreMiddleware_GetLastPosition(t *testing.T) {
 	t.Run("records successful get last position", func(t *testing.T) {
 		m := New(WithNamespace("es_pos_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{
 			events: []adapters.StoredEvent{
@@ -395,7 +395,7 @@ func TestEventStoreMiddleware_Initialize(t *testing.T) {
 	t.Run("records successful initialize", func(t *testing.T) {
 		m := New(WithNamespace("es_init_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		adapter := &mockAdapter{}
 		middleware := m.WrapEventStore(adapter)
@@ -430,7 +430,7 @@ func TestProjectionMiddleware(t *testing.T) {
 	t.Run("records successful apply", func(t *testing.T) {
 		m := New(WithNamespace("proj_success"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		projection := &mockProjection{name: "OrderProjection"}
 		middleware := m.WrapProjection(projection)
@@ -458,7 +458,7 @@ func TestProjectionMiddleware(t *testing.T) {
 	t.Run("records failed apply", func(t *testing.T) {
 		m := New(WithNamespace("proj_fail"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		projection := &mockProjection{
 			name:     "OrderProjection",
@@ -489,7 +489,7 @@ func TestMetrics_RecordProjectionLag(t *testing.T) {
 	t.Run("records lag", func(t *testing.T) {
 		m := New(WithNamespace("lag_test"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		m.RecordProjectionLag("OrderProjection", 50)
 
@@ -502,7 +502,7 @@ func TestMetrics_RecordProjectionCheckpoint(t *testing.T) {
 	t.Run("records checkpoint", func(t *testing.T) {
 		m := New(WithNamespace("cp_test"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		m.RecordProjectionCheckpoint("OrderProjection", 1000)
 
@@ -515,7 +515,7 @@ func TestMetrics_RecordError(t *testing.T) {
 	t.Run("records custom error", func(t *testing.T) {
 		m := New(WithNamespace("err_test"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()
-		m.Register(registry)
+		_ = m.Register(registry)
 
 		m.RecordError("custom_error")
 		m.RecordError("custom_error")

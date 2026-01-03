@@ -131,7 +131,7 @@ func setupTestTracer(t *testing.T) (*Tracer, *tracetest.InMemoryExporter) {
 	)
 	otel.SetTracerProvider(tp)
 	t.Cleanup(func() {
-		tp.Shutdown(context.Background())
+		_ = tp.Shutdown(context.Background())
 	})
 
 	tracer := NewTracer(WithTracerProvider(tp))
@@ -160,7 +160,7 @@ func TestNewTracer(t *testing.T) {
 	t.Run("with custom tracer provider", func(t *testing.T) {
 		exporter := tracetest.NewInMemoryExporter()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-		defer tp.Shutdown(context.Background())
+		defer func() { _ = tp.Shutdown(context.Background()) }()
 
 		tracer := NewTracer(WithTracerProvider(tp))
 

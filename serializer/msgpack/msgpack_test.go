@@ -489,7 +489,7 @@ func TestSerializer_Concurrency(t *testing.T) {
 				event := OrderCreated{OrderID: "order-123"}
 				data, err := s.Serialize(event)
 				if err == nil {
-					s.Deserialize(data, "OrderCreated")
+					_, _ = s.Deserialize(data, "OrderCreated")
 				}
 				done <- true
 			}(i)
@@ -514,7 +514,7 @@ func BenchmarkSerializer_Serialize(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Serialize(event)
+		_, _ = s.Serialize(event)
 	}
 }
 
@@ -530,6 +530,6 @@ func BenchmarkSerializer_Deserialize(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Deserialize(data, "OrderCreated")
+		_, _ = s.Deserialize(data, "OrderCreated")
 	}
 }

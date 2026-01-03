@@ -20,10 +20,10 @@ import (
 // =============================================================================
 
 var (
-	ErrInsufficientFunds   = errors.New("insufficient funds")
-	ErrAccountClosed       = errors.New("account is closed")
-	ErrNegativeAmount      = errors.New("amount must be positive")
-	ErrDailyLimitExceeded  = errors.New("daily withdrawal limit exceeded")
+	ErrInsufficientFunds  = errors.New("insufficient funds")
+	ErrAccountClosed      = errors.New("account is closed")
+	ErrNegativeAmount     = errors.New("amount must be positive")
+	ErrDailyLimitExceeded = errors.New("daily withdrawal limit exceeded")
 )
 
 // =============================================================================
@@ -407,7 +407,7 @@ func TestBankAccount_CompleteLifecycle(t *testing.T) {
 		// Clear uncommitted and deposit
 		account.ClearUncommittedEvents()
 		account.Deposit(1000.00, "initial-deposit")
-		
+
 		if account.Balance != 1000.00 {
 			t.Errorf("Expected balance 1000.00, got %.2f", account.Balance)
 		}

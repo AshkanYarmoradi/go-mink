@@ -14,6 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testContextKey is a type for context keys to avoid staticcheck SA1029
+type testContextKey string
+
+const testKey testContextKey = "key"
+
 // =============================================================================
 // Mock testing.TB for testing failure cases
 // =============================================================================
@@ -23,7 +28,6 @@ type mockT struct {
 	testing.TB // embed to satisfy unexported methods
 	failed     bool
 	fatal      bool
-	skipped    bool
 	logs       []string
 }
 
@@ -257,7 +261,7 @@ func TestProjectionTestFixture_WithContext(t *testing.T) {
 	t.Run("sets custom context", func(t *testing.T) {
 		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })
 		projection := newTestOrderProjection(repo)
-		ctx := context.WithValue(context.Background(), "key", "value")
+		ctx := context.WithValue(context.Background(), testKey, "value")
 
 		fixture := TestProjection[TestOrderSummary](t, projection).WithContext(ctx)
 
@@ -565,7 +569,7 @@ func TestTestEngine(t *testing.T) {
 
 func TestEngineTestFixture_WithContext(t *testing.T) {
 	t.Run("sets custom context", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "key", "value")
+		ctx := context.WithValue(context.Background(), testKey, "value")
 		fixture := TestEngine(t).WithContext(ctx)
 
 		assert.Equal(t, ctx, fixture.ctx)

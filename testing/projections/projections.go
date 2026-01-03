@@ -122,6 +122,7 @@ func (f *ProjectionTestFixture[T]) ThenReadModel(id string, expected T) {
 
 	if actual == nil {
 		f.t.Fatalf("Read model %s not found", id)
+		return // unreachable but helps static analysis
 	}
 
 	if !reflect.DeepEqual(*actual, expected) {
@@ -342,19 +343,19 @@ func (f *EngineTestFixture) WithContext(ctx context.Context) *EngineTestFixture 
 
 // RegisterInline registers an inline projection.
 func (f *EngineTestFixture) RegisterInline(projection mink.InlineProjection) *EngineTestFixture {
-	f.engine.RegisterInline(projection)
+	_ = f.engine.RegisterInline(projection)
 	return f
 }
 
 // RegisterAsync registers an async projection.
 func (f *EngineTestFixture) RegisterAsync(projection mink.AsyncProjection, opts mink.AsyncOptions) *EngineTestFixture {
-	f.engine.RegisterAsync(projection, opts)
+	_ = f.engine.RegisterAsync(projection, opts)
 	return f
 }
 
 // RegisterLive registers a live projection.
 func (f *EngineTestFixture) RegisterLive(projection mink.LiveProjection, opts ...mink.LiveOptions) *EngineTestFixture {
-	f.engine.RegisterLive(projection, opts...)
+	_ = f.engine.RegisterLive(projection, opts...)
 	return f
 }
 

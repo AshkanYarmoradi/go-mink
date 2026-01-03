@@ -12,6 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testContextKey is a type for context keys to avoid staticcheck SA1029
+type testContextKey string
+
+const testKey testContextKey = "key"
+
 // =============================================================================
 // Mock Testing Helper
 // =============================================================================
@@ -493,7 +498,7 @@ func TestGivenCommand(t *testing.T) {
 func TestCommandTestFixture_WithContext(t *testing.T) {
 	t.Run("sets custom context", func(t *testing.T) {
 		bus := mink.NewCommandBus()
-		ctx := context.WithValue(context.Background(), "key", "value")
+		ctx := context.WithValue(context.Background(), testKey, "value")
 
 		fixture := GivenCommand(t, bus, nil).WithContext(ctx)
 
