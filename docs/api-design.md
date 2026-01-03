@@ -525,41 +525,51 @@ if errors.As(err, &concErr) {
 }
 ```
 
-### Testing Utilities
+### Testing Utilities (v0.4.0)
 
 ```go
-package go-minktest
+import (
+    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
+    "github.com/AshkanYarmoradi/go-mink/testing/projections"
+    "github.com/AshkanYarmoradi/go-mink/testing/sagas"
+    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+)
 
-// InMemoryStore for unit tests
-func NewInMemoryStore() *go-mink.EventStore
-
-// EventBuilder for test events
-type EventBuilder struct{}
-
-func NewEvent(eventType string) *EventBuilder
-func (b *EventBuilder) WithData(data interface{}) *EventBuilder
-func (b *EventBuilder) WithMetadata(m go-mink.Metadata) *EventBuilder
-func (b *EventBuilder) Build() go-mink.Event
-
-// Assertions
-func AssertEventTypes(t *testing.T, events []go-mink.Event, types ...string)
-func AssertStreamVersion(t *testing.T, store *go-mink.EventStore, streamID string, version int64)
-func AssertProjectionState[T any](t *testing.T, repo go-mink.Repository[T], id string, expected T)
-
-// Usage in tests
+// BDD-style aggregate testing
 func TestOrderAggregate(t *testing.T) {
-    store := go-minktest.NewInMemoryStore()
-    
     order := NewOrder("order-123")
-    order.Create("customer-456")
-    order.AddItem("SKU-001", 2, 29.99)
-    
-    store.SaveAggregate(ctx, order)
-    
-    go-minktest.AssertEventTypes(t, order.UncommittedEvents(),
-        "OrderCreated", "ItemAdded")
-    go-minktest.AssertStreamVersion(t, store, "order-123", 2)
+
+    bdd.Given(t, order).
+        When(func() error {
+            return order.Create("customer-456")
+        }).
+        Then(OrderCreated{OrderID: "order-123", CustomerID: "customer-456"})
 }
+
+// Event assertions
+assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
+assertions.AssertEventsEqual(t, expected, actual)
+assertions.AssertContainsEvent(t, events, OrderCreated{OrderID: "123"})
+
+// Event diffing
+diffs := assertions.DiffEvents(expected, actual)
+t.Error(assertions.FormatDiffs(diffs))
+
+// Projection testing
+projections.TestProjection[OrderSummary](t, projection).
+    GivenEvents(storedEvents...).
+    ThenReadModel("order-123", expectedModel)
+
+// Saga testing
+sagas.TestSaga(t, saga).
+    GivenEvents(events...).
+    ThenCommands(expectedCommands...).
+    ThenCompleted()
+
+// PostgreSQL test containers
+container := containers.StartPostgres(t)
+db := container.MustDB(ctx)
 ```
 
 ---

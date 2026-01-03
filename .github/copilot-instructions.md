@@ -60,25 +60,18 @@ type Projection interface {
 
 ## Development Priorities
 
-### Phase 1 (Current): Core Foundation
-1. Event types: `EventData`, `StoredEvent`, `Metadata`
-2. `Aggregate` interface and `AggregateBase`
-3. `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
-4. PostgreSQL adapter with optimistic concurrency
-5. In-memory adapter for testing
-6. JSON serialization with type registry
+### Completed Phases
+- **Phase 1 (v0.1.0)**: Core Foundation - Event Store, Aggregates, PostgreSQL/Memory adapters
+- **Phase 2 (v0.2.0)**: CQRS Commands - Command Bus, middleware, idempotency
+- **Phase 3 (v0.3.0)**: Projections - Inline/async/live projections, subscriptions
+- **Phase 4 (v0.4.0)**: Developer Experience - Testing utilities, observability, MessagePack
 
-### Phase 2: CQRS Commands
-1. `Command` interface with validation
-2. `CommandHandler` generic interface
-3. `CommandBus` with middleware
-4. Idempotency support
-
-### Phase 3: Projections
-1. Inline projections (transactional)
-2. Async projections (background worker)
-3. Live projections (real-time)
-4. Checkpoint management
+### Phase 5 (Next): Security & Advanced Patterns
+1. Saga / Process Manager implementation
+2. Outbox pattern for reliable messaging
+3. Event versioning & upcasting
+4. Field-level encryption (AWS KMS, HashiCorp Vault)
+5. GDPR compliance (crypto-shredding)
 
 ## Coding Standards
 
@@ -129,9 +122,9 @@ func TestEventStore_Append(t *testing.T) {
     }
 }
 
-// BDD for aggregates
-Given(t, aggregate, previousEvents...).
-    When(command).
+// BDD for aggregates (testing/bdd package)
+bdd.Given(t, aggregate, previousEvents...).
+    When(func() error { return aggregate.DoSomething() }).
     Then(expectedEvents...)
 ```
 
@@ -145,12 +138,19 @@ mink/
 ├── store.go             # EventStore
 ├── adapters/
 │   ├── postgres/        # PostgreSQL (primary)
-│   ├── mongodb/         # MongoDB
-│   ├── redis/           # Redis (snapshots/cache)
 │   └── memory/          # Testing
-├── projection/          # Projection engine
-├── middleware/          # Command/event middleware
-└── testing/             # Test utilities
+├── middleware/
+│   ├── metrics/         # Prometheus metrics (v0.4.0+)
+│   └── tracing/         # OpenTelemetry tracing (v0.4.0+)
+├── serializer/
+│   └── msgpack/         # MessagePack serializer (v0.4.0+)
+└── testing/
+    ├── bdd/             # BDD test fixtures
+    ├── assertions/      # Event assertions
+    ├── projections/     # Projection testing
+    ├── sagas/           # Saga testing
+    ├── containers/      # PostgreSQL test containers
+    └── testutil/        # Mock adapters
 ```
 
 ## PostgreSQL Schema

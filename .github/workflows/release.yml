@@ -108,6 +108,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Publish to Go Module Proxy
+        run: |
+          NEW_VERSION="${{ steps.next_version.outputs.new_version }}"
+          MODULE="github.com/${{ github.repository }}"
+          
+          echo "Requesting module from Go proxy to trigger indexing..."
+          
+          # Request the module version from proxy.golang.org to trigger caching
+          PROXY_URL="https://proxy.golang.org/${MODULE}/@v/${NEW_VERSION}.info"
+          echo "Requesting: $PROXY_URL"
+          
+          # Retry up to 5 times with 10 second delays (proxy may need time to fetch)
+          for i in {1..5}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROXY_URL")
+            echo "Attempt $i: HTTP $HTTP_STATUS"
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "✅ Module successfully indexed by Go proxy"
+              break
+            fi
+            
+            if [ $i -lt 5 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+          done
+          
+          # Also trigger pkg.go.dev to fetch the documentation
+          PKG_URL="https://pkg.go.dev/${MODULE}@${NEW_VERSION}"
+          echo "Module will be available at: $PKG_URL"
+          
+          # Request the module list to ensure it's fully indexed
+          GOPROXY=https://proxy.golang.org go list -m "${MODULE}@${NEW_VERSION}" || true
+
       - name: Release summary
         run: |
           echo "## 🎉 Release Created" >> $GITHUB_STEP_SUMMARY
@@ -117,3 +156,5 @@ jobs:
           echo "**Previous:** ${{ steps.get_tag.outputs.latest_tag }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 **Go Module:** [pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }}](https://pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY

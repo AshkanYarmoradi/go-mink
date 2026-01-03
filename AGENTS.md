@@ -83,11 +83,14 @@ github.com/AshkanYarmoradi/go-mink/
 │
 ├── middleware/
 │   ├── logging.go
-│   ├── metrics.go
-│   ├── tracing.go
+│   ├── metrics/               # Prometheus metrics (v0.4.0+)
+│   ├── tracing/               # OpenTelemetry tracing (v0.4.0+)
 │   ├── retry.go
 │   ├── idempotency.go
 │   └── validation.go
+│
+├── serializer/
+│   └── msgpack/               # MessagePack serializer (v0.4.0+)
 │
 ├── encryption/
 │   ├── provider.go            # EncryptionProvider interface
@@ -115,10 +118,12 @@ github.com/AshkanYarmoradi/go-mink/
 │       └── stream.go
 │
 ├── testing/
-│   ├── inmemory.go            # In-memory adapters
-│   ├── fixture.go             # BDD test fixtures
-│   ├── assertions.go          # Event assertions
-│   └── containers.go          # Test containers
+│   ├── bdd/                   # BDD test fixtures (Given-When-Then)
+│   ├── assertions/            # Event assertions and diffing
+│   ├── projections/           # Projection testing utilities
+│   ├── sagas/                 # Saga testing utilities
+│   ├── containers/            # PostgreSQL test containers
+│   └── testutil/              # Mock adapters and helpers
 │
 └── examples/
     ├── basic/
@@ -130,59 +135,47 @@ github.com/AshkanYarmoradi/go-mink/
 
 ## Development Phases
 
-### Phase 1: Foundation (v0.1.0) - CURRENT PRIORITY
+### Completed Phases
 
-**Goal**: Basic event store with PostgreSQL adapter
+**Phase 1 (v0.1.0)**: Foundation - COMPLETE
+- Core interfaces: `Event`, `EventData`, `StoredEvent`, `Metadata`
+- `Aggregate` interface and `AggregateBase` implementation
+- `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
+- PostgreSQL adapter with optimistic concurrency
+- In-memory adapter for testing
+- JSON serializer with event registry
 
-**Tasks**:
-1. Core interfaces: `Event`, `EventData`, `StoredEvent`, `Metadata`, `StreamID`
-2. `Aggregate` interface and `AggregateBase` implementation
-3. `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
-4. PostgreSQL adapter with optimistic concurrency
-5. In-memory adapter for testing
-6. JSON serializer with event registry
+**Phase 2 (v0.2.0)**: CQRS & Commands - COMPLETE
+- `Command` interface with validation
+- `CommandHandler` generic interface
+- `CommandBus` with middleware pipeline
+- `IdempotencyStore` interface and PostgreSQL implementation
+- Middleware: Logging, Validation, Recovery, Idempotency, Correlation, Causation, Tenant
 
-**Acceptance Criteria**:
-```go
-// This code must work by end of v0.1.0
-store := mink.New(postgres.NewAdapter(connStr))
+**Phase 3 (v0.3.0)**: Read Models - COMPLETE
+- `Projection` interface hierarchy (Inline, Async, Live)
+- `ProjectionEngine` with worker pool
+- Checkpoint management and rebuilding
+- `ReadModelRepository` generic interface with query builder
+- Event subscriptions (`SubscribeAll`, `SubscribeStream`, `SubscribeCategory`)
 
-order := NewOrder("order-123")
-order.Create("customer-456")
-order.AddItem("SKU-001", 2, 29.99)
+**Phase 4 (v0.4.0)**: Developer Experience - COMPLETE
+- Testing utilities: `testing/bdd`, `testing/assertions`, `testing/projections`, `testing/sagas`, `testing/containers`
+- Observability: `middleware/metrics` (Prometheus), `middleware/tracing` (OpenTelemetry)
+- MessagePack serializer: `serializer/msgpack`
 
-store.SaveAggregate(ctx, order)
+### Phase 5 (v0.5.0): Security & Advanced Patterns - NEXT
 
-loaded := NewOrder("order-123")
-store.LoadAggregate(ctx, loaded)
-// loaded.Status == "Created"
-// len(loaded.Items) == 1
-```
-
-### Phase 2: CQRS & Commands (v0.2.0)
-
-**Goal**: Complete command handling with idempotency
-
-**Tasks**:
-1. `Command` interface with validation
-2. `CommandHandler` generic interface
-3. `CommandBus` with middleware pipeline
-4. `IdempotencyStore` interface and PostgreSQL implementation
-5. Middleware: Logging, Validation, Idempotency, Transaction
-
-### Phase 3: Read Models (v0.3.0)
-
-**Goal**: Projection system with multiple strategies
+**Goal**: Production-ready features for enterprise use
 
 **Tasks**:
-1. `Projection` interface hierarchy (Inline, Async, Live)
-2. `ProjectionEngine` with worker pool
-3. Checkpoint management
-4. `ReadModelRepository` generic interface
-5. Query builder
-6. Projection rebuilding
+1. Saga / Process Manager implementation
+2. Outbox pattern for reliable messaging
+3. Event versioning & upcasting
+4. Field-level encryption (AWS KMS, HashiCorp Vault)
+5. GDPR compliance (crypto-shredding, data export)
 
-### Phase 4-7: See roadmap.md for details
+### Phase 6-7: See roadmap.md for details
 
 ---
 
@@ -305,14 +298,18 @@ import "github.com/stretchr/testify/require"
 assert.Equal(t, expected, actual)
 require.NoError(t, err)
 
-// 3. BDD-style for aggregate tests
+// 3. BDD-style for aggregate tests (testing/bdd package)
 func TestOrder_CannotAddItemAfterShipping(t *testing.T) {
-    Given(t, NewOrder("order-123"),
+    order := NewOrder("order-123")
+
+    bdd.Given(t, order,
         OrderCreated{OrderID: "order-123"},
         OrderShipped{OrderID: "order-123"},
     ).
-    When(AddItemCommand{OrderID: "order-123", SKU: "WIDGET"}).
-    ThenError(ErrOrderAlreadyShipped)
+        When(func() error {
+            return order.AddItem("WIDGET", 1, 29.99)
+        }).
+        ThenError(ErrOrderAlreadyShipped)
 }
 ```
 
@@ -569,20 +566,29 @@ func TestPostgresAdapter_Append(t *testing.T) {
 ### BDD Tests (Behavior)
 
 ```go
-// Use the minktest package
+import "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+
 func TestOrderFulfillment(t *testing.T) {
     t.Run("successful order flow", func(t *testing.T) {
-        Given(t, NewOrder("order-123")).
-            When(CreateOrderCommand{CustomerID: "cust-456"}).
+        order := NewOrder("order-123")
+
+        bdd.Given(t, order).
+            When(func() error {
+                return order.Create("cust-456")
+            }).
             Then(OrderCreated{OrderID: "order-123", CustomerID: "cust-456"})
     })
-    
+
     t.Run("cannot add items after shipping", func(t *testing.T) {
-        Given(t, NewOrder("order-123"),
+        order := NewOrder("order-123")
+
+        bdd.Given(t, order,
             OrderCreated{OrderID: "order-123"},
             OrderShipped{OrderID: "order-123"},
         ).
-            When(AddItemCommand{SKU: "WIDGET"}).
+            When(func() error {
+                return order.AddItem("WIDGET", 1, 29.99)
+            }).
             ThenError(ErrOrderAlreadyShipped)
     })
 }
@@ -768,7 +774,16 @@ import (
     "github.com/AshkanYarmoradi/go-mink"
     "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
     "github.com/AshkanYarmoradi/go-mink/adapters/memory"
-    "github.com/AshkanYarmoradi/go-mink/testing/minktest"
+
+    // Testing utilities (v0.4.0+)
+    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
+    "github.com/AshkanYarmoradi/go-mink/testing/projections"
+    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+
+    // Observability (v0.4.0+)
+    "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+    "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
 )
 ```
 

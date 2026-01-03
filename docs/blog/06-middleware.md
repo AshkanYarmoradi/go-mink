@@ -178,6 +178,63 @@ func AuthMiddleware(authService AuthService) mink.Middleware {
 
 ---
 
+## Observability Middleware (v0.4.0)
+
+### Prometheus Metrics
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+
+// Create metrics
+m := metrics.New(
+    metrics.WithNamespace("myapp"),
+    metrics.WithMetricsServiceName("order-service"),
+)
+
+// Register with Prometheus
+m.MustRegister()
+
+// Add to command bus
+bus.Use(m.CommandMiddleware())
+
+// Wrap event store
+metricsStore := m.WrapEventStore(adapter)
+
+// Wrap projections
+metricsProjection := m.WrapProjection(projection)
+```
+
+**Collected Metrics:**
+- `mink_commands_total` - Command count by type/status
+- `mink_command_duration_seconds` - Command execution histogram
+- `mink_commands_in_flight` - Currently executing commands
+- `mink_eventstore_operations_total` - Event store operations
+- `mink_projections_processed_total` - Projection processing
+- `mink_projection_lag_events` - Projection lag
+
+### OpenTelemetry Tracing
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+
+// Create tracer
+tracer := tracing.NewTracer(
+    tracing.WithServiceName("order-service"),
+    tracing.WithTracerProvider(provider), // Optional custom provider
+)
+
+// Add to command bus
+bus.Use(tracer.CommandMiddleware())
+
+// Wrap event store
+tracedStore := tracing.NewEventStoreMiddleware(adapter, tracer)
+
+// Add events to current span
+tracing.AddEvent(ctx, "Processing order", map[string]string{"order_id": "123"})
+```
+
+---
+
 ## Key Takeaways
 
 {: .highlight }

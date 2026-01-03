@@ -48,12 +48,14 @@ Building event-sourced applications in Go means wrestling with **boilerplate cod
 | 🎯 | **Event Store** | ✅ v0.1.0 | Append-only storage with optimistic concurrency |
 | 🔌 | **Adapters** | ✅ v0.1.0 | PostgreSQL & In-Memory adapters |
 | 🧱 | **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
-| 🧪 | **Testing** | ✅ v0.1.0 | 90%+ coverage, Docker Compose infrastructure |
 | 📋 | **Command Bus** | ✅ v0.2.0 | Full CQRS with middleware, validation & idempotency |
 | 🔐 | **Idempotency** | ✅ v0.2.0 | Prevent duplicate command processing |
 | 🔗 | **Correlation/Causation** | ✅ v0.2.0 | Distributed tracing support |
-| 📖 | **Projections** | 🔜 v0.3.0 | Inline, async, and live read models |
-| 🛠️ | **CLI** | 🔜 v0.4.0 | Generate code, run migrations, diagnose issues |
+| 📖 | **Projections** | ✅ v0.3.0 | Inline, async, and live read models |
+| 📡 | **Subscriptions** | ✅ v0.3.0 | Catch-up and polling event subscriptions |
+| 🧪 | **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
+| 📊 | **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
+| 🛠️ | **CLI** | 🔜 v0.5.0 | Generate code, run migrations, diagnose issues |
 | 🔐 | **Security** | 🔜 v0.5.0 | Field-level encryption & GDPR compliance |
 | 🔄 | **Sagas** | 🔜 v0.5.0 | Coordinate long-running business processes |
 | 📤 | **Outbox** | 🔜 v0.5.0 | Reliable event publishing |

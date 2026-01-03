@@ -9,7 +9,7 @@ permalink: /docs/introduction
 {: .no_toc }
 
 {: .label .label-green }
-v0.3.0 Released
+v0.4.0 Released
 
 ## Table of contents
 {: .no_toc .text-delta }

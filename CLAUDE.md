@@ -42,6 +42,9 @@ Commands → Command Bus → Aggregate → Events → Event Store
 - Idempotency: `idempotency.go`, `adapters/*/idempotency.go`
 - Subscriptions: `subscription.go`, `adapters/postgres/subscription.go`
 - Errors: `errors.go`, `adapters/adapter.go` (sentinel errors)
+- Testing utilities: `testing/bdd/`, `testing/assertions/`, `testing/projections/`, `testing/sagas/`, `testing/containers/`
+- Observability: `middleware/metrics/`, `middleware/tracing/`
+- Serializers: `serializer/msgpack/`
 
 ## Core Interfaces to Know
 
@@ -102,29 +105,40 @@ func TestFoo(t *testing.T) {
         want    Output
         wantErr error
     }{...}
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {...})
     }
 }
 
-// BDD for aggregates
-Given(t, aggregate, previousEvents...).
-    When(command).
+// BDD for aggregates (testing/bdd package)
+bdd.Given(t, aggregate, previousEvents...).
+    When(func() error { return aggregate.DoSomething() }).
     Then(expectedEvents...)
+
+// Event assertions (testing/assertions package)
+assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
+assertions.AssertEventsEqual(t, expected, actual)
+
+// Test containers (testing/containers package)
+container := containers.StartPostgres(t)
+db := container.MustDB(ctx)
 ```
 
 ## Current Development Phase
 
-**Phase 3 (v0.3.0)**: Projections - IN PROGRESS
-- Projection interfaces: `InlineProjection`, `AsyncProjection`, `LiveProjection`
-- `ProjectionEngine` with worker pool
-- Checkpoint management and rebuilding
-- Event subscriptions (`SubscribeAll`, `SubscribeStream`, `SubscribeCategory`)
+**Phase 5 (v0.5.0)**: Security & Advanced Patterns - NEXT
+- Saga / Process Manager implementation
+- Outbox pattern
+- Event versioning & upcasting
+- Field-level encryption
+- GDPR compliance (crypto-shredding)
 
 **Completed phases**:
-- Phase 1: Event types, Aggregate, EventStore, PostgreSQL/Memory adapters
-- Phase 2: Command Bus, handlers, middleware (Validation, Recovery, Idempotency, Correlation)
+- Phase 1 (v0.1.0): Event types, Aggregate, EventStore, PostgreSQL/Memory adapters
+- Phase 2 (v0.2.0): Command Bus, handlers, middleware (Validation, Recovery, Idempotency, Correlation)
+- Phase 3 (v0.3.0): Projections (`InlineProjection`, `AsyncProjection`, `LiveProjection`), `ProjectionEngine`, subscriptions
+- Phase 4 (v0.4.0): Testing utilities (`testing/bdd`, `testing/assertions`, `testing/projections`, `testing/sagas`, `testing/containers`), observability (`middleware/metrics`, `middleware/tracing`), MessagePack serializer
 
 ## Don't Do
 

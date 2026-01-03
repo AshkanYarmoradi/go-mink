@@ -7,7 +7,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2025-01-XX
+## [0.4.0] - 2026-01-03
+
+### Added
+
+#### Testing Utilities - BDD Package (`testing/bdd`)
+- `TestFixture` - BDD-style test fixture for aggregate testing
+- `CommandTestFixture` - Test fixture for command bus integration
+- `Given()` - Set up initial events for test
+- `When()` - Execute command or method
+- `Then()` - Assert expected events
+- `ThenError()` - Assert expected error
+- `ThenNoEvents()` - Assert no events emitted
+
+#### Testing Utilities - Assertions Package (`testing/assertions`)
+- `AssertEventTypes()` - Assert event types match expected
+- `AssertEventData()` - Assert event data matches expected
+- `DiffEvents()` - Compute differences between event slices
+- `FormatDiffs()` - Format diff results for display
+- `EventMatcher` - Fluent interface for event matching
+- `MatchEventType()` - Match single event type
+- `MatchEvent()` - Match event with data
+- `FilterEvents()` - Filter events by predicate
+
+#### Testing Utilities - Projections Package (`testing/projections`)
+- `ProjectionTestFixture[T]` - Generic projection test fixture
+- `InlineProjectionFixture` - Test inline projections
+- `AsyncProjectionFixture` - Test async projections
+- `LiveProjectionFixture` - Test live projections with channels
+- `EngineTestFixture` - Test full projection engine
+- `GivenEvents()` - Set up events for projection
+- `GivenDomainEvents()` - Set up domain events with serialization
+- `ThenReadModel()` - Assert read model state
+- `ThenReadModelExists()` - Assert read model exists
+- `ThenReadModelCount()` - Assert read model count
+- `ThenReadModelMatches()` - Assert read model with custom predicate
+
+#### Testing Utilities - Sagas Package (`testing/sagas`)
+- `Saga` interface - Saga/Process Manager contract
+- `SagaTestFixture` - Test fixture for saga testing
+- `SagaStateMachineFixture` - Test saga state transitions
+- `CompensationFixture` - Test compensation flows
+- `TimeoutFixture` - Test saga timeout handling
+- `TestSaga()` - Create saga test fixture
+- `GivenEvents()` - Set up triggering events
+- `ThenCommands()` - Assert commands issued
+- `ThenCompleted()` - Assert saga completion
+- `ThenState()` - Assert saga state
+- `ThenCompensates()` - Assert compensation commands
+
+#### Testing Utilities - Containers Package (`testing/containers`)
+- `PostgresContainer` - PostgreSQL test container management
+- `StartPostgres()` - Start PostgreSQL container for tests
+- `IntegrationTest` - Full integration test environment
+- `FullStackTest` - Complete mink stack test environment
+- `ConnectionString()` - Get database connection string
+- `CreateSchema()` - Create isolated test schema
+- `DropSchema()` - Clean up test schema
+- `SetupMinkSchema()` - Initialize mink tables
+
+#### Serializers - MessagePack (`serializer/msgpack`)
+- `Serializer` - MessagePack serializer implementation
+- `NewSerializer()` - Create new MessagePack serializer
+- `NewSerializerWithOptions()` - Create with options
+- `WithRegistry()` - Pre-configure type registry
+- `Register()` - Register event type
+- `RegisterAll()` - Register multiple event types
+- `Serialize()` - Convert event to MessagePack bytes
+- `Deserialize()` - Convert bytes back to event
+- `SerializationError` - Detailed serialization errors
+
+#### Middleware - Tracing (`middleware/tracing`)
+- `Tracer` - OpenTelemetry tracer wrapper
+- `NewTracer()` - Create tracer with options
+- `WithTracerProvider()` - Custom TracerProvider
+- `WithServiceName()` - Set service name for spans
+- `CommandMiddleware()` - Trace command execution
+- `EventStoreMiddleware` - Trace event store operations
+- `ProjectionMiddleware` - Trace projection processing
+- `SpanFromContext()` - Get current span
+- `AddEvent()` - Add event to current span
+- `SetError()` - Set error on current span
+- `SetAttributes()` - Set attributes on current span
+
+#### Middleware - Metrics (`middleware/metrics`)
+- `Metrics` - Prometheus metrics collection
+- `New()` - Create metrics with options
+- `WithNamespace()` - Set Prometheus namespace
+- `WithSubsystem()` - Set Prometheus subsystem
+- `WithMetricsServiceName()` - Set service name label
+- `CommandMiddleware()` - Record command metrics
+- `WrapEventStore()` - Wrap event store with metrics
+- `WrapProjection()` - Wrap projection with metrics
+- `Collectors()` - Get all Prometheus collectors
+- `MustRegister()` - Register with default registry
+- `Register()` - Register with custom registry
+- `RecordProjectionLag()` - Record projection lag
+- `RecordProjectionCheckpoint()` - Record checkpoint position
+- `RecordError()` - Record custom error
+
+#### Prometheus Metrics Collected
+- `mink_commands_total` - Command execution count by type/status
+- `mink_command_duration_seconds` - Command execution duration histogram
+- `mink_commands_in_flight` - Currently executing commands gauge
+- `mink_eventstore_operations_total` - Event store operations by type/status
+- `mink_eventstore_operation_duration_seconds` - Event store operation duration
+- `mink_events_appended_total` - Events appended by type
+- `mink_events_loaded_total` - Events loaded count
+- `mink_projections_processed_total` - Projection events by name/type/status
+- `mink_projection_duration_seconds` - Projection processing duration
+- `mink_projection_lag_events` - Projection lag gauge
+- `mink_projection_checkpoint_position` - Checkpoint position gauge
+- `mink_errors_total` - Error count by type
+
+### Changed
+- Version updated to 0.4.0
+
+## [0.3.0] - 2025-12-15
 
 ### Added
 
@@ -194,6 +310,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ErrStreamNotFound` - Stream does not exist
 - `ConcurrencyError` - Detailed concurrency error info
 
-[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AshkanYarmoradi/go-mink/releases/tag/v0.1.0
