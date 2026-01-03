@@ -61,7 +61,7 @@ func (f *TestFixture) Then(expectedEvents ...interface{}) {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("Then called without When")
+		f.t.Fatal("bdd: Then() must be called after When() - no command was executed")
 	}
 
 	if f.result != nil {
@@ -87,7 +87,7 @@ func (f *TestFixture) ThenError(expectedErr error) {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenError called without When")
+		f.t.Fatal("bdd: ThenError() must be called after When() - no command was executed")
 	}
 
 	if f.result == nil {
@@ -104,7 +104,7 @@ func (f *TestFixture) ThenErrorContains(substring string) {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenErrorContains called without When")
+		f.t.Fatal("bdd: ThenErrorContains() must be called after When() - no command was executed")
 	}
 
 	if f.result == nil {
@@ -121,7 +121,7 @@ func (f *TestFixture) ThenNoEvents() {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenNoEvents called without When")
+		f.t.Fatal("bdd: ThenNoEvents() must be called after When() - no command was executed")
 	}
 
 	if f.result != nil {
@@ -201,7 +201,7 @@ func (f *CommandTestFixture) ThenSucceeds() *CommandTestFixture {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenSucceeds called without When")
+		f.t.Fatal("bdd: ThenSucceeds() must be called after When() - no command was dispatched")
 	}
 
 	if f.err != nil {
@@ -220,7 +220,7 @@ func (f *CommandTestFixture) ThenFails(expectedErr error) {
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenFails called without When")
+		f.t.Fatal("bdd: ThenFails() must be called after When() - no command was dispatched")
 	}
 
 	if f.err == nil && f.result.IsSuccess() {
@@ -242,7 +242,7 @@ func (f *CommandTestFixture) ThenReturnsAggregateID(expected string) *CommandTes
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenReturnsAggregateID called without When")
+		f.t.Fatal("bdd: ThenReturnsAggregateID() must be called after When() - no command was dispatched")
 	}
 
 	if f.result.AggregateID != expected {
@@ -257,7 +257,7 @@ func (f *CommandTestFixture) ThenReturnsVersion(expected int64) *CommandTestFixt
 	f.t.Helper()
 
 	if !f.executed {
-		f.t.Fatal("ThenReturnsVersion called without When")
+		f.t.Fatal("bdd: ThenReturnsVersion() must be called after When() - no command was dispatched")
 	}
 
 	if f.result.Version != expected {

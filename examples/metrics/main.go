@@ -15,7 +15,7 @@ import (
 
 	"github.com/AshkanYarmoradi/go-mink"
 	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+	minkmetrics "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -58,9 +58,9 @@ func main() {
 	ctx := context.Background()
 
 	// Create metrics instance
-	metricsInstance := metrics.New(
-		metrics.WithNamespace("mink_example"),
-		metrics.WithMetricsServiceName("user-service"),
+	metricsInstance := minkmetrics.New(
+		minkmetrics.WithNamespace("mink_example"),
+		minkmetrics.WithMetricsServiceName("user-service"),
 	)
 
 	// Register metrics with Prometheus

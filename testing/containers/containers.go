@@ -6,13 +6,30 @@ package containers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// Validation errors.
+var (
+	// ErrInvalidSchemaPrefix indicates the schema prefix contains invalid characters.
+	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must contain only alphanumeric characters and underscores")
+
+	// ErrInvalidPort indicates the port is not valid.
+	ErrInvalidPort = errors.New("containers: port must be a valid number between 1 and 65535")
+
+	// ErrEmptyPassword indicates the password is empty.
+	ErrEmptyPassword = errors.New("containers: password cannot be empty")
+)
+
+// identifierRegex validates PostgreSQL identifiers (schema names, etc.)
+var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // PostgresContainer represents a PostgreSQL test container.
 type PostgresContainer struct {
@@ -172,6 +189,9 @@ func (c *PostgresContainer) MustDB(ctx context.Context) *sql.DB {
 
 // CreateSchema creates a unique test schema.
 func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix string) (string, error) {
+	if err := validateSchemaPrefix(prefix); err != nil {
+		return "", err
+	}
 	schema := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
 	_, err := db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(schema)))
 	if err != nil {
@@ -209,9 +229,34 @@ func waitForPostgres(ctx context.Context, connStr string) error {
 	}
 }
 
-// quoteIdentifier quotes a PostgreSQL identifier.
+// quoteIdentifier quotes a PostgreSQL identifier after validating it.
 func quoteIdentifier(name string) string {
 	return `"` + name + `"`
+}
+
+// validateIdentifier validates that a string is a valid PostgreSQL identifier.
+func validateIdentifier(name string) error {
+	if name == "" {
+		return errors.New("containers: identifier cannot be empty")
+	}
+	if len(name) > 63 {
+		return errors.New("containers: identifier exceeds maximum length of 63 characters")
+	}
+	if !identifierRegex.MatchString(name) {
+		return fmt.Errorf("containers: invalid identifier %q - must start with letter or underscore and contain only alphanumeric characters and underscores", name)
+	}
+	return nil
+}
+
+// validateSchemaPrefix validates a schema prefix for use in test schema names.
+func validateSchemaPrefix(prefix string) error {
+	if prefix == "" {
+		return ErrInvalidSchemaPrefix
+	}
+	if !identifierRegex.MatchString(prefix) {
+		return ErrInvalidSchemaPrefix
+	}
+	return nil
 }
 
 // =============================================================================

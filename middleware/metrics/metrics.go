@@ -26,6 +26,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -337,13 +338,47 @@ func (m *Metrics) recordError(err error, result mink.CommandResult) {
 	m.errorsTotal.WithLabelValues(m.serviceName, errorType).Inc()
 }
 
-// errorTypeName extracts the error type name.
+// errorTypeName extracts the error type name based on sentinel errors.
 func errorTypeName(err error) string {
 	if err == nil {
 		return "none"
 	}
-	// Use simple type name extraction
-	return "error"
+
+	// Check for known mink error types
+	switch {
+	case errors.Is(err, mink.ErrConcurrencyConflict):
+		return "concurrency_conflict"
+	case errors.Is(err, mink.ErrStreamNotFound):
+		return "stream_not_found"
+	case errors.Is(err, mink.ErrHandlerNotFound):
+		return "handler_not_found"
+	case errors.Is(err, mink.ErrValidationFailed):
+		return "validation_failed"
+	case errors.Is(err, mink.ErrCommandAlreadyProcessed):
+		return "command_already_processed"
+	case errors.Is(err, mink.ErrHandlerPanicked):
+		return "handler_panicked"
+	case errors.Is(err, mink.ErrSerializationFailed):
+		return "serialization_failed"
+	case errors.Is(err, mink.ErrEventTypeNotRegistered):
+		return "event_type_not_registered"
+	case errors.Is(err, mink.ErrNilAggregate):
+		return "nil_aggregate"
+	case errors.Is(err, mink.ErrNilCommand):
+		return "nil_command"
+	case errors.Is(err, mink.ErrProjectionFailed):
+		return "projection_failed"
+	case errors.Is(err, adapters.ErrEmptyStreamID):
+		return "empty_stream_id"
+	case errors.Is(err, adapters.ErrNoEvents):
+		return "no_events"
+	case errors.Is(err, adapters.ErrInvalidVersion):
+		return "invalid_version"
+	case errors.Is(err, adapters.ErrAdapterClosed):
+		return "adapter_closed"
+	default:
+		return "unknown"
+	}
 }
 
 // =============================================================================
@@ -453,6 +488,82 @@ func (em *EventStoreMiddleware) Initialize(ctx context.Context) error {
 // Close closes the adapter.
 func (em *EventStoreMiddleware) Close() error {
 	return em.adapter.Close()
+}
+
+// =============================================================================
+// SubscriptionAdapter Support
+// =============================================================================
+
+// SupportsSubscriptions returns true if the underlying adapter supports subscriptions.
+func (em *EventStoreMiddleware) SupportsSubscriptions() bool {
+	_, ok := em.adapter.(adapters.SubscriptionAdapter)
+	return ok
+}
+
+// LoadFromPosition loads events from a global position with metrics.
+// Returns an error if the underlying adapter doesn't support subscriptions.
+func (em *EventStoreMiddleware) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	subAdapter, ok := em.adapter.(adapters.SubscriptionAdapter)
+	if !ok {
+		return nil, mink.ErrSubscriptionNotSupported
+	}
+
+	start := time.Now()
+	events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+	duration := time.Since(start)
+
+	em.metrics.eventStoreOperationDuration.WithLabelValues(em.metrics.serviceName, "load_from_position").Observe(duration.Seconds())
+
+	status := StatusSuccess
+	if err != nil {
+		status = StatusError
+		em.metrics.errorsTotal.WithLabelValues(em.metrics.serviceName, "load_from_position_error").Inc()
+	} else {
+		em.metrics.eventsLoadedTotal.WithLabelValues(em.metrics.serviceName).Add(float64(len(events)))
+	}
+
+	em.metrics.eventStoreOperationsTotal.WithLabelValues(em.metrics.serviceName, "load_from_position", status).Inc()
+
+	return events, err
+}
+
+// SubscribeAll subscribes to all events with metrics.
+// Returns an error if the underlying adapter doesn't support subscriptions.
+func (em *EventStoreMiddleware) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	subAdapter, ok := em.adapter.(adapters.SubscriptionAdapter)
+	if !ok {
+		return nil, mink.ErrSubscriptionNotSupported
+	}
+
+	em.metrics.eventStoreOperationsTotal.WithLabelValues(em.metrics.serviceName, OperationSubscribe, StatusSuccess).Inc()
+
+	return subAdapter.SubscribeAll(ctx, fromPosition, opts...)
+}
+
+// SubscribeStream subscribes to a stream with metrics.
+// Returns an error if the underlying adapter doesn't support subscriptions.
+func (em *EventStoreMiddleware) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	subAdapter, ok := em.adapter.(adapters.SubscriptionAdapter)
+	if !ok {
+		return nil, mink.ErrSubscriptionNotSupported
+	}
+
+	em.metrics.eventStoreOperationsTotal.WithLabelValues(em.metrics.serviceName, OperationSubscribe, StatusSuccess).Inc()
+
+	return subAdapter.SubscribeStream(ctx, streamID, fromVersion, opts...)
+}
+
+// SubscribeCategory subscribes to a category with metrics.
+// Returns an error if the underlying adapter doesn't support subscriptions.
+func (em *EventStoreMiddleware) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	subAdapter, ok := em.adapter.(adapters.SubscriptionAdapter)
+	if !ok {
+		return nil, mink.ErrSubscriptionNotSupported
+	}
+
+	em.metrics.eventStoreOperationsTotal.WithLabelValues(em.metrics.serviceName, OperationSubscribe, StatusSuccess).Inc()
+
+	return subAdapter.SubscribeCategory(ctx, category, fromPosition, opts...)
 }
 
 // =============================================================================

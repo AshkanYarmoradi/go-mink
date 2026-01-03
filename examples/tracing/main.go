@@ -14,7 +14,7 @@ import (
 
 	"github.com/AshkanYarmoradi/go-mink"
 	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+	minktracing "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -68,9 +68,9 @@ func main() {
 	store := mink.New(adapter)
 
 	// Create tracing middleware tracer
-	tracingTracer := tracing.NewTracer(
-		tracing.WithTracerProvider(tp),
-		tracing.WithServiceName("order-service"),
+	tracingTracer := minktracing.NewTracer(
+		minktracing.WithTracerProvider(tp),
+		minktracing.WithServiceName("order-service"),
 	)
 	_ = tracingTracer // Used for demonstration
 
