@@ -238,8 +238,11 @@ import (
 )
 
 // BDD test fixtures
-bdd.Given(t, NewOrder("order-123")).
-    When(CreateOrderCommand{CustomerID: "cust-456"}).
+order := NewOrder("order-123")
+bdd.Given(t, order).
+    When(func() error {
+        return order.Create("cust-456")
+    }).
     Then(OrderCreated{OrderID: "order-123", CustomerID: "cust-456"})
 
 // Event assertions
@@ -247,14 +250,12 @@ assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
 diff := assertions.DiffEvents(expected, actual)
 
 // Projection test helpers
-projections.NewProjectionTestFixture[OrderSummary](t).
+projections.TestProjection[OrderSummary](t, projection).
     GivenEvents(storedEvents...).
-    ThenReadModel(func(rm *OrderSummary) {
-        assert.Equal(t, "order-123", rm.ID)
-    })
+    ThenReadModel("order-123", expectedModel)
 
 // Saga test fixtures
-sagas.NewSagaTestFixture(t, saga).
+sagas.TestSaga(t, saga).
     GivenEvents(events...).
     ThenCommands(expectedCommands...).
     ThenCompleted()

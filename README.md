@@ -26,22 +26,24 @@
 
 ---
 
-## 🚀 Current Status: v0.3.0 (Phase 3 Complete)
+## 🚀 Current Status: v0.4.0 (Phase 4 Complete)
 
-Phase 3 (Projections & Read Models) is complete with:
-- ✅ Projection Engine (inline, async, live projections)
-- ✅ Read Model Repository with fluent query builder
-- ✅ Event subscriptions (catch-up, polling, filtered)
-- ✅ Checkpoint management for async projections
-- ✅ Projection rebuilding (single and parallel)
-- ✅ Retry policies with exponential backoff
-- ✅ 90%+ test coverage
+Phase 4 (Developer Experience) is complete with:
+- ✅ BDD-style testing fixtures (Given/When/Then)
+- ✅ Event assertions and diffing utilities
+- ✅ Projection and saga test helpers
+- ✅ PostgreSQL test containers
+- ✅ Prometheus metrics middleware
+- ✅ OpenTelemetry tracing middleware
+- ✅ MessagePack serializer
 
 **Previous phases included:**
 - ✅ Event Store with optimistic concurrency (v0.1.0)
 - ✅ PostgreSQL & In-Memory adapters (v0.1.0)
 - ✅ Command Bus with middleware pipeline (v0.2.0)
 - ✅ Idempotency, Validation, Correlation tracking (v0.2.0)
+- ✅ Projection Engine & Read Models (v0.3.0)
+- ✅ Event subscriptions & checkpoint management (v0.3.0)
 
 ---
 
@@ -71,7 +73,10 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 📖 **Projections** | ✅ v0.3.0 | Inline, async, and live projection engine |
 | 📊 **Read Models** | ✅ v0.3.0 | Generic repository with query builder |
 | 📡 **Subscriptions** | ✅ v0.3.0 | Catch-up and polling event subscriptions |
-| 🛠️ **CLI Tool** | 🔜 v0.4.0 | Code generation, migrations, and diagnostics |
+| 🧪 **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
+| 📊 **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
+| 📦 **MessagePack** | ✅ v0.4.0 | Alternative serializer for performance |
+| 🛠️ **CLI Tool** | 🔜 v0.5.0 | Code generation, migrations, and diagnostics |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
 | 🔄 **Sagas** | 🔜 v0.5.0 | Process manager for long-running workflows |
 | 📤 **Outbox Pattern** | 🔜 v0.5.0 | Reliable event publishing to external systems |
@@ -231,6 +236,52 @@ func main() {
     rebuilder := mink.NewProjectionRebuilder(store, checkpointStore)
     rebuilder.RebuildInline(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 }
+```
+
+## Testing Utilities (v0.4.0)
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
+    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+)
+
+// BDD-style aggregate testing
+func TestOrderCreation(t *testing.T) {
+    order := NewOrder("order-123")
+
+    bdd.Given(t, order).
+        When(func() error {
+            return order.Create("customer-456")
+        }).
+        Then(OrderCreated{OrderID: "order-123", CustomerID: "customer-456"})
+}
+
+// Event assertions
+assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
+
+// PostgreSQL test containers
+container := containers.StartPostgres(t)
+db := container.MustDB(ctx)
+```
+
+## Observability (v0.4.0)
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+    "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+)
+
+// Prometheus metrics
+m := metrics.New(metrics.WithMetricsServiceName("order-service"))
+m.MustRegister()
+bus.Use(m.CommandMiddleware())
+
+// OpenTelemetry tracing
+tracer := tracing.NewTracer(tracing.WithServiceName("order-service"))
+bus.Use(tracer.CommandMiddleware())
 ```
 
 ## Installation

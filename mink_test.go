@@ -10,7 +10,7 @@ import (
 func TestVersion(t *testing.T) {
 	v := Version()
 
-	assert.Equal(t, "0.3.0", v)
+	assert.Equal(t, "0.4.0", v)
 }
 
 func TestBuildStreamID(t *testing.T) {
