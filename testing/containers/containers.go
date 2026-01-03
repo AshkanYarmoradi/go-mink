@@ -234,20 +234,6 @@ func quoteIdentifier(name string) string {
 	return `"` + name + `"`
 }
 
-// validateIdentifier validates that a string is a valid PostgreSQL identifier.
-func validateIdentifier(name string) error {
-	if name == "" {
-		return errors.New("containers: identifier cannot be empty")
-	}
-	if len(name) > 63 {
-		return errors.New("containers: identifier exceeds maximum length of 63 characters")
-	}
-	if !identifierRegex.MatchString(name) {
-		return fmt.Errorf("containers: invalid identifier %q - must start with letter or underscore and contain only alphanumeric characters and underscores", name)
-	}
-	return nil
-}
-
 // validateSchemaPrefix validates a schema prefix for use in test schema names.
 func validateSchemaPrefix(prefix string) error {
 	if prefix == "" {
