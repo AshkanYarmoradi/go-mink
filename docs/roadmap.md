@@ -224,7 +224,7 @@ rebuilder.Rebuild(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 - [x] API reference docs (code documentation)
 - [x] Testing guide updates
 - [x] Tutorial: Building an e-commerce app (6-part series in `/docs/tutorial/`)
-- [ ] Architecture decision records (deferred)
+- [x] Architecture decision records (10 ADRs in `/docs/adr/`)
 
 ### Deliverables
 ```go
