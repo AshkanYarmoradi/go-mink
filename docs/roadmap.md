@@ -202,7 +202,7 @@ rebuilder.Rebuild(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 - [ ] `mink schema` - Event schema management (deferred to v0.5.0)
 
 ### Additional Serializers
-- [ ] Protocol Buffers support (planned for v0.5.0)
+- [x] Protocol Buffers support - `serializer/protobuf`
 - [x] MessagePack support (`serializer/msgpack`)
 - [x] Custom serializer interface
 
@@ -287,6 +287,13 @@ import "github.com/AshkanYarmoradi/go-mink/serializer/msgpack"
 serializer := msgpack.NewSerializer()
 serializer.Register("OrderCreated", OrderCreated{})
 data, _ := serializer.Serialize(event)
+
+// v0.4.0 Protocol Buffers serializer:
+import "github.com/AshkanYarmoradi/go-mink/serializer/protobuf"
+
+pbSerializer := protobuf.NewSerializer()
+pbSerializer.Register("OrderCreated", &pb.OrderCreated{})
+data, _ := pbSerializer.Serialize(event)
 ```
 
 ---
