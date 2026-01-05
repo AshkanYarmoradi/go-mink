@@ -12,16 +12,16 @@ import (
 type Config struct {
 	// Version of the config file format
 	Version string `yaml:"version"`
-	
+
 	// Project configuration
 	Project ProjectConfig `yaml:"project"`
-	
+
 	// Database configuration
 	Database DatabaseConfig `yaml:"database"`
-	
+
 	// EventStore configuration
 	EventStore EventStoreConfig `yaml:"event_store"`
-	
+
 	// Generation configuration
 	Generation GenerationConfig `yaml:"generation"`
 }
@@ -30,10 +30,10 @@ type Config struct {
 type ProjectConfig struct {
 	// Name of the project
 	Name string `yaml:"name"`
-	
+
 	// Module is the Go module path
 	Module string `yaml:"module"`
-	
+
 	// SourceDir is the root source directory
 	SourceDir string `yaml:"source_dir"`
 }
@@ -42,13 +42,13 @@ type ProjectConfig struct {
 type DatabaseConfig struct {
 	// Driver is the database driver (postgres, memory)
 	Driver string `yaml:"driver"`
-	
+
 	// URL is the database connection string
 	URL string `yaml:"url,omitempty"`
-	
+
 	// Schema is the database schema to use
 	Schema string `yaml:"schema"`
-	
+
 	// MigrationsDir is the directory for migration files
 	MigrationsDir string `yaml:"migrations_dir"`
 }
@@ -57,10 +57,10 @@ type DatabaseConfig struct {
 type EventStoreConfig struct {
 	// TableName for events
 	TableName string `yaml:"table_name"`
-	
+
 	// SnapshotTableName for snapshots
 	SnapshotTableName string `yaml:"snapshot_table_name"`
-	
+
 	// OutboxTableName for outbox messages
 	OutboxTableName string `yaml:"outbox_table_name"`
 }
@@ -69,13 +69,13 @@ type EventStoreConfig struct {
 type GenerationConfig struct {
 	// AggregatePackage is the package for aggregates
 	AggregatePackage string `yaml:"aggregate_package"`
-	
+
 	// EventPackage is the package for events
 	EventPackage string `yaml:"event_package"`
-	
+
 	// ProjectionPackage is the package for projections
 	ProjectionPackage string `yaml:"projection_package"`
-	
+
 	// CommandPackage is the package for commands
 	CommandPackage string `yaml:"command_package"`
 }
@@ -123,12 +123,12 @@ func LoadFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-	
+
 	return &cfg, nil
 }
 
@@ -144,7 +144,7 @@ func (c *Config) SaveFile(path string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(path, data, 0644)
 }
 
@@ -167,7 +167,7 @@ func FindConfig(dir string) (string, *Config, error) {
 			}
 			return current, cfg, nil
 		}
-		
+
 		parent := filepath.Dir(current)
 		if parent == current {
 			// Reached root, config not found
@@ -180,27 +180,27 @@ func FindConfig(dir string) (string, *Config, error) {
 // Validate validates the configuration
 func (c *Config) Validate() []string {
 	var errors []string
-	
+
 	if c.Project.Name == "" {
 		errors = append(errors, "project.name is required")
 	}
-	
+
 	if c.Project.Module == "" {
 		errors = append(errors, "project.module is required")
 	}
-	
+
 	if c.Database.Driver == "" {
 		errors = append(errors, "database.driver is required")
 	}
-	
+
 	if c.Database.Driver != "postgres" && c.Database.Driver != "memory" {
 		errors = append(errors, "database.driver must be 'postgres' or 'memory'")
 	}
-	
+
 	if c.Database.Driver == "postgres" && c.Database.URL == "" {
 		errors = append(errors, "database.url is required for postgres driver")
 	}
-	
+
 	return errors
 }
 

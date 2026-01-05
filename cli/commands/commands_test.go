@@ -8,15 +8,15 @@ import (
 
 func TestNewRootCommand(t *testing.T) {
 	cmd := NewRootCommand()
-	
+
 	assert.Equal(t, "mink", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.NotEmpty(t, cmd.Long)
-	
+
 	// Check subcommands are registered
 	subcommands := cmd.Commands()
 	assert.NotEmpty(t, subcommands)
-	
+
 	// Check for expected subcommands
 	foundInit := false
 	foundGenerate := false
@@ -26,7 +26,7 @@ func TestNewRootCommand(t *testing.T) {
 	foundDiagnose := false
 	foundSchema := false
 	foundVersion := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "init":
@@ -47,7 +47,7 @@ func TestNewRootCommand(t *testing.T) {
 			foundVersion = true
 		}
 	}
-	
+
 	assert.True(t, foundInit, "init command should be registered")
 	assert.True(t, foundGenerate, "generate command should be registered")
 	assert.True(t, foundMigrate, "migrate command should be registered")
@@ -60,11 +60,11 @@ func TestNewRootCommand(t *testing.T) {
 
 func TestNewInitCommand(t *testing.T) {
 	cmd := NewInitCommand()
-	
+
 	assert.Equal(t, "init [directory]", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.NotEmpty(t, cmd.Long)
-	
+
 	// Check flags
 	f := cmd.Flags()
 	assert.NotNil(t, f.Lookup("name"))
@@ -75,19 +75,19 @@ func TestNewInitCommand(t *testing.T) {
 
 func TestNewGenerateCommand(t *testing.T) {
 	cmd := NewGenerateCommand()
-	
+
 	assert.Equal(t, "generate", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.Contains(t, cmd.Aliases, "gen")
 	assert.Contains(t, cmd.Aliases, "g")
-	
+
 	// Check subcommands
 	subcommands := cmd.Commands()
 	foundAggregate := false
 	foundEvent := false
 	foundProjection := false
 	foundCommand := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "aggregate":
@@ -100,7 +100,7 @@ func TestNewGenerateCommand(t *testing.T) {
 			foundCommand = true
 		}
 	}
-	
+
 	assert.True(t, foundAggregate)
 	assert.True(t, foundEvent)
 	assert.True(t, foundProjection)
@@ -109,17 +109,17 @@ func TestNewGenerateCommand(t *testing.T) {
 
 func TestNewMigrateCommand(t *testing.T) {
 	cmd := NewMigrateCommand()
-	
+
 	assert.Equal(t, "migrate", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
-	
+
 	// Check subcommands
 	subcommands := cmd.Commands()
 	foundUp := false
 	foundDown := false
 	foundStatus := false
 	foundCreate := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "up":
@@ -132,7 +132,7 @@ func TestNewMigrateCommand(t *testing.T) {
 			foundCreate = true
 		}
 	}
-	
+
 	assert.True(t, foundUp)
 	assert.True(t, foundDown)
 	assert.True(t, foundStatus)
@@ -141,11 +141,11 @@ func TestNewMigrateCommand(t *testing.T) {
 
 func TestNewProjectionCommand(t *testing.T) {
 	cmd := NewProjectionCommand()
-	
+
 	assert.Equal(t, "projection", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.Contains(t, cmd.Aliases, "proj")
-	
+
 	// Check subcommands
 	subcommands := cmd.Commands()
 	foundList := false
@@ -153,7 +153,7 @@ func TestNewProjectionCommand(t *testing.T) {
 	foundRebuild := false
 	foundPause := false
 	foundResume := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "list":
@@ -168,7 +168,7 @@ func TestNewProjectionCommand(t *testing.T) {
 			foundResume = true
 		}
 	}
-	
+
 	assert.True(t, foundList)
 	assert.True(t, foundStatus)
 	assert.True(t, foundRebuild)
@@ -178,17 +178,17 @@ func TestNewProjectionCommand(t *testing.T) {
 
 func TestNewStreamCommand(t *testing.T) {
 	cmd := NewStreamCommand()
-	
+
 	assert.Equal(t, "stream", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
-	
+
 	// Check subcommands
 	subcommands := cmd.Commands()
 	foundList := false
 	foundEvents := false
 	foundExport := false
 	foundStats := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "list":
@@ -201,7 +201,7 @@ func TestNewStreamCommand(t *testing.T) {
 			foundStats = true
 		}
 	}
-	
+
 	assert.True(t, foundList)
 	assert.True(t, foundEvents)
 	assert.True(t, foundExport)
@@ -210,7 +210,7 @@ func TestNewStreamCommand(t *testing.T) {
 
 func TestNewDiagnoseCommand(t *testing.T) {
 	cmd := NewDiagnoseCommand()
-	
+
 	assert.Equal(t, "diagnose", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.Contains(t, cmd.Aliases, "diag")
@@ -219,15 +219,15 @@ func TestNewDiagnoseCommand(t *testing.T) {
 
 func TestNewSchemaCommand(t *testing.T) {
 	cmd := NewSchemaCommand()
-	
+
 	assert.Equal(t, "schema", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
-	
+
 	// Check subcommands
 	subcommands := cmd.Commands()
 	foundGenerate := false
 	foundPrint := false
-	
+
 	for _, sub := range subcommands {
 		switch sub.Name() {
 		case "generate":
@@ -236,14 +236,14 @@ func TestNewSchemaCommand(t *testing.T) {
 			foundPrint = true
 		}
 	}
-	
+
 	assert.True(t, foundGenerate)
 	assert.True(t, foundPrint)
 }
 
 func TestNewVersionCommand(t *testing.T) {
 	cmd := NewVersionCommand("1.0.0", "abc123", "2024-01-01")
-	
+
 	assert.Equal(t, "version", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 }
@@ -260,7 +260,7 @@ func TestToPascalCase(t *testing.T) {
 		{"", ""},
 		{"OrderCreated", "OrderCreated"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			result := toPascalCase(tt.input)
@@ -279,7 +279,7 @@ func TestSanitizeName(t *testing.T) {
 		{"MixedCase", "mixedcase"},
 		{"already_valid", "already_valid"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			result := sanitizeName(tt.input)

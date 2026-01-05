@@ -16,22 +16,22 @@ var (
 	SecondaryDark = lipgloss.Color("#0891B2") // Dark cyan
 
 	// Status colors
-	Success     = lipgloss.Color("#10B981") // Emerald green
+	Success      = lipgloss.Color("#10B981") // Emerald green
 	SuccessLight = lipgloss.Color("#34D399") // Light green
-	Warning     = lipgloss.Color("#F59E0B") // Amber
+	Warning      = lipgloss.Color("#F59E0B") // Amber
 	WarningLight = lipgloss.Color("#FBBF24") // Light amber
-	Error       = lipgloss.Color("#EF4444") // Red
-	ErrorLight  = lipgloss.Color("#F87171") // Light red
-	Info        = lipgloss.Color("#3B82F6") // Blue
-	InfoLight   = lipgloss.Color("#60A5FA") // Light blue
+	Error        = lipgloss.Color("#EF4444") // Red
+	ErrorLight   = lipgloss.Color("#F87171") // Light red
+	Info         = lipgloss.Color("#3B82F6") // Blue
+	InfoLight    = lipgloss.Color("#60A5FA") // Light blue
 
 	// Neutral colors
-	Text        = lipgloss.Color("#F9FAFB") // Almost white
-	TextMuted   = lipgloss.Color("#9CA3AF") // Gray
-	TextDim     = lipgloss.Color("#6B7280") // Darker gray
-	Background  = lipgloss.Color("#111827") // Dark background
-	Surface     = lipgloss.Color("#1F2937") // Slightly lighter
-	Border      = lipgloss.Color("#374151") // Border gray
+	Text       = lipgloss.Color("#F9FAFB") // Almost white
+	TextMuted  = lipgloss.Color("#9CA3AF") // Gray
+	TextDim    = lipgloss.Color("#6B7280") // Darker gray
+	Background = lipgloss.Color("#111827") // Dark background
+	Surface    = lipgloss.Color("#1F2937") // Slightly lighter
+	Border     = lipgloss.Color("#374151") // Border gray
 
 	// Accent colors for variety
 	Accent1 = lipgloss.Color("#EC4899") // Pink
@@ -53,8 +53,8 @@ var (
 
 	// Subtitle for secondary headers
 	Subtitle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(PrimaryLight)
+			Bold(true).
+			Foreground(PrimaryLight)
 
 	// Normal text
 	Normal = lipgloss.NewStyle().
@@ -70,8 +70,8 @@ var (
 
 	// Highlight for important text
 	Highlight = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Secondary)
+			Bold(true).
+			Foreground(Secondary)
 
 	// Code style for inline code
 	Code = lipgloss.NewStyle().
@@ -84,39 +84,39 @@ var (
 var (
 	// SuccessStyle for success messages
 	SuccessStyle = lipgloss.NewStyle().
-		Foreground(Success)
+			Foreground(Success)
 
 	// SuccessBold for emphasized success
 	SuccessBold = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Success)
+			Bold(true).
+			Foreground(Success)
 
 	// WarningStyle for warning messages
 	WarningStyle = lipgloss.NewStyle().
-		Foreground(Warning)
+			Foreground(Warning)
 
 	// WarningBold for emphasized warnings
 	WarningBold = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Warning)
+			Bold(true).
+			Foreground(Warning)
 
 	// ErrorStyle for error messages
 	ErrorStyle = lipgloss.NewStyle().
-		Foreground(Error)
+			Foreground(Error)
 
 	// ErrorBold for emphasized errors
 	ErrorBold = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Error)
+			Bold(true).
+			Foreground(Error)
 
 	// InfoStyle for informational messages
 	InfoStyle = lipgloss.NewStyle().
-		Foreground(Info)
+			Foreground(Info)
 
 	// InfoBold for emphasized info
 	InfoBold = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Info)
+			Bold(true).
+			Foreground(Info)
 )
 
 // Icons - using Unicode symbols for beautiful indicators
@@ -153,50 +153,50 @@ var (
 
 	// BoxHighlight with primary color border
 	BoxHighlight = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Primary).
-		Padding(1, 2)
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Primary).
+			Padding(1, 2)
 
 	// BoxSuccess with success color border
 	BoxSuccess = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Success).
-		Padding(1, 2)
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Success).
+			Padding(1, 2)
 
 	// BoxError with error color border
 	BoxError = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Error).
-		Padding(1, 2)
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Error).
+			Padding(1, 2)
 
 	// BoxWarning with warning color border
 	BoxWarning = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Warning).
-		Padding(1, 2)
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Warning).
+			Padding(1, 2)
 )
 
 // Component styles
 var (
 	// MenuItem for menu items
 	MenuItem = lipgloss.NewStyle().
-		PaddingLeft(2)
+			PaddingLeft(2)
 
 	// MenuItemSelected for selected menu items
 	MenuItemSelected = lipgloss.NewStyle().
-		Foreground(Primary).
-		Bold(true).
-		PaddingLeft(2)
+				Foreground(Primary).
+				Bold(true).
+				PaddingLeft(2)
 
 	// ListItem for list items
 	ListItem = lipgloss.NewStyle().
-		PaddingLeft(2).
-		Foreground(Text)
+			PaddingLeft(2).
+			Foreground(Text)
 
 	// ListItemBullet for list item bullets
 	ListItemBullet = lipgloss.NewStyle().
-		Foreground(Primary).
-		PaddingRight(1)
+			Foreground(Primary).
+			PaddingRight(1)
 )
 
 // Layout helpers
@@ -207,7 +207,7 @@ var (
 
 	// DoubleIndent for double indented text
 	DoubleIndent = lipgloss.NewStyle().
-		PaddingLeft(4)
+			PaddingLeft(4)
 
 	// Section for section content
 	Section = lipgloss.NewStyle().

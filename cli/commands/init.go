@@ -18,12 +18,12 @@ import (
 // NewInitCommand creates the init command
 func NewInitCommand() *cobra.Command {
 	var (
-		name       string
-		module     string
-		driver     string
+		name           string
+		module         string
+		driver         string
 		nonInteractive bool
 	)
-	
+
 	cmd := &cobra.Command{
 		Use:   "init [directory]",
 		Short: "Initialize a new mink project",
@@ -38,32 +38,32 @@ Examples:
   mink init                    # Initialize in current directory
   mink init my-project         # Initialize in a new directory
   mink init --driver=postgres  # Use PostgreSQL driver`,
-		
+
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Determine target directory
 			dir := "."
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			
+
 			// Make absolute path
 			absDir, err := filepath.Abs(dir)
 			if err != nil {
 				return err
 			}
-			
+
 			// Check if config already exists
 			if config.Exists(absDir) {
 				fmt.Println(styles.FormatWarning("mink.yaml already exists in this directory"))
 				return nil
 			}
-			
+
 			// Print welcome banner
 			fmt.Println(ui.Banner())
 			fmt.Println()
-			
+
 			cfg := config.DefaultConfig()
-			
+
 			// Interactive mode
 			if !nonInteractive {
 				// Detect module name from go.mod if possible
@@ -71,23 +71,23 @@ Examples:
 				if detectedModule != "" {
 					cfg.Project.Module = detectedModule
 				}
-				
+
 				// Use name from flag or directory name
 				if name == "" {
 					name = filepath.Base(absDir)
 				}
 				cfg.Project.Name = name
-				
+
 				// Use driver from flag or default
 				if driver != "" {
 					cfg.Database.Driver = driver
 				}
-				
+
 				// Use module from flag if provided
 				if module != "" {
 					cfg.Project.Module = module
 				}
-				
+
 				// Interactive form
 				form := huh.NewForm(
 					huh.NewGroup(
@@ -96,14 +96,14 @@ Examples:
 							Description("The name of your project").
 							Value(&cfg.Project.Name).
 							Placeholder(name),
-						
+
 						huh.NewInput().
 							Title("Go Module").
 							Description("The Go module path (from go.mod)").
 							Value(&cfg.Project.Module).
 							Placeholder(cfg.Project.Module),
 					).Title("Project Configuration"),
-					
+
 					huh.NewGroup(
 						huh.NewSelect[string]().
 							Title("Database Driver").
@@ -114,25 +114,25 @@ Examples:
 							).
 							Value(&cfg.Database.Driver),
 					).Title("Database Configuration"),
-					
+
 					huh.NewGroup(
 						huh.NewInput().
 							Title("Aggregates Package").
 							Description("Package path for aggregates").
 							Value(&cfg.Generation.AggregatePackage),
-						
+
 						huh.NewInput().
 							Title("Events Package").
 							Description("Package path for events").
 							Value(&cfg.Generation.EventPackage),
-						
+
 						huh.NewInput().
 							Title("Projections Package").
 							Description("Package path for projections").
 							Value(&cfg.Generation.ProjectionPackage),
 					).Title("Code Generation"),
 				).WithTheme(huh.ThemeDracula())
-				
+
 				if err := form.Run(); err != nil {
 					return err
 				}
@@ -148,7 +148,7 @@ Examples:
 					cfg.Database.Driver = driver
 				}
 			}
-			
+
 			// Create directories
 			dirs := []string{
 				cfg.Database.MigrationsDir,
@@ -157,11 +157,11 @@ Examples:
 				cfg.Generation.ProjectionPackage,
 				cfg.Generation.CommandPackage,
 			}
-			
+
 			fmt.Println()
 			fmt.Println(styles.Title.Render(styles.IconFolder + " Creating project structure..."))
 			fmt.Println()
-			
+
 			for _, d := range dirs {
 				dirPath := filepath.Join(absDir, d)
 				if err := os.MkdirAll(dirPath, 0755); err != nil {
@@ -170,7 +170,7 @@ Examples:
 					fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", d)))
 				}
 			}
-			
+
 			// Create config file
 			fmt.Println()
 			configContent := config.GenerateYAML(cfg)
@@ -179,26 +179,26 @@ Examples:
 				return fmt.Errorf("failed to create config file: %w", err)
 			}
 			fmt.Println(styles.FormatSuccess("Created mink.yaml"))
-			
+
 			// Create .gitkeep files for empty directories
 			for _, d := range dirs {
 				gitkeepPath := filepath.Join(absDir, d, ".gitkeep")
 				_ = os.WriteFile(gitkeepPath, []byte(""), 0644)
 			}
-			
+
 			// Print next steps
 			fmt.Println()
 			fmt.Println(styles.InfoBox.Render(nextSteps(cfg)))
-			
+
 			return nil
 		},
 	}
-	
+
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Project name")
 	cmd.Flags().StringVarP(&module, "module", "m", "", "Go module path")
 	cmd.Flags().StringVarP(&driver, "driver", "d", "", "Database driver (postgres, memory)")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Run in non-interactive mode")
-	
+
 	return cmd
 }
 
@@ -209,7 +209,7 @@ func detectModule(dir string) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -217,7 +217,7 @@ func detectModule(dir string) string {
 			return strings.TrimPrefix(line, "module ")
 		}
 	}
-	
+
 	return ""
 }
 
@@ -226,9 +226,9 @@ func nextSteps(cfg *config.Config) string {
 		styles.Bold.Render("Next Steps:"),
 		"",
 	}
-	
+
 	stepNum := 1
-	
+
 	if cfg.Database.Driver == "postgres" {
 		steps = append(steps,
 			fmt.Sprintf("%d. Set your database URL:", stepNum),
@@ -236,7 +236,7 @@ func nextSteps(cfg *config.Config) string {
 			"",
 		)
 		stepNum++
-		
+
 		steps = append(steps,
 			fmt.Sprintf("%d. The event store schema will be created automatically", stepNum),
 			"   when you first use the PostgreSQL adapter.",
@@ -244,14 +244,14 @@ func nextSteps(cfg *config.Config) string {
 		)
 		stepNum++
 	}
-	
+
 	steps = append(steps,
 		fmt.Sprintf("%d. Generate your first aggregate:", stepNum),
 		"   "+styles.Code.Render("mink generate aggregate Order"),
 		"",
 		"Happy event sourcing! "+styles.IconMink,
 	)
-	
+
 	return strings.Join(steps, "\n")
 }
 
@@ -260,6 +260,6 @@ func Splash() {
 	style := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(styles.Primary)
-	
+
 	fmt.Println(style.Render("\n" + styles.IconMink + " mink\n"))
 }

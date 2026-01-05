@@ -44,7 +44,7 @@ type SpinnerModel struct {
 // NewSpinner creates a new spinner with the given message
 func NewSpinner(message string, spinnerType SpinnerType) SpinnerModel {
 	s := spinner.New()
-	
+
 	switch spinnerType {
 	case SpinnerDots:
 		s.Spinner = spinner.Dot
@@ -71,9 +71,9 @@ func NewSpinner(message string, spinnerType SpinnerType) SpinnerModel {
 	default:
 		s.Spinner = spinner.Dot
 	}
-	
+
 	s.Style = lipgloss.NewStyle().Foreground(styles.Primary)
-	
+
 	return SpinnerModel{
 		spinner: s,
 		message: message,
@@ -115,11 +115,11 @@ func (m SpinnerModel) View() string {
 		}
 		return styles.FormatSuccess(m.result) + "\n"
 	}
-	
+
 	if m.quitting {
 		return styles.FormatWarning("Cancelled") + "\n"
 	}
-	
+
 	return m.spinner.View() + " " + styles.Normal.Render(m.message) + "\n"
 }
 
@@ -144,7 +144,7 @@ func NewProgress(message string) ProgressModel {
 		progress.WithWidth(40),
 		progress.WithoutPercentage(),
 	)
-	
+
 	return ProgressModel{
 		progress: p,
 		message:  message,
@@ -185,7 +185,7 @@ func (m ProgressModel) View() string {
 	if m.done {
 		return styles.FormatSuccess(m.message) + "\n"
 	}
-	
+
 	return m.progress.ViewAs(m.percent) + " " + styles.Muted.Render(m.message) + "\n"
 }
 
@@ -235,28 +235,28 @@ func (t *Table) Render() string {
 	if len(t.headers) == 0 {
 		return ""
 	}
-	
+
 	var sb strings.Builder
-	
+
 	// Calculate total width
 	totalWidth := 1 // Start with left border
 	for _, w := range t.widths {
 		totalWidth += w + 3 // column + padding + separator
 	}
-	
+
 	// Header styles
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(styles.Primary).
 		Padding(0, 1)
-	
+
 	cellStyle := lipgloss.NewStyle().
 		Foreground(styles.Text).
 		Padding(0, 1)
-	
+
 	borderStyle := lipgloss.NewStyle().
 		Foreground(styles.Border)
-	
+
 	// Top border
 	sb.WriteString(borderStyle.Render("┌"))
 	for i, w := range t.widths {
@@ -267,7 +267,7 @@ func (t *Table) Render() string {
 	}
 	sb.WriteString(borderStyle.Render("┐"))
 	sb.WriteString("\n")
-	
+
 	// Header row
 	sb.WriteString(borderStyle.Render("│"))
 	for i, h := range t.headers {
@@ -276,7 +276,7 @@ func (t *Table) Render() string {
 		sb.WriteString(borderStyle.Render("│"))
 	}
 	sb.WriteString("\n")
-	
+
 	// Header separator
 	sb.WriteString(borderStyle.Render("├"))
 	for i, w := range t.widths {
@@ -287,7 +287,7 @@ func (t *Table) Render() string {
 	}
 	sb.WriteString(borderStyle.Render("┤"))
 	sb.WriteString("\n")
-	
+
 	// Data rows
 	for _, row := range t.rows {
 		sb.WriteString(borderStyle.Render("│"))
@@ -298,7 +298,7 @@ func (t *Table) Render() string {
 		}
 		sb.WriteString("\n")
 	}
-	
+
 	// Bottom border
 	sb.WriteString(borderStyle.Render("└"))
 	for i, w := range t.widths {
@@ -308,7 +308,7 @@ func (t *Table) Render() string {
 		}
 	}
 	sb.WriteString(borderStyle.Render("┘"))
-	
+
 	return sb.String()
 }
 
@@ -372,7 +372,7 @@ func SimpleBanner() string {
 		Render("mink") +
 		" " +
 		styles.Muted.Render("- Event Sourcing Toolkit for Go")
-	
+
 	return banner
 }
 

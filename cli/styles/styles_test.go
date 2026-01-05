@@ -47,14 +47,14 @@ func TestDisableColors(t *testing.T) {
 	// Store original values
 	originalPrimary := Primary
 	originalSuccess := Success
-	
+
 	// Disable colors
 	DisableColors()
-	
+
 	// Check colors are empty
 	assert.Equal(t, "", string(Primary))
 	assert.Equal(t, "", string(Success))
-	
+
 	// Restore original values for other tests
 	Primary = originalPrimary
 	Success = originalSuccess

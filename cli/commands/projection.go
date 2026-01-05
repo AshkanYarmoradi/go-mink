@@ -43,8 +43,8 @@ Examples:
 
 func newProjectionListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List all projections",
+		Use:     "list",
+		Short:   "List all projections",
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()

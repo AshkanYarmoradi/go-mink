@@ -11,7 +11,7 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	
+
 	assert.Equal(t, "1", cfg.Version)
 	assert.Equal(t, "my-mink-app", cfg.Project.Name)
 	assert.Equal(t, "postgres", cfg.Database.Driver)
@@ -61,7 +61,7 @@ func TestConfig_Validate(t *testing.T) {
 			wantErrors: 1,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := DefaultConfig()
@@ -77,25 +77,25 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
-	
+
 	// Create and save config
 	cfg := DefaultConfig()
 	cfg.Project.Name = "test-project"
 	cfg.Project.Module = "github.com/test/project"
 	cfg.Database.URL = "postgres://localhost/test"
-	
+
 	err = cfg.Save(tmpDir)
 	require.NoError(t, err)
-	
+
 	// Verify file exists
 	configPath := filepath.Join(tmpDir, ConfigFileName)
 	_, err = os.Stat(configPath)
 	require.NoError(t, err)
-	
+
 	// Load config
 	loaded, err := Load(tmpDir)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, cfg.Project.Name, loaded.Project.Name)
 	assert.Equal(t, cfg.Project.Module, loaded.Project.Module)
 	assert.Equal(t, cfg.Database.URL, loaded.Database.URL)
@@ -106,14 +106,14 @@ func TestExists(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
-	
+
 	assert.False(t, Exists(tmpDir))
-	
+
 	// Create config
 	cfg := DefaultConfig()
 	err = cfg.Save(tmpDir)
 	require.NoError(t, err)
-	
+
 	assert.True(t, Exists(tmpDir))
 }
 
@@ -122,22 +122,22 @@ func TestFindConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
-	
+
 	// Create config at root
 	cfg := DefaultConfig()
 	cfg.Project.Name = "root-project"
 	err = cfg.Save(tmpDir)
 	require.NoError(t, err)
-	
+
 	// Create nested directories
 	nested := filepath.Join(tmpDir, "a", "b", "c")
 	err = os.MkdirAll(nested, 0755)
 	require.NoError(t, err)
-	
+
 	// Find config from nested directory
 	foundDir, foundCfg, err := FindConfig(nested)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, tmpDir, foundDir)
 	assert.Equal(t, "root-project", foundCfg.Project.Name)
 }
@@ -146,9 +146,9 @@ func TestGenerateYAML(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Project.Name = "test-app"
 	cfg.Project.Module = "github.com/test/app"
-	
+
 	yaml := GenerateYAML(cfg)
-	
+
 	assert.Contains(t, yaml, "test-app")
 	assert.Contains(t, yaml, "github.com/test/app")
 	assert.Contains(t, yaml, "postgres")

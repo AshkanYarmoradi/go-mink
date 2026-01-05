@@ -60,11 +60,11 @@ func TestTable_AddRow(t *testing.T) {
 	table := NewTable("Name", "Value")
 	table.AddRow("foo", "bar")
 	table.AddRow("longer name", "value")
-	
+
 	assert.Len(t, table.rows, 2)
 	assert.Equal(t, []string{"foo", "bar"}, table.rows[0])
 	assert.Equal(t, []string{"longer name", "value"}, table.rows[1])
-	
+
 	// Width should be updated for longest value
 	assert.GreaterOrEqual(t, table.widths[0], len("longer name"))
 }
@@ -73,15 +73,15 @@ func TestTable_Render(t *testing.T) {
 	table := NewTable("Name", "Status")
 	table.AddRow("test", "active")
 	table.AddRow("example", "pending")
-	
+
 	rendered := table.Render()
-	
+
 	// Should contain borders
 	assert.Contains(t, rendered, "┌")
 	assert.Contains(t, rendered, "┐")
 	assert.Contains(t, rendered, "└")
 	assert.Contains(t, rendered, "┘")
-	
+
 	// Should contain some data - the table may wrap text
 	assert.NotEmpty(t, rendered)
 }
@@ -155,7 +155,7 @@ func TestDivider(t *testing.T) {
 func TestListItems(t *testing.T) {
 	items := []string{"Item 1", "Item 2", "Item 3"}
 	list := ListItems(items)
-	
+
 	assert.Contains(t, list, "Item 1")
 	assert.Contains(t, list, "Item 2")
 	assert.Contains(t, list, "Item 3")
@@ -164,7 +164,7 @@ func TestListItems(t *testing.T) {
 func TestNumberedList(t *testing.T) {
 	items := []string{"First", "Second", "Third"}
 	list := NumberedList(items)
-	
+
 	assert.Contains(t, list, "1.")
 	assert.Contains(t, list, "2.")
 	assert.Contains(t, list, "3.")
@@ -176,7 +176,7 @@ func TestNumberedList(t *testing.T) {
 func TestConfirmation(t *testing.T) {
 	yes := Confirmation(true)
 	no := Confirmation(false)
-	
+
 	assert.Contains(t, yes, "Yes")
 	assert.Contains(t, no, "No")
 }
