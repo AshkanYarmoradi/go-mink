@@ -132,6 +132,25 @@ func TestSerializer_MustRegister(t *testing.T) {
 	})
 }
 
+func TestSerializer_MustRegisterAll(t *testing.T) {
+	t.Run("registers multiple without panic for proto.Message", func(t *testing.T) {
+		s := NewSerializer()
+
+		assert.NotPanics(t, func() {
+			s.MustRegisterAll(&wrapperspb.StringValue{}, &wrapperspb.Int32Value{})
+		})
+		assert.Equal(t, 2, s.Count())
+	})
+
+	t.Run("panics for non-proto.Message in batch", func(t *testing.T) {
+		s := NewSerializer()
+
+		assert.Panics(t, func() {
+			s.MustRegisterAll(&wrapperspb.StringValue{}, NonProtoEvent{})
+		})
+	})
+}
+
 // =============================================================================
 // Lookup Tests
 // =============================================================================
@@ -245,6 +264,29 @@ func TestSerializer_Serialize(t *testing.T) {
 		var serErr *SerializationError
 		require.ErrorAs(t, err, &serErr)
 		assert.Equal(t, "serialize", serErr.Operation)
+		assert.True(t, errors.Is(serErr, ErrNotProtoMessage))
+	})
+
+	t.Run("serializes nil pointer as empty message", func(t *testing.T) {
+		s := NewSerializer()
+		var nilPtr *wrapperspb.StringValue = nil
+
+		// Protobuf accepts nil pointers and marshals them as empty messages
+		data, err := s.Serialize(nilPtr)
+
+		require.NoError(t, err)
+		assert.Empty(t, data) // Empty protobuf message
+	})
+
+	t.Run("returns error for non-proto pointer", func(t *testing.T) {
+		s := NewSerializer()
+		nonProto := &NonProtoEvent{ID: "123", Data: "test"}
+
+		_, err := s.Serialize(nonProto)
+
+		require.Error(t, err)
+		var serErr *SerializationError
+		require.ErrorAs(t, err, &serErr)
 		assert.True(t, errors.Is(serErr, ErrNotProtoMessage))
 	})
 
@@ -365,6 +407,22 @@ func TestSerializer_Deserialize(t *testing.T) {
 
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrEmptyData))
+	})
+
+	t.Run("returns error for corrupted protobuf data", func(t *testing.T) {
+		s := NewSerializer()
+		_ = s.Register("Int64Value", &wrapperspb.Int64Value{})
+
+		// Create deliberately malformed protobuf data
+		// Field 1, wire type varint, with incomplete varint that promises more bytes
+		corruptedData := []byte{0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+
+		_, err := s.Deserialize(corruptedData, "Int64Value")
+
+		require.Error(t, err)
+		var serErr *SerializationError
+		require.ErrorAs(t, err, &serErr)
+		assert.Equal(t, "deserialize", serErr.Operation)
 	})
 }
 
@@ -582,6 +640,31 @@ func TestSerializationError(t *testing.T) {
 
 		assert.True(t, errors.Is(err, ErrNilEvent))
 		assert.False(t, errors.Is(err, ErrEmptyData))
+	})
+
+	t.Run("Is() returns false when cause is nil", func(t *testing.T) {
+		err := &SerializationError{
+			EventType: "Test",
+			Operation: "serialize",
+			Cause:     nil,
+		}
+
+		assert.False(t, errors.Is(err, ErrNilEvent))
+		assert.False(t, errors.Is(err, ErrEmptyData))
+		assert.False(t, errors.Is(err, ErrNotProtoMessage))
+		assert.False(t, errors.Is(err, ErrTypeNotRegistered))
+	})
+
+	t.Run("Is() returns false for non-sentinel errors", func(t *testing.T) {
+		customErr := errors.New("custom error")
+		err := &SerializationError{
+			EventType: "Test",
+			Operation: "serialize",
+			Cause:     customErr,
+		}
+
+		// Should return false for non-sentinel targets
+		assert.False(t, errors.Is(err, errors.New("other error")))
 	})
 }
 
