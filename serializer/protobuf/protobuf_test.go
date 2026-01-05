@@ -1008,14 +1008,14 @@ func TestE2E_FullEventSourcingFlow(t *testing.T) {
 		// Test various valid unicode strings (protobuf strings must be valid UTF-8)
 		unicodeStrings := []string{
 			"Hello, 世界!",                  // Chinese
-			"مرحبا بالعالم",                 // Arabic
-			"שלום עולם",                     // Hebrew
-			"Привет мир",                   // Russian
-			"こんにちは世界",                      // Japanese
-			"🎉🚀💻🔥✨",                        // Emojis
-			"Special chars: <>&\"'\\",      // Special chars
-			"Line\nBreaks\tAnd\rCarriage",  // Control chars
-			"Mixed: Hello世界مرحبا🎉",         // Mixed
+			"مرحبا بالعالم",               // Arabic
+			"שלום עולם",                   // Hebrew
+			"Привет мир",                  // Russian
+			"こんにちは世界",                     // Japanese
+			"🎉🚀💻🔥✨",                       // Emojis
+			"Special chars: <>&\"'\\",     // Special chars
+			"Line\nBreaks\tAnd\rCarriage", // Control chars
+			"Mixed: Hello世界مرحبا🎉",        // Mixed
 		}
 
 		for i, str := range unicodeStrings {
