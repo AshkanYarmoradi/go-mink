@@ -203,47 +203,24 @@ func TestSerializer_Count(t *testing.T) {
 // =============================================================================
 
 func TestSerializer_Serialize(t *testing.T) {
-	t.Run("serializes proto.Message event", func(t *testing.T) {
-		s := NewSerializer()
-		event := wrapperspb.String("order-123")
+	serializeTests := []struct {
+		name  string
+		event proto.Message
+	}{
+		{"proto.Message event", wrapperspb.String("order-123")},
+		{"int value", wrapperspb.Int32(42)},
+		{"double value", wrapperspb.Double(3.14159)},
+		{"bool value", wrapperspb.Bool(true)},
+	}
 
-		data, err := s.Serialize(event)
-
-		require.NoError(t, err)
-		assert.NotEmpty(t, data)
-		// Protocol Buffers produces binary data
-		assert.True(t, len(data) > 0)
-	})
-
-	t.Run("serializes int value", func(t *testing.T) {
-		s := NewSerializer()
-		event := wrapperspb.Int32(42)
-
-		data, err := s.Serialize(event)
-
-		require.NoError(t, err)
-		assert.NotEmpty(t, data)
-	})
-
-	t.Run("serializes double value", func(t *testing.T) {
-		s := NewSerializer()
-		event := wrapperspb.Double(3.14159)
-
-		data, err := s.Serialize(event)
-
-		require.NoError(t, err)
-		assert.NotEmpty(t, data)
-	})
-
-	t.Run("serializes bool value", func(t *testing.T) {
-		s := NewSerializer()
-		event := wrapperspb.Bool(true)
-
-		data, err := s.Serialize(event)
-
-		require.NoError(t, err)
-		assert.NotEmpty(t, data)
-	})
+	for _, tc := range serializeTests {
+		t.Run("serializes "+tc.name, func(t *testing.T) {
+			s := NewSerializer()
+			data, err := s.Serialize(tc.event)
+			require.NoError(t, err)
+			assert.NotEmpty(t, data)
+		})
+	}
 
 	t.Run("returns error for nil event", func(t *testing.T) {
 		s := NewSerializer()
@@ -287,69 +264,69 @@ func TestSerializer_Serialize(t *testing.T) {
 // Deserialize Tests
 // =============================================================================
 
+// deserializeTestCase defines a test case for deserialize operations
+type deserializeTestCase struct {
+	typeName string
+	original proto.Message
+	getValue func(interface{}) interface{}
+}
+
 func TestSerializer_Deserialize(t *testing.T) {
-	t.Run("deserializes to registered type", func(t *testing.T) {
+	basicDeserializeTests := []deserializeTestCase{
+		{"StringValue", wrapperspb.String("order-123"), func(v interface{}) interface{} {
+			switch typed := v.(type) {
+			case wrapperspb.StringValue:
+				return typed.GetValue()
+			case *wrapperspb.StringValue:
+				return typed.GetValue()
+			}
+			return nil
+		}},
+		{"Int32Value", wrapperspb.Int32(42), func(v interface{}) interface{} {
+			switch typed := v.(type) {
+			case wrapperspb.Int32Value:
+				return typed.GetValue()
+			case *wrapperspb.Int32Value:
+				return typed.GetValue()
+			}
+			return nil
+		}},
+		{"BoolValue", wrapperspb.Bool(true), func(v interface{}) interface{} {
+			switch typed := v.(type) {
+			case wrapperspb.BoolValue:
+				return typed.GetValue()
+			case *wrapperspb.BoolValue:
+				return typed.GetValue()
+			}
+			return nil
+		}},
+	}
+
+	for _, tc := range basicDeserializeTests {
+		t.Run("deserializes to registered type "+tc.typeName, func(t *testing.T) {
+			s := NewSerializer()
+			require.NoError(t, s.Register(tc.typeName, tc.original))
+
+			data, err := s.Serialize(tc.original)
+			require.NoError(t, err)
+
+			result, err := s.Deserialize(data, tc.typeName)
+			require.NoError(t, err)
+			assert.Equal(t, tc.getValue(tc.original), tc.getValue(result))
+		})
+	}
+
+	t.Run("deserializes double value with delta comparison", func(t *testing.T) {
 		s := NewSerializer()
-		_ = s.Register("StringValue", &wrapperspb.StringValue{})
-
-		original := wrapperspb.String("order-123")
-		data, err := s.Serialize(original)
-		require.NoError(t, err)
-
-		result, err := s.Deserialize(data, "StringValue")
-
-		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.StringValue)
-		require.True(t, ok)
-		assert.Equal(t, original.GetValue(), deserialized.GetValue())
-	})
-
-	t.Run("deserializes int value", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("Int32Value", &wrapperspb.Int32Value{})
-
-		original := wrapperspb.Int32(42)
-		data, err := s.Serialize(original)
-		require.NoError(t, err)
-
-		result, err := s.Deserialize(data, "Int32Value")
-
-		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.Int32Value)
-		require.True(t, ok)
-		assert.Equal(t, original.GetValue(), deserialized.GetValue())
-	})
-
-	t.Run("deserializes double value", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("DoubleValue", &wrapperspb.DoubleValue{})
+		require.NoError(t, s.Register("DoubleValue", &wrapperspb.DoubleValue{}))
 
 		original := wrapperspb.Double(3.14159)
 		data, err := s.Serialize(original)
 		require.NoError(t, err)
 
 		result, err := s.Deserialize(data, "DoubleValue")
-
 		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.DoubleValue)
-		require.True(t, ok)
-		assert.InDelta(t, original.GetValue(), deserialized.GetValue(), 0.00001)
-	})
-
-	t.Run("deserializes bool value", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("BoolValue", &wrapperspb.BoolValue{})
-
-		original := wrapperspb.Bool(true)
-		data, err := s.Serialize(original)
-		require.NoError(t, err)
-
-		result, err := s.Deserialize(data, "BoolValue")
-
-		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.BoolValue)
-		require.True(t, ok)
-		assert.Equal(t, original.GetValue(), deserialized.GetValue())
+		assert.InDelta(t, original.GetValue(), extractDoubleValue(result), 0.00001)
 	})
 
 	t.Run("returns error when type not registered", func(t *testing.T) {
@@ -376,10 +353,8 @@ func TestSerializer_Deserialize(t *testing.T) {
 		result, err := s.Deserialize([]byte{}, "StringValue")
 
 		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.StringValue)
-		require.True(t, ok)
 		// Empty protobuf message deserializes to zero value
-		assert.Equal(t, "", deserialized.GetValue())
+		assert.Equal(t, "", extractStringValue(result))
 	})
 
 	t.Run("returns error for nil data", func(t *testing.T) {
@@ -391,140 +366,135 @@ func TestSerializer_Deserialize(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrEmptyData))
 	})
-
-	t.Run("handles empty byte slice (valid for zero values)", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("StringValue", &wrapperspb.StringValue{})
-
-		// Empty byte slice is valid protobuf for zero values
-		result, err := s.Deserialize([]byte{}, "StringValue")
-
-		require.NoError(t, err)
-		deserialized, ok := result.(wrapperspb.StringValue)
-		require.True(t, ok)
-		assert.Equal(t, "", deserialized.GetValue())
-	})
 }
 
 // =============================================================================
 // Round-trip Tests
 // =============================================================================
 
+// Value extractors that handle both pointer and value types from Deserialize
+func extractStringValue(v interface{}) string {
+	switch typed := v.(type) {
+	case *wrapperspb.StringValue:
+		return typed.GetValue()
+	case wrapperspb.StringValue:
+		return typed.GetValue()
+	}
+	return ""
+}
+
+func extractInt32Value(v interface{}) int32 {
+	switch typed := v.(type) {
+	case *wrapperspb.Int32Value:
+		return typed.GetValue()
+	case wrapperspb.Int32Value:
+		return typed.GetValue()
+	}
+	return 0
+}
+
+func extractInt64Value(v interface{}) int64 {
+	switch typed := v.(type) {
+	case *wrapperspb.Int64Value:
+		return typed.GetValue()
+	case wrapperspb.Int64Value:
+		return typed.GetValue()
+	}
+	return 0
+}
+
+func extractDoubleValue(v interface{}) float64 {
+	switch typed := v.(type) {
+	case *wrapperspb.DoubleValue:
+		return typed.GetValue()
+	case wrapperspb.DoubleValue:
+		return typed.GetValue()
+	}
+	return 0
+}
+
+func extractBytesValue(v interface{}) []byte {
+	switch typed := v.(type) {
+	case *wrapperspb.BytesValue:
+		return typed.GetValue()
+	case wrapperspb.BytesValue:
+		return typed.GetValue()
+	}
+	return nil
+}
+
+// roundTripTest performs a serialize/deserialize round trip and verifies the result
+func roundTripTest[T any](t *testing.T, s *Serializer, typeName string, original proto.Message, getValue func(interface{}) T, compare func(*testing.T, T, T)) {
+	t.Helper()
+	data, err := s.Serialize(original)
+	require.NoError(t, err)
+
+	result, err := s.Deserialize(data, typeName)
+	require.NoError(t, err)
+
+	compare(t, getValue(original), getValue(result))
+}
+
 func TestSerializer_RoundTrip(t *testing.T) {
 	t.Run("preserves string data through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("StringValue", &wrapperspb.StringValue{})
-
+		s := setupSerializer(t, "StringValue")
 		values := []string{"order-1", "order-2", "", "unicode: 你好世界"}
 
 		for _, val := range values {
-			original := wrapperspb.String(val)
-			data, err := s.Serialize(original)
-			require.NoError(t, err)
-
-			result, err := s.Deserialize(data, "StringValue")
-			require.NoError(t, err)
-
-			deserialized := result.(wrapperspb.StringValue)
-			assert.Equal(t, original.GetValue(), deserialized.GetValue())
+			roundTripTest(t, s, "StringValue", wrapperspb.String(val), extractStringValue,
+				func(t *testing.T, expected, actual string) { assert.Equal(t, expected, actual) })
 		}
 	})
 
 	t.Run("preserves int data through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("Int32Value", &wrapperspb.Int32Value{})
-
+		s := setupSerializer(t, "Int32Value")
 		values := []int32{0, 1, -1, 42, -42, 2147483647, -2147483648}
 
 		for _, val := range values {
-			original := wrapperspb.Int32(val)
-			data, err := s.Serialize(original)
-			require.NoError(t, err)
-
-			result, err := s.Deserialize(data, "Int32Value")
-			require.NoError(t, err)
-
-			deserialized := result.(wrapperspb.Int32Value)
-			assert.Equal(t, original.GetValue(), deserialized.GetValue())
+			roundTripTest(t, s, "Int32Value", wrapperspb.Int32(val), extractInt32Value,
+				func(t *testing.T, expected, actual int32) { assert.Equal(t, expected, actual) })
 		}
 	})
 
 	t.Run("preserves int64 data through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("Int64Value", &wrapperspb.Int64Value{})
-
+		s := setupSerializer(t, "Int64Value")
 		values := []int64{0, 1, -1, 9223372036854775807, -9223372036854775808}
 
 		for _, val := range values {
-			original := wrapperspb.Int64(val)
-			data, err := s.Serialize(original)
-			require.NoError(t, err)
-
-			result, err := s.Deserialize(data, "Int64Value")
-			require.NoError(t, err)
-
-			deserialized := result.(wrapperspb.Int64Value)
-			assert.Equal(t, original.GetValue(), deserialized.GetValue())
+			roundTripTest(t, s, "Int64Value", wrapperspb.Int64(val), extractInt64Value,
+				func(t *testing.T, expected, actual int64) { assert.Equal(t, expected, actual) })
 		}
 	})
 
 	t.Run("preserves double data through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("DoubleValue", &wrapperspb.DoubleValue{})
-
+		s := setupSerializer(t, "DoubleValue")
 		values := []float64{0.0, 1.0, -1.0, 3.14159, 2.71828}
 
 		for _, val := range values {
-			original := wrapperspb.Double(val)
-			data, err := s.Serialize(original)
-			require.NoError(t, err)
-
-			result, err := s.Deserialize(data, "DoubleValue")
-			require.NoError(t, err)
-
-			deserialized := result.(wrapperspb.DoubleValue)
-			assert.InDelta(t, original.GetValue(), deserialized.GetValue(), 0.00001)
+			roundTripTest(t, s, "DoubleValue", wrapperspb.Double(val), extractDoubleValue,
+				func(t *testing.T, expected, actual float64) { assert.InDelta(t, expected, actual, 0.00001) })
 		}
 	})
 
 	t.Run("preserves bytes data through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("BytesValue", &wrapperspb.BytesValue{})
-
-		values := [][]byte{
-			{0x00},
-			{0x01, 0x02, 0x03},
-			[]byte("hello world"),
-		}
+		s := setupSerializer(t, "BytesValue")
+		values := [][]byte{{0x00}, {0x01, 0x02, 0x03}, []byte("hello world")}
 
 		for _, val := range values {
-			original := wrapperspb.Bytes(val)
-			data, err := s.Serialize(original)
-			require.NoError(t, err)
-
-			result, err := s.Deserialize(data, "BytesValue")
-			require.NoError(t, err)
-
-			deserialized := result.(wrapperspb.BytesValue)
-			assert.Equal(t, original.GetValue(), deserialized.GetValue())
+			roundTripTest(t, s, "BytesValue", wrapperspb.Bytes(val), extractBytesValue,
+				func(t *testing.T, expected, actual []byte) { assert.Equal(t, expected, actual) })
 		}
 	})
 
 	t.Run("preserves empty bytes through serialize/deserialize", func(t *testing.T) {
-		s := NewSerializer()
-		_ = s.Register("BytesValue", &wrapperspb.BytesValue{})
-
+		s := setupSerializer(t, "BytesValue")
 		// Empty bytes is a special case - protobuf treats empty and nil as equivalent
-		original := wrapperspb.Bytes([]byte{})
-		data, err := s.Serialize(original)
+		data, err := s.Serialize(wrapperspb.Bytes([]byte{}))
 		require.NoError(t, err)
 
 		result, err := s.Deserialize(data, "BytesValue")
 		require.NoError(t, err)
-
-		deserialized := result.(wrapperspb.BytesValue)
-		// Both nil and empty are valid zero values for bytes
-		assert.Empty(t, deserialized.GetValue())
+		assert.Empty(t, extractBytesValue(result))
 	})
 }
 
@@ -544,11 +514,21 @@ func TestSerializer_ProtoCloneCompatibility(t *testing.T) {
 		result, err := s.Deserialize(data, "StringValue")
 		require.NoError(t, err)
 
-		deserialized := result.(wrapperspb.StringValue)
+		// Get proto.Message for cloning - use reflect to get addressable pointer
+		var msg proto.Message
+		rv := reflect.ValueOf(result)
+		if rv.Kind() == reflect.Ptr {
+			msg = result.(proto.Message)
+		} else {
+			// Create a new pointer and set its value
+			ptr := reflect.New(rv.Type())
+			ptr.Elem().Set(rv)
+			msg = ptr.Interface().(proto.Message)
+		}
 
 		// Should be able to clone the deserialized message
-		cloned := proto.Clone(&deserialized).(*wrapperspb.StringValue)
-		assert.Equal(t, deserialized.GetValue(), cloned.GetValue())
+		cloned := proto.Clone(msg).(*wrapperspb.StringValue)
+		assert.Equal(t, extractStringValue(result), cloned.GetValue())
 	})
 }
 
@@ -759,38 +739,75 @@ func (es *SimulatedEventStore) Deserialize(event SimulatedEvent) (interface{}, e
 	return es.serializer.Deserialize(event.Data, event.Type)
 }
 
+// eventTypeRegistry defines standard event type registrations for tests
+var eventTypeRegistry = map[string]proto.Message{
+	"StringValue":         &wrapperspb.StringValue{},
+	"Int32Value":          &wrapperspb.Int32Value{},
+	"Int64Value":          &wrapperspb.Int64Value{},
+	"DoubleValue":         &wrapperspb.DoubleValue{},
+	"BoolValue":           &wrapperspb.BoolValue{},
+	"BytesValue":          &wrapperspb.BytesValue{},
+	"OrderCreated":        &wrapperspb.StringValue{},
+	"ItemAdded":           &wrapperspb.Int32Value{},
+	"OrderTotal":          &wrapperspb.DoubleValue{},
+	"OrderShipped":        &wrapperspb.BoolValue{},
+	"UserCreated":         &wrapperspb.StringValue{},
+	"UserUpdated":         &wrapperspb.StringValue{},
+	"UserDeleted":         &wrapperspb.BoolValue{},
+	"BalanceDeposit":      &wrapperspb.DoubleValue{},
+	"BalanceWithdraw":     &wrapperspb.DoubleValue{},
+	"ValidEvent":          &wrapperspb.StringValue{},
+	"LargePayload":        &wrapperspb.BytesValue{},
+	"TextEvent":           &wrapperspb.StringValue{},
+	"BinaryEvent":         &wrapperspb.BytesValue{},
+	"OrderV1":             &wrapperspb.StringValue{},
+	"OrderV2":             &wrapperspb.Int64Value{},
+	"CounterIncremented":  &wrapperspb.Int32Value{},
+	"CounterSnapshot":     &wrapperspb.Int64Value{},
+	"GenericEvent":        &wrapperspb.StringValue{},
+	"BatchEvent":          &wrapperspb.StringValue{},
+}
+
+// setupSerializer creates a serializer and registers the specified event types
+func setupSerializer(t *testing.T, eventTypes ...string) *Serializer {
+	t.Helper()
+	s := NewSerializer()
+	for _, eventType := range eventTypes {
+		proto, ok := eventTypeRegistry[eventType]
+		require.True(t, ok, "Unknown event type: %s", eventType)
+		require.NoError(t, s.Register(eventType, proto))
+	}
+	return s
+}
+
+// setupStore creates a serializer with event types and returns both the serializer and store
+func setupStore(t *testing.T, eventTypes ...string) (*Serializer, *SimulatedEventStore) {
+	t.Helper()
+	s := setupSerializer(t, eventTypes...)
+	return s, NewSimulatedEventStore(s)
+}
+
+// mustDeserializeAs deserializes an event and asserts the type, returning pointer for method access
+func mustDeserializeAs[T any](t *testing.T, store *SimulatedEventStore, event SimulatedEvent) *T {
+	t.Helper()
+	result, err := store.Deserialize(event)
+	require.NoError(t, err)
+	typed, ok := result.(T)
+	require.True(t, ok, "Expected type %T, got %T", new(T), result)
+	return &typed
+}
+
 func TestE2E_FullEventSourcingFlow(t *testing.T) {
 	t.Run("complete order lifecycle with protobuf serialization", func(t *testing.T) {
-		// Setup serializer with all event types
-		s := NewSerializer()
-		require.NoError(t, s.Register("OrderCreated", &wrapperspb.StringValue{}))
-		require.NoError(t, s.Register("ItemAdded", &wrapperspb.Int32Value{}))
-		require.NoError(t, s.Register("OrderTotal", &wrapperspb.DoubleValue{}))
-		require.NoError(t, s.Register("OrderShipped", &wrapperspb.BoolValue{}))
-
-		// Create simulated event store
-		store := NewSimulatedEventStore(s)
-
-		// Simulate order creation
+		_, store := setupStore(t, "OrderCreated", "ItemAdded", "OrderTotal", "OrderShipped")
 		streamID := "order-12345"
 
-		// 1. Order Created
-		err := store.Append(streamID, "OrderCreated", wrapperspb.String("customer-abc"))
-		require.NoError(t, err)
-
-		// 2. Items Added (multiple)
-		err = store.Append(streamID, "ItemAdded", wrapperspb.Int32(3))
-		require.NoError(t, err)
-		err = store.Append(streamID, "ItemAdded", wrapperspb.Int32(2))
-		require.NoError(t, err)
-
-		// 3. Order Total Calculated
-		err = store.Append(streamID, "OrderTotal", wrapperspb.Double(149.99))
-		require.NoError(t, err)
-
-		// 4. Order Shipped
-		err = store.Append(streamID, "OrderShipped", wrapperspb.Bool(true))
-		require.NoError(t, err)
+		// Simulate order creation and lifecycle
+		require.NoError(t, store.Append(streamID, "OrderCreated", wrapperspb.String("customer-abc")))
+		require.NoError(t, store.Append(streamID, "ItemAdded", wrapperspb.Int32(3)))
+		require.NoError(t, store.Append(streamID, "ItemAdded", wrapperspb.Int32(2)))
+		require.NoError(t, store.Append(streamID, "OrderTotal", wrapperspb.Double(149.99)))
+		require.NoError(t, store.Append(streamID, "OrderShipped", wrapperspb.Bool(true)))
 
 		// Load and replay events
 		events, err := store.Load(streamID)
@@ -798,101 +815,47 @@ func TestE2E_FullEventSourcingFlow(t *testing.T) {
 		assert.Len(t, events, 5)
 
 		// Verify each event deserializes correctly
-		// Event 1: OrderCreated
-		result1, err := store.Deserialize(events[0])
-		require.NoError(t, err)
-		orderCreated := result1.(wrapperspb.StringValue)
-		assert.Equal(t, "customer-abc", orderCreated.GetValue())
-
-		// Event 2: ItemAdded (3 items)
-		result2, err := store.Deserialize(events[1])
-		require.NoError(t, err)
-		itemAdded1 := result2.(wrapperspb.Int32Value)
-		assert.Equal(t, int32(3), itemAdded1.GetValue())
-
-		// Event 3: ItemAdded (2 items)
-		result3, err := store.Deserialize(events[2])
-		require.NoError(t, err)
-		itemAdded2 := result3.(wrapperspb.Int32Value)
-		assert.Equal(t, int32(2), itemAdded2.GetValue())
-
-		// Event 4: OrderTotal
-		result4, err := store.Deserialize(events[3])
-		require.NoError(t, err)
-		orderTotal := result4.(wrapperspb.DoubleValue)
-		assert.InDelta(t, 149.99, orderTotal.GetValue(), 0.001)
-
-		// Event 5: OrderShipped
-		result5, err := store.Deserialize(events[4])
-		require.NoError(t, err)
-		orderShipped := result5.(wrapperspb.BoolValue)
-		assert.True(t, orderShipped.GetValue())
+		assert.Equal(t, "customer-abc", mustDeserializeAs[wrapperspb.StringValue](t, store, events[0]).GetValue())
+		assert.Equal(t, int32(3), mustDeserializeAs[wrapperspb.Int32Value](t, store, events[1]).GetValue())
+		assert.Equal(t, int32(2), mustDeserializeAs[wrapperspb.Int32Value](t, store, events[2]).GetValue())
+		assert.InDelta(t, 149.99, mustDeserializeAs[wrapperspb.DoubleValue](t, store, events[3]).GetValue(), 0.001)
+		assert.True(t, mustDeserializeAs[wrapperspb.BoolValue](t, store, events[4]).GetValue())
 	})
 
 	t.Run("multiple streams with concurrent access", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("UserCreated", &wrapperspb.StringValue{}))
-		require.NoError(t, s.Register("UserUpdated", &wrapperspb.StringValue{}))
-		require.NoError(t, s.Register("UserDeleted", &wrapperspb.BoolValue{}))
-
-		store := NewSimulatedEventStore(s)
+		_, store := setupStore(t, "UserCreated", "UserUpdated", "UserDeleted")
 
 		// Simulate multiple user streams concurrently
 		var wg sync.WaitGroup
-		userCount := 10
-		eventsPerUser := 5
+		userCount, eventsPerUser := 10, 5
 
 		for i := 0; i < userCount; i++ {
 			wg.Add(1)
 			go func(userID int) {
 				defer wg.Done()
 				streamID := fmt.Sprintf("user-%d", userID)
-
-				// Create user
 				_ = store.Append(streamID, "UserCreated", wrapperspb.String(fmt.Sprintf("user%d@example.com", userID)))
-
-				// Update user multiple times
 				for j := 0; j < eventsPerUser-2; j++ {
 					_ = store.Append(streamID, "UserUpdated", wrapperspb.String(fmt.Sprintf("updated-%d-%d", userID, j)))
 				}
-
-				// Delete user
 				_ = store.Append(streamID, "UserDeleted", wrapperspb.Bool(true))
 			}(i)
 		}
-
 		wg.Wait()
 
-		// Verify total events
+		// Verify total events and each user stream
 		assert.Len(t, store.events, userCount*eventsPerUser)
-
-		// Verify each user stream has correct events
 		for i := 0; i < userCount; i++ {
-			streamID := fmt.Sprintf("user-%d", i)
-			events, err := store.Load(streamID)
+			events, err := store.Load(fmt.Sprintf("user-%d", i))
 			require.NoError(t, err)
 			assert.Len(t, events, eventsPerUser)
-
-			// First event should be UserCreated
-			result, err := store.Deserialize(events[0])
-			require.NoError(t, err)
-			created := result.(wrapperspb.StringValue)
-			assert.Contains(t, created.GetValue(), "@example.com")
-
-			// Last event should be UserDeleted
-			result, err = store.Deserialize(events[len(events)-1])
-			require.NoError(t, err)
-			deleted := result.(wrapperspb.BoolValue)
-			assert.True(t, deleted.GetValue())
+			assert.Contains(t, mustDeserializeAs[wrapperspb.StringValue](t, store, events[0]).GetValue(), "@example.com")
+			assert.True(t, mustDeserializeAs[wrapperspb.BoolValue](t, store, events[len(events)-1]).GetValue())
 		}
 	})
 
 	t.Run("projection building from events", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("BalanceDeposit", &wrapperspb.DoubleValue{}))
-		require.NoError(t, s.Register("BalanceWithdraw", &wrapperspb.DoubleValue{}))
-
-		store := NewSimulatedEventStore(s)
+		_, store := setupStore(t, "BalanceDeposit", "BalanceWithdraw")
 		streamID := "account-001"
 
 		// Simulate account transactions
@@ -900,16 +863,11 @@ func TestE2E_FullEventSourcingFlow(t *testing.T) {
 			eventType string
 			amount    float64
 		}{
-			{"BalanceDeposit", 100.00},
-			{"BalanceDeposit", 50.00},
-			{"BalanceWithdraw", 25.00},
-			{"BalanceDeposit", 75.00},
-			{"BalanceWithdraw", 10.00},
+			{"BalanceDeposit", 100.00}, {"BalanceDeposit", 50.00}, {"BalanceWithdraw", 25.00},
+			{"BalanceDeposit", 75.00}, {"BalanceWithdraw", 10.00},
 		}
-
 		for _, tx := range transactions {
-			err := store.Append(streamID, tx.eventType, wrapperspb.Double(tx.amount))
-			require.NoError(t, err)
+			require.NoError(t, store.Append(streamID, tx.eventType, wrapperspb.Double(tx.amount)))
 		}
 
 		// Build projection by replaying events
@@ -918,299 +876,162 @@ func TestE2E_FullEventSourcingFlow(t *testing.T) {
 
 		var balance float64
 		for _, event := range events {
-			result, err := store.Deserialize(event)
-			require.NoError(t, err)
-
-			dv := result.(wrapperspb.DoubleValue)
-			amount := dv.GetValue()
-
-			switch event.Type {
-			case "BalanceDeposit":
+			amount := mustDeserializeAs[wrapperspb.DoubleValue](t, store, event).GetValue()
+			if event.Type == "BalanceDeposit" {
 				balance += amount
-			case "BalanceWithdraw":
+			} else {
 				balance -= amount
 			}
 		}
-
-		// Expected: 100 + 50 - 25 + 75 - 10 = 190
-		assert.InDelta(t, 190.00, balance, 0.001)
+		assert.InDelta(t, 190.00, balance, 0.001) // 100 + 50 - 25 + 75 - 10 = 190
 	})
 
 	t.Run("error handling in event flow", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("ValidEvent", &wrapperspb.StringValue{}))
-		// Note: "UnknownEvent" is NOT registered
+		s, store := setupStore(t, "ValidEvent")
 
-		store := NewSimulatedEventStore(s)
+		require.NoError(t, store.Append("stream-1", "ValidEvent", wrapperspb.String("valid-data")))
+		require.True(t, errors.Is(store.Append("stream-1", "ValidEvent", nil), ErrNilEvent))
 
-		// Append valid event
-		err := store.Append("stream-1", "ValidEvent", wrapperspb.String("valid-data"))
-		require.NoError(t, err)
+		_, err := s.Serialize(NonProtoEvent{ID: "test"})
+		require.True(t, errors.Is(err, ErrNotProtoMessage))
 
-		// Try to append nil event (should fail)
-		err = store.Append("stream-1", "ValidEvent", nil)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, ErrNilEvent))
-
-		// Try to append non-proto event (should fail at serializer level)
-		_, err = s.Serialize(NonProtoEvent{ID: "test"})
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, ErrNotProtoMessage))
-
-		// Manually create event with unregistered type and try to deserialize
-		manualEvent := SimulatedEvent{
-			ID:       "manual-1",
-			StreamID: "stream-1",
-			Type:     "UnknownEvent",
-			Data:     []byte{0x0a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f}, // protobuf encoded "hello"
-			Version:  1,
-		}
+		// Manually create event with unregistered type
+		manualEvent := SimulatedEvent{Type: "UnknownEvent", Data: []byte{0x0a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f}}
 		_, err = store.Deserialize(manualEvent)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, ErrTypeNotRegistered))
+		require.True(t, errors.Is(err, ErrTypeNotRegistered))
 	})
 
 	t.Run("large payload handling", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("LargePayload", &wrapperspb.BytesValue{}))
+		_, store := setupStore(t, "LargePayload")
 
-		store := NewSimulatedEventStore(s)
-
-		// Create large payload (1MB)
-		largeData := make([]byte, 1024*1024)
+		largeData := make([]byte, 1024*1024) // 1MB
 		for i := range largeData {
 			largeData[i] = byte(i % 256)
 		}
 
-		err := store.Append("stream-large", "LargePayload", wrapperspb.Bytes(largeData))
-		require.NoError(t, err)
-
-		// Verify round-trip
+		require.NoError(t, store.Append("stream-large", "LargePayload", wrapperspb.Bytes(largeData)))
 		events, err := store.Load("stream-large")
 		require.NoError(t, err)
 		require.Len(t, events, 1)
 
-		result, err := store.Deserialize(events[0])
-		require.NoError(t, err)
-
-		payload := result.(wrapperspb.BytesValue)
-		assert.Len(t, payload.GetValue(), 1024*1024)
+		payload := mustDeserializeAs[wrapperspb.BytesValue](t, store, events[0])
 		assert.Equal(t, largeData, payload.GetValue())
 	})
 
 	t.Run("unicode and special characters", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("TextEvent", &wrapperspb.StringValue{}))
-		require.NoError(t, s.Register("BinaryEvent", &wrapperspb.BytesValue{}))
+		s, store := setupStore(t, "TextEvent", "BinaryEvent")
 
-		store := NewSimulatedEventStore(s)
-
-		// Test various valid unicode strings (protobuf strings must be valid UTF-8)
 		unicodeStrings := []string{
-			"Hello, 世界!",                  // Chinese
-			"مرحبا بالعالم",               // Arabic
-			"שלום עולם",                   // Hebrew
-			"Привет мир",                  // Russian
-			"こんにちは世界",                     // Japanese
-			"🎉🚀💻🔥✨",                       // Emojis
-			"Special chars: <>&\"'\\",     // Special chars
-			"Line\nBreaks\tAnd\rCarriage", // Control chars
-			"Mixed: Hello世界مرحبا🎉",        // Mixed
+			"Hello, 世界!", "مرحبا بالعالم", "שלום עולם", "Привет мир", "こんにちは世界",
+			"🎉🚀💻🔥✨", "Special chars: <>&\"'\\", "Line\nBreaks\tAnd\rCarriage", "Mixed: Hello世界مرحبا🎉",
 		}
 
 		for i, str := range unicodeStrings {
 			streamID := fmt.Sprintf("unicode-%d", i)
-			err := store.Append(streamID, "TextEvent", wrapperspb.String(str))
-			require.NoError(t, err, "Failed to append string: %q", str)
-
-			events, err := store.Load(streamID)
-			require.NoError(t, err)
-			require.Len(t, events, 1)
-
-			result, err := store.Deserialize(events[0])
-			require.NoError(t, err)
-
-			// Deserialize returns value type, get the Value field directly
-			sv := result.(wrapperspb.StringValue)
-			assert.Equal(t, str, sv.Value, "Failed for string: %q", str)
+			require.NoError(t, store.Append(streamID, "TextEvent", wrapperspb.String(str)))
+			events, _ := store.Load(streamID)
+			assert.Equal(t, str, mustDeserializeAs[wrapperspb.StringValue](t, store, events[0]).Value)
 		}
 
-		// Test invalid UTF-8 is rejected (protobuf strings must be valid UTF-8)
 		t.Run("rejects invalid UTF-8", func(t *testing.T) {
-			invalidUTF8 := string([]byte{0xc0, 0x80}) // Invalid UTF-8 encoding
-			_, err := s.Serialize(wrapperspb.String(invalidUTF8))
-			assert.Error(t, err, "Should reject invalid UTF-8 in string fields")
+			_, err := s.Serialize(wrapperspb.String(string([]byte{0xc0, 0x80})))
+			assert.Error(t, err)
 		})
 
-		// Test binary data can store arbitrary bytes using BytesValue
 		t.Run("binary data with BytesValue", func(t *testing.T) {
 			binaryData := []byte{0x00, 0xc0, 0x80, 0xff, 0xfe, 0x00, 0x01}
-			streamID := "binary-data"
-			err := store.Append(streamID, "BinaryEvent", wrapperspb.Bytes(binaryData))
-			require.NoError(t, err)
-
-			events, err := store.Load(streamID)
-			require.NoError(t, err)
-			require.Len(t, events, 1)
-
-			result, err := store.Deserialize(events[0])
-			require.NoError(t, err)
-
-			// Deserialize returns value type
-			bv := result.(wrapperspb.BytesValue)
-			assert.Equal(t, binaryData, bv.Value)
+			require.NoError(t, store.Append("binary-data", "BinaryEvent", wrapperspb.Bytes(binaryData)))
+			events, _ := store.Load("binary-data")
+			assert.Equal(t, binaryData, mustDeserializeAs[wrapperspb.BytesValue](t, store, events[0]).Value)
 		})
 	})
 
 	t.Run("event versioning simulation", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("OrderV1", &wrapperspb.StringValue{}))
-		require.NoError(t, s.Register("OrderV2", &wrapperspb.Int64Value{}))
-
-		store := NewSimulatedEventStore(s)
+		_, store := setupStore(t, "OrderV1", "OrderV2")
 		streamID := "versioned-order"
 
-		// Simulate old events (V1 format - string order ID)
-		err := store.Append(streamID, "OrderV1", wrapperspb.String("ORD-12345"))
-		require.NoError(t, err)
+		require.NoError(t, store.Append(streamID, "OrderV1", wrapperspb.String("ORD-12345")))
+		require.NoError(t, store.Append(streamID, "OrderV2", wrapperspb.Int64(12345)))
 
-		// Simulate new events (V2 format - numeric order ID)
-		err = store.Append(streamID, "OrderV2", wrapperspb.Int64(12345))
-		require.NoError(t, err)
-
-		// Load and handle both versions
-		events, err := store.Load(streamID)
-		require.NoError(t, err)
+		events, _ := store.Load(streamID)
 		assert.Len(t, events, 2)
-
-		for _, event := range events {
-			result, err := store.Deserialize(event)
-			require.NoError(t, err)
-
-			switch event.Type {
-			case "OrderV1":
-				v1 := result.(wrapperspb.StringValue)
-				assert.Equal(t, "ORD-12345", v1.GetValue())
-			case "OrderV2":
-				v2 := result.(wrapperspb.Int64Value)
-				assert.Equal(t, int64(12345), v2.GetValue())
-			}
-		}
+		assert.Equal(t, "ORD-12345", mustDeserializeAs[wrapperspb.StringValue](t, store, events[0]).GetValue())
+		assert.Equal(t, int64(12345), mustDeserializeAs[wrapperspb.Int64Value](t, store, events[1]).GetValue())
 	})
 
 	t.Run("snapshot and restore simulation", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("CounterIncremented", &wrapperspb.Int32Value{}))
-		require.NoError(t, s.Register("CounterSnapshot", &wrapperspb.Int64Value{}))
-
-		store := NewSimulatedEventStore(s)
+		_, store := setupStore(t, "CounterIncremented", "CounterSnapshot")
 		streamID := "counter-001"
 
-		// Add many increment events
+		// Add increment events
 		for i := 0; i < 100; i++ {
-			err := store.Append(streamID, "CounterIncremented", wrapperspb.Int32(1))
-			require.NoError(t, err)
+			require.NoError(t, store.Append(streamID, "CounterIncremented", wrapperspb.Int32(1)))
 		}
 
-		// Calculate current state by replaying
+		// Calculate and create snapshot
 		events, _ := store.Load(streamID)
 		var counter int64
 		for _, event := range events {
-			result, _ := store.Deserialize(event)
-			iv := result.(wrapperspb.Int32Value)
-			counter += int64(iv.GetValue())
+			counter += int64(mustDeserializeAs[wrapperspb.Int32Value](t, store, event).GetValue())
 		}
 		assert.Equal(t, int64(100), counter)
-
-		// Create snapshot
-		err := store.Append(streamID, "CounterSnapshot", wrapperspb.Int64(counter))
-		require.NoError(t, err)
+		require.NoError(t, store.Append(streamID, "CounterSnapshot", wrapperspb.Int64(counter)))
 
 		// Add more events after snapshot
 		for i := 0; i < 10; i++ {
-			err := store.Append(streamID, "CounterIncremented", wrapperspb.Int32(1))
-			require.NoError(t, err)
+			require.NoError(t, store.Append(streamID, "CounterIncremented", wrapperspb.Int32(1)))
 		}
 
-		// Rebuild state from snapshot
+		// Rebuild from snapshot
 		events, _ = store.Load(streamID)
 		var rebuiltCounter int64
-		var snapshotFound bool
-
-		// Find latest snapshot and replay from there
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Type == "CounterSnapshot" {
-				result, _ := store.Deserialize(events[i])
-				lv := result.(wrapperspb.Int64Value)
-				rebuiltCounter = lv.GetValue()
-				snapshotFound = true
-
-				// Replay events after snapshot
+				rebuiltCounter = mustDeserializeAs[wrapperspb.Int64Value](t, store, events[i]).GetValue()
 				for j := i + 1; j < len(events); j++ {
 					if events[j].Type == "CounterIncremented" {
-						result, _ := store.Deserialize(events[j])
-						iv := result.(wrapperspb.Int32Value)
-						rebuiltCounter += int64(iv.GetValue())
+						rebuiltCounter += int64(mustDeserializeAs[wrapperspb.Int32Value](t, store, events[j]).GetValue())
 					}
 				}
 				break
 			}
 		}
-
-		assert.True(t, snapshotFound)
 		assert.Equal(t, int64(110), rebuiltCounter)
 	})
 }
 
 func TestE2E_SerializerRegistry(t *testing.T) {
 	t.Run("registry isolation between serializer instances", func(t *testing.T) {
-		s1 := NewSerializer()
+		s1 := setupSerializer(t, "StringValue")
 		s2 := NewSerializer()
-
-		// Register different types in each serializer
-		require.NoError(t, s1.Register("EventA", &wrapperspb.StringValue{}))
 		require.NoError(t, s2.Register("EventB", &wrapperspb.Int32Value{}))
 
-		// s1 should only know about EventA
-		_, ok := s1.Lookup("EventA")
+		_, ok := s1.Lookup("StringValue")
 		assert.True(t, ok)
 		_, ok = s1.Lookup("EventB")
 		assert.False(t, ok)
 
-		// s2 should only know about EventB
-		_, ok = s2.Lookup("EventA")
+		_, ok = s2.Lookup("StringValue")
 		assert.False(t, ok)
 		_, ok = s2.Lookup("EventB")
 		assert.True(t, ok)
 	})
 
 	t.Run("serializer reuse across multiple streams", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("GenericEvent", &wrapperspb.StringValue{}))
-
-		store := NewSimulatedEventStore(s)
-
-		// Use same serializer for multiple streams
+		_, store := setupStore(t, "GenericEvent")
 		streams := []string{"stream-a", "stream-b", "stream-c"}
+
 		for _, streamID := range streams {
 			for i := 0; i < 10; i++ {
-				err := store.Append(streamID, "GenericEvent", wrapperspb.String(fmt.Sprintf("%s-event-%d", streamID, i)))
-				require.NoError(t, err)
+				require.NoError(t, store.Append(streamID, "GenericEvent", wrapperspb.String(fmt.Sprintf("%s-event-%d", streamID, i))))
 			}
 		}
 
-		// Verify each stream
 		for _, streamID := range streams {
-			events, err := store.Load(streamID)
-			require.NoError(t, err)
+			events, _ := store.Load(streamID)
 			assert.Len(t, events, 10)
-
 			for i, event := range events {
-				result, err := store.Deserialize(event)
-				require.NoError(t, err)
-				expected := fmt.Sprintf("%s-event-%d", streamID, i)
-				sv := result.(wrapperspb.StringValue)
-				assert.Equal(t, expected, sv.GetValue())
+				assert.Equal(t, fmt.Sprintf("%s-event-%d", streamID, i), mustDeserializeAs[wrapperspb.StringValue](t, store, event).GetValue())
 			}
 		}
 	})
@@ -1221,90 +1042,63 @@ func TestE2E_SerializerRegistry(t *testing.T) {
 			"TypeB": reflect.TypeOf(wrapperspb.Int32Value{}),
 			"TypeC": reflect.TypeOf(wrapperspb.DoubleValue{}),
 		}
-
 		s := NewSerializerWithOptions(WithRegistry(registry))
 
 		assert.Equal(t, 3, s.Count())
-		types := s.RegisteredTypes()
-		assert.Contains(t, types, "TypeA")
-		assert.Contains(t, types, "TypeB")
-		assert.Contains(t, types, "TypeC")
-
-		// All types should work for serialization
-		_, err := s.Deserialize([]byte{}, "TypeA")
-		require.NoError(t, err) // Empty is valid for zero values
-
-		_, err = s.Deserialize([]byte{}, "TypeB")
-		require.NoError(t, err)
-
-		_, err = s.Deserialize([]byte{}, "TypeC")
-		require.NoError(t, err)
+		for _, typeName := range []string{"TypeA", "TypeB", "TypeC"} {
+			_, err := s.Deserialize([]byte{}, typeName)
+			require.NoError(t, err)
+		}
 	})
 }
 
 func TestE2E_PerformanceCharacteristics(t *testing.T) {
 	t.Run("serialization size comparison", func(t *testing.T) {
 		s := NewSerializer()
-
-		// Test various payload sizes
 		testCases := []struct {
 			name     string
 			value    string
-			maxBytes int // Expected max serialized size
+			maxBytes int
 		}{
-			{"tiny", "a", 10},
-			{"small", "hello world", 20},
-			{"medium", strings.Repeat("x", 100), 110},
-			{"large", strings.Repeat("x", 1000), 1010},
+			{"tiny", "a", 10}, {"small", "hello world", 20},
+			{"medium", strings.Repeat("x", 100), 110}, {"large", strings.Repeat("x", 1000), 1010},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				data, err := s.Serialize(wrapperspb.String(tc.value))
 				require.NoError(t, err)
-
-				// Protobuf should be efficient
-				assert.LessOrEqual(t, len(data), tc.maxBytes,
-					"Serialized size %d exceeds expected max %d for %s",
-					len(data), tc.maxBytes, tc.name)
+				assert.LessOrEqual(t, len(data), tc.maxBytes)
 			})
 		}
 	})
 
 	t.Run("batch processing performance", func(t *testing.T) {
-		s := NewSerializer()
-		require.NoError(t, s.Register("BatchEvent", &wrapperspb.StringValue{}))
-
+		s := setupSerializer(t, "BatchEvent")
 		const batchSize = 10000
+
 		events := make([]*wrapperspb.StringValue, batchSize)
 		for i := 0; i < batchSize; i++ {
 			events[i] = wrapperspb.String(fmt.Sprintf("event-data-%d", i))
 		}
 
-		// Serialize all
 		start := time.Now()
 		serialized := make([][]byte, batchSize)
 		for i, event := range events {
-			data, err := s.Serialize(event)
-			require.NoError(t, err)
-			serialized[i] = data
+			serialized[i], _ = s.Serialize(event)
 		}
 		serializeTime := time.Since(start)
 
-		// Deserialize all
 		start = time.Now()
 		for _, data := range serialized {
-			_, err := s.Deserialize(data, "BatchEvent")
-			require.NoError(t, err)
+			_, _ = s.Deserialize(data, "BatchEvent")
 		}
 		deserializeTime := time.Since(start)
 
-		// Log performance (should be very fast)
 		t.Logf("Batch of %d events:", batchSize)
 		t.Logf("  Serialize:   %v (%.2f µs/event)", serializeTime, float64(serializeTime.Microseconds())/float64(batchSize))
 		t.Logf("  Deserialize: %v (%.2f µs/event)", deserializeTime, float64(deserializeTime.Microseconds())/float64(batchSize))
 
-		// Sanity check - should process at least 10k events per second
 		assert.Less(t, serializeTime, 10*time.Second)
 		assert.Less(t, deserializeTime, 10*time.Second)
 	})

@@ -138,7 +138,7 @@ func (s *Serializer) Register(eventType string, event interface{}) error {
 		// Check if pointer implements proto.Message
 		v := reflect.ValueOf(event)
 		if v.Kind() != reflect.Ptr {
-			ptrType := reflect.PtrTo(reflect.TypeOf(event))
+			ptrType := reflect.PointerTo(reflect.TypeOf(event))
 			if !ptrType.Implements(reflect.TypeOf((*proto.Message)(nil)).Elem()) {
 				return &SerializationError{
 					EventType: eventType,
