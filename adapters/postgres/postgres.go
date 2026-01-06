@@ -1309,7 +1309,7 @@ func (a *PostgresAdapter) GetProjectionHealth(ctx context.Context) (*adapters.Pr
 
 	// Get max position from events
 	eventsTable := quoteQualifiedTable(a.schema, "events")
-	err = a.db.QueryRowContext(ctx, 
+	err = a.db.QueryRowContext(ctx,
 		fmt.Sprintf("SELECT COALESCE(MAX(global_position), 0) FROM %s", eventsTable),
 	).Scan(&result.MaxPosition)
 	if err != nil {
@@ -1319,8 +1319,8 @@ func (a *PostgresAdapter) GetProjectionHealth(ctx context.Context) (*adapters.Pr
 
 	// Count projections behind
 	if result.MaxPosition > 0 {
-		err = a.db.QueryRowContext(ctx, 
-			"SELECT COUNT(*) FROM mink_checkpoints WHERE position < $1", 
+		err = a.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM mink_checkpoints WHERE position < $1",
 			result.MaxPosition,
 		).Scan(&result.ProjectionsBehind)
 		if err != nil {

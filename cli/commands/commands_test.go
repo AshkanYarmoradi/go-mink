@@ -1982,7 +1982,7 @@ func TestAdapterFactory_WithInvalidURL(t *testing.T) {
 	// Adapter factory requires DATABASE_URL - test creation without env var
 	cfg := config.DefaultConfig()
 	cfg.Database.URL = "${DATABASE_URL}" // Not set
-	
+
 	_, err := NewAdapterFactory(cfg)
 	assert.Error(t, err)
 }
@@ -2729,7 +2729,7 @@ func TestAdapterFactory_InvalidURL(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Database.Driver = "postgres"
 	cfg.Database.URL = "postgres://invalid:url@localhost:65535/test"
-	
+
 	_, err := NewAdapterFactory(cfg)
 	// Should succeed (factory creates, connection may fail later)
 	assert.NoError(t, err)
