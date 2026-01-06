@@ -283,17 +283,17 @@ func demonstrateProjection() {
 
 		switch e.Type {
 		case "CustomerID":
-			sv := result.(wrapperspb.StringValue)
+			sv := result.(*wrapperspb.StringValue)
 			summary.CustomerID = sv.Value
 			fmt.Printf("   → Event %d: Set CustomerID = %s\n", i+1, sv.Value)
 		case "ItemAdded":
-			iv := result.(wrapperspb.Int32Value)
+			iv := result.(*wrapperspb.Int32Value)
 			summary.ItemCount++
 			summary.TotalItems += iv.Value
 			fmt.Printf("   → Event %d: Added %d items (total batches: %d, total items: %d)\n",
 				i+1, iv.Value, summary.ItemCount, summary.TotalItems)
 		case "OrderComplete":
-			bv := result.(wrapperspb.BoolValue)
+			bv := result.(*wrapperspb.BoolValue)
 			summary.IsComplete = bv.Value
 			fmt.Printf("   → Event %d: Order complete = %v\n", i+1, bv.Value)
 		}
