@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -37,6 +38,7 @@ func newSchemaGenerateCommand() *cobra.Command {
 		Short: "Generate event store schema SQL",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_ = force // Used for scripting (skip interactive elements)
+			ctx := cmd.Context()
 
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -48,7 +50,10 @@ func newSchemaGenerateCommand() *cobra.Command {
 				cfg = config.DefaultConfig()
 			}
 
-			schema := generateSchema(cfg)
+			schema, err := generateSchemaFromAdapter(ctx, cfg)
+			if err != nil {
+				return err
+			}
 
 			if output != "" {
 				if err := os.WriteFile(output, []byte(schema), 0644); err != nil {
@@ -74,6 +79,8 @@ func newSchemaPrintCommand() *cobra.Command {
 		Use:   "print",
 		Short: "Print the event store schema",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -84,18 +91,53 @@ func newSchemaPrintCommand() *cobra.Command {
 				cfg = config.DefaultConfig()
 			}
 
+			schema, err := generateSchemaFromAdapter(ctx, cfg)
+			if err != nil {
+				return err
+			}
+
 			fmt.Println()
 			fmt.Println(styles.Title.Render(styles.IconDatabase + " Event Store Schema"))
 			fmt.Println()
-			fmt.Println(styles.Code.Render(generateSchema(cfg)))
+			fmt.Println(styles.Code.Render(schema))
 
 			return nil
 		},
 	}
 }
 
-func generateSchema(cfg *config.Config) string {
-	return fmt.Sprintf(`-- Mink Event Store Schema
+// generateSchemaFromAdapter uses the adapter's schema generation capability.
+func generateSchemaFromAdapter(ctx context.Context, cfg *config.Config) (string, error) {
+	// Create a temporary adapter just to get the schema
+	factory, err := NewAdapterFactory(cfg)
+	if err != nil {
+		// For schema generation without database, use fallback
+		return generateFallbackSchema(cfg), nil
+	}
+
+	adapter, err := factory.CreateAdapter(ctx)
+	if err != nil {
+		// If we can't create adapter, use fallback schema
+		return generateFallbackSchema(cfg), nil
+	}
+	defer func() {
+		if closer, ok := adapter.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}()
+
+	return adapter.GenerateSchema(
+		cfg.Project.Name,
+		cfg.EventStore.TableName,
+		cfg.EventStore.SnapshotTableName,
+		cfg.EventStore.OutboxTableName,
+	), nil
+}
+
+// generateFallbackSchema generates a basic PostgreSQL schema when adapter is not available.
+// This is used when DATABASE_URL is not set but user still wants to see the schema.
+func generateFallbackSchema(cfg *config.Config) string {
+	return fmt.Sprintf(`-- Mink Event Store Schema (PostgreSQL)
 -- Generated for: %s
 
 -- Events table
@@ -167,74 +209,6 @@ CREATE TABLE IF NOT EXISTS mink_idempotency (
 
 CREATE INDEX IF NOT EXISTS idx_mink_idempotency_expires ON mink_idempotency(expires_at);
 
--- Function for appending events with optimistic concurrency
-CREATE OR REPLACE FUNCTION mink_append_events(
-    p_stream_id VARCHAR(255),
-    p_expected_version BIGINT,
-    p_events JSONB
-) RETURNS TABLE(
-    id UUID,
-    stream_id VARCHAR(255),
-    version BIGINT,
-    type VARCHAR(255),
-    data JSONB,
-    metadata JSONB,
-    global_position BIGINT,
-    timestamp TIMESTAMPTZ
-) AS $$
-DECLARE
-    v_current_version BIGINT;
-    v_event JSONB;
-    v_version BIGINT;
-BEGIN
-    -- Lock and get current version
-    SELECT COALESCE(MAX(e.version), 0) INTO v_current_version
-    FROM %s e
-    WHERE e.stream_id = p_stream_id
-    FOR UPDATE;
-    
-    -- Check expected version
-    -- -1 = AnyVersion, 0 = NoStream, -2 = StreamExists
-    IF p_expected_version >= 0 AND v_current_version != p_expected_version THEN
-        RAISE EXCEPTION 'mink: concurrency conflict on stream %% expected %% got %%', 
-            p_stream_id, p_expected_version, v_current_version;
-    ELSIF p_expected_version = 0 AND v_current_version > 0 THEN
-        RAISE EXCEPTION 'mink: stream %% already exists', p_stream_id;
-    ELSIF p_expected_version = -2 AND v_current_version = 0 THEN
-        RAISE EXCEPTION 'mink: stream %% does not exist', p_stream_id;
-    END IF;
-    
-    v_version := v_current_version;
-    
-    -- Insert events
-    FOR v_event IN SELECT * FROM jsonb_array_elements(p_events)
-    LOOP
-        v_version := v_version + 1;
-        
-        INSERT INTO %s (stream_id, version, type, data, metadata)
-        VALUES (
-            p_stream_id,
-            v_version,
-            v_event->>'type',
-            v_event->'data',
-            COALESCE(v_event->'metadata', '{}'::jsonb)
-        )
-        RETURNING 
-            %s.id,
-            %s.stream_id,
-            %s.version,
-            %s.type,
-            %s.data,
-            %s.metadata,
-            %s.global_position,
-            %s.timestamp
-        INTO id, stream_id, version, type, data, metadata, global_position, timestamp;
-        
-        RETURN NEXT;
-    END LOOP;
-END;
-$$ LANGUAGE plpgsql;
-
 COMMENT ON TABLE %s IS 'Mink event store - immutable event log';
 COMMENT ON TABLE %s IS 'Aggregate snapshots for optimization';
 COMMENT ON TABLE mink_checkpoints IS 'Projection checkpoint positions';
@@ -250,16 +224,6 @@ COMMENT ON TABLE %s IS 'Transactional outbox for reliable messaging';
 		cfg.EventStore.SnapshotTableName, cfg.EventStore.SnapshotTableName,
 		cfg.EventStore.OutboxTableName,
 		cfg.EventStore.OutboxTableName, cfg.EventStore.OutboxTableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
-		cfg.EventStore.TableName,
 		cfg.EventStore.TableName,
 		cfg.EventStore.SnapshotTableName,
 		cfg.EventStore.OutboxTableName,

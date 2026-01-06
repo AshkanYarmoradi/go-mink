@@ -2,9 +2,7 @@ package commands
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"net"
 	"os"
 	"runtime"
 	"time"
@@ -217,31 +215,12 @@ func checkDatabaseConnection() CheckResult {
 		}
 	}
 
-	// Try to connect
+	// Use the adapter to check connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	db, err := sql.Open("pgx", dbURL)
+	adapter, cleanup, err := getAdapter(ctx)
 	if err != nil {
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusError,
-			Message:        fmt.Sprintf("Failed to open: %v", err),
-			Recommendation: "Check DATABASE_URL format",
-		}
-	}
-	defer db.Close()
-
-	if err := db.PingContext(ctx); err != nil {
-		// Check if it's a network error
-		if _, ok := err.(*net.OpError); ok {
-			return CheckResult{
-				Name:           "Database Connection",
-				Status:         StatusError,
-				Message:        "Cannot reach database server",
-				Recommendation: "Check if PostgreSQL is running and accessible",
-			}
-		}
 		return CheckResult{
 			Name:           "Database Connection",
 			Status:         StatusError,
@@ -249,21 +228,32 @@ func checkDatabaseConnection() CheckResult {
 			Recommendation: "Verify database credentials",
 		}
 	}
+	defer cleanup()
 
-	// Get PostgreSQL version
-	var version string
-	_ = db.QueryRowContext(ctx, "SELECT version()").Scan(&version)
-	if version != "" {
-		// Truncate version string
-		if len(version) > 50 {
-			version = version[:50] + "..."
+	// Get diagnostic info via adapter
+	info, err := adapter.GetDiagnosticInfo(ctx)
+	if err != nil {
+		return CheckResult{
+			Name:           "Database Connection",
+			Status:         StatusError,
+			Message:        err.Error(),
+			Recommendation: "Check database server status",
+		}
+	}
+
+	if !info.Connected {
+		return CheckResult{
+			Name:           "Database Connection",
+			Status:         StatusError,
+			Message:        info.Message,
+			Recommendation: "Verify database credentials",
 		}
 	}
 
 	return CheckResult{
 		Name:    "Database Connection",
 		Status:  StatusOK,
-		Message: "Connected successfully",
+		Message: info.Message,
 	}
 }
 
@@ -287,25 +277,22 @@ func checkEventStoreSchema() CheckResult {
 		}
 	}
 
-	db, err := sql.Open("pgx", dbURL)
+	// Use adapter to check schema
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adapter, cleanup, err := getAdapter(ctx)
 	if err != nil {
 		return CheckResult{
-			Name:    "Event Store Schema",
-			Status:  StatusError,
-			Message: err.Error(),
+			Name:           "Event Store Schema",
+			Status:         StatusError,
+			Message:        err.Error(),
+			Recommendation: "Check database connection",
 		}
 	}
-	defer db.Close()
+	defer cleanup()
 
-	// Check if events table exists
-	var exists bool
-	err = db.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.tables 
-			WHERE table_name = $1
-		)
-	`, cfg.EventStore.TableName).Scan(&exists)
-
+	result, err := adapter.CheckSchema(ctx, cfg.EventStore.TableName)
 	if err != nil {
 		return CheckResult{
 			Name:           "Event Store Schema",
@@ -315,23 +302,19 @@ func checkEventStoreSchema() CheckResult {
 		}
 	}
 
-	if !exists {
+	if !result.TableExists {
 		return CheckResult{
 			Name:           "Event Store Schema",
 			Status:         StatusWarning,
-			Message:        fmt.Sprintf("Table '%s' not found", cfg.EventStore.TableName),
+			Message:        result.Message,
 			Recommendation: "Run 'mink migrate up' to create tables",
 		}
 	}
 
-	// Count events
-	var count int64
-	_ = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", cfg.EventStore.TableName)).Scan(&count)
-
 	return CheckResult{
 		Name:    "Event Store Schema",
 		Status:  StatusOK,
-		Message: fmt.Sprintf("Table exists (%d events)", count),
+		Message: result.Message,
 	}
 }
 
@@ -355,7 +338,22 @@ func checkProjections() CheckResult {
 		}
 	}
 
-	db, err := sql.Open("pgx", dbURL)
+	// Use adapter to check projections
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adapter, cleanup, err := getAdapter(ctx)
+	if err != nil {
+		return CheckResult{
+			Name:           "Projections",
+			Status:         StatusError,
+			Message:        err.Error(),
+			Recommendation: "Check database connection",
+		}
+	}
+	defer cleanup()
+
+	health, err := adapter.GetProjectionHealth(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:    "Projections",
@@ -363,39 +361,20 @@ func checkProjections() CheckResult {
 			Message: err.Error(),
 		}
 	}
-	defer db.Close()
 
-	// Check checkpoints table
-	var exists bool
-	_ = db.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.tables 
-			WHERE table_name = 'mink_checkpoints'
-		)
-	`).Scan(&exists)
-
-	if !exists {
+	if health.TotalProjections == 0 {
 		return CheckResult{
 			Name:    "Projections",
 			Status:  StatusOK,
-			Message: "No projections registered yet",
+			Message: health.Message,
 		}
 	}
 
-	// Count projections
-	var total, behind int64
-	_ = db.QueryRow("SELECT COUNT(*) FROM mink_checkpoints").Scan(&total)
-
-	// Check for projections behind
-	var maxPosition int64
-	_ = db.QueryRow("SELECT COALESCE(MAX(global_position), 0) FROM mink_events").Scan(&maxPosition)
-	_ = db.QueryRow("SELECT COUNT(*) FROM mink_checkpoints WHERE position < $1", maxPosition).Scan(&behind)
-
-	if behind > 0 {
+	if health.ProjectionsBehind > 0 {
 		return CheckResult{
 			Name:           "Projections",
 			Status:         StatusWarning,
-			Message:        fmt.Sprintf("%d/%d projections behind", behind, total),
+			Message:        health.Message,
 			Recommendation: "Check projection workers or run 'mink projection status'",
 		}
 	}
@@ -403,7 +382,7 @@ func checkProjections() CheckResult {
 	return CheckResult{
 		Name:    "Projections",
 		Status:  StatusOK,
-		Message: fmt.Sprintf("%d projections, all up to date", total),
+		Message: health.Message,
 	}
 }
 

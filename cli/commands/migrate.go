@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +49,8 @@ func newMigrateUpCommand() *cobra.Command {
 
 By default, applies all pending migrations. Use --steps to limit.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -64,10 +66,11 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				return nil
 			}
 
-			dbURL := os.ExpandEnv(cfg.Database.URL)
-			if dbURL == "" || dbURL == "${DATABASE_URL}" {
-				return fmt.Errorf("DATABASE_URL environment variable is not set")
+			adapter, cleanup, err := getAdapter(ctx)
+			if err != nil {
+				return err
 			}
+			defer cleanup()
 
 			// Show spinner while connecting (skip if --force)
 			if !force {
@@ -86,7 +89,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 
 			// Get pending migrations
 			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
-			pending, err := getPendingMigrations(dbURL, migrationsDir)
+			pending, err := getPendingMigrations(ctx, adapter, migrationsDir)
 			if err != nil {
 				return err
 			}
@@ -102,12 +105,6 @@ By default, applies all pending migrations. Use --steps to limit.`,
 
 			fmt.Printf("\n%s Applying %d migration(s)...\n\n", styles.IconPending, len(pending))
 
-			db, err := sql.Open("pgx", dbURL)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-
 			for _, m := range pending {
 				fmt.Printf("  %s Applying %s... ", styles.IconPending, m.Name)
 
@@ -117,14 +114,14 @@ By default, applies all pending migrations. Use --steps to limit.`,
 					return fmt.Errorf("failed to read migration: %w", err)
 				}
 
-				// Execute migration
-				if _, err := db.Exec(string(content)); err != nil {
+				// Execute migration using adapter
+				if err := adapter.ExecuteSQL(ctx, string(content)); err != nil {
 					fmt.Println(styles.ErrorStyle.Render("FAILED"))
 					return fmt.Errorf("migration failed: %w", err)
 				}
 
-				// Record migration
-				if err := recordMigration(db, m.Name); err != nil {
+				// Record migration using adapter
+				if err := adapter.RecordMigration(ctx, m.Name); err != nil {
 					fmt.Println(styles.WarningStyle.Render("WARNING"))
 					fmt.Printf("    %s\n", styles.FormatWarning("Migration applied but not recorded"))
 				} else {
@@ -156,6 +153,8 @@ func newMigrateDownCommand() *cobra.Command {
 By default, rolls back the last migration. Use --steps to rollback more.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_ = force // Used for scripting (skip interactive elements)
+			ctx := cmd.Context()
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -171,13 +170,14 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 				return nil
 			}
 
-			dbURL := os.ExpandEnv(cfg.Database.URL)
-			if dbURL == "" || dbURL == "${DATABASE_URL}" {
-				return fmt.Errorf("DATABASE_URL environment variable is not set")
+			adapter, cleanup, err := getAdapter(ctx)
+			if err != nil {
+				return err
 			}
+			defer cleanup()
 
 			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
-			applied, err := getAppliedMigrations(dbURL, migrationsDir)
+			applied, err := getAppliedMigrations(ctx, adapter, migrationsDir)
 			if err != nil {
 				return err
 			}
@@ -198,12 +198,6 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 
 			fmt.Printf("\n%s Rolling back %d migration(s)...\n\n", styles.IconWarning, len(toRollback))
 
-			db, err := sql.Open("pgx", dbURL)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-
 			for i := len(toRollback) - 1; i >= 0; i-- {
 				m := toRollback[i]
 				fmt.Printf("  %s Rolling back %s... ", styles.IconPending, m.Name)
@@ -221,12 +215,12 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 					return fmt.Errorf("failed to read down migration: %w", err)
 				}
 
-				if _, err := db.Exec(string(content)); err != nil {
+				if err := adapter.ExecuteSQL(ctx, string(content)); err != nil {
 					fmt.Println(styles.ErrorStyle.Render("FAILED"))
 					return fmt.Errorf("rollback failed: %w", err)
 				}
 
-				if err := removeMigrationRecord(db, m.Name); err != nil {
+				if err := adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
 					fmt.Println(styles.WarningStyle.Render("WARNING"))
 				} else {
 					fmt.Println(styles.SuccessStyle.Render("OK"))
@@ -250,6 +244,8 @@ func newMigrateStatusCommand() *cobra.Command {
 		Use:   "status",
 		Short: "Show migration status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -265,10 +261,11 @@ func newMigrateStatusCommand() *cobra.Command {
 				return nil
 			}
 
-			dbURL := os.ExpandEnv(cfg.Database.URL)
-			if dbURL == "" || dbURL == "${DATABASE_URL}" {
-				return fmt.Errorf("DATABASE_URL environment variable is not set")
+			adapter, cleanup, err := getAdapter(ctx)
+			if err != nil {
+				return err
 			}
+			defer cleanup()
 
 			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
 
@@ -278,8 +275,8 @@ func newMigrateStatusCommand() *cobra.Command {
 				return err
 			}
 
-			// Get applied migrations
-			applied, err := getAppliedMigrationNames(dbURL)
+			// Get applied migrations using adapter
+			applied, err := adapter.GetAppliedMigrations(ctx)
 			if err != nil {
 				return err
 			}
@@ -430,13 +427,13 @@ func getAllMigrations(dir string) ([]Migration, error) {
 	return migrations, nil
 }
 
-func getPendingMigrations(dbURL, migrationsDir string) ([]Migration, error) {
+func getPendingMigrations(ctx context.Context, adapter CLIAdapter, migrationsDir string) ([]Migration, error) {
 	all, err := getAllMigrations(migrationsDir)
 	if err != nil {
 		return nil, err
 	}
 
-	applied, err := getAppliedMigrationNames(dbURL)
+	applied, err := adapter.GetAppliedMigrations(ctx)
 	if err != nil {
 		// If we can't get applied migrations, assume all are pending
 		return all, nil
@@ -457,8 +454,8 @@ func getPendingMigrations(dbURL, migrationsDir string) ([]Migration, error) {
 	return pending, nil
 }
 
-func getAppliedMigrations(dbURL, migrationsDir string) ([]Migration, error) {
-	applied, err := getAppliedMigrationNames(dbURL)
+func getAppliedMigrations(ctx context.Context, adapter CLIAdapter, migrationsDir string) ([]Migration, error) {
+	applied, err := adapter.GetAppliedMigrations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -472,52 +469,6 @@ func getAppliedMigrations(dbURL, migrationsDir string) ([]Migration, error) {
 	}
 
 	return migrations, nil
-}
-
-func getAppliedMigrationNames(dbURL string) ([]string, error) {
-	db, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-
-	// Ensure migrations table exists
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS mink_migrations (
-			name VARCHAR(255) PRIMARY KEY,
-			applied_at TIMESTAMPTZ DEFAULT NOW()
-		)
-	`)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := db.Query("SELECT name FROM mink_migrations ORDER BY name")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-
-	return names, rows.Err()
-}
-
-func recordMigration(db *sql.DB, name string) error {
-	_, err := db.Exec("INSERT INTO mink_migrations (name) VALUES ($1)", name)
-	return err
-}
-
-func removeMigrationRecord(db *sql.DB, name string) error {
-	_, err := db.Exec("DELETE FROM mink_migrations WHERE name = $1", name)
-	return err
 }
 
 func sanitizeName(name string) string {

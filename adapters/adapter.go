@@ -306,3 +306,186 @@ type IdempotencyRecord struct {
 func (r *IdempotencyRecord) IsExpired() bool {
 	return time.Now().After(r.ExpiresAt)
 }
+
+// StreamSummary contains summary information about a stream for listing.
+type StreamSummary struct {
+	// StreamID is the stream identifier.
+	StreamID string
+
+	// EventCount is the number of events in the stream.
+	EventCount int64
+
+	// LastEventType is the type of the most recent event.
+	LastEventType string
+
+	// LastUpdated is when the last event was stored.
+	LastUpdated time.Time
+}
+
+// ProjectionInfo contains projection status information.
+type ProjectionInfo struct {
+	// Name is the projection identifier.
+	Name string
+
+	// Position is the last processed global position.
+	Position int64
+
+	// Status is the projection state (active, paused, etc.).
+	Status string
+
+	// UpdatedAt is when the projection was last updated.
+	UpdatedAt time.Time
+}
+
+// EventStoreStats contains aggregate statistics about the event store.
+type EventStoreStats struct {
+	// TotalEvents is the total number of events across all streams.
+	TotalEvents int64
+
+	// TotalStreams is the number of unique streams.
+	TotalStreams int64
+
+	// EventTypes is the number of unique event types.
+	EventTypes int64
+
+	// AvgEventsPerStream is the average events per stream.
+	AvgEventsPerStream float64
+
+	// TopEventTypes contains the most common event types.
+	TopEventTypes []EventTypeCount
+}
+
+// EventTypeCount holds an event type and its count.
+type EventTypeCount struct {
+	// Type is the event type name.
+	Type string
+
+	// Count is the number of occurrences.
+	Count int64
+}
+
+// MigrationInfo contains information about a database migration.
+type MigrationInfo struct {
+	// Name is the migration identifier.
+	Name string
+
+	// AppliedAt is when the migration was applied (zero if pending).
+	AppliedAt time.Time
+
+	// Applied indicates if this migration has been run.
+	Applied bool
+}
+
+// StreamQueryAdapter provides stream inspection capabilities for CLI tools.
+// This allows querying streams without direct SQL access.
+type StreamQueryAdapter interface {
+	// ListStreams returns a list of stream summaries.
+	// prefix filters streams by ID prefix (empty string for all).
+	// limit caps the number of results (0 for unlimited).
+	ListStreams(ctx context.Context, prefix string, limit int) ([]StreamSummary, error)
+
+	// GetStreamEvents returns events from a stream with pagination.
+	// fromVersion starts at this version (0 for beginning).
+	// limit caps the number of events returned.
+	GetStreamEvents(ctx context.Context, streamID string, fromVersion int64, limit int) ([]StoredEvent, error)
+
+	// GetEventStoreStats returns aggregate statistics about the event store.
+	GetEventStoreStats(ctx context.Context) (*EventStoreStats, error)
+}
+
+// ProjectionQueryAdapter provides projection management capabilities for CLI tools.
+type ProjectionQueryAdapter interface {
+	// ListProjections returns all registered projections.
+	ListProjections(ctx context.Context) ([]ProjectionInfo, error)
+
+	// GetProjection returns information about a specific projection.
+	// Returns nil, nil if the projection doesn't exist.
+	GetProjection(ctx context.Context, name string) (*ProjectionInfo, error)
+
+	// SetProjectionStatus updates a projection's status (active, paused).
+	SetProjectionStatus(ctx context.Context, name string, status string) error
+
+	// ResetProjectionCheckpoint resets a projection's position to 0 for rebuild.
+	ResetProjectionCheckpoint(ctx context.Context, name string) error
+
+	// GetTotalEventCount returns the highest global position (for progress display).
+	GetTotalEventCount(ctx context.Context) (int64, error)
+}
+
+// MigrationAdapter provides migration management capabilities for CLI tools.
+type MigrationAdapter interface {
+	// GetAppliedMigrations returns the list of applied migration names.
+	GetAppliedMigrations(ctx context.Context) ([]string, error)
+
+	// RecordMigration marks a migration as applied.
+	RecordMigration(ctx context.Context, name string) error
+
+	// RemoveMigrationRecord removes a migration record (for rollback).
+	RemoveMigrationRecord(ctx context.Context, name string) error
+
+	// ExecuteSQL runs arbitrary SQL (for applying migrations).
+	ExecuteSQL(ctx context.Context, sql string) error
+}
+
+// SchemaProvider generates database-specific schema SQL.
+type SchemaProvider interface {
+	// GenerateSchema returns the DDL for the event store schema.
+	// tableName is the events table name.
+	// snapshotTableName is the snapshots table name.
+	// outboxTableName is the outbox table name.
+	GenerateSchema(projectName, tableName, snapshotTableName, outboxTableName string) string
+}
+
+// DiagnosticInfo contains database diagnostic information.
+type DiagnosticInfo struct {
+	// Version is the database server version (e.g., "PostgreSQL 16.1").
+	Version string
+
+	// Connected indicates if the connection is healthy.
+	Connected bool
+
+	// Message provides additional status information.
+	Message string
+}
+
+// SchemaCheckResult contains information about the event store schema.
+type SchemaCheckResult struct {
+	// TableExists indicates if the events table exists.
+	TableExists bool
+
+	// EventCount is the number of events in the store.
+	EventCount int64
+
+	// Message provides additional information.
+	Message string
+}
+
+// ProjectionHealthResult contains projection health information.
+type ProjectionHealthResult struct {
+	// TotalProjections is the number of registered projections.
+	TotalProjections int64
+
+	// ProjectionsBehind is the number of projections that are behind.
+	ProjectionsBehind int64
+
+	// MaxPosition is the highest global position in the event store.
+	MaxPosition int64
+
+	// Message provides additional information.
+	Message string
+}
+
+// DiagnosticAdapter provides diagnostic capabilities for CLI tools.
+type DiagnosticAdapter interface {
+	// Ping checks if the database connection is healthy.
+	Ping(ctx context.Context) error
+
+	// GetDiagnosticInfo returns database version and connection status.
+	GetDiagnosticInfo(ctx context.Context) (*DiagnosticInfo, error)
+
+	// CheckSchema verifies the event store schema exists.
+	CheckSchema(ctx context.Context, tableName string) (*SchemaCheckResult, error)
+
+	// GetProjectionHealth returns projection health status.
+	GetProjectionHealth(ctx context.Context) (*ProjectionHealthResult, error)
+}

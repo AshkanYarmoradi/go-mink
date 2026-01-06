@@ -2,10 +2,12 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/ui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -740,7 +742,7 @@ func TestGenerateSchema(t *testing.T) {
 	cfg.EventStore.SnapshotTableName = "my_snapshots"
 	cfg.EventStore.OutboxTableName = "my_outbox"
 
-	schema := generateSchema(cfg)
+	schema := generateFallbackSchema(cfg)
 
 	assert.Contains(t, schema, "test-project")
 	assert.Contains(t, schema, "my_events")
@@ -748,7 +750,6 @@ func TestGenerateSchema(t *testing.T) {
 	assert.Contains(t, schema, "my_outbox")
 	assert.Contains(t, schema, "CREATE TABLE")
 	assert.Contains(t, schema, "CREATE INDEX")
-	assert.Contains(t, schema, "mink_append_events")
 }
 
 func TestExecute(t *testing.T) {
@@ -841,7 +842,7 @@ func TestGenerateSchemaContent(t *testing.T) {
 	cfg.EventStore.SnapshotTableName = "my_snapshots"
 	cfg.EventStore.OutboxTableName = "my_outbox"
 
-	schema := generateSchema(cfg)
+	schema := generateFallbackSchema(cfg)
 
 	// Verify schema contains all necessary parts
 	assert.Contains(t, schema, "test-project")
@@ -853,7 +854,6 @@ func TestGenerateSchemaContent(t *testing.T) {
 	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS mink_checkpoints")
 	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS my_outbox")
 	assert.Contains(t, schema, "CREATE INDEX")
-	assert.Contains(t, schema, "CREATE OR REPLACE FUNCTION mink_append_events")
 }
 
 func TestGenerateFile_ExecutionError(t *testing.T) {
@@ -1143,15 +1143,15 @@ var _ *cobra.Command = nil
 
 // TestDataStructures verifies data type initialization
 func TestDataStructures(t *testing.T) {
-	t.Run("Projection", func(t *testing.T) {
-		p := Projection{Name: "TestProjection", Position: 100, Status: "active"}
+	t.Run("ProjectionInfo", func(t *testing.T) {
+		p := adapters.ProjectionInfo{Name: "TestProjection", Position: 100, Status: "active"}
 		assert.Equal(t, "TestProjection", p.Name)
 		assert.Equal(t, int64(100), p.Position)
 		assert.Equal(t, "active", p.Status)
 	})
 
-	t.Run("Stream", func(t *testing.T) {
-		s := Stream{StreamID: "order-123", EventCount: 5, LastEventType: "ItemAdded"}
+	t.Run("StreamSummary", func(t *testing.T) {
+		s := adapters.StreamSummary{StreamID: "order-123", EventCount: 5, LastEventType: "ItemAdded"}
 		assert.Equal(t, "order-123", s.StreamID)
 		assert.Equal(t, int64(5), s.EventCount)
 		assert.Equal(t, "ItemAdded", s.LastEventType)
@@ -1166,7 +1166,7 @@ func TestDataStructures(t *testing.T) {
 	})
 
 	t.Run("EventStoreStats", func(t *testing.T) {
-		stats := EventStoreStats{TotalEvents: 1000, TotalStreams: 50, EventTypes: 10}
+		stats := adapters.EventStoreStats{TotalEvents: 1000, TotalStreams: 50, EventTypes: 10}
 		assert.Equal(t, int64(1000), stats.TotalEvents)
 		assert.Equal(t, int64(50), stats.TotalStreams)
 		assert.Equal(t, int64(10), stats.EventTypes)
@@ -1977,10 +1977,13 @@ func TestRootCommand_Structure(t *testing.T) {
 	assert.Equal(t, "mink", cmd.Use)
 }
 
-// Test listProjections helper without config
-func TestListProjections_WithInvalidURL(t *testing.T) {
-	// listProjections requires a database URL - test with invalid URL
-	_, err := listProjections("invalid://not-a-valid-url")
+// Test adapter factory with invalid URL
+func TestAdapterFactory_WithInvalidURL(t *testing.T) {
+	// Adapter factory requires DATABASE_URL - test creation without env var
+	cfg := config.DefaultConfig()
+	cfg.Database.URL = "${DATABASE_URL}" // Not set
+	
+	_, err := NewAdapterFactory(cfg)
 	assert.Error(t, err)
 }
 
@@ -2410,26 +2413,39 @@ func TestMigrateCreateCommand_WithSQLFlag(t *testing.T) {
 	assert.True(t, len(files) >= 1)
 }
 
-// TestHelpersWithInvalidURL tests helper functions that fail with invalid URLs
+// TestHelpersWithInvalidURL tests adapter creation with invalid configuration
 func TestHelpersWithInvalidURL(t *testing.T) {
-	tests := []struct {
-		name   string
-		testFn func() error
-	}{
-		{"listStreams", func() error { _, err := listStreams("invalid://not-a-url", "", 10); return err }},
-		{"getStreamEvents", func() error { _, err := getStreamEvents("invalid://not-a-url", "test-stream", 0, 10); return err }},
-		{"setProjectionStatus", func() error { return setProjectionStatus("invalid://not-a-url", "test", "running") }},
-		{"listProjections", func() error { _, err := listProjections("postgres://invalid:url@localhost:65535/db"); return err }},
-		{"getProjection", func() error { _, err := getProjection("postgres://invalid:url@localhost:65535/db", "test"); return err }},
-		{"getTotalEventCount", func() error { _, err := getTotalEventCount("postgres://invalid:url@localhost:65535/db"); return err }},
-	}
+	t.Run("invalid postgres URL creates factory but fails to connect", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Database.Driver = "postgres"
+		cfg.Database.URL = "postgres://invalid:url@localhost:65535/db"
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.testFn()
-			assert.Error(t, err)
-		})
-	}
+		factory, err := NewAdapterFactory(cfg)
+		assert.NoError(t, err, "Factory creation should succeed with invalid URL")
+
+		// Connection should fail
+		ctx := context.Background()
+		_, err = factory.CreateAdapter(ctx)
+		assert.Error(t, err, "Creating adapter with invalid URL should fail on connection")
+	})
+
+	t.Run("missing DATABASE_URL", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Database.Driver = "postgres"
+		cfg.Database.URL = "${DATABASE_URL}"
+
+		_, err := NewAdapterFactory(cfg)
+		assert.Error(t, err, "Should fail with unexpanded DATABASE_URL")
+	})
+
+	t.Run("empty URL", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Database.Driver = "postgres"
+		cfg.Database.URL = ""
+
+		_, err := NewAdapterFactory(cfg)
+		assert.Error(t, err, "Should fail with empty URL")
+	})
 }
 
 // Test getAppliedMigrationNames error path
@@ -2708,23 +2724,28 @@ func TestCheckGoVersion_Valid(t *testing.T) {
 	assert.NotEmpty(t, result.Message)
 }
 
-// Test listStreams returns empty for invalid URL
-func TestListStreams_EmptyResult(t *testing.T) {
-	_, err := listStreams("postgres://invalid:url@localhost:65535/test", "", 10)
-	assert.Error(t, err)
+// Test adapter factory returns error for invalid URL
+func TestAdapterFactory_InvalidURL(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Database.Driver = "postgres"
+	cfg.Database.URL = "postgres://invalid:url@localhost:65535/test"
+	
+	_, err := NewAdapterFactory(cfg)
+	// Should succeed (factory creates, connection may fail later)
+	assert.NoError(t, err)
 }
 
-// Test generateSchema produces valid output
-func TestGenerateSchema_Valid(t *testing.T) {
+// Test generateFallbackSchema produces valid output
+func TestGenerateFallbackSchema_Valid(t *testing.T) {
 	cfg := config.DefaultConfig()
-	schema := generateSchema(cfg)
+	schema := generateFallbackSchema(cfg)
 	assert.Contains(t, schema, "CREATE TABLE")
 	assert.Contains(t, schema, "mink_events")
 }
 
-// Test Projection struct initialization
-func TestProjection_Initialization(t *testing.T) {
-	p := Projection{
+// Test ProjectionInfo struct initialization
+func TestProjectionInfo_Initialization(t *testing.T) {
+	p := adapters.ProjectionInfo{
 		Name:     "test",
 		Position: 100,
 		Status:   "active",
@@ -2733,9 +2754,9 @@ func TestProjection_Initialization(t *testing.T) {
 	assert.Equal(t, int64(100), p.Position)
 }
 
-// Test Stream struct initialization
-func TestStream_Initialization(t *testing.T) {
-	s := Stream{
+// Test StreamSummary struct initialization
+func TestStreamSummary_Initialization(t *testing.T) {
+	s := adapters.StreamSummary{
 		StreamID:   "order-123",
 		EventCount: 5,
 	}
@@ -2755,9 +2776,9 @@ func TestStreamEvent_Initialization(t *testing.T) {
 	assert.Equal(t, int64(1), e.Version)
 }
 
-// Test EventStoreStats struct initialization
-func TestEventStoreStats_Initialization(t *testing.T) {
-	s := EventStoreStats{
+// Test adapters.EventStoreStats struct initialization
+func TestAdapterEventStoreStats_Initialization(t *testing.T) {
+	s := adapters.EventStoreStats{
 		TotalEvents:  100,
 		TotalStreams: 10,
 	}
@@ -2810,16 +2831,16 @@ go 1.21
 	assert.Equal(t, "github.com/test/myproject", result)
 }
 
-// Test getPendingMigrations helper (with invalid DB returns all migrations)
-func TestGetPendingMigrations_InvalidDB(t *testing.T) {
+// Test getAllMigrations helper (standalone function does not require adapter)
+func TestGetAllMigrations_FromDirectory(t *testing.T) {
 	env := setupTestEnv(t, "mink-pending-*")
 	env.createMigrationFile("001_init.sql", "-- init")
 
-	// Invalid DB URL should return all migrations (function handles error gracefully)
+	// getAllMigrations just reads filesystem
 	migrationsDir := filepath.Join(env.tmpDir, "migrations")
-	pending, err := getPendingMigrations("postgres://invalid:url@localhost:65535/db", migrationsDir)
+	migrations, err := getAllMigrations(migrationsDir)
 	assert.NoError(t, err)
-	assert.Len(t, pending, 1) // Returns all when can't connect to DB
+	assert.Len(t, migrations, 1)
 }
 
 // Test init command with directory argument
