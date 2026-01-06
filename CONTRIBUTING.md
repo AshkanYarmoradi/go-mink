@@ -118,7 +118,26 @@ Please follow these steps to have your contribution considered by the maintainer
 go test -short ./...
 
 # Run all tests (requires PostgreSQL)
+docker-compose -f docker-compose.test.yml up -d
 go test ./...
+
+# Run CLI tests with coverage
+cd cli/commands
+go test -tags=integration -cover -timeout 180s
+
+# Run CLI E2E tests
+go test -tags=integration -run "TestE2E" -v
 ```
+
+### Test Coverage
+
+The project maintains high test coverage:
+
+| Package | Coverage |
+|---------|----------|
+| `cli/commands` | 84.9% |
+| `cli/config` | 95.5% |
+| `cli/styles` | 100% |
+| `cli/ui` | 96.7% |
 
 Thank you for contributing!

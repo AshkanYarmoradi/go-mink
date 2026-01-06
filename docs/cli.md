@@ -356,6 +356,65 @@ Recommendations:
   3. Consider snapshotting Order-abc123 (>100 events)
 ```
 
+## Testing
+
+The CLI tool includes comprehensive testing with **84.9% code coverage**:
+
+### Test Categories
+
+| Category | Tests | Coverage |
+|----------|-------|----------|
+| Unit Tests | ~200 tests | Core logic, helpers, validation |
+| Integration Tests | 67 tests | PostgreSQL operations |
+| E2E Tests | 4 tests | Complete workflows |
+
+### Running CLI Tests
+
+```bash
+# Run all tests (requires PostgreSQL)
+docker-compose -f docker-compose.test.yml up -d
+cd cli/commands
+go test -tags=integration -cover ./...
+
+# Run unit tests only
+go test -short ./...
+
+# Run E2E tests
+go test -tags=integration -run "TestE2E" -v
+```
+
+### E2E Test Workflows
+
+The E2E tests exercise complete CLI workflows against a real PostgreSQL database:
+
+**`TestE2E_CompleteCliWorkflow`** - 20-step workflow:
+1. Initialize mink project
+2. Generate aggregate with events
+3. Generate projection
+4. Generate command
+5. Create migration
+6. Check migration status
+7. Apply migration (creates table)
+8. Insert test events
+9. List streams
+10. Get stream events
+11. Get stream stats
+12. Export stream to JSON
+13. Create projection checkpoint
+14. Get projection status
+15. Pause projection
+16. Resume projection
+17. Rebuild projection
+18. Run diagnostics
+19. Rollback migration
+20. Final verification
+
+**`TestE2E_MultiAggregateWorkflow`** - Multiple aggregates and projections
+
+**`TestE2E_MigrationLifecycle`** - Full migration up/down cycle
+
+**`TestE2E_ProjectionManagement`** - Complete projection operations
+
 ## Integration with Go Generate
 
 ```go

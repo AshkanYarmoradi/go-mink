@@ -76,7 +76,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 🧪 **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
 | 📊 **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
 | 📦 **MessagePack** | ✅ v0.4.0 | Alternative serializer for performance |
-| 🛠️ **CLI Tool** | 🔜 v0.5.0 | Code generation, migrations, and diagnostics |
+| 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
 | 🔄 **Sagas** | 🔜 v0.5.0 | Process manager for long-running workflows |
 | 📤 **Outbox Pattern** | 🔜 v0.5.0 | Reliable event publishing to external systems |

@@ -65,6 +65,7 @@ type Projection interface {
 - **Phase 2 (v0.2.0)**: CQRS Commands - Command Bus, middleware, idempotency
 - **Phase 3 (v0.3.0)**: Projections - Inline/async/live projections, subscriptions
 - **Phase 4 (v0.4.0)**: Developer Experience - Testing utilities, observability, MessagePack
+- **CLI Tool**: Complete with 84.9% test coverage (200+ unit tests, 67 integration tests, 4 E2E tests)
 
 ### Phase 5 (Next): Security & Advanced Patterns
 1. Saga / Process Manager implementation

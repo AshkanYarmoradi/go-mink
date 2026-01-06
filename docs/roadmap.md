@@ -193,13 +193,19 @@ rebuilder.Rebuild(ctx, projection, mink.RebuildOptions{BatchSize: 1000})
 **Status: Released**
 
 ### CLI Tool
-- [ ] `mink init` - Project scaffolding (deferred to v0.5.0)
-- [ ] `mink generate` - Code generation (deferred to v0.5.0)
-- [ ] `mink migrate` - Schema management (deferred to v0.5.0)
-- [ ] `mink projection` - Projection management (deferred to v0.5.0)
-- [ ] `mink stream` - Stream inspection (deferred to v0.5.0)
-- [ ] `mink diagnose` - Health checks (deferred to v0.5.0)
-- [ ] `mink schema` - Event schema management (deferred to v0.5.0)
+- [x] `mink init` - Project scaffolding
+- [x] `mink generate` - Code generation (aggregate, event, projection, command)
+- [x] `mink migrate` - Schema management (up, down, create, status)
+- [x] `mink projection` - Projection management (list, status, pause, resume, rebuild)
+- [x] `mink stream` - Stream inspection (list, events, stats, export)
+- [x] `mink diagnose` - Health checks and diagnostics
+- [x] `mink schema` - Event schema generation/print
+
+### CLI Testing
+- [x] Unit tests (~200 tests) - 84.9% code coverage
+- [x] Integration tests (67 tests) - Real PostgreSQL operations
+- [x] E2E tests (4 tests) - Complete 20-step workflows
+- [x] Test containers support (docker-compose.test.yml)
 
 ### Additional Serializers
 - [x] Protocol Buffers support - `serializer/protobuf`

@@ -30,16 +30,17 @@ Mink provides comprehensive testing utilities to make event-sourced systems easy
         /  \         E2E Tests (few)
        /----\        - Full system integration
       /      \       - Database, projections, sagas
-     /--------\
+     /--------\      - CLI workflows (20-step E2E)
     /          \     Integration Tests (some)
    /------------\    - Adapter tests
   /              \   - Projection tests
- /----------------\
+ /----------------\  - CLI commands (67 integration tests)
 /                  \ Unit Tests (many)
 /--------------------\
                       - Aggregate logic
                       - Command validation
                       - Event handlers
+                      - CLI helpers (~200 tests)
 ```
 
 ---
@@ -654,6 +655,79 @@ The test containers respect these environment variables:
 | `POSTGRES_USER` | `postgres` | Username |
 | `POSTGRES_PASSWORD` | `postgres` | Password |
 | `POSTGRES_PORT` | `5432` | Host port |
+
+---
+
+## CLI Testing
+
+The CLI tool (`cli/commands`) has comprehensive test coverage with **84.9% code coverage**.
+
+### CLI Test Categories
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| Unit Tests | ~200 | Core logic, helpers, validation, error paths |
+| Integration Tests | 67 | PostgreSQL operations via real database |
+| E2E Tests | 4 | Complete 20-step workflows |
+
+### Running CLI Tests
+
+```bash
+# Start PostgreSQL
+docker-compose -f docker-compose.test.yml up -d
+
+# Run all CLI tests
+cd cli/commands
+go test -tags=integration -cover -timeout 180s
+
+# Run E2E tests only
+go test -tags=integration -run "TestE2E" -v
+
+# Run unit tests only (no database required)
+go test -short ./...
+```
+
+### CLI E2E Test Workflows
+
+**`TestE2E_CompleteCliWorkflow`** exercises a full 20-step workflow:
+
+```go
+// This test executes these steps against real PostgreSQL:
+// 1. Initialize mink project (mink.yaml)
+// 2. Generate Order aggregate with events
+// 3. Generate OrderSummary projection  
+// 4. Generate CreateOrder command
+// 5. Create migration file
+// 6. Check migration status (pending)
+// 7. Apply migration (CREATE TABLE)
+// 8. Insert test events into database
+// 9. List streams (stream list)
+// 10. Get stream events (stream events order-e2e-001)
+// 11. Get stream stats (stream stats)
+// 12. Export stream to JSON (stream export)
+// 13. Create projection checkpoint
+// 14. Get projection status (projection status)
+// 15. Pause projection (projection pause)
+// 16. Resume projection (projection resume)
+// 17. Rebuild projection (projection rebuild)
+// 18. Run diagnostics (diagnose)
+// 19. Rollback migration (DROP TABLE)
+// 20. Final verification
+```
+
+Additional E2E tests:
+- **`TestE2E_MultiAggregateWorkflow`** - 3 aggregates + 3 projections
+- **`TestE2E_MigrationLifecycle`** - Full up/down migration cycle
+- **`TestE2E_ProjectionManagement`** - List, status, pause, resume, rebuild
+
+### CLI Test Coverage by Package
+
+| Package | Coverage | Notes |
+|---------|----------|-------|
+| `cli/commands` | 84.9% | Unit + Integration + E2E |
+| `cli/config` | 95.5% | Configuration handling |
+| `cli/styles` | 100% | Terminal styling |
+| `cli/ui` | 96.7% | UI components |
 
 ---
 
