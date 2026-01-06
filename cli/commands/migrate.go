@@ -146,6 +146,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 
 func newMigrateDownCommand() *cobra.Command {
 	var steps int
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "down",
@@ -154,6 +155,7 @@ func newMigrateDownCommand() *cobra.Command {
 
 By default, rolls back the last migration. Use --steps to rollback more.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			_ = force // Used for scripting (skip interactive elements)
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -238,6 +240,7 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 	}
 
 	cmd.Flags().IntVarP(&steps, "steps", "n", 1, "Number of migrations to rollback")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive elements (for scripting)")
 
 	return cmd
 }
@@ -320,7 +323,9 @@ func newMigrateStatusCommand() *cobra.Command {
 }
 
 func newMigrateCreateCommand() *cobra.Command {
-	return &cobra.Command{
+	var sqlContent string
+
+	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new migration file",
 		Args:  cobra.ExactArgs(1),
@@ -353,11 +358,16 @@ func newMigrateCreateCommand() *cobra.Command {
 			upPath := filepath.Join(migrationsDir, baseName+".sql")
 			downPath := filepath.Join(migrationsDir, baseName+".down.sql")
 
-			upContent := fmt.Sprintf(`-- Migration: %s
+			var upContent string
+			if sqlContent != "" {
+				upContent = sqlContent
+			} else {
+				upContent = fmt.Sprintf(`-- Migration: %s
 -- Created: %s
 
 -- Write your UP migration here
 `, name, time.Now().Format(time.RFC3339))
+			}
 
 			downContent := fmt.Sprintf(`-- Rollback: %s
 -- Created: %s
@@ -378,6 +388,10 @@ func newMigrateCreateCommand() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&sqlContent, "sql", "", "SQL content for the up migration")
+
+	return cmd
 }
 
 // Migration represents a migration file

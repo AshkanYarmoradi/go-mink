@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/AshkanYarmoradi/go-mink/cli/config"
@@ -14,6 +13,125 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// ============================================================================
+// Test Helpers - Reduce duplication by providing common test setup utilities
+// ============================================================================
+
+// testEnv holds common test environment state
+type testEnv struct {
+	t      *testing.T
+	tmpDir string
+	origWd string
+}
+
+// setupTestEnv creates a temporary directory and changes to it.
+// Returns a testEnv with cleanup that restores the original directory.
+func setupTestEnv(t *testing.T, prefix string) *testEnv {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", prefix)
+	require.NoError(t, err)
+
+	origWd, _ := os.Getwd()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	env := &testEnv{
+		t:      t,
+		tmpDir: tmpDir,
+		origWd: origWd,
+	}
+	t.Cleanup(env.cleanup)
+	return env
+}
+
+// cleanup restores the original working directory and removes temp dir
+func (e *testEnv) cleanup() {
+	_ = os.Chdir(e.origWd)
+	os.RemoveAll(e.tmpDir)
+}
+
+// createConfig creates a mink.yaml config file in the test directory
+func (e *testEnv) createConfig(opts ...configOption) *config.Config {
+	e.t.Helper()
+	cfg := config.DefaultConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	err := cfg.SaveFile(filepath.Join(e.tmpDir, "mink.yaml"))
+	require.NoError(e.t, err)
+	return cfg
+}
+
+// createMigrationsDir creates the migrations directory structure
+func (e *testEnv) createMigrationsDir() string {
+	e.t.Helper()
+	migrationsDir := filepath.Join(e.tmpDir, "migrations")
+	require.NoError(e.t, os.MkdirAll(migrationsDir, 0755))
+	return migrationsDir
+}
+
+// createMigrationFile creates a migration file in the migrations directory
+func (e *testEnv) createMigrationFile(name, content string) {
+	e.t.Helper()
+	migrationsDir := e.createMigrationsDir()
+	require.NoError(e.t, os.WriteFile(filepath.Join(migrationsDir, name), []byte(content), 0644))
+}
+
+// configOption is a function that modifies a config
+type configOption func(*config.Config)
+
+// withDriver sets the database driver
+func withDriver(driver string) configOption {
+	return func(c *config.Config) {
+		c.Database.Driver = driver
+	}
+}
+
+// withDatabaseURL sets the database URL
+func withDatabaseURL(url string) configOption {
+	return func(c *config.Config) {
+		c.Database.URL = url
+	}
+}
+
+// withModule sets the project module
+func withModule(module string) configOption {
+	return func(c *config.Config) {
+		c.Project.Module = module
+	}
+}
+
+// withAggregatePackage sets the aggregate package path
+func withAggregatePackage(pkg string) configOption {
+	return func(c *config.Config) {
+		c.Generation.AggregatePackage = pkg
+	}
+}
+
+// withEventPackage sets the event package path
+func withEventPackage(pkg string) configOption {
+	return func(c *config.Config) {
+		c.Generation.EventPackage = pkg
+	}
+}
+
+// withProjectName sets the project name
+func withProjectName(name string) configOption {
+	return func(c *config.Config) {
+		c.Project.Name = name
+	}
+}
+
+// withMigrationsDir sets the migrations directory
+func withMigrationsDir(dir string) configOption {
+	return func(c *config.Config) {
+		c.Database.MigrationsDir = dir
+	}
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 func TestNewRootCommand(t *testing.T) {
 	cmd := NewRootCommand()
@@ -304,42 +422,35 @@ func TestSanitizeName(t *testing.T) {
 }
 
 func TestDetectModule(t *testing.T) {
-	// Create temp directory with go.mod
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
 	// Create go.mod
 	gomodContent := `module github.com/test/myapp
 
 go 1.21
 `
-	err = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(gomodContent), 0644)
+	err := os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte(gomodContent), 0644)
 	require.NoError(t, err)
 
-	module := detectModule(tmpDir)
+	module := detectModule(env.tmpDir)
 	assert.Equal(t, "github.com/test/myapp", module)
 }
 
 func TestDetectModule_NoGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
-	module := detectModule(tmpDir)
+	module := detectModule(env.tmpDir)
 	assert.Empty(t, module)
 }
 
 func TestDetectModule_InvalidGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
 	// Create go.mod without module line
-	err = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("go 1.21\n"), 0644)
+	err := os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte("go 1.21\n"), 0644)
 	require.NoError(t, err)
 
-	module := detectModule(tmpDir)
+	module := detectModule(env.tmpDir)
 	assert.Empty(t, module)
 }
 
@@ -378,23 +489,21 @@ func TestSplash(t *testing.T) {
 	os.Stdout = old
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	_, _ = buf.ReadFrom(r)
 	output := buf.String()
 
 	assert.Contains(t, output, "mink")
 }
 
 func TestGenerateFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
 	// Test generating a file with template (directory already exists)
-	testPath := filepath.Join(tmpDir, "test.go")
+	testPath := filepath.Join(env.tmpDir, "test.go")
 	tmpl := "package {{.Package}}\n"
 	data := struct{ Package string }{Package: "test"}
 
-	err = generateFile(testPath, tmpl, data)
+	err := generateFile(testPath, tmpl, data)
 	require.NoError(t, err)
 
 	// Verify file was created
@@ -404,14 +513,12 @@ func TestGenerateFile(t *testing.T) {
 }
 
 func TestGenerateFile_Overwrite(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
-	testPath := filepath.Join(tmpDir, "test.go")
+	testPath := filepath.Join(env.tmpDir, "test.go")
 
 	// Create initial file
-	err = os.WriteFile(testPath, []byte("old content"), 0644)
+	err := os.WriteFile(testPath, []byte("old content"), 0644)
 	require.NoError(t, err)
 
 	// Generate new file (should overwrite)
@@ -426,14 +533,12 @@ func TestGenerateFile_Overwrite(t *testing.T) {
 }
 
 func TestGenerateFile_InvalidTemplate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-cmd-test-*")
 
-	testPath := filepath.Join(tmpDir, "test.go")
+	testPath := filepath.Join(env.tmpDir, "test.go")
 	tmpl := "{{.Invalid" // Invalid template
 
-	err = generateFile(testPath, tmpl, nil)
+	err := generateFile(testPath, tmpl, nil)
 	assert.Error(t, err)
 }
 
@@ -463,13 +568,11 @@ func TestSchemaCommand_PrintSubcommand(t *testing.T) {
 }
 
 func TestInitCommand_NonInteractive(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-init-test-*")
 
 	cmd := NewInitCommand()
 	cmd.SetArgs([]string{
-		tmpDir,
+		env.tmpDir,
 		"--non-interactive",
 		"--name", "test-app",
 		"--module", "github.com/test/app",
@@ -480,25 +583,23 @@ func TestInitCommand_NonInteractive(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	require.NoError(t, err)
 
 	// Verify config was created
-	assert.True(t, config.Exists(tmpDir))
+	assert.True(t, config.Exists(env.tmpDir))
 }
 
 func TestInitCommand_AlreadyExists(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-init-test-*")
 
 	// Create config first
 	cfg := config.DefaultConfig()
-	err = cfg.Save(tmpDir)
+	err := cfg.Save(env.tmpDir)
 	require.NoError(t, err)
 
 	cmd := NewInitCommand()
-	cmd.SetArgs([]string{tmpDir, "--non-interactive"})
+	cmd.SetArgs([]string{env.tmpDir, "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -509,21 +610,19 @@ func TestInitCommand_AlreadyExists(t *testing.T) {
 }
 
 func TestInitCommand_WithGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-gomod-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-init-gomod-test-*")
 
 	// Create a go.mod file
 	gomodContent := `module github.com/test/myproject
 
 go 1.21
 `
-	err = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(gomodContent), 0644)
+	err := os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte(gomodContent), 0644)
 	require.NoError(t, err)
 
 	cmd := NewInitCommand()
 	cmd.SetArgs([]string{
-		tmpDir,
+		env.tmpDir,
 		"--non-interactive",
 		"--name", "myproject",
 	})
@@ -536,17 +635,15 @@ go 1.21
 	require.NoError(t, err)
 
 	// Verify config was created
-	assert.True(t, config.Exists(tmpDir))
+	assert.True(t, config.Exists(env.tmpDir))
 }
 
 func TestInitCommand_PostgresDriver(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-pg-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-init-pg-test-*")
 
 	cmd := NewInitCommand()
 	cmd.SetArgs([]string{
-		tmpDir,
+		env.tmpDir,
 		"--non-interactive",
 		"--name", "pg-app",
 		"--module", "github.com/test/pg-app",
@@ -557,11 +654,11 @@ func TestInitCommand_PostgresDriver(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	require.NoError(t, err)
 
 	// Verify config was created with postgres driver
-	assert.True(t, config.Exists(tmpDir))
+	assert.True(t, config.Exists(env.tmpDir))
 }
 
 func TestMigrateCommand_CreateSubcommand_Structure(t *testing.T) {
@@ -581,19 +678,16 @@ func TestMigrateCommand_CreateSubcommand_Structure(t *testing.T) {
 }
 
 func TestGetAllMigrations(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-migrate-test-*")
 
 	// Create some migration files
-	err = os.WriteFile(filepath.Join(tmpDir, "001_create_users.sql"), []byte("-- up"), 0644)
-	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(tmpDir, "001_create_users.down.sql"), []byte("-- down"), 0644)
-	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(tmpDir, "002_add_index.sql"), []byte("-- up"), 0644)
-	require.NoError(t, err)
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_create_users.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_create_users.down.sql"), []byte("-- down"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_add_index.sql"), []byte("-- up"), 0644))
 
-	migrations, err := getAllMigrations(tmpDir)
+	migrations, err := getAllMigrations(migrationsDir)
 	require.NoError(t, err)
 
 	// Should find 2 up migrations (not down migrations)
@@ -855,15 +949,13 @@ func TestGenerateSchemaContent(t *testing.T) {
 }
 
 func TestGenerateFile_ExecutionError(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-gen-test-*")
 
-	path := filepath.Join(tmpDir, "test.go")
+	path := filepath.Join(env.tmpDir, "test.go")
 	tmpl := "{{.Missing}}" // Template expects field that doesn't exist
 	data := struct{}{}
 
-	err = generateFile(path, tmpl, data)
+	err := generateFile(path, tmpl, data)
 	assert.Error(t, err)
 }
 
@@ -992,29 +1084,15 @@ func TestRootCommand_PersistentFlags(t *testing.T) {
 }
 
 func TestSchemaCommand_GenerateSubcommand_Run(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create a mink.yaml config first
-	cfg := config.DefaultConfig()
-	cfg.Project.Name = "test-project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Change to temp dir
-	origWd, err := os.Getwd()
-	require.NoError(t, err)
-	err = os.Chdir(tmpDir)
-	require.NoError(t, err)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-test-*")
+	env.createConfig(withProjectName("test-project"))
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"generate"})
 
 	// Just test that it executes without error
 	// The output goes to stdout, not to the command's buffer
-	err = cmd.Execute()
+	err := cmd.Execute()
 	require.NoError(t, err)
 }
 
@@ -1052,31 +1130,17 @@ func TestCommandAliases(t *testing.T) {
 }
 
 func TestMigrateCreateCommand_Execute(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-create-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create mink.yaml
-	cfg := config.DefaultConfig()
-	cfg.Database.MigrationsDir = "migrations"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Change to temp dir
-	origWd, err := os.Getwd()
-	require.NoError(t, err)
-	err = os.Chdir(tmpDir)
-	require.NoError(t, err)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-create-*")
+	env.createConfig(withMigrationsDir("migrations"))
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"create", "add_users_table"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	require.NoError(t, err)
 
 	// Verify migration files were created
-	entries, err := os.ReadDir(filepath.Join(tmpDir, "migrations"))
+	entries, err := os.ReadDir(filepath.Join(env.tmpDir, "migrations"))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2) // up and down files
 }
@@ -1386,15 +1450,8 @@ func TestCheckSystemResources(t *testing.T) {
 }
 
 func TestCheckConfiguration_NoConfig(t *testing.T) {
-	// Change to temp dir without config
-	tmpDir, err := os.MkdirTemp("", "mink-diag-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	err = os.Chdir(tmpDir)
-	require.NoError(t, err)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-diag-test-*")
+	_ = env // No config created intentionally
 
 	result := checkConfiguration()
 
@@ -1404,22 +1461,12 @@ func TestCheckConfiguration_NoConfig(t *testing.T) {
 }
 
 func TestCheckConfiguration_WithConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-diag-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create config with valid values
-	cfg := config.DefaultConfig()
-	cfg.Project.Name = "test-project"
-	cfg.Project.Module = "github.com/test/project"
-	cfg.Database.Driver = "memory" // Valid driver that doesn't require URL
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	err = os.Chdir(tmpDir)
-	require.NoError(t, err)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-diag-test-*")
+	env.createConfig(
+		withProjectName("test-project"),
+		withModule("github.com/test/project"),
+		withDriver("memory"),
+	)
 
 	result := checkConfiguration()
 
@@ -1574,8 +1621,7 @@ func TestAnimatedVersionModel_Update_Tick(t *testing.T) {
 func TestAnimatedVersionModel_Update_KeyPress(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
-	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = newModel.(AnimatedVersionModel)
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Key press should trigger quit
 	assert.NotNil(t, cmd)
@@ -1607,17 +1653,17 @@ func TestAnimatedVersionModel_View_AllPhases(t *testing.T) {
 
 // Test getAllMigrations with various scenarios
 func TestGetAllMigrations_WithDownFiles(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-migrations-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-migrations-*")
 
 	// Create .sql and .down.sql files
-	os.WriteFile(filepath.Join(tmpDir, "001_create.sql"), []byte("-- up"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "001_create.down.sql"), []byte("-- down"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "002_update.sql"), []byte("-- up"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "002_update.down.sql"), []byte("-- down"), 0644)
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_create.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_create.down.sql"), []byte("-- down"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_update.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_update.down.sql"), []byte("-- down"), 0644))
 
-	migrations, err := getAllMigrations(tmpDir)
+	migrations, err := getAllMigrations(migrationsDir)
 	require.NoError(t, err)
 
 	// Should only return .sql files, not .down.sql
@@ -1633,26 +1679,28 @@ func TestGetAllMigrations_NonExistentDir(t *testing.T) {
 }
 
 func TestGetAllMigrations_EmptyDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-empty-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-empty-*")
 
-	migrations, err := getAllMigrations(tmpDir)
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+
+	migrations, err := getAllMigrations(migrationsDir)
 	require.NoError(t, err)
 	assert.Empty(t, migrations)
 }
 
 func TestGetAllMigrations_WithSubdirectories(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-subdir-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-subdir-*")
+
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
 
 	// Create a subdirectory that should be ignored
-	os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755)
-	os.WriteFile(filepath.Join(tmpDir, "001_first.sql"), []byte("-- up"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "subdir", "002_second.sql"), []byte("-- up"), 0644)
+	require.NoError(t, os.Mkdir(filepath.Join(migrationsDir, "subdir"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "subdir", "002_second.sql"), []byte("-- up"), 0644))
 
-	migrations, err := getAllMigrations(tmpDir)
+	migrations, err := getAllMigrations(migrationsDir)
 	require.NoError(t, err)
 
 	// Should only find 001_first.sql, not the one in subdirectory
@@ -1661,16 +1709,17 @@ func TestGetAllMigrations_WithSubdirectories(t *testing.T) {
 }
 
 func TestGetAllMigrations_Sorting(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-sort-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-sort-*")
+
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
 
 	// Create files in non-sorted order
-	os.WriteFile(filepath.Join(tmpDir, "003_third.sql"), []byte("-- up"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "001_first.sql"), []byte("-- up"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "002_second.sql"), []byte("-- up"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "003_third.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"), []byte("-- up"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_second.sql"), []byte("-- up"), 0644))
 
-	migrations, err := getAllMigrations(tmpDir)
+	migrations, err := getAllMigrations(migrationsDir)
 	require.NoError(t, err)
 
 	// Should be sorted
@@ -1683,13 +1732,8 @@ func TestGetAllMigrations_Sorting(t *testing.T) {
 // Test error handling branches
 func TestNewInitCommand_NoConfig(t *testing.T) {
 	// Test init command when there's no existing config
-	tmpDir, err := os.MkdirTemp("", "mink-init-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-init-noconfig-*")
+	_ = env
 
 	cmd := NewInitCommand()
 	assert.NotNil(t, cmd)
@@ -1718,18 +1762,8 @@ func TestSchemaGenerateCommand_Flags(t *testing.T) {
 }
 
 func TestSchemaGenerateCommand_Execute(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-test-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"generate"})
@@ -1737,30 +1771,20 @@ func TestSchemaGenerateCommand_Execute(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestSchemaGenerateCommand_OutputFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-output-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-schema-output-test-*")
+	env.createConfig(withModule("github.com/test/project"))
 
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
-
-	outputFile := filepath.Join(tmpDir, "schema.sql")
+	outputFile := filepath.Join(env.tmpDir, "schema.sql")
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"generate", "--output", outputFile})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify file was created
@@ -1774,18 +1798,8 @@ func TestSchemaGenerateCommand_OutputFile(t *testing.T) {
 }
 
 func TestSchemaPrintCommand_Execute(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-print-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-print-test-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"print"})
@@ -1793,7 +1807,7 @@ func TestSchemaPrintCommand_Execute(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
@@ -1891,33 +1905,27 @@ func TestToPascalCase_Comprehensive(t *testing.T) {
 
 // Test detectModule with various scenarios
 func TestDetectModule_WithoutGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-nomod-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-nomod-*")
 
-	result := detectModule(tmpDir)
+	result := detectModule(env.tmpDir)
 	assert.Empty(t, result)
 }
 
 func TestDetectModule_WithMalformedGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-badmod-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-badmod-*")
 
 	// Write go.mod without module line
-	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("go 1.21\n"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte("go 1.21\n"), 0644))
 
-	result := detectModule(tmpDir)
+	result := detectModule(env.tmpDir)
 	assert.Empty(t, result)
 }
 
 // Test generate file with various templates
 func TestGenerateFile_CustomTemplate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-genfile-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-genfile-*")
 
-	filePath := filepath.Join(tmpDir, "test.go")
+	filePath := filepath.Join(env.tmpDir, "test.go")
 	template := `package {{.Package}}
 
 // {{.Name}} is a test struct
@@ -1932,7 +1940,7 @@ type {{.Name}} struct {}
 		Name:    "MyStruct",
 	}
 
-	err = generateFile(filePath, template, data)
+	err := generateFile(filePath, template, data)
 	require.NoError(t, err)
 
 	content, err := os.ReadFile(filePath)
@@ -1942,15 +1950,13 @@ type {{.Name}} struct {}
 }
 
 func TestGenerateFile_CreateDirectory(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-gendir-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-gendir-*")
 
 	// Generate file in existing directory (generateFile doesn't auto-create nested dirs)
-	filePath := filepath.Join(tmpDir, "test.go")
+	filePath := filepath.Join(env.tmpDir, "test.go")
 	template := `package test`
 
-	err = generateFile(filePath, template, nil)
+	err := generateFile(filePath, template, nil)
 	require.NoError(t, err)
 
 	// Verify file exists
@@ -1959,29 +1965,21 @@ func TestGenerateFile_CreateDirectory(t *testing.T) {
 }
 
 func TestGenerateFile_BadTemplate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-badtempl-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-badtempl-*")
 
-	filePath := filepath.Join(tmpDir, "test.go")
+	filePath := filepath.Join(env.tmpDir, "test.go")
 	template := `{{.Invalid`
 
-	err = generateFile(filePath, template, nil)
+	err := generateFile(filePath, template, nil)
 	assert.Error(t, err)
 }
 
 // Test config with various edge cases
 func TestCheckConfiguration_WithInvalidConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-badcfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-test-badcfg-*")
 
 	// Create invalid yaml
-	os.WriteFile(filepath.Join(tmpDir, "mink.yaml"), []byte("invalid: yaml: :::"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "mink.yaml"), []byte("invalid: yaml: :::"), 0644))
 
 	result := checkConfiguration()
 	// Should return an error status when config can't be loaded
@@ -1989,13 +1987,8 @@ func TestCheckConfiguration_WithInvalidConfig(t *testing.T) {
 }
 
 func TestCheckConfiguration_WithNoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-test-nocfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-test-nocfg-*")
+	_ = env // No config created intentionally
 
 	result := checkConfiguration()
 	assert.Equal(t, StatusWarning, result.Status)
@@ -2017,18 +2010,13 @@ func TestProjectionRebuildCommand_Structure(t *testing.T) {
 
 // Test migrate status command more thoroughly
 func TestMigrateStatusCommand_WithoutConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-status-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-status-*")
+	_ = env // No config created intentionally
 
 	cmd := NewMigrateCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{})
+	err := statusCmd.RunE(statusCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
@@ -2089,13 +2077,11 @@ func TestSchemaCommand_NoAliases(t *testing.T) {
 
 // Test getPendingMigrations with empty dir
 func TestGetPendingMigrations_EmptyDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-pending-empty-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-pending-empty-*")
 
 	// Create empty migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
 
 	// We can test that empty dir returns no migrations
 	all, err := getAllMigrations(migrationsDir)
@@ -2153,116 +2139,83 @@ func TestAnimatedVersionModel_FullLifecycle(t *testing.T) {
 
 // Test migrate up error paths
 func TestMigrateUpCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	upCmd.Flags().Set("force", "true")
+	require.NoError(t, upCmd.Flags().Set("force", "true"))
 
-	err = upCmd.RunE(upCmd, []string{})
+	err := upCmd.RunE(upCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test projection list without config
 func TestProjectionListCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-list-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-list-*")
+	_ = env // No config created intentionally
 
 	cmd := NewProjectionCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test stream list without config
 func TestStreamListCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-list-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-list-*")
+	_ = env // No config created intentionally
 
 	cmd := NewStreamCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test stream events without config
 func TestStreamEventsCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-events-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-events-*")
+	_ = env // No config created intentionally
 
 	cmd := NewStreamCommand()
 	eventsCmd, _, _ := cmd.Find([]string{"events"})
 
-	err = eventsCmd.RunE(eventsCmd, []string{"stream-123"})
+	err := eventsCmd.RunE(eventsCmd, []string{"stream-123"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test stream stats without config
 func TestStreamStatsCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-stats-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-stats-*")
+	_ = env // No config created intentionally
 
 	cmd := NewStreamCommand()
 	statsCmd, _, _ := cmd.Find([]string{"stats"})
 
-	err = statsCmd.RunE(statsCmd, []string{})
+	err := statsCmd.RunE(statsCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test stream export without config
 func TestStreamExportCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-export-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-export-*")
+	_ = env // No config created intentionally
 
 	cmd := NewStreamCommand()
 	exportCmd, _, _ := cmd.Find([]string{"export"})
 
-	err = exportCmd.RunE(exportCmd, []string{"stream-123"})
+	err := exportCmd.RunE(exportCmd, []string{"stream-123"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
@@ -2293,216 +2246,146 @@ func TestProjectionResumeCommand_Structure(t *testing.T) {
 
 // Test migrate up with invalid database URL
 func TestMigrateUpCommand_InvalidDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-invalid-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "postgres://invalid:url@localhost:65535/nonexistent"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir with a migration
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_test.sql"), []byte("SELECT 1;"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-invalid-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL("postgres://invalid:url@localhost:65535/nonexistent"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationFile("001_test.sql", "SELECT 1;")
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	upCmd.Flags().Set("force", "true")
+	require.NoError(t, upCmd.Flags().Set("force", "true"))
 
-	err = upCmd.RunE(upCmd, []string{})
+	err := upCmd.RunE(upCmd, []string{})
 	// Should fail when trying to connect with invalid DB URL
 	assert.Error(t, err)
 }
 
 // Test migrate status with memory driver
 func TestMigrateStatusCommand_MemoryDriver(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-memory-status-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-memory-status-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewMigrateCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{})
+	err := statusCmd.RunE(statusCmd, []string{})
 	// Memory driver should show info message
 	assert.NoError(t, err)
 }
 
 // Test generate aggregate with multiple events
 func TestGenerateAggregateCommand_MultipleEvents(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-multi-events-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/multi"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
+	env := setupTestEnv(t, "mink-gen-multi-events-*")
+	cfg := env.createConfig(withModule("github.com/test/multi"))
 
 	// Create the directories
-	os.MkdirAll(filepath.Join(tmpDir, cfg.Generation.AggregatePackage), 0755)
-	os.MkdirAll(filepath.Join(tmpDir, cfg.Generation.EventPackage), 0755)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	require.NoError(t, os.MkdirAll(filepath.Join(env.tmpDir, cfg.Generation.AggregatePackage), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(env.tmpDir, cfg.Generation.EventPackage), 0755))
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"aggregate", "MultiTest", "--events", "Created,Updated,Deleted", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify aggregate file was created
-	aggFile := filepath.Join(tmpDir, cfg.Generation.AggregatePackage, "multitest.go")
+	aggFile := filepath.Join(env.tmpDir, cfg.Generation.AggregatePackage, "multitest.go")
 	_, err = os.Stat(aggFile)
 	assert.NoError(t, err, "Aggregate file should exist")
 
 	// Verify events file was created (all events in one file)
-	eventsFile := filepath.Join(tmpDir, cfg.Generation.EventPackage, "multitest_events.go")
+	eventsFile := filepath.Join(env.tmpDir, cfg.Generation.EventPackage, "multitest_events.go")
 	_, err = os.Stat(eventsFile)
 	assert.NoError(t, err, "Events file should exist")
 }
 
 // Test projection list command without db URL
 func TestProjectionListCommand_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-list-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-list-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test projection status without db URL
 func TestProjectionStatusCommand_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-status-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-status-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{"TestProj"})
+	err := statusCmd.RunE(statusCmd, []string{"TestProj"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test generate event without config
 func TestGenerateEventCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-evt-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-evt-noconfig-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"event", "TestEvent", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// Should use default config
 	assert.NoError(t, err)
 }
 
 // Test generate projection without config
 func TestGenerateProjectionCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-proj-noconfig-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"projection", "TestProj", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// Should use default config
 	assert.NoError(t, err)
 }
 
 // Test generate command without config
 func TestGenerateCommandCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-cmd-noconfig-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"command", "TestCmd", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// Should use default config
 	assert.NoError(t, err)
 }
 
 // Test runDiagnose function paths - warning status
 func TestCheckDatabaseConnection_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-db-nourl-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create config without DB URL
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-db-nourl-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	result := checkDatabaseConnection()
 	assert.Equal(t, StatusWarning, result.Status)
@@ -2511,13 +2394,7 @@ func TestCheckDatabaseConnection_NoDBURL(t *testing.T) {
 
 // Test checkEventStoreSchema error cases - returns OK when using valid config
 func TestCheckEventStoreSchema_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-schema-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	_ = setupTestEnv(t, "mink-check-schema-noconfig-*")
 
 	result := checkEventStoreSchema()
 	// Should return warning or OK when no config (depending on implementation)
@@ -2526,13 +2403,7 @@ func TestCheckEventStoreSchema_NoConfig(t *testing.T) {
 
 // Test checkProjections without config
 func TestCheckProjections_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-proj-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	_ = setupTestEnv(t, "mink-check-proj-noconfig-*")
 
 	result := checkProjections()
 	// Should return warning or OK when no config
@@ -2541,20 +2412,16 @@ func TestCheckProjections_NoConfig(t *testing.T) {
 
 // Test migrate down without config
 func TestMigrateDownCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-down-noconfig-*")
 
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
 
-	err = downCmd.RunE(downCmd, []string{})
+	err := downCmd.RunE(downCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
+
+	_ = env // Cleanup handled by t.Cleanup
 }
 
 // Test stream list with prefix filter
@@ -2608,113 +2475,79 @@ func TestRootCommand_Structure(t *testing.T) {
 
 // Test projection pause without config
 func TestProjectionPauseCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-pause-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-pause-noconfig-*")
+	_ = env // No config created intentionally
 
 	cmd := NewProjectionCommand()
 	pauseCmd, _, _ := cmd.Find([]string{"pause"})
 
-	err = pauseCmd.RunE(pauseCmd, []string{"TestProj"})
+	err := pauseCmd.RunE(pauseCmd, []string{"TestProj"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test projection resume without config
 func TestProjectionResumeCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-resume-noconfig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-resume-noconfig-*")
+	_ = env // No config created intentionally
 
 	cmd := NewProjectionCommand()
 	resumeCmd, _, _ := cmd.Find([]string{"resume"})
 
-	err = resumeCmd.RunE(resumeCmd, []string{"TestProj"})
+	err := resumeCmd.RunE(resumeCmd, []string{"TestProj"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
 
 // Test projection pause without db URL
 func TestProjectionPauseCommand_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-pause-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-pause-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	pauseCmd, _, _ := cmd.Find([]string{"pause"})
 
-	err = pauseCmd.RunE(pauseCmd, []string{"TestProj"})
+	err := pauseCmd.RunE(pauseCmd, []string{"TestProj"})
 	assert.Error(t, err)
-	// Command tries to connect with empty URL - connection will fail
-	assert.True(t, strings.Contains(err.Error(), "failed to connect") || strings.Contains(err.Error(), "connection"))
+	// Command requires DATABASE_URL to be set
+	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test projection resume without db URL
 func TestProjectionResumeCommand_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-resume-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-resume-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	resumeCmd, _, _ := cmd.Find([]string{"resume"})
 
-	err = resumeCmd.RunE(resumeCmd, []string{"TestProj"})
+	err := resumeCmd.RunE(resumeCmd, []string{"TestProj"})
 	assert.Error(t, err)
-	// Command tries to connect with empty URL - connection will fail
-	assert.True(t, strings.Contains(err.Error(), "failed to connect") || strings.Contains(err.Error(), "connection"))
+	// Command requires DATABASE_URL to be set
+	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test stream export without db URL
 func TestStreamExportCommand_NoDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-export-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = ""
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-export-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	exportCmd, _, _ := cmd.Find([]string{"export"})
 
-	err = exportCmd.RunE(exportCmd, []string{"stream-123"})
+	err := exportCmd.RunE(exportCmd, []string{"stream-123"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
@@ -2728,19 +2561,11 @@ func TestListProjections_WithInvalidURL(t *testing.T) {
 
 // Test checkDatabaseConnection with memory driver
 func TestCheckDatabaseConnection_MemoryDriver(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-db-memory-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-db-memory-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
 
 	result := checkDatabaseConnection()
 	assert.Equal(t, StatusOK, result.Status)
@@ -2749,110 +2574,72 @@ func TestCheckDatabaseConnection_MemoryDriver(t *testing.T) {
 
 // Test generate aggregate with existing config
 func TestGenerateAggregateCommand_WithExistingConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-existing-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/existing"
-	cfg.Generation.AggregatePackage = "pkg/domain"
-	cfg.Generation.EventPackage = "pkg/events"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-agg-existing-*")
+	env.createConfig(
+		withModule("github.com/test/existing"),
+		withAggregatePackage("pkg/domain"),
+		withEventPackage("pkg/events"),
+	)
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"aggregate", "Custom", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify files created in custom paths
-	aggFile := filepath.Join(tmpDir, "pkg/domain", "custom.go")
+	aggFile := filepath.Join(env.tmpDir, "pkg/domain", "custom.go")
 	_, err = os.Stat(aggFile)
 	assert.NoError(t, err)
 }
 
 // Test generate event with aggregate flag
 func TestGenerateEventCommand_WithAggregate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-evt-agg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/evtagg"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-evt-agg-*")
+	cfg := env.createConfig(withModule("github.com/test/evtagg"))
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"event", "OrderShipped", "--aggregate", "Order", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify event file was created
-	eventFile := filepath.Join(tmpDir, cfg.Generation.EventPackage, "ordershipped.go")
+	eventFile := filepath.Join(env.tmpDir, cfg.Generation.EventPackage, "ordershipped.go")
 	_, err = os.Stat(eventFile)
 	assert.NoError(t, err)
 }
 
 // Test generate command with aggregate flag
 func TestGenerateCommandCommand_WithAggregate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-agg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/cmdagg"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-cmd-agg-*")
+	cfg := env.createConfig(withModule("github.com/test/cmdagg"))
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"command", "ShipOrder", "--aggregate", "Order", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify command file was created
-	cmdFile := filepath.Join(tmpDir, cfg.Generation.CommandPackage, "shiporder.go")
+	cmdFile := filepath.Join(env.tmpDir, cfg.Generation.CommandPackage, "shiporder.go")
 	_, err = os.Stat(cmdFile)
 	assert.NoError(t, err)
 }
 
 // Test generate projection with events flag
 func TestGenerateProjectionCommand_WithEvents(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-evts-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/projevt"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-proj-evts-*")
+	cfg := env.createConfig(withModule("github.com/test/projevt"))
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--force"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify projection file was created
-	projFile := filepath.Join(tmpDir, cfg.Generation.ProjectionPackage, "ordersummary.go")
+	projFile := filepath.Join(env.tmpDir, cfg.Generation.ProjectionPackage, "ordersummary.go")
 	_, err = os.Stat(projFile)
 	assert.NoError(t, err)
 
@@ -2865,693 +2652,446 @@ func TestGenerateProjectionCommand_WithEvents(t *testing.T) {
 
 // Test migrate down with invalid db URL
 func TestMigrateDownCommand_InvalidDBURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-invalid-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "postgres://invalid:url@localhost:65535/nonexistent"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
+	env := setupTestEnv(t, "mink-migrate-down-invalid-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL("postgres://invalid:url@localhost:65535/nonexistent"),
+		withModule("github.com/test/project"),
+	)
 
 	// Create migrations dir with a migration
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_test.sql"), []byte("SELECT 1;"), 0644)
-	os.WriteFile(filepath.Join(migrationsDir, "001_test.down.sql"), []byte("SELECT 1;"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env.createMigrationFile("001_test.sql", "SELECT 1;")
+	env.createMigrationFile("001_test.down.sql", "SELECT 1;")
 
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
 
-	err = downCmd.RunE(downCmd, []string{})
+	err := downCmd.RunE(downCmd, []string{})
 	// Should fail when trying to connect with invalid DB URL
 	assert.Error(t, err)
 }
 
 // Test generate aggregate with no events and force flag
 func TestGenerateAggregateCommand_ForceNoEventsUnit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-force-unit-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-agg-force-unit-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	aggCmd, _, _ := cmd.Find([]string{"aggregate"})
 
 	// Set the force flag
-	aggCmd.Flags().Set("force", "true")
+	require.NoError(t, aggCmd.Flags().Set("force", "true"))
 
-	err = aggCmd.RunE(aggCmd, []string{"TestAggregate"})
+	err := aggCmd.RunE(aggCmd, []string{"TestAggregate"})
 	assert.NoError(t, err)
 }
 
 // Test projection list with force flag
 func TestProjectionListCommand_WithForce(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-list-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-list-force-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test generate event with no aggregate and force
 func TestGenerateEventCommand_ForceNoAggregate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-event-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-event-force-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	eventCmd, _, _ := cmd.Find([]string{"event"})
 
 	// Set the force flag
-	eventCmd.Flags().Set("force", "true")
+	require.NoError(t, eventCmd.Flags().Set("force", "true"))
 
-	err = eventCmd.RunE(eventCmd, []string{"OrderCreated"})
+	err := eventCmd.RunE(eventCmd, []string{"OrderCreated"})
 	assert.NoError(t, err)
 }
 
 // Test generate command with no aggregate and force
 func TestGenerateCommandCommand_ForceNoAggregate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-cmd-force-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	cmdCmd, _, _ := cmd.Find([]string{"command"})
 
 	// Set the force flag
-	cmdCmd.Flags().Set("force", "true")
+	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
 
-	err = cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
+	err := cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
 	assert.NoError(t, err)
 }
 
 // Test generate projection with no events and force
 func TestGenerateProjectionCommand_ForceNoEvents(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-proj-force-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	projCmd, _, _ := cmd.Find([]string{"projection"})
 
 	// Set the force flag
-	projCmd.Flags().Set("force", "true")
+	require.NoError(t, projCmd.Flags().Set("force", "true"))
 
-	err = projCmd.RunE(projCmd, []string{"OrderView"})
+	err := projCmd.RunE(projCmd, []string{"OrderView"})
 	assert.NoError(t, err)
 }
 
 // Test init command when config exists
 func TestInitCommand_ConfigExists(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-exists-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create existing config
-	cfg := config.DefaultConfig()
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-init-exists-*")
+	env.createConfig() // Create existing config
 
 	cmd := NewInitCommand()
-	err = cmd.RunE(cmd, []string{})
+	err := cmd.RunE(cmd, []string{})
 	// Should return nil but print warning (config already exists)
 	assert.NoError(t, err)
 }
 
 // Test migrate up with no pending migrations and force
 func TestMigrateUpCommand_NoPending(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-no-pending-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create empty migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-no-pending-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationsDir() // Create empty migrations dir
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	upCmd.Flags().Set("force", "true")
+	require.NoError(t, upCmd.Flags().Set("force", "true"))
 
-	err = upCmd.RunE(upCmd, []string{})
+	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err) // Should succeed even with no migrations
 }
 
 // Test migrate down with memory driver (no-op)
 func TestMigrateDownCommand_MemoryDriverUnit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-mem-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_test.sql"), []byte("SELECT 1;"), 0644)
-	os.WriteFile(filepath.Join(migrationsDir, "001_test.down.sql"), []byte("SELECT 1;"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-down-mem-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationFile("001_test.sql", "SELECT 1;")
+	env.createMigrationFile("001_test.down.sql", "SELECT 1;")
 
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
-	downCmd.Flags().Set("force", "true")
+	require.NoError(t, downCmd.Flags().Set("force", "true"))
 
-	err = downCmd.RunE(downCmd, []string{})
+	err := downCmd.RunE(downCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test stream list without database URL
 func TestStreamListCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-list-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-list-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test projection status without database URL
 func TestProjectionStatusCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-status-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-status-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{"TestProj"})
+	err := statusCmd.RunE(statusCmd, []string{"TestProj"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test stream events without database URL
 func TestStreamEventsCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-events-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-events-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	eventsCmd, _, _ := cmd.Find([]string{"events"})
 
-	err = eventsCmd.RunE(eventsCmd, []string{"test-stream"})
+	err := eventsCmd.RunE(eventsCmd, []string{"test-stream"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test stream stats without database URL
 func TestStreamStatsCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-stats-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-stats-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	statsCmd, _, _ := cmd.Find([]string{"stats"})
 
-	err = statsCmd.RunE(statsCmd, []string{})
+	err := statsCmd.RunE(statsCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test schema generate with force
 func TestSchemaGenerateCommand_WithForce(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-gen-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-gen-force-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewSchemaCommand()
 	genCmd, _, _ := cmd.Find([]string{"generate"})
-	genCmd.Flags().Set("force", "true")
+	require.NoError(t, genCmd.Flags().Set("force", "true"))
 
-	err = genCmd.RunE(genCmd, []string{})
+	err := genCmd.RunE(genCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test projection rebuild with force and invalid URL
 func TestProjectionRebuildCommand_ForceInvalidURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-rebuild-inv-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "postgres://invalid:url@localhost:65535/nonexistent"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-rebuild-inv-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL("postgres://invalid:url@localhost:65535/nonexistent"),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	rebuildCmd, _, _ := cmd.Find([]string{"rebuild"})
-	rebuildCmd.Flags().Set("force", "true")
+	require.NoError(t, rebuildCmd.Flags().Set("force", "true"))
 
-	err = rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
+	err := rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
 	assert.Error(t, err)
 }
 
 // Test stream export without database URL
 func TestStreamExportCommand_NoDatabaseURLUnit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-export-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-export-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	exportCmd, _, _ := cmd.Find([]string{"export"})
 
-	err = exportCmd.RunE(exportCmd, []string{"test-stream"})
+	err := exportCmd.RunE(exportCmd, []string{"test-stream"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test migrate status with force
 func TestMigrateStatusCommand_WithForce(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-status-force-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-status-force-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationsDir()
 
 	cmd := NewMigrateCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{})
+	err := statusCmd.RunE(statusCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test generate aggregate with events flag
 func TestGenerateAggregateCommand_WithEventsFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-events-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-agg-events-*")
+	cfg := env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	aggCmd, _, _ := cmd.Find([]string{"aggregate"})
 
 	// Set the events flag
-	aggCmd.Flags().Set("events", "Created,Updated,Deleted")
-	aggCmd.Flags().Set("force", "true")
+	require.NoError(t, aggCmd.Flags().Set("events", "Created,Updated,Deleted"))
+	require.NoError(t, aggCmd.Flags().Set("force", "true"))
 
-	err = aggCmd.RunE(aggCmd, []string{"TestAggregate"})
+	err := aggCmd.RunE(aggCmd, []string{"TestAggregate"})
 	assert.NoError(t, err)
 
 	// Verify aggregate and events file created
-	aggFile := filepath.Join(tmpDir, cfg.Generation.AggregatePackage, "testaggregate.go")
+	aggFile := filepath.Join(env.tmpDir, cfg.Generation.AggregatePackage, "testaggregate.go")
 	_, err = os.Stat(aggFile)
 	assert.NoError(t, err)
 
-	eventsFile := filepath.Join(tmpDir, cfg.Generation.EventPackage, "testaggregate_events.go")
+	eventsFile := filepath.Join(env.tmpDir, cfg.Generation.EventPackage, "testaggregate_events.go")
 	_, err = os.Stat(eventsFile)
 	assert.NoError(t, err)
 }
 
 // Test generate projection with events flag
 func TestGenerateProjectionCommand_WithEventsFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-events-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-proj-events-*")
+	cfg := env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	projCmd, _, _ := cmd.Find([]string{"projection"})
 
 	// Set the events flag
-	projCmd.Flags().Set("events", "OrderCreated,OrderShipped")
-	projCmd.Flags().Set("force", "true")
+	require.NoError(t, projCmd.Flags().Set("events", "OrderCreated,OrderShipped"))
+	require.NoError(t, projCmd.Flags().Set("force", "true"))
 
-	err = projCmd.RunE(projCmd, []string{"OrderView"})
+	err := projCmd.RunE(projCmd, []string{"OrderView"})
 	assert.NoError(t, err)
 
 	// Verify projection file created
-	projFile := filepath.Join(tmpDir, cfg.Generation.ProjectionPackage, "orderview.go")
+	projFile := filepath.Join(env.tmpDir, cfg.Generation.ProjectionPackage, "orderview.go")
 	_, err = os.Stat(projFile)
 	assert.NoError(t, err)
 }
 
 // Test generate event with aggregate flag
 func TestGenerateEventCommand_WithAggregateFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-event-agg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-event-agg-*")
+	cfg := env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	eventCmd, _, _ := cmd.Find([]string{"event"})
 
 	// Set the aggregate flag
-	eventCmd.Flags().Set("aggregate", "Order")
-	eventCmd.Flags().Set("force", "true")
+	require.NoError(t, eventCmd.Flags().Set("aggregate", "Order"))
+	require.NoError(t, eventCmd.Flags().Set("force", "true"))
 
-	err = eventCmd.RunE(eventCmd, []string{"ItemAdded"})
+	err := eventCmd.RunE(eventCmd, []string{"ItemAdded"})
 	assert.NoError(t, err)
 
 	// Verify event file created
-	eventFile := filepath.Join(tmpDir, cfg.Generation.EventPackage, "itemadded.go")
+	eventFile := filepath.Join(env.tmpDir, cfg.Generation.EventPackage, "itemadded.go")
 	_, err = os.Stat(eventFile)
 	assert.NoError(t, err)
 }
 
 // Test generate command with aggregate flag
 func TestGenerateCommandCommand_WithAggregateFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-agg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-cmd-agg-*")
+	cfg := env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewGenerateCommand()
 	cmdCmd, _, _ := cmd.Find([]string{"command"})
 
 	// Set the aggregate flag
-	cmdCmd.Flags().Set("aggregate", "Order")
-	cmdCmd.Flags().Set("force", "true")
+	require.NoError(t, cmdCmd.Flags().Set("aggregate", "Order"))
+	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
 
-	err = cmdCmd.RunE(cmdCmd, []string{"CancelOrder"})
+	err := cmdCmd.RunE(cmdCmd, []string{"CancelOrder"})
 	assert.NoError(t, err)
 
 	// Verify command file created
-	cmdFile := filepath.Join(tmpDir, cfg.Generation.CommandPackage, "cancelorder.go")
+	cmdFile := filepath.Join(env.tmpDir, cfg.Generation.CommandPackage, "cancelorder.go")
 	_, err = os.Stat(cmdFile)
 	assert.NoError(t, err)
 }
 
 // Test projection rebuild without database URL
 func TestProjectionRebuildCommand_NoDatabaseURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-rebuild-nodb-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // Empty URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-rebuild-nodb-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	rebuildCmd, _, _ := cmd.Find([]string{"rebuild"})
-	rebuildCmd.Flags().Set("force", "true")
+	require.NoError(t, rebuildCmd.Flags().Set("force", "true"))
 
-	err = rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
+	err := rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test migrate up with steps flag
 func TestMigrateUpCommand_WithStepsFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-steps-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir with multiple migrations
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("-- init"), 0644)
-	os.WriteFile(filepath.Join(migrationsDir, "002_add_table.sql"), []byte("-- add table"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-steps-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationFile("001_init.sql", "-- init")
+	env.createMigrationFile("002_add_table.sql", "-- add table")
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	upCmd.Flags().Set("steps", "1")
-	upCmd.Flags().Set("force", "true")
+	require.NoError(t, upCmd.Flags().Set("steps", "1"))
+	require.NoError(t, upCmd.Flags().Set("force", "true"))
 
-	err = upCmd.RunE(upCmd, []string{})
+	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test migrate down with steps flag
 func TestMigrateDownCommand_WithStepsFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-steps-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("-- init"), 0644)
-	os.WriteFile(filepath.Join(migrationsDir, "001_init.down.sql"), []byte("-- down init"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-down-steps-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationFile("001_init.sql", "-- init")
+	env.createMigrationFile("001_init.down.sql", "-- down init")
 
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
-	downCmd.Flags().Set("steps", "1")
-	downCmd.Flags().Set("force", "true")
+	require.NoError(t, downCmd.Flags().Set("steps", "1"))
+	require.NoError(t, downCmd.Flags().Set("force", "true"))
 
-	err = downCmd.RunE(downCmd, []string{})
+	err := downCmd.RunE(downCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test migrate create with sql flag
 func TestMigrateCreateCommand_WithSQLFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-create-sql-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
+	env := setupTestEnv(t, "mink-migrate-create-sql-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	// Create migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env.createMigrationsDir()
 
 	cmd := NewMigrateCommand()
 	createCmd, _, _ := cmd.Find([]string{"create"})
-	createCmd.Flags().Set("sql", "SELECT 1;")
+	require.NoError(t, createCmd.Flags().Set("sql", "SELECT 1;"))
 
-	err = createCmd.RunE(createCmd, []string{"test_migration"})
+	err := createCmd.RunE(createCmd, []string{"test_migration"})
 	assert.NoError(t, err)
 
 	// Verify migration file was created
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
 	files, _ := os.ReadDir(migrationsDir)
 	assert.True(t, len(files) >= 1)
 }
 
 // Test checkConfiguration with no config file - additional test case
 func TestCheckConfiguration_NoConfigUnit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-config-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-config-*")
+	_ = env // No config created intentionally
 
 	result := checkConfiguration()
 	// Returns StatusWarning when config is not found
@@ -3598,44 +3138,26 @@ func TestDiagnosticCheck_Usage(t *testing.T) {
 
 // Test runDiagnose directly
 func TestRunDiagnose_Unit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-diagnose-unit-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-diagnose-unit-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewDiagnoseCommand()
-	err = runDiagnose(cmd, []string{})
+	err := runDiagnose(cmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test schema print executes without error
 func TestSchemaPrintCommand_Execution(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-print-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-print-*")
+	env.createConfig(withModule("github.com/test/project"))
 
 	cmd := NewSchemaCommand()
 	printCmd, _, _ := cmd.Find([]string{"print"})
 
-	err = printCmd.RunE(printCmd, []string{})
+	err := printCmd.RunE(printCmd, []string{})
 	assert.NoError(t, err)
 }
 
@@ -3665,117 +3187,78 @@ func TestExecute_VersionCommand(t *testing.T) {
 
 // Test projection list with various scenarios
 func TestProjectionListCommand_EmptyList(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-list-empty-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // No URL set
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-proj-list-empty-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewProjectionCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test stream command with limit flag
 func TestStreamListCommand_WithLimit(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-limit-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // No URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-limit-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
-	listCmd.Flags().Set("limit", "10")
+	require.NoError(t, listCmd.Flags().Set("limit", "10"))
 
-	err = listCmd.RunE(listCmd, []string{})
+	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
 }
 
 // Test stream events with from flag
 func TestStreamEventsCommand_WithFrom(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-from-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "" // No URL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-stream-from-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL(""),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewStreamCommand()
 	eventsCmd, _, _ := cmd.Find([]string{"events"})
-	eventsCmd.Flags().Set("from", "5")
+	require.NoError(t, eventsCmd.Flags().Set("from", "5"))
 
-	err = eventsCmd.RunE(eventsCmd, []string{"test-stream"})
+	err := eventsCmd.RunE(eventsCmd, []string{"test-stream"})
 	assert.Error(t, err)
 }
 
 // Test runDiagnose with database configured
 func TestRunDiagnose_WithDatabase(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-diagnose-db-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "postgres://invalid:url@localhost:5432/test"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-diagnose-db-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL("postgres://invalid:url@localhost:5432/test"),
+		withModule("github.com/test/project"),
+	)
 
 	cmd := NewDiagnoseCommand()
-	err = runDiagnose(cmd, []string{})
+	err := runDiagnose(cmd, []string{})
 	// Should complete even with failed checks
 	assert.NoError(t, err)
 }
 
 // Test checkProjections with config
 func TestCheckProjections_WithConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-proj-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-proj-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	_ = env
 
 	result := checkProjections()
 	assert.NotEmpty(t, result.Name)
@@ -3783,19 +3266,12 @@ func TestCheckProjections_WithConfig(t *testing.T) {
 
 // Test checkEventStoreSchema with config
 func TestCheckEventStoreSchema_WithConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-schema-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-schema-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	_ = env
 
 	result := checkEventStoreSchema()
 	assert.NotEmpty(t, result.Name)
@@ -3803,20 +3279,13 @@ func TestCheckEventStoreSchema_WithConfig(t *testing.T) {
 
 // Test checkDatabaseConnection with postgres URL
 func TestCheckDatabaseConnection_WithInvalidURL(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-check-db-inv-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = "postgres://invalid:url@localhost:65535/test"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-check-db-inv-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withDatabaseURL("postgres://invalid:url@localhost:65535/test"),
+		withModule("github.com/test/project"),
+	)
+	_ = env
 
 	result := checkDatabaseConnection()
 	// Should return error status for invalid connection
@@ -3825,12 +3294,10 @@ func TestCheckDatabaseConnection_WithInvalidURL(t *testing.T) {
 
 // Test generateFile with valid template
 func TestGenerateFile_ValidTemplate(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-file-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-gen-file-*")
 
-	testFile := filepath.Join(tmpDir, "test.txt")
-	err = generateFile(testFile, "Hello {{.Name}}", struct{ Name string }{Name: "World"})
+	testFile := filepath.Join(env.tmpDir, "test.txt")
+	err := generateFile(testFile, "Hello {{.Name}}", struct{ Name string }{Name: "World"})
 	assert.NoError(t, err)
 
 	content, _ := os.ReadFile(testFile)
@@ -3853,168 +3320,115 @@ func TestSanitizeName_EdgeCases(t *testing.T) {
 
 // Test migrate up with no pending migrations
 func TestMigrateUpCommand_NoPendingMigrations(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-nopend-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create empty migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-up-nopend-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationsDir()
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	upCmd.Flags().Set("force", "true")
+	require.NoError(t, upCmd.Flags().Set("force", "true"))
 
-	err = upCmd.RunE(upCmd, []string{})
+	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test migrate status with migrations
 func TestMigrateStatusCommand_WithMigrations(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-status-mig-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "memory"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations dir with files
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("-- init"), 0644)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-migrate-status-mig-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("github.com/test/project"),
+	)
+	env.createMigrationFile("001_init.sql", "-- init")
 
 	cmd := NewMigrateCommand()
 	statusCmd, _, _ := cmd.Find([]string{"status"})
 
-	err = statusCmd.RunE(statusCmd, []string{})
+	err := statusCmd.RunE(statusCmd, []string{})
 	assert.NoError(t, err)
 }
 
 // Test generate aggregate without config file
 func TestGenerateAggregateCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-agg-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	aggCmd, _, _ := cmd.Find([]string{"aggregate"})
-	aggCmd.Flags().Set("force", "true")
+	require.NoError(t, aggCmd.Flags().Set("force", "true"))
 
-	err = aggCmd.RunE(aggCmd, []string{"Order"})
+	err := aggCmd.RunE(aggCmd, []string{"Order"})
 	// Should succeed with defaults when no config
 	assert.NoError(t, err)
 }
 
 // Test generate event without config file
 func TestGenerateEventCommand_NoConfigFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-event-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-event-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	eventCmd, _, _ := cmd.Find([]string{"event"})
-	eventCmd.Flags().Set("force", "true")
+	require.NoError(t, eventCmd.Flags().Set("force", "true"))
 
-	err = eventCmd.RunE(eventCmd, []string{"OrderCreated"})
+	err := eventCmd.RunE(eventCmd, []string{"OrderCreated"})
 	// Should succeed with defaults when no config
 	assert.NoError(t, err)
 }
 
 // Test generate projection without config file
 func TestGenerateProjectionCommand_NoConfigFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-proj-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	projCmd, _, _ := cmd.Find([]string{"projection"})
-	projCmd.Flags().Set("force", "true")
+	require.NoError(t, projCmd.Flags().Set("force", "true"))
 
-	err = projCmd.RunE(projCmd, []string{"OrderView"})
+	err := projCmd.RunE(projCmd, []string{"OrderView"})
 	// Should succeed with defaults when no config
 	assert.NoError(t, err)
 }
 
 // Test generate command without config file
 func TestGenerateCommandCommand_NoConfigFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-gen-cmd-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewGenerateCommand()
 	cmdCmd, _, _ := cmd.Find([]string{"command"})
-	cmdCmd.Flags().Set("force", "true")
+	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
 
-	err = cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
+	err := cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
 	// Should succeed with defaults when no config
 	assert.NoError(t, err)
 }
 
 // Test schema generate without config
 func TestSchemaGenerateCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-gen-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-gen-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewSchemaCommand()
 	genCmd, _, _ := cmd.Find([]string{"generate"})
 
-	err = genCmd.RunE(genCmd, []string{})
+	err := genCmd.RunE(genCmd, []string{})
 	// Should work with defaults
 	assert.NoError(t, err)
 }
 
 // Test schema print without config
 func TestSchemaPrintCommand_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-print-noconf-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-schema-print-noconf-*")
+	_ = env // No config created intentionally
 
 	cmd := NewSchemaCommand()
 	printCmd, _, _ := cmd.Find([]string{"print"})
 
-	err = printCmd.RunE(printCmd, []string{})
+	err := printCmd.RunE(printCmd, []string{})
 	assert.NoError(t, err)
 }
 
@@ -4120,12 +3534,10 @@ func TestSplash_Output(t *testing.T) {
 
 // Test detectModule in different scenarios
 func TestDetectModule_Scenarios(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-detect-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-detect-*")
 
 	// Without go.mod should return empty
-	result := detectModule(tmpDir)
+	result := detectModule(env.tmpDir)
 	assert.Empty(t, result)
 
 	// With go.mod should return module name
@@ -4133,23 +3545,18 @@ func TestDetectModule_Scenarios(t *testing.T) {
 
 go 1.21
 `
-	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(gomod), 0644)
-	result = detectModule(tmpDir)
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte(gomod), 0644))
+	result = detectModule(env.tmpDir)
 	assert.Equal(t, "github.com/test/myproject", result)
 }
 
 // Test getPendingMigrations helper (with invalid DB returns all migrations)
 func TestGetPendingMigrations_InvalidDB(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-pending-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create migrations dir with files
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-	os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("-- init"), 0644)
+	env := setupTestEnv(t, "mink-pending-*")
+	env.createMigrationFile("001_init.sql", "-- init")
 
 	// Invalid DB URL should return all migrations (function handles error gracefully)
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
 	pending, err := getPendingMigrations("postgres://invalid:url@localhost:65535/db", migrationsDir)
 	assert.NoError(t, err)
 	assert.Len(t, pending, 1) // Returns all when can't connect to DB
@@ -4182,16 +3589,11 @@ func TestGetTotalEventCount_InvalidURL(t *testing.T) {
 
 // Test init command with directory argument
 func TestInitCommand_WithDirectoryFlag(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-init-dir-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupTestEnv(t, "mink-init-dir-*")
+	_ = env
 
 	cmd := NewInitCommand()
-	cmd.Flags().Set("driver", "memory")
+	require.NoError(t, cmd.Flags().Set("driver", "memory"))
 	// Note: This will try to run interactive form, so we can only test structure
 	assert.NotNil(t, cmd)
 }

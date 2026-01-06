@@ -390,6 +390,10 @@ func getTotalEventCount(dbURL string) (int64, error) {
 }
 
 func setProjectionStatus(dbURL, name, status string) error {
+	if dbURL == "" {
+		return fmt.Errorf("DATABASE_URL is not configured")
+	}
+	
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
 		return err

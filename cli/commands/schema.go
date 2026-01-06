@@ -30,11 +30,14 @@ Examples:
 
 func newSchemaGenerateCommand() *cobra.Command {
 	var output string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate event store schema SQL",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			_ = force // Used for scripting (skip interactive elements)
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return err
@@ -61,6 +64,7 @@ func newSchemaGenerateCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (default: stdout)")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive elements (for scripting)")
 
 	return cmd
 }
