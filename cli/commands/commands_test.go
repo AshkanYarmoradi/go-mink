@@ -129,6 +129,39 @@ func withMigrationsDir(dir string) configOption {
 	}
 }
 
+// runSubcommand is a helper to find and run a subcommand
+func (e *testEnv) runSubcommand(parentCmd *cobra.Command, subcommandPath []string, args []string, flags map[string]string) error {
+	e.t.Helper()
+	cmd, _, err := parentCmd.Find(subcommandPath)
+	if err != nil {
+		return err
+	}
+	for k, v := range flags {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			return err
+		}
+	}
+	return cmd.RunE(cmd, args)
+}
+
+// assertErrorContains is a helper for error assertion
+func assertErrorContains(t *testing.T, err error, substring string) {
+	t.Helper()
+	assert.Error(t, err)
+	if err != nil {
+		assert.Contains(t, err.Error(), substring)
+	}
+}
+
+// getSubcommandNames returns a map of subcommand names for a parent command
+func getSubcommandNames(cmd *cobra.Command) map[string]bool {
+	names := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		names[sub.Name()] = true
+	}
+	return names
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -746,39 +779,44 @@ func TestExecute(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestAggregateSubcommand_Flags(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	// Find aggregate subcommand
-	var aggCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "aggregate" {
-			aggCmd = sub
-			break
-		}
+// TestSubcommandFlags consolidates all subcommand flag tests
+func TestSubcommandFlags(t *testing.T) {
+	tests := []struct {
+		name          string
+		parentCmd     func() *cobra.Command
+		subName       string
+		expectedFlags []string
+	}{
+		{"generate/aggregate", NewGenerateCommand, "aggregate", []string{"events"}},
+		{"generate/event", NewGenerateCommand, "event", []string{"aggregate"}},
+		{"generate/command", NewGenerateCommand, "command", []string{"aggregate"}},
+		{"migrate/up", NewMigrateCommand, "up", []string{"steps"}},
+		{"migrate/down", NewMigrateCommand, "down", []string{"steps"}},
+		{"projection/rebuild", NewProjectionCommand, "rebuild", []string{"force"}},
+		{"stream/list", NewStreamCommand, "list", []string{"limit", "prefix"}},
+		{"stream/events", NewStreamCommand, "events", []string{"limit"}},
+		{"stream/export", NewStreamCommand, "export", []string{"output"}},
+		{"schema/generate", NewSchemaCommand, "generate", []string{"output"}},
 	}
-	require.NotNil(t, aggCmd)
 
-	// Check flags exist (--events, -e)
-	f := aggCmd.Flags()
-	assert.NotNil(t, f.Lookup("events"))
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.parentCmd()
+			var subCmd *cobra.Command
+			for _, sub := range cmd.Commands() {
+				if sub.Name() == tt.subName {
+					subCmd = sub
+					break
+				}
+			}
+			require.NotNil(t, subCmd, "subcommand %s not found", tt.subName)
 
-func TestEventSubcommand_Flags(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	// Find event subcommand
-	var eventCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "event" {
-			eventCmd = sub
-			break
-		}
+			f := subCmd.Flags()
+			for _, flag := range tt.expectedFlags {
+				assert.NotNil(t, f.Lookup(flag), "flag %s should exist on %s", flag, tt.name)
+			}
+		})
 	}
-	require.NotNil(t, eventCmd)
-
-	f := eventCmd.Flags()
-	assert.NotNil(t, f.Lookup("aggregate"))
 }
 
 func TestProjectionSubcommand(t *testing.T) {
@@ -794,136 +832,6 @@ func TestProjectionSubcommand(t *testing.T) {
 	}
 	require.NotNil(t, projCmd)
 	assert.Equal(t, "projection <name>", projCmd.Use)
-}
-
-func TestCommandSubcommand_Flags(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	// Find command subcommand
-	var cmdCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "command" {
-			cmdCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, cmdCmd)
-
-	f := cmdCmd.Flags()
-	assert.NotNil(t, f.Lookup("aggregate"))
-}
-
-func TestMigrateUpSubcommand_Flags(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	var upCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "up" {
-			upCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, upCmd)
-
-	f := upCmd.Flags()
-	assert.NotNil(t, f.Lookup("steps"))
-}
-
-func TestMigrateDownSubcommand_Flags(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	var downCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "down" {
-			downCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, downCmd)
-
-	f := downCmd.Flags()
-	assert.NotNil(t, f.Lookup("steps"))
-}
-
-func TestProjectionRebuildSubcommand_Flags(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var rebuildCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "rebuild" {
-			rebuildCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, rebuildCmd)
-
-	f := rebuildCmd.Flags()
-	assert.NotNil(t, f.Lookup("force"))
-}
-
-func TestStreamListSubcommand_Flags(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var listCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "list" {
-			listCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, listCmd)
-
-	f := listCmd.Flags()
-	assert.NotNil(t, f.Lookup("limit"))
-	assert.NotNil(t, f.Lookup("prefix"))
-}
-
-func TestStreamEventsSubcommand_Flags(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var eventsCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "events" {
-			eventsCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, eventsCmd)
-
-	f := eventsCmd.Flags()
-	assert.NotNil(t, f.Lookup("limit"))
-}
-
-func TestStreamExportSubcommand_Flags(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var exportCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "export" {
-			exportCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, exportCmd)
-
-	f := exportCmd.Flags()
-	assert.NotNil(t, f.Lookup("output"))
-}
-
-func TestSchemaGenerateSubcommand_Flags(t *testing.T) {
-	cmd := NewSchemaCommand()
-
-	var genCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "generate" {
-			genCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, genCmd)
-
-	f := genCmd.Flags()
-	assert.NotNil(t, f.Lookup("output"))
 }
 
 func TestGenerateSchemaContent(t *testing.T) {
@@ -974,78 +882,29 @@ func TestNewInitCommand_Structure(t *testing.T) {
 	assert.NotNil(t, f.Lookup("non-interactive"))
 }
 
-func TestNewProjectionCommand_Subcommands(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	// Verify all subcommands exist
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
+// TestCommandSubcommands verifies all parent commands have expected subcommands
+func TestCommandSubcommands(t *testing.T) {
+	tests := []struct {
+		name        string
+		newCmd      func() *cobra.Command
+		subcommands []string
+	}{
+		{"projection", NewProjectionCommand, []string{"list", "status", "rebuild", "pause", "resume"}},
+		{"stream", NewStreamCommand, []string{"list", "events", "export", "stats"}},
+		{"generate", NewGenerateCommand, []string{"aggregate", "event", "projection", "command"}},
+		{"migrate", NewMigrateCommand, []string{"up", "down", "status", "create"}},
+		{"schema", NewSchemaCommand, []string{"generate", "print"}},
 	}
 
-	assert.True(t, subcommandNames["list"])
-	assert.True(t, subcommandNames["status"])
-	assert.True(t, subcommandNames["rebuild"])
-	assert.True(t, subcommandNames["pause"])
-	assert.True(t, subcommandNames["resume"])
-}
-
-func TestNewStreamCommand_Subcommands(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	// Verify all subcommands exist
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.newCmd()
+			names := getSubcommandNames(cmd)
+			for _, sub := range tt.subcommands {
+				assert.True(t, names[sub], "missing subcommand: %s", sub)
+			}
+		})
 	}
-
-	assert.True(t, subcommandNames["list"])
-	assert.True(t, subcommandNames["events"])
-	assert.True(t, subcommandNames["export"])
-	assert.True(t, subcommandNames["stats"])
-}
-
-func TestNewGenerateCommand_Subcommands(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	// Verify all subcommands exist
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
-	}
-
-	assert.True(t, subcommandNames["aggregate"])
-	assert.True(t, subcommandNames["event"])
-	assert.True(t, subcommandNames["projection"])
-	assert.True(t, subcommandNames["command"])
-}
-
-func TestNewMigrateCommand_Subcommands(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	// Verify all subcommands exist
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
-	}
-
-	assert.True(t, subcommandNames["up"])
-	assert.True(t, subcommandNames["down"])
-	assert.True(t, subcommandNames["status"])
-	assert.True(t, subcommandNames["create"])
-}
-
-func TestNewSchemaCommand_Subcommands(t *testing.T) {
-	cmd := NewSchemaCommand()
-
-	// Verify all subcommands exist
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
-	}
-
-	assert.True(t, subcommandNames["generate"])
-	assert.True(t, subcommandNames["print"])
 }
 
 func TestNewDiagnoseCommand_Structure(t *testing.T) {
@@ -1059,21 +918,17 @@ func TestNewDiagnoseCommand_Structure(t *testing.T) {
 
 func TestRootCommand_HasSubcommands(t *testing.T) {
 	cmd := NewRootCommand()
-
-	subcommandNames := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommandNames[sub.Name()] = true
-	}
+	names := getSubcommandNames(cmd)
 
 	// Verify essential subcommands are registered
-	assert.True(t, subcommandNames["init"])
-	assert.True(t, subcommandNames["generate"])
-	assert.True(t, subcommandNames["migrate"])
-	assert.True(t, subcommandNames["projection"])
-	assert.True(t, subcommandNames["stream"])
-	assert.True(t, subcommandNames["diagnose"])
-	assert.True(t, subcommandNames["schema"])
-	assert.True(t, subcommandNames["version"])
+	assert.True(t, names["init"])
+	assert.True(t, names["generate"])
+	assert.True(t, names["migrate"])
+	assert.True(t, names["projection"])
+	assert.True(t, names["stream"])
+	assert.True(t, names["diagnose"])
+	assert.True(t, names["schema"])
+	assert.True(t, names["version"])
 }
 
 func TestRootCommand_PersistentFlags(t *testing.T) {
@@ -1145,289 +1000,62 @@ func TestMigrateCreateCommand_Execute(t *testing.T) {
 	assert.Len(t, entries, 2) // up and down files
 }
 
-func TestGenerateCommand_AggregateSubcommand_Structure(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	var aggCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "aggregate" {
-			aggCmd = sub
-			break
-		}
+// TestSubcommandStructure consolidates all subcommand structure tests
+func TestSubcommandStructure(t *testing.T) {
+	tests := []struct {
+		name       string
+		parentCmd  func() *cobra.Command
+		subName    string
+		useStr     string
+		aliases    []string // Optional aliases to check
+		checkShort bool     // Whether to check for non-empty Short
+	}{
+		// Generate subcommands
+		{"generate/aggregate", NewGenerateCommand, "aggregate", "aggregate <name>", []string{"agg", "a"}, false},
+		{"generate/event", NewGenerateCommand, "event", "event <name>", []string{"evt", "e"}, false},
+		{"generate/projection", NewGenerateCommand, "projection", "projection <name>", []string{"proj", "p"}, false},
+		{"generate/command", NewGenerateCommand, "command", "command <name>", []string{"cmd", "c"}, false},
+		// Migrate subcommands
+		{"migrate/up", NewMigrateCommand, "up", "up", nil, true},
+		{"migrate/down", NewMigrateCommand, "down", "down", nil, true},
+		{"migrate/status", NewMigrateCommand, "status", "status", nil, true},
+		// Projection subcommands
+		{"projection/list", NewProjectionCommand, "list", "list", []string{"ls"}, false},
+		{"projection/status", NewProjectionCommand, "status", "status <name>", nil, false},
+		{"projection/rebuild", NewProjectionCommand, "rebuild", "rebuild <name>", nil, false},
+		{"projection/pause", NewProjectionCommand, "pause", "pause <name>", nil, false},
+		{"projection/resume", NewProjectionCommand, "resume", "resume <name>", nil, false},
+		// Stream subcommands
+		{"stream/list", NewStreamCommand, "list", "list", []string{"ls"}, false},
+		{"stream/events", NewStreamCommand, "events", "events <stream-id>", nil, false},
+		{"stream/export", NewStreamCommand, "export", "export <stream-id>", nil, false},
+		{"stream/stats", NewStreamCommand, "stats", "stats", nil, false},
+		// Schema subcommands
+		{"schema/generate", NewSchemaCommand, "generate", "generate", nil, false},
+		{"schema/print", NewSchemaCommand, "print", "print", nil, false},
 	}
-	require.NotNil(t, aggCmd)
 
-	assert.Equal(t, "aggregate <name>", aggCmd.Use)
-	assert.Contains(t, aggCmd.Aliases, "agg")
-	assert.Contains(t, aggCmd.Aliases, "a")
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.parentCmd()
+			var subCmd *cobra.Command
+			for _, sub := range cmd.Commands() {
+				if sub.Name() == tt.subName {
+					subCmd = sub
+					break
+				}
+			}
+			require.NotNil(t, subCmd, "subcommand %s not found", tt.subName)
 
-func TestGenerateCommand_EventSubcommand_Structure(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	var eventCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "event" {
-			eventCmd = sub
-			break
-		}
+			assert.Equal(t, tt.useStr, subCmd.Use)
+			for _, alias := range tt.aliases {
+				assert.Contains(t, subCmd.Aliases, alias)
+			}
+			if tt.checkShort {
+				assert.NotEmpty(t, subCmd.Short)
+			}
+		})
 	}
-	require.NotNil(t, eventCmd)
-
-	assert.Equal(t, "event <name>", eventCmd.Use)
-	assert.Contains(t, eventCmd.Aliases, "evt")
-	assert.Contains(t, eventCmd.Aliases, "e")
-}
-
-func TestGenerateCommand_ProjectionSubcommand_Structure(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	var projCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "projection" {
-			projCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, projCmd)
-
-	assert.Equal(t, "projection <name>", projCmd.Use)
-	assert.Contains(t, projCmd.Aliases, "proj")
-	assert.Contains(t, projCmd.Aliases, "p")
-}
-
-func TestGenerateCommand_CommandSubcommand_Structure(t *testing.T) {
-	cmd := NewGenerateCommand()
-
-	var cmdCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "command" {
-			cmdCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, cmdCmd)
-
-	assert.Equal(t, "command <name>", cmdCmd.Use)
-	assert.Contains(t, cmdCmd.Aliases, "cmd")
-	assert.Contains(t, cmdCmd.Aliases, "c")
-}
-
-func TestMigrateCommand_UpSubcommand_Structure(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	var upCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "up" {
-			upCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, upCmd)
-
-	assert.Equal(t, "up", upCmd.Use)
-	assert.NotEmpty(t, upCmd.Short)
-	assert.NotEmpty(t, upCmd.Long)
-}
-
-func TestMigrateCommand_DownSubcommand_Structure(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	var downCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "down" {
-			downCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, downCmd)
-
-	assert.Equal(t, "down", downCmd.Use)
-	assert.NotEmpty(t, downCmd.Short)
-	assert.NotEmpty(t, downCmd.Long)
-}
-
-func TestMigrateCommand_StatusSubcommand_Structure(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	var statusCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "status" {
-			statusCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, statusCmd)
-
-	assert.Equal(t, "status", statusCmd.Use)
-	assert.NotEmpty(t, statusCmd.Short)
-}
-
-func TestProjectionCommand_ListSubcommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var listCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "list" {
-			listCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, listCmd)
-
-	assert.Equal(t, "list", listCmd.Use)
-	assert.Contains(t, listCmd.Aliases, "ls")
-}
-
-func TestProjectionCommand_StatusSubcommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var statusCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "status" {
-			statusCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, statusCmd)
-
-	assert.Equal(t, "status <name>", statusCmd.Use)
-}
-
-func TestProjectionCommand_RebuildSubcommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var rebuildCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "rebuild" {
-			rebuildCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, rebuildCmd)
-
-	assert.Equal(t, "rebuild <name>", rebuildCmd.Use)
-}
-
-func TestProjectionCommand_PauseSubcommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var pauseCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "pause" {
-			pauseCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, pauseCmd)
-
-	assert.Equal(t, "pause <name>", pauseCmd.Use)
-}
-
-func TestProjectionCommand_ResumeSubcommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	var resumeCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "resume" {
-			resumeCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, resumeCmd)
-
-	assert.Equal(t, "resume <name>", resumeCmd.Use)
-}
-
-func TestStreamCommand_ListSubcommand_Structure(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var listCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "list" {
-			listCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, listCmd)
-
-	assert.Equal(t, "list", listCmd.Use)
-	assert.Contains(t, listCmd.Aliases, "ls")
-}
-
-func TestStreamCommand_EventsSubcommand_Structure(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var eventsCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "events" {
-			eventsCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, eventsCmd)
-
-	assert.Equal(t, "events <stream-id>", eventsCmd.Use)
-}
-
-func TestStreamCommand_ExportSubcommand_Structure(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var exportCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "export" {
-			exportCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, exportCmd)
-
-	assert.Equal(t, "export <stream-id>", exportCmd.Use)
-}
-
-func TestStreamCommand_StatsSubcommand_Structure(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	var statsCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "stats" {
-			statsCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, statsCmd)
-
-	assert.Equal(t, "stats", statsCmd.Use)
-}
-
-func TestSchemaCommand_GenerateSubcommand_Structure(t *testing.T) {
-	cmd := NewSchemaCommand()
-
-	var genCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "generate" {
-			genCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, genCmd)
-
-	assert.Equal(t, "generate", genCmd.Use)
-}
-
-func TestSchemaCommand_PrintSubcommand_Structure(t *testing.T) {
-	cmd := NewSchemaCommand()
-
-	var printCmd *cobra.Command
-	for _, sub := range cmd.Commands() {
-		if sub.Name() == "print" {
-			printCmd = sub
-			break
-		}
-	}
-	require.NotNil(t, printCmd)
-
-	assert.Equal(t, "print", printCmd.Use)
 }
 
 // Test diagnose check functions
@@ -1513,69 +1141,42 @@ func TestDiagnosticCheck_Structure(t *testing.T) {
 // Ensure cobra.Command is used to prevent import error
 var _ *cobra.Command = nil
 
-// Additional tests for data structures
+// TestDataStructures verifies data type initialization
+func TestDataStructures(t *testing.T) {
+	t.Run("Projection", func(t *testing.T) {
+		p := Projection{Name: "TestProjection", Position: 100, Status: "active"}
+		assert.Equal(t, "TestProjection", p.Name)
+		assert.Equal(t, int64(100), p.Position)
+		assert.Equal(t, "active", p.Status)
+	})
 
-func TestProjection_Structure(t *testing.T) {
-	// Test Projection data structure
-	p := Projection{
-		Name:     "TestProjection",
-		Position: 100,
-		Status:   "active",
-	}
+	t.Run("Stream", func(t *testing.T) {
+		s := Stream{StreamID: "order-123", EventCount: 5, LastEventType: "ItemAdded"}
+		assert.Equal(t, "order-123", s.StreamID)
+		assert.Equal(t, int64(5), s.EventCount)
+		assert.Equal(t, "ItemAdded", s.LastEventType)
+	})
 
-	assert.Equal(t, "TestProjection", p.Name)
-	assert.Equal(t, int64(100), p.Position)
-	assert.Equal(t, "active", p.Status)
-}
+	t.Run("StreamEvent", func(t *testing.T) {
+		e := StreamEvent{ID: "event-123", StreamID: "order-123", Version: 1, Type: "OrderCreated", Data: `{}`, Metadata: `{}`}
+		assert.Equal(t, "event-123", e.ID)
+		assert.Equal(t, "order-123", e.StreamID)
+		assert.Equal(t, int64(1), e.Version)
+		assert.Equal(t, "OrderCreated", e.Type)
+	})
 
-func TestStream_Structure(t *testing.T) {
-	s := Stream{
-		StreamID:      "order-123",
-		EventCount:    5,
-		LastEventType: "ItemAdded",
-	}
+	t.Run("EventStoreStats", func(t *testing.T) {
+		stats := EventStoreStats{TotalEvents: 1000, TotalStreams: 50, EventTypes: 10}
+		assert.Equal(t, int64(1000), stats.TotalEvents)
+		assert.Equal(t, int64(50), stats.TotalStreams)
+		assert.Equal(t, int64(10), stats.EventTypes)
+	})
 
-	assert.Equal(t, "order-123", s.StreamID)
-	assert.Equal(t, int64(5), s.EventCount)
-	assert.Equal(t, "ItemAdded", s.LastEventType)
-}
-
-func TestStreamEvent_Structure(t *testing.T) {
-	e := StreamEvent{
-		ID:       "event-123",
-		StreamID: "order-123",
-		Version:  1,
-		Type:     "OrderCreated",
-		Data:     `{"orderId": "123"}`,
-		Metadata: `{}`,
-	}
-
-	assert.Equal(t, "event-123", e.ID)
-	assert.Equal(t, "order-123", e.StreamID)
-	assert.Equal(t, int64(1), e.Version)
-	assert.Equal(t, "OrderCreated", e.Type)
-}
-
-func TestEventStoreStats_Structure(t *testing.T) {
-	stats := EventStoreStats{
-		TotalEvents:  1000,
-		TotalStreams: 50,
-		EventTypes:   10,
-	}
-
-	assert.Equal(t, int64(1000), stats.TotalEvents)
-	assert.Equal(t, int64(50), stats.TotalStreams)
-	assert.Equal(t, int64(10), stats.EventTypes)
-}
-
-func TestMigration_Structure(t *testing.T) {
-	m := Migration{
-		Name: "001_initial",
-		Path: "/path/to/001_initial.sql",
-	}
-
-	assert.Equal(t, "001_initial", m.Name)
-	assert.Equal(t, "/path/to/001_initial.sql", m.Path)
+	t.Run("Migration", func(t *testing.T) {
+		m := Migration{Name: "001_initial", Path: "/path/to/001_initial.sql"}
+		assert.Equal(t, "001_initial", m.Name)
+		assert.Equal(t, "/path/to/001_initial.sql", m.Path)
+	})
 }
 
 // Test Execute function
@@ -1809,52 +1410,6 @@ func TestSchemaPrintCommand_Execute(t *testing.T) {
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
-}
-
-// Test projection command flags
-func TestProjectionCommand_SubcommandsExist(t *testing.T) {
-	cmd := NewProjectionCommand()
-
-	subcommands := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommands[sub.Name()] = true
-	}
-
-	assert.True(t, subcommands["list"], "list subcommand should exist")
-	assert.True(t, subcommands["status"], "status subcommand should exist")
-	assert.True(t, subcommands["rebuild"], "rebuild subcommand should exist")
-	assert.True(t, subcommands["pause"], "pause subcommand should exist")
-	assert.True(t, subcommands["resume"], "resume subcommand should exist")
-}
-
-// Test stream command flags
-func TestStreamCommand_SubcommandsExist(t *testing.T) {
-	cmd := NewStreamCommand()
-
-	subcommands := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommands[sub.Name()] = true
-	}
-
-	assert.True(t, subcommands["list"], "list subcommand should exist")
-	assert.True(t, subcommands["events"], "events subcommand should exist")
-	assert.True(t, subcommands["export"], "export subcommand should exist")
-	assert.True(t, subcommands["stats"], "stats subcommand should exist")
-}
-
-// Test migrate command flags
-func TestMigrateCommand_SubcommandsExist(t *testing.T) {
-	cmd := NewMigrateCommand()
-
-	subcommands := make(map[string]bool)
-	for _, sub := range cmd.Commands() {
-		subcommands[sub.Name()] = true
-	}
-
-	assert.True(t, subcommands["up"], "up subcommand should exist")
-	assert.True(t, subcommands["down"], "down subcommand should exist")
-	assert.True(t, subcommands["status"], "status subcommand should exist")
-	assert.True(t, subcommands["create"], "create subcommand should exist")
 }
 
 // Test sanitizeName with various inputs
@@ -2137,111 +1692,57 @@ func TestAnimatedVersionModel_FullLifecycle(t *testing.T) {
 	assert.True(t, model.done)
 }
 
-// Test migrate up error paths
-func TestMigrateUpCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
+// TestCommandsRequireConfig tests that various commands fail without mink.yaml
+func TestCommandsRequireConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		newCmd         func() *cobra.Command
+		subcommandPath []string
+		args           []string
+	}{
+		{"projection list", NewProjectionCommand, []string{"list"}, nil},
+		{"projection pause", NewProjectionCommand, []string{"pause"}, []string{"TestProj"}},
+		{"projection resume", NewProjectionCommand, []string{"resume"}, []string{"TestProj"}},
+		{"stream list", NewStreamCommand, []string{"list"}, nil},
+		{"stream events", NewStreamCommand, []string{"events"}, []string{"stream-123"}},
+		{"stream stats", NewStreamCommand, []string{"stats"}, nil},
+		{"stream export", NewStreamCommand, []string{"export"}, []string{"stream-123"}},
+		{"migrate status", NewMigrateCommand, []string{"status"}, nil},
+		{"migrate down", NewMigrateCommand, []string{"down"}, nil},
+	}
 
-	cmd := NewMigrateCommand()
-	upCmd, _, _ := cmd.Find([]string{"up"})
-	require.NoError(t, upCmd.Flags().Set("force", "true"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-noconfig-*")
+			_ = env // No config created intentionally
 
-	err := upCmd.RunE(upCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
+			cmd := tt.newCmd()
+			subCmd, _, _ := cmd.Find(tt.subcommandPath)
+			err := subCmd.RunE(subCmd, tt.args)
+			assertErrorContains(t, err, "mink.yaml")
+		})
+	}
 }
 
-// Test projection list without config
-func TestProjectionListCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-list-*")
-	_ = env // No config created intentionally
+// TestProjectionSubcommandStructure tests projection subcommand structures
+func TestProjectionSubcommandStructure(t *testing.T) {
+	tests := []struct {
+		subcommand string
+		expected   string
+	}{
+		{"status", "status <name>"},
+		{"pause", "pause <name>"},
+		{"resume", "resume <name>"},
+	}
 
-	cmd := NewProjectionCommand()
-	listCmd, _, _ := cmd.Find([]string{"list"})
-
-	err := listCmd.RunE(listCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test stream list without config
-func TestStreamListCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-*")
-	_ = env // No config created intentionally
-
-	cmd := NewStreamCommand()
-	listCmd, _, _ := cmd.Find([]string{"list"})
-
-	err := listCmd.RunE(listCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test stream events without config
-func TestStreamEventsCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-*")
-	_ = env // No config created intentionally
-
-	cmd := NewStreamCommand()
-	eventsCmd, _, _ := cmd.Find([]string{"events"})
-
-	err := eventsCmd.RunE(eventsCmd, []string{"stream-123"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test stream stats without config
-func TestStreamStatsCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-*")
-	_ = env // No config created intentionally
-
-	cmd := NewStreamCommand()
-	statsCmd, _, _ := cmd.Find([]string{"stats"})
-
-	err := statsCmd.RunE(statsCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test stream export without config
-func TestStreamExportCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-export-*")
-	_ = env // No config created intentionally
-
-	cmd := NewStreamCommand()
-	exportCmd, _, _ := cmd.Find([]string{"export"})
-
-	err := exportCmd.RunE(exportCmd, []string{"stream-123"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test projection status command structure
-func TestProjectionStatusCommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-	statusCmd, _, err := cmd.Find([]string{"status"})
-	require.NoError(t, err)
-	assert.Equal(t, "status <name>", statusCmd.Use)
-}
-
-// Test projection pause command structure
-func TestProjectionPauseCommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-	pauseCmd, _, err := cmd.Find([]string{"pause"})
-	require.NoError(t, err)
-	assert.Equal(t, "pause <name>", pauseCmd.Use)
-}
-
-// Test projection resume command structure
-func TestProjectionResumeCommand_Structure(t *testing.T) {
-	cmd := NewProjectionCommand()
-	resumeCmd, _, err := cmd.Find([]string{"resume"})
-	require.NoError(t, err)
-	assert.Equal(t, "resume <name>", resumeCmd.Use)
+	for _, tt := range tests {
+		t.Run(tt.subcommand, func(t *testing.T) {
+			cmd := NewProjectionCommand()
+			subCmd, _, err := cmd.Find([]string{tt.subcommand})
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, subCmd.Use)
+		})
+	}
 }
 
 // Test migrate up with invalid database URL
@@ -2305,77 +1806,77 @@ func TestGenerateAggregateCommand_MultipleEvents(t *testing.T) {
 	assert.NoError(t, err, "Events file should exist")
 }
 
-// Test projection list command without db URL
-func TestProjectionListCommand_NoDBURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-list-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
+// TestCommandsRequireDatabaseURL tests that various commands fail without DATABASE_URL
+func TestCommandsRequireDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name           string
+		newCmd         func() *cobra.Command
+		subcommandPath []string
+		args           []string
+		setFlags       func(cmd *cobra.Command)
+	}{
+		{"projection list", NewProjectionCommand, []string{"list"}, nil, nil},
+		{"projection status", NewProjectionCommand, []string{"status"}, []string{"TestProj"}, nil},
+		{"projection pause", NewProjectionCommand, []string{"pause"}, []string{"TestProj"}, nil},
+		{"projection resume", NewProjectionCommand, []string{"resume"}, []string{"TestProj"}, nil},
+		{"projection rebuild", NewProjectionCommand, []string{"rebuild"}, []string{"TestProj"}, func(cmd *cobra.Command) {
+			_ = cmd.Flags().Set("force", "true")
+		}},
+		{"stream list", NewStreamCommand, []string{"list"}, nil, nil},
+		{"stream events", NewStreamCommand, []string{"events"}, []string{"test-stream"}, nil},
+		{"stream stats", NewStreamCommand, []string{"stats"}, nil, nil},
+		{"stream export", NewStreamCommand, []string{"export"}, []string{"stream-123"}, nil},
+		{"migrate up", NewMigrateCommand, []string{"up"}, nil, func(cmd *cobra.Command) {
+			_ = cmd.Flags().Set("force", "true")
+		}},
+	}
 
-	cmd := NewProjectionCommand()
-	listCmd, _, _ := cmd.Find([]string{"list"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-nodb-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(""),
+				withModule("github.com/test/project"),
+			)
 
-	err := listCmd.RunE(listCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
+			cmd := tt.newCmd()
+			subCmd, _, _ := cmd.Find(tt.subcommandPath)
+			if tt.setFlags != nil {
+				tt.setFlags(subCmd)
+			}
+			err := subCmd.RunE(subCmd, tt.args)
+			assertErrorContains(t, err, "DATABASE_URL")
+		})
+	}
 }
 
-// Test projection status without db URL
-func TestProjectionStatusCommand_NoDBURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-status-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
+// TestGenerateCommandsWithoutConfig tests that generate commands succeed with defaults when no config exists
+func TestGenerateCommandsWithoutConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		subcommand string
+		arg        string
+	}{
+		{"event", "event", "TestEvent"},
+		{"projection", "projection", "TestProj"},
+		{"command", "command", "TestCmd"},
+		{"aggregate", "aggregate", "Order"},
+	}
 
-	cmd := NewProjectionCommand()
-	statusCmd, _, _ := cmd.Find([]string{"status"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-gen-noconf-*")
+			_ = env // No config created intentionally
 
-	err := statusCmd.RunE(statusCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
+			cmd := NewGenerateCommand()
+			subCmd, _, _ := cmd.Find([]string{tt.subcommand})
+			require.NoError(t, subCmd.Flags().Set("force", "true"))
 
-// Test generate event without config
-func TestGenerateEventCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-evt-noconfig-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"event", "TestEvent", "--force"})
-
-	err := cmd.Execute()
-	// Should use default config
-	assert.NoError(t, err)
-}
-
-// Test generate projection without config
-func TestGenerateProjectionCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-proj-noconfig-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "TestProj", "--force"})
-
-	err := cmd.Execute()
-	// Should use default config
-	assert.NoError(t, err)
-}
-
-// Test generate command without config
-func TestGenerateCommandCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-cmd-noconfig-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "TestCmd", "--force"})
-
-	err := cmd.Execute()
-	// Should use default config
-	assert.NoError(t, err)
+			err := subCmd.RunE(subCmd, []string{tt.arg})
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // Test runDiagnose function paths - warning status
@@ -2392,22 +1893,25 @@ func TestCheckDatabaseConnection_NoDBURL(t *testing.T) {
 	assert.NotEmpty(t, result.Recommendation)
 }
 
-// Test checkEventStoreSchema error cases - returns OK when using valid config
-func TestCheckEventStoreSchema_NoConfig(t *testing.T) {
-	_ = setupTestEnv(t, "mink-check-schema-noconfig-*")
+// TestDiagnosticChecksWithoutConfig tests diagnostic checks without configuration
+func TestDiagnosticChecksWithoutConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		checkFn func() CheckResult
+	}{
+		{"checkEventStoreSchema", checkEventStoreSchema},
+		{"checkProjections", checkProjections},
+	}
 
-	result := checkEventStoreSchema()
-	// Should return warning or OK when no config (depending on implementation)
-	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = setupTestEnv(t, "mink-check-noconf-*")
 
-// Test checkProjections without config
-func TestCheckProjections_NoConfig(t *testing.T) {
-	_ = setupTestEnv(t, "mink-check-proj-noconfig-*")
-
-	result := checkProjections()
-	// Should return warning or OK when no config
-	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
+			result := tt.checkFn()
+			// Should return warning or OK when no config
+			assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
+		})
+	}
 }
 
 // Test migrate down without config
@@ -2471,85 +1975,6 @@ func TestVersionCommand_Structure(t *testing.T) {
 func TestRootCommand_Structure(t *testing.T) {
 	cmd := NewRootCommand()
 	assert.Equal(t, "mink", cmd.Use)
-}
-
-// Test projection pause without config
-func TestProjectionPauseCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-pause-noconfig-*")
-	_ = env // No config created intentionally
-
-	cmd := NewProjectionCommand()
-	pauseCmd, _, _ := cmd.Find([]string{"pause"})
-
-	err := pauseCmd.RunE(pauseCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test projection resume without config
-func TestProjectionResumeCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-resume-noconfig-*")
-	_ = env // No config created intentionally
-
-	cmd := NewProjectionCommand()
-	resumeCmd, _, _ := cmd.Find([]string{"resume"})
-
-	err := resumeCmd.RunE(resumeCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-// Test projection pause without db URL
-func TestProjectionPauseCommand_NoDBURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-pause-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewProjectionCommand()
-	pauseCmd, _, _ := cmd.Find([]string{"pause"})
-
-	err := pauseCmd.RunE(pauseCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	// Command requires DATABASE_URL to be set
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-// Test projection resume without db URL
-func TestProjectionResumeCommand_NoDBURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-resume-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewProjectionCommand()
-	resumeCmd, _, _ := cmd.Find([]string{"resume"})
-
-	err := resumeCmd.RunE(resumeCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	// Command requires DATABASE_URL to be set
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-// Test stream export without db URL
-func TestStreamExportCommand_NoDBURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-export-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewStreamCommand()
-	exportCmd, _, _ := cmd.Find([]string{"export"})
-
-	err := exportCmd.RunE(exportCmd, []string{"stream-123"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test listProjections helper without config
@@ -2792,74 +2217,6 @@ func TestMigrateDownCommand_MemoryDriverUnit(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test stream list without database URL
-func TestStreamListCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewStreamCommand()
-	listCmd, _, _ := cmd.Find([]string{"list"})
-
-	err := listCmd.RunE(listCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-// Test projection status without database URL
-func TestProjectionStatusCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-status-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewProjectionCommand()
-	statusCmd, _, _ := cmd.Find([]string{"status"})
-
-	err := statusCmd.RunE(statusCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-// Test stream events without database URL
-func TestStreamEventsCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewStreamCommand()
-	eventsCmd, _, _ := cmd.Find([]string{"events"})
-
-	err := eventsCmd.RunE(eventsCmd, []string{"test-stream"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-// Test stream stats without database URL
-func TestStreamStatsCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewStreamCommand()
-	statsCmd, _, _ := cmd.Find([]string{"stats"})
-
-	err := statsCmd.RunE(statsCmd, []string{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
 // Test schema generate with force
 func TestSchemaGenerateCommand_WithForce(t *testing.T) {
 	env := setupTestEnv(t, "mink-schema-gen-force-*")
@@ -2888,23 +2245,6 @@ func TestProjectionRebuildCommand_ForceInvalidURL(t *testing.T) {
 
 	err := rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
 	assert.Error(t, err)
-}
-
-// Test stream export without database URL
-func TestStreamExportCommand_NoDatabaseURLUnit(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-export-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewStreamCommand()
-	exportCmd, _, _ := cmd.Find([]string{"export"})
-
-	err := exportCmd.RunE(exportCmd, []string{"test-stream"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
 
 // Test migrate status with force
@@ -3011,24 +2351,6 @@ func TestGenerateCommandCommand_WithAggregateFlag(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test projection rebuild without database URL
-func TestProjectionRebuildCommand_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-rebuild-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-		withModule("github.com/test/project"),
-	)
-
-	cmd := NewProjectionCommand()
-	rebuildCmd, _, _ := cmd.Find([]string{"rebuild"})
-	require.NoError(t, rebuildCmd.Flags().Set("force", "true"))
-
-	err := rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
 // Test migrate up with steps flag
 func TestMigrateUpCommand_WithStepsFlag(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-steps-*")
@@ -3088,32 +2410,26 @@ func TestMigrateCreateCommand_WithSQLFlag(t *testing.T) {
 	assert.True(t, len(files) >= 1)
 }
 
-// Test checkConfiguration with no config file - additional test case
-func TestCheckConfiguration_NoConfigUnit(t *testing.T) {
-	env := setupTestEnv(t, "mink-check-config-*")
-	_ = env // No config created intentionally
+// TestHelpersWithInvalidURL tests helper functions that fail with invalid URLs
+func TestHelpersWithInvalidURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		testFn  func() error
+	}{
+		{"listStreams", func() error { _, err := listStreams("invalid://not-a-url", "", 10); return err }},
+		{"getStreamEvents", func() error { _, err := getStreamEvents("invalid://not-a-url", "test-stream", 0, 10); return err }},
+		{"setProjectionStatus", func() error { return setProjectionStatus("invalid://not-a-url", "test", "running") }},
+		{"listProjections", func() error { _, err := listProjections("postgres://invalid:url@localhost:65535/db"); return err }},
+		{"getProjection", func() error { _, err := getProjection("postgres://invalid:url@localhost:65535/db", "test"); return err }},
+		{"getTotalEventCount", func() error { _, err := getTotalEventCount("postgres://invalid:url@localhost:65535/db"); return err }},
+	}
 
-	result := checkConfiguration()
-	// Returns StatusWarning when config is not found
-	assert.Equal(t, StatusWarning, result.Status)
-}
-
-// Test listStreams helper with invalid URL
-func TestListStreams_InvalidURL(t *testing.T) {
-	_, err := listStreams("invalid://not-a-url", "", 10)
-	assert.Error(t, err)
-}
-
-// Test getStreamEvents helper with invalid URL
-func TestGetStreamEvents_InvalidURL(t *testing.T) {
-	_, err := getStreamEvents("invalid://not-a-url", "test-stream", 0, 10)
-	assert.Error(t, err)
-}
-
-// Test setProjectionStatus helper with invalid URL
-func TestSetProjectionStatus_InvalidURL(t *testing.T) {
-	err := setProjectionStatus("invalid://not-a-url", "test", "running")
-	assert.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.testFn()
+			assert.Error(t, err)
+		})
+	}
 }
 
 // Test getAppliedMigrationNames error path
@@ -3351,62 +2667,6 @@ func TestMigrateStatusCommand_WithMigrations(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test generate aggregate without config file
-func TestGenerateAggregateCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-agg-noconf-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	aggCmd, _, _ := cmd.Find([]string{"aggregate"})
-	require.NoError(t, aggCmd.Flags().Set("force", "true"))
-
-	err := aggCmd.RunE(aggCmd, []string{"Order"})
-	// Should succeed with defaults when no config
-	assert.NoError(t, err)
-}
-
-// Test generate event without config file
-func TestGenerateEventCommand_NoConfigFile(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-event-noconf-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	eventCmd, _, _ := cmd.Find([]string{"event"})
-	require.NoError(t, eventCmd.Flags().Set("force", "true"))
-
-	err := eventCmd.RunE(eventCmd, []string{"OrderCreated"})
-	// Should succeed with defaults when no config
-	assert.NoError(t, err)
-}
-
-// Test generate projection without config file
-func TestGenerateProjectionCommand_NoConfigFile(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-proj-noconf-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	projCmd, _, _ := cmd.Find([]string{"projection"})
-	require.NoError(t, projCmd.Flags().Set("force", "true"))
-
-	err := projCmd.RunE(projCmd, []string{"OrderView"})
-	// Should succeed with defaults when no config
-	assert.NoError(t, err)
-}
-
-// Test generate command without config file
-func TestGenerateCommandCommand_NoConfigFile(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-cmd-noconf-*")
-	_ = env // No config created intentionally
-
-	cmd := NewGenerateCommand()
-	cmdCmd, _, _ := cmd.Find([]string{"command"})
-	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
-
-	err := cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
-	// Should succeed with defaults when no config
-	assert.NoError(t, err)
-}
-
 // Test schema generate without config
 func TestSchemaGenerateCommand_NoConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-schema-gen-noconf-*")
@@ -3560,31 +2820,6 @@ func TestGetPendingMigrations_InvalidDB(t *testing.T) {
 	pending, err := getPendingMigrations("postgres://invalid:url@localhost:65535/db", migrationsDir)
 	assert.NoError(t, err)
 	assert.Len(t, pending, 1) // Returns all when can't connect to DB
-}
-
-// Test getStreamEvents with limit
-func TestGetStreamEvents_WithLimit(t *testing.T) {
-	// Test error path with invalid URL
-	_, err := getStreamEvents("postgres://invalid:url@localhost:65535/db", "stream", 0, 5)
-	assert.Error(t, err)
-}
-
-// Test listProjections with invalid URL
-func TestListProjections_InvalidURL(t *testing.T) {
-	_, err := listProjections("postgres://invalid:url@localhost:65535/db")
-	assert.Error(t, err)
-}
-
-// Test getProjection with invalid URL
-func TestGetProjection_InvalidURL(t *testing.T) {
-	_, err := getProjection("postgres://invalid:url@localhost:65535/db", "test")
-	assert.Error(t, err)
-}
-
-// Test getTotalEventCount with invalid URL
-func TestGetTotalEventCount_InvalidURL(t *testing.T) {
-	_, err := getTotalEventCount("postgres://invalid:url@localhost:65535/db")
-	assert.Error(t, err)
 }
 
 // Test init command with directory argument
