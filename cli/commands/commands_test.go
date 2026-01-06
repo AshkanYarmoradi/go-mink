@@ -2413,8 +2413,8 @@ func TestMigrateCreateCommand_WithSQLFlag(t *testing.T) {
 // TestHelpersWithInvalidURL tests helper functions that fail with invalid URLs
 func TestHelpersWithInvalidURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		testFn  func() error
+		name   string
+		testFn func() error
 	}{
 		{"listStreams", func() error { _, err := listStreams("invalid://not-a-url", "", 10); return err }},
 		{"getStreamEvents", func() error { _, err := getStreamEvents("invalid://not-a-url", "test-stream", 0, 10); return err }},
