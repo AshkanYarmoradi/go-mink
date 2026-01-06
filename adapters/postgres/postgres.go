@@ -736,7 +736,6 @@ func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit 
 	if prefix != "" {
 		query += fmt.Sprintf(" WHERE s.stream_id LIKE $%d", argNum)
 		args = append(args, prefix+"%")
-		argNum++
 	}
 
 	query += " ORDER BY s.updated_at DESC"

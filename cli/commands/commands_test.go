@@ -131,21 +131,6 @@ func withMigrationsDir(dir string) configOption {
 	}
 }
 
-// runSubcommand is a helper to find and run a subcommand
-func (e *testEnv) runSubcommand(parentCmd *cobra.Command, subcommandPath []string, args []string, flags map[string]string) error {
-	e.t.Helper()
-	cmd, _, err := parentCmd.Find(subcommandPath)
-	if err != nil {
-		return err
-	}
-	for k, v := range flags {
-		if err := cmd.Flags().Set(k, v); err != nil {
-			return err
-		}
-	}
-	return cmd.RunE(cmd, args)
-}
-
 // assertErrorContains is a helper for error assertion
 func assertErrorContains(t *testing.T, err error, substring string) {
 	t.Helper()

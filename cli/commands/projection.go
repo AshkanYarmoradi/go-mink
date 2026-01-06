@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/styles"
 	"github.com/AshkanYarmoradi/go-mink/cli/ui"
 	"github.com/charmbracelet/huh"
@@ -519,21 +518,6 @@ type StreamEvent struct {
 	Data      string    `json:"data"`
 	Metadata  string    `json:"metadata,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
-}
-
-// loadConfig loads the mink configuration from the current directory.
-func loadConfig() (*config.Config, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	_, cfg, err := config.FindConfig(cwd)
-	if err != nil {
-		return nil, fmt.Errorf("no mink.yaml found: %w", err)
-	}
-
-	return cfg, nil
 }
 
 // renderProgressBar renders a simple text-based progress bar.
