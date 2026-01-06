@@ -4100,3 +4100,98 @@ func TestMigration_Init(t *testing.T) {
 	assert.Equal(t, "001_init", m.Name)
 	assert.Equal(t, "/migrations/001_init.sql", m.Path)
 }
+
+// Test nextSteps helper function
+func TestNextSteps_Complete(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Database.Driver = "postgres"
+	cfg.Database.URL = "postgres://localhost/test"
+
+	steps := nextSteps(cfg)
+	assert.NotEmpty(t, steps)
+}
+
+// Test Splash helper (exported)
+func TestSplash_Output(t *testing.T) {
+	// Splash just prints output - test that function exists
+	// Cannot test output easily but can ensure it doesn't panic
+	assert.NotPanics(t, func() { Splash() })
+}
+
+// Test detectModule in different scenarios
+func TestDetectModule_Scenarios(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mink-detect-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Without go.mod should return empty
+	result := detectModule(tmpDir)
+	assert.Empty(t, result)
+
+	// With go.mod should return module name
+	gomod := `module github.com/test/myproject
+
+go 1.21
+`
+	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(gomod), 0644)
+	result = detectModule(tmpDir)
+	assert.Equal(t, "github.com/test/myproject", result)
+}
+
+// Test getPendingMigrations helper (with invalid DB returns all migrations)
+func TestGetPendingMigrations_InvalidDB(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mink-pending-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create migrations dir with files
+	migrationsDir := filepath.Join(tmpDir, "migrations")
+	os.MkdirAll(migrationsDir, 0755)
+	os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("-- init"), 0644)
+
+	// Invalid DB URL should return all migrations (function handles error gracefully)
+	pending, err := getPendingMigrations("postgres://invalid:url@localhost:65535/db", migrationsDir)
+	assert.NoError(t, err)
+	assert.Len(t, pending, 1) // Returns all when can't connect to DB
+}
+
+// Test getStreamEvents with limit
+func TestGetStreamEvents_WithLimit(t *testing.T) {
+	// Test error path with invalid URL
+	_, err := getStreamEvents("postgres://invalid:url@localhost:65535/db", "stream", 0, 5)
+	assert.Error(t, err)
+}
+
+// Test listProjections with invalid URL
+func TestListProjections_InvalidURL(t *testing.T) {
+	_, err := listProjections("postgres://invalid:url@localhost:65535/db")
+	assert.Error(t, err)
+}
+
+// Test getProjection with invalid URL
+func TestGetProjection_InvalidURL(t *testing.T) {
+	_, err := getProjection("postgres://invalid:url@localhost:65535/db", "test")
+	assert.Error(t, err)
+}
+
+// Test getTotalEventCount with invalid URL
+func TestGetTotalEventCount_InvalidURL(t *testing.T) {
+	_, err := getTotalEventCount("postgres://invalid:url@localhost:65535/db")
+	assert.Error(t, err)
+}
+
+// Test init command with directory argument
+func TestInitCommand_WithDirectoryFlag(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mink-init-dir-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	origWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	cmd := NewInitCommand()
+	cmd.Flags().Set("driver", "memory")
+	// Note: This will try to run interactive form, so we can only test structure
+	assert.NotNil(t, cmd)
+}
