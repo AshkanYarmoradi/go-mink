@@ -40,6 +40,7 @@ Examples:
 
 func newMigrateUpCommand() *cobra.Command {
 	var steps int
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -68,17 +69,19 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				return fmt.Errorf("DATABASE_URL environment variable is not set")
 			}
 
-			// Show spinner while connecting
-			spinner := ui.NewSpinner("Connecting to database...", ui.SpinnerDots)
-			p := tea.NewProgram(spinner)
+			// Show spinner while connecting (skip if --force)
+			if !force {
+				spinner := ui.NewSpinner("Connecting to database...", ui.SpinnerDots)
+				p := tea.NewProgram(spinner)
 
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				p.Send(ui.SpinnerDoneMsg{Result: "Connected to database"})
-			}()
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					p.Send(ui.SpinnerDoneMsg{Result: "Connected to database"})
+				}()
 
-			if _, err := p.Run(); err != nil {
-				return err
+				if _, err := p.Run(); err != nil {
+					return err
+				}
 			}
 
 			// Get pending migrations
@@ -136,6 +139,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 	}
 
 	cmd.Flags().IntVarP(&steps, "steps", "n", 0, "Number of migrations to apply (0 = all)")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive elements (for scripting)")
 
 	return cmd
 }

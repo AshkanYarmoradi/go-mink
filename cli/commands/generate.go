@@ -40,6 +40,7 @@ Examples:
 
 func newGenerateAggregateCommand() *cobra.Command {
 	var events []string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "aggregate <name>",
@@ -66,8 +67,8 @@ Examples:
 				cfg = config.DefaultConfig()
 			}
 
-			// Interactive event selection if none provided
-			if len(events) == 0 {
+			// Interactive event selection if none provided (skip if --force)
+			if len(events) == 0 && !force {
 				var eventsInput string
 				form := huh.NewForm(
 					huh.NewGroup(
@@ -164,12 +165,14 @@ Next steps:
 	}
 
 	cmd.Flags().StringSliceVarP(&events, "events", "e", nil, "Events to generate (comma-separated)")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive prompts (for scripting)")
 
 	return cmd
 }
 
 func newGenerateEventCommand() *cobra.Command {
 	var aggregate string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     "event <name>",
@@ -189,8 +192,8 @@ func newGenerateEventCommand() *cobra.Command {
 				cfg = config.DefaultConfig()
 			}
 
-			// Interactive aggregate selection if not provided
-			if aggregate == "" {
+			// Interactive aggregate selection if not provided (skip if --force)
+			if aggregate == "" && !force {
 				form := huh.NewForm(
 					huh.NewGroup(
 						huh.NewInput().
@@ -229,12 +232,14 @@ func newGenerateEventCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this event belongs to")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive prompts (for scripting)")
 
 	return cmd
 }
 
 func newGenerateProjectionCommand() *cobra.Command {
 	var events []string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     "projection <name>",
@@ -254,8 +259,8 @@ func newGenerateProjectionCommand() *cobra.Command {
 				cfg = config.DefaultConfig()
 			}
 
-			// Interactive event selection if none provided
-			if len(events) == 0 {
+			// Interactive event selection if none provided (skip if --force)
+			if len(events) == 0 && !force {
 				var eventsInput string
 				form := huh.NewForm(
 					huh.NewGroup(
@@ -309,12 +314,14 @@ func newGenerateProjectionCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringSliceVarP(&events, "events", "e", nil, "Events this projection handles")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive prompts (for scripting)")
 
 	return cmd
 }
 
 func newGenerateCommandCommand() *cobra.Command {
 	var aggregate string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     "command <name>",
@@ -334,8 +341,8 @@ func newGenerateCommandCommand() *cobra.Command {
 				cfg = config.DefaultConfig()
 			}
 
-			// Interactive aggregate selection if not provided
-			if aggregate == "" {
+			// Interactive aggregate selection if not provided (skip if --force)
+			if aggregate == "" && !force {
 				form := huh.NewForm(
 					huh.NewGroup(
 						huh.NewInput().
@@ -374,6 +381,7 @@ func newGenerateCommandCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this command operates on")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive prompts (for scripting)")
 
 	return cmd
 }
@@ -442,7 +450,10 @@ func toPascalCase(s string) string {
 }
 
 func generateFile(path string, tmpl string, data interface{}) error {
-	t, err := template.New("file").Parse(tmpl)
+	funcMap := template.FuncMap{
+		"ToLower": strings.ToLower,
+	}
+	t, err := template.New("file").Funcs(funcMap).Parse(tmpl)
 	if err != nil {
 		return err
 	}

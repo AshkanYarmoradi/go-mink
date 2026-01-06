@@ -142,6 +142,18 @@ func TestFindConfig(t *testing.T) {
 	assert.Equal(t, "root-project", foundCfg.Project.Name)
 }
 
+func TestFindConfig_NotFound(t *testing.T) {
+	// Create temp directory without config
+	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Try to find config - should fail
+	_, _, err = FindConfig(tmpDir)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestGenerateYAML(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Project.Name = "test-app"
@@ -154,4 +166,34 @@ func TestGenerateYAML(t *testing.T) {
 	assert.Contains(t, yaml, "postgres")
 	assert.Contains(t, yaml, "mink_events")
 	assert.Contains(t, yaml, "# Mink Configuration File")
+}
+
+func TestLoadFile_NotFound(t *testing.T) {
+	_, err := LoadFile("/nonexistent/path/mink.yaml")
+	assert.Error(t, err)
+}
+
+func TestLoadFile_InvalidYAML(t *testing.T) {
+	// Create temp file with invalid YAML
+	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	invalidPath := filepath.Join(tmpDir, "invalid.yaml")
+	err = os.WriteFile(invalidPath, []byte("invalid: yaml: content: ["), 0644)
+	require.NoError(t, err)
+
+	_, err = LoadFile(invalidPath)
+	assert.Error(t, err)
+}
+
+func TestSaveFile_InvalidPath(t *testing.T) {
+	cfg := DefaultConfig()
+	err := cfg.SaveFile("/nonexistent/directory/config.yaml")
+	assert.Error(t, err)
+}
+
+func TestLoad_NotFound(t *testing.T) {
+	_, err := Load("/nonexistent/path")
+	assert.Error(t, err)
 }

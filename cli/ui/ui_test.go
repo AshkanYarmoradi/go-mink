@@ -3,7 +3,10 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -24,6 +27,7 @@ func TestNewSpinner(t *testing.T) {
 		{"monkey spinner", "Monkey...", SpinnerMonkey},
 		{"meter spinner", "Meter...", SpinnerMeter},
 		{"hamburger spinner", "Hamburger...", SpinnerHamburger},
+		{"default spinner", "Default...", SpinnerType(999)}, // Unknown type falls back to default
 	}
 
 	for _, tt := range tests {
@@ -36,10 +40,110 @@ func TestNewSpinner(t *testing.T) {
 	}
 }
 
+func TestSpinnerInit(t *testing.T) {
+	s := NewSpinner("Loading...", SpinnerDots)
+	cmd := s.Init()
+	assert.NotNil(t, cmd)
+}
+
+func TestSpinnerUpdate(t *testing.T) {
+	s := NewSpinner("Loading...", SpinnerDots)
+
+	// Test quit key
+	t.Run("quit with q", func(t *testing.T) {
+		model, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		sm := model.(SpinnerModel)
+		assert.True(t, sm.quitting)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test esc key
+	t.Run("quit with esc", func(t *testing.T) {
+		s2 := NewSpinner("Loading...", SpinnerDots)
+		model, cmd := s2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		sm := model.(SpinnerModel)
+		assert.True(t, sm.quitting)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test ctrl+c
+	t.Run("quit with ctrl+c", func(t *testing.T) {
+		s3 := NewSpinner("Loading...", SpinnerDots)
+		model, cmd := s3.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		sm := model.(SpinnerModel)
+		assert.True(t, sm.quitting)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test done message
+	t.Run("spinner done success", func(t *testing.T) {
+		s4 := NewSpinner("Loading...", SpinnerDots)
+		model, cmd := s4.Update(SpinnerDoneMsg{Result: "Success!", Err: nil})
+		sm := model.(SpinnerModel)
+		assert.True(t, sm.done)
+		assert.Equal(t, "Success!", sm.result)
+		assert.Nil(t, sm.err)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test done message with error
+	t.Run("spinner done error", func(t *testing.T) {
+		s5 := NewSpinner("Loading...", SpinnerDots)
+		testErr := assert.AnError
+		model, cmd := s5.Update(SpinnerDoneMsg{Result: "Failed", Err: testErr})
+		sm := model.(SpinnerModel)
+		assert.True(t, sm.done)
+		assert.Equal(t, testErr, sm.err)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test tick message
+	t.Run("spinner tick", func(t *testing.T) {
+		s6 := NewSpinner("Loading...", SpinnerDots)
+		model, cmd := s6.Update(spinner.TickMsg{Time: time.Now()})
+		_ = model.(SpinnerModel)
+		assert.NotNil(t, cmd)
+	})
+
+	// Test unhandled message
+	t.Run("unhandled message", func(t *testing.T) {
+		s7 := NewSpinner("Loading...", SpinnerDots)
+		model, cmd := s7.Update(tea.WindowSizeMsg{})
+		_ = model.(SpinnerModel)
+		assert.Nil(t, cmd)
+	})
+}
+
 func TestSpinnerView(t *testing.T) {
-	spinner := NewSpinner("Loading...", SpinnerDots)
-	view := spinner.View()
-	assert.Contains(t, view, "Loading...")
+	t.Run("normal view", func(t *testing.T) {
+		spinner := NewSpinner("Loading...", SpinnerDots)
+		view := spinner.View()
+		assert.Contains(t, view, "Loading...")
+	})
+
+	t.Run("done view success", func(t *testing.T) {
+		s := NewSpinner("Loading...", SpinnerDots)
+		s.done = true
+		s.result = "Success!"
+		view := s.View()
+		assert.Contains(t, view, "Success!")
+	})
+
+	t.Run("done view error", func(t *testing.T) {
+		s := NewSpinner("Loading...", SpinnerDots)
+		s.done = true
+		s.result = "Failed"
+		s.err = assert.AnError
+		view := s.View()
+		assert.Contains(t, view, "Failed")
+	})
+
+	t.Run("quitting view", func(t *testing.T) {
+		s := NewSpinner("Loading...", SpinnerDots)
+		s.quitting = true
+		view := s.View()
+		assert.Contains(t, view, "Cancelled")
+	})
 }
 
 func TestNewProgress(t *testing.T) {
@@ -47,6 +151,63 @@ func TestNewProgress(t *testing.T) {
 	assert.Equal(t, "Downloading...", progress.message)
 	assert.Equal(t, float64(0), progress.percent)
 	assert.False(t, progress.done)
+}
+
+func TestProgressInit(t *testing.T) {
+	p := NewProgress("Loading...")
+	cmd := p.Init()
+	assert.Nil(t, cmd)
+}
+
+func TestProgressUpdate(t *testing.T) {
+	t.Run("quit with q", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		model, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		_ = model.(ProgressModel)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("progress message", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		model, cmd := p.Update(ProgressMsg{Percent: 0.5, Message: "50%"})
+		pm := model.(ProgressModel)
+		assert.Equal(t, 0.5, pm.percent)
+		assert.Equal(t, "50%", pm.message)
+		assert.False(t, pm.done)
+		assert.Nil(t, cmd)
+	})
+
+	t.Run("progress complete", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		model, cmd := p.Update(ProgressMsg{Percent: 1.0, Message: "Done!"})
+		pm := model.(ProgressModel)
+		assert.True(t, pm.done)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("unhandled message", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		model, cmd := p.Update(tea.WindowSizeMsg{})
+		_ = model.(ProgressModel)
+		assert.Nil(t, cmd)
+	})
+}
+
+func TestProgressView(t *testing.T) {
+	t.Run("in progress", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		p.percent = 0.5
+		view := p.View()
+		assert.Contains(t, view, "Loading...")
+	})
+
+	t.Run("done", func(t *testing.T) {
+		p := NewProgress("Loading...")
+		p.done = true
+		p.message = "Complete!"
+		view := p.View()
+		assert.Contains(t, view, "Complete!")
+	})
 }
 
 func TestNewTable(t *testing.T) {
@@ -67,6 +228,14 @@ func TestTable_AddRow(t *testing.T) {
 
 	// Width should be updated for longest value
 	assert.GreaterOrEqual(t, table.widths[0], len("longer name"))
+}
+
+func TestTable_AddRow_FewerColumns(t *testing.T) {
+	table := NewTable("Name", "Value", "Status")
+	table.AddRow("only", "two") // Only 2 values for 3 columns
+
+	assert.Len(t, table.rows, 1)
+	assert.Equal(t, []string{"only", "two", ""}, table.rows[0])
 }
 
 func TestTable_Render(t *testing.T) {
@@ -110,6 +279,7 @@ func TestStatusBadge(t *testing.T) {
 		{"failed", "failed"},
 		{"stopped", "stopped"},
 		{"unknown", "unknown"},
+		{"ACTIVE", "ACTIVE"}, // Test case insensitivity
 	}
 
 	for _, tt := range tests {
@@ -140,6 +310,46 @@ func TestNewAnimatedBanner(t *testing.T) {
 	assert.False(t, banner.done)
 }
 
+func TestAnimatedBannerInit(t *testing.T) {
+	banner := NewAnimatedBanner()
+	cmd := banner.Init()
+	assert.NotNil(t, cmd)
+}
+
+func TestAnimatedBannerUpdate(t *testing.T) {
+	t.Run("animation tick not done", func(t *testing.T) {
+		banner := NewAnimatedBanner()
+		model, cmd := banner.Update(AnimationTickMsg{})
+		ab := model.(AnimatedBannerModel)
+		assert.Equal(t, 1, ab.frameIndex)
+		assert.False(t, ab.done)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("animation complete", func(t *testing.T) {
+		banner := NewAnimatedBanner()
+		banner.frameIndex = len(banner.frames) - 1
+		model, cmd := banner.Update(AnimationTickMsg{})
+		ab := model.(AnimatedBannerModel)
+		assert.True(t, ab.done)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("key press quits", func(t *testing.T) {
+		banner := NewAnimatedBanner()
+		model, cmd := banner.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		_ = model.(AnimatedBannerModel)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("unhandled message", func(t *testing.T) {
+		banner := NewAnimatedBanner()
+		model, cmd := banner.Update(tea.WindowSizeMsg{})
+		_ = model.(AnimatedBannerModel)
+		assert.Nil(t, cmd)
+	})
+}
+
 func TestAnimatedBannerView(t *testing.T) {
 	banner := NewAnimatedBanner()
 	view := banner.View()
@@ -161,6 +371,12 @@ func TestListItems(t *testing.T) {
 	assert.Contains(t, list, "Item 3")
 }
 
+func TestListItemsEmpty(t *testing.T) {
+	items := []string{}
+	list := ListItems(items)
+	assert.Empty(t, list)
+}
+
 func TestNumberedList(t *testing.T) {
 	items := []string{"First", "Second", "Third"}
 	list := NumberedList(items)
@@ -171,6 +387,12 @@ func TestNumberedList(t *testing.T) {
 	assert.Contains(t, list, "First")
 	assert.Contains(t, list, "Second")
 	assert.Contains(t, list, "Third")
+}
+
+func TestNumberedListEmpty(t *testing.T) {
+	items := []string{}
+	list := NumberedList(items)
+	assert.Empty(t, list)
 }
 
 func TestConfirmation(t *testing.T) {
