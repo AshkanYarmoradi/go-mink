@@ -909,7 +909,7 @@ func TestProjectionRebuildCommand_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "RebuildTestProj", "--force"})
+	cmd.SetArgs([]string{"rebuild", "RebuildTestProj", "--yes"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -965,7 +965,7 @@ func TestMigrateCreateCommand_Integration(t *testing.T) {
 	assert.True(t, foundUpFile, "migration up file not found")
 }
 
-// Test generate aggregate command with --force (skips interactive)
+// Test generate aggregate command with --non-interactive (skips interactive)
 func TestGenerateAggregateCommand_Force_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-test-*")
 	require.NoError(t, err)
@@ -982,7 +982,7 @@ func TestGenerateAggregateCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "Order", "--events", "Created,Shipped", "--force"})
+	cmd.SetArgs([]string{"aggregate", "Order", "--events", "Created,Shipped", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1008,8 +1008,8 @@ func TestGenerateAggregateCommand_ForceNoEvents_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	// Use --force without --events to skip the interactive form
-	cmd.SetArgs([]string{"aggregate", "Customer", "--force"})
+	// Use --non-interactive without --events to skip the interactive form
+	cmd.SetArgs([]string{"aggregate", "Customer", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1019,7 +1019,7 @@ func TestGenerateAggregateCommand_ForceNoEvents_Integration(t *testing.T) {
 	assert.FileExists(t, filepath.Join(tmpDir, "internal/domain/customer_test.go"))
 }
 
-// Test generate event command with --force
+// Test generate event command with --non-interactive
 func TestGenerateEventCommand_Force_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-gen-evt-test-*")
 	require.NoError(t, err)
@@ -1035,7 +1035,7 @@ func TestGenerateEventCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"event", "OrderCreated", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"event", "OrderCreated", "--aggregate", "Order", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1058,8 +1058,8 @@ func TestGenerateEventCommand_ForceNoAggregate_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	// Use --force without --aggregate to skip interactive form
-	cmd.SetArgs([]string{"event", "ItemAdded", "--force"})
+	// Use --non-interactive without --aggregate to skip interactive form
+	cmd.SetArgs([]string{"event", "ItemAdded", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1068,7 +1068,7 @@ func TestGenerateEventCommand_ForceNoAggregate_Integration(t *testing.T) {
 	assert.FileExists(t, filepath.Join(tmpDir, "internal/events/itemadded.go"))
 }
 
-// Test generate projection command with --force
+// Test generate projection command with --non-interactive
 func TestGenerateProjectionCommand_Force_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-test-*")
 	require.NoError(t, err)
@@ -1084,7 +1084,7 @@ func TestGenerateProjectionCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--force"})
+	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1108,7 +1108,7 @@ func TestGenerateProjectionCommand_ForceNoEvents_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "UserProfile", "--force"})
+	cmd.SetArgs([]string{"projection", "UserProfile", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1117,7 +1117,7 @@ func TestGenerateProjectionCommand_ForceNoEvents_Integration(t *testing.T) {
 	assert.FileExists(t, filepath.Join(tmpDir, "internal/projections/userprofile_test.go"))
 }
 
-// Test generate command command with --force
+// Test generate command command with --non-interactive
 func TestGenerateCommandCommand_Force_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-test-*")
 	require.NoError(t, err)
@@ -1133,7 +1133,7 @@ func TestGenerateCommandCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "CreateOrder", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"command", "CreateOrder", "--aggregate", "Order", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1156,7 +1156,7 @@ func TestGenerateCommandCommand_ForceNoAggregate_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "UpdateItem", "--force"})
+	cmd.SetArgs([]string{"command", "UpdateItem", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1164,7 +1164,7 @@ func TestGenerateCommandCommand_ForceNoAggregate_Integration(t *testing.T) {
 	assert.FileExists(t, filepath.Join(tmpDir, "internal/commands/updateitem.go"))
 }
 
-// Test migrate up command with --force (skips spinner)
+// Test migrate up command with --non-interactive (skips spinner)
 func TestMigrateUpCommand_Force_Integration(t *testing.T) {
 	db := setupTestDB(t)
 	defer cleanupTestDB(t, db)
@@ -1196,7 +1196,7 @@ func TestMigrateUpCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1236,7 +1236,7 @@ func TestMigrateUpCommand_ForceNoMigrations_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	// Should succeed with "up to date" message
 	err = cmd.Execute()
@@ -1280,7 +1280,7 @@ func TestMigrateUpCommand_WithSteps_Integration(t *testing.T) {
 
 	// Apply only 2 migrations
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force", "--steps", "2"})
+	cmd.SetArgs([]string{"up", "--non-interactive", "--steps", "2"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1316,7 +1316,7 @@ func TestMigrateUpCommand_MemoryDriver_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	// Should succeed with info message about memory driver
 	err = cmd.Execute()
@@ -1360,7 +1360,7 @@ func TestMigrateDownCommand_Integration(t *testing.T) {
 
 	// First apply the migration
 	cmdUp := NewMigrateCommand()
-	cmdUp.SetArgs([]string{"up", "--force"})
+	cmdUp.SetArgs([]string{"up", "--non-interactive"})
 	err = cmdUp.Execute()
 	require.NoError(t, err)
 
@@ -1448,7 +1448,7 @@ func TestMigrateDownCommand_NoDownFile_Integration(t *testing.T) {
 
 	// Apply the migration
 	cmdUp := NewMigrateCommand()
-	cmdUp.SetArgs([]string{"up", "--force"})
+	cmdUp.SetArgs([]string{"up", "--non-interactive"})
 	err = cmdUp.Execute()
 	require.NoError(t, err)
 
@@ -1502,7 +1502,7 @@ func TestMigrateDownCommand_MultipleSteps_Integration(t *testing.T) {
 
 	// Apply both migrations
 	cmdUp := NewMigrateCommand()
-	cmdUp.SetArgs([]string{"up", "--force"})
+	cmdUp.SetArgs([]string{"up", "--non-interactive"})
 	err = cmdUp.Execute()
 	require.NoError(t, err)
 
@@ -1586,7 +1586,7 @@ func TestGetAllMigrations_Integration(t *testing.T) {
 	assert.Equal(t, "003_third", all[2].Name)
 }
 
-// Test projection rebuild command with --force
+// Test projection rebuild command with --yes
 func TestProjectionRebuildCommand_Force_Integration(t *testing.T) {
 	db := setupTestDB(t)
 	defer cleanupTestDB(t, db)
@@ -1618,7 +1618,7 @@ func TestProjectionRebuildCommand_Force_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "TestRebuildProj", "--force"})
+	cmd.SetArgs([]string{"rebuild", "TestRebuildProj", "--yes"})
 
 	err = cmd.Execute()
 	assert.NoError(t, err)
@@ -1641,7 +1641,7 @@ func TestProjectionRebuildCommand_NoConfig_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "TestProj", "--force"})
+	cmd.SetArgs([]string{"rebuild", "TestProj", "--yes"})
 
 	err = cmd.Execute()
 	assert.Error(t, err)
@@ -1666,7 +1666,7 @@ func TestProjectionRebuildCommand_NoDBURL_Integration(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "TestProj", "--force"})
+	cmd.SetArgs([]string{"rebuild", "TestProj", "--yes"})
 
 	err = cmd.Execute()
 	assert.Error(t, err)

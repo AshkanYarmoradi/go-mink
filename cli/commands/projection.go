@@ -144,7 +144,7 @@ func newProjectionStatusCommand() *cobra.Command {
 }
 
 func newProjectionRebuildCommand() *cobra.Command {
-	var force bool
+	var skipConfirm bool
 
 	cmd := &cobra.Command{
 		Use:   "rebuild <name>",
@@ -169,8 +169,8 @@ func newProjectionRebuildCommand() *cobra.Command {
 				return fmt.Errorf("projection '%s' not found", name)
 			}
 
-			// Confirm rebuild
-			if !force {
+			// Confirm rebuild (skip if --yes flag)
+			if !skipConfirm {
 				var confirmed bool
 				form := huh.NewForm(
 					huh.NewGroup(
@@ -206,7 +206,7 @@ func newProjectionRebuildCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation")
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip confirmation prompt")
 
 	return cmd
 }
@@ -285,8 +285,8 @@ Examples:
 
 func newStreamListCommand() *cobra.Command {
 	var (
-		limit  int
-		prefix string
+		maxStreams int
+		prefix     string
 	)
 
 	cmd := &cobra.Command{
@@ -302,7 +302,7 @@ func newStreamListCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			streams, err := adapter.ListStreams(ctx, prefix, limit)
+			streams, err := adapter.ListStreams(ctx, prefix, maxStreams)
 			if err != nil {
 				return err
 			}
@@ -328,7 +328,7 @@ func newStreamListCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "Maximum streams to show")
+	cmd.Flags().IntVarP(&maxStreams, "max-streams", "n", 50, "Maximum streams to show")
 	cmd.Flags().StringVarP(&prefix, "prefix", "p", "", "Filter by stream ID prefix")
 
 	return cmd
@@ -336,8 +336,8 @@ func newStreamListCommand() *cobra.Command {
 
 func newStreamEventsCommand() *cobra.Command {
 	var (
-		limit int
-		from  int64
+		maxEvents int
+		from      int64
 	)
 
 	cmd := &cobra.Command{
@@ -354,7 +354,7 @@ func newStreamEventsCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			events, err := adapter.GetStreamEvents(ctx, streamID, from, limit)
+			events, err := adapter.GetStreamEvents(ctx, streamID, from, maxEvents)
 			if err != nil {
 				return err
 			}
@@ -390,7 +390,7 @@ func newStreamEventsCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Maximum events to show")
+	cmd.Flags().IntVarP(&maxEvents, "max-events", "n", 20, "Maximum events to show")
 	cmd.Flags().Int64VarP(&from, "from", "f", 0, "Start from version")
 
 	return cmd

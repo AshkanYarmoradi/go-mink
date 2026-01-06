@@ -780,9 +780,9 @@ func TestSubcommandFlags(t *testing.T) {
 		{"generate/command", NewGenerateCommand, "command", []string{"aggregate"}},
 		{"migrate/up", NewMigrateCommand, "up", []string{"steps"}},
 		{"migrate/down", NewMigrateCommand, "down", []string{"steps"}},
-		{"projection/rebuild", NewProjectionCommand, "rebuild", []string{"force"}},
-		{"stream/list", NewStreamCommand, "list", []string{"limit", "prefix"}},
-		{"stream/events", NewStreamCommand, "events", []string{"limit"}},
+		{"projection/rebuild", NewProjectionCommand, "rebuild", []string{"yes"}},
+		{"stream/list", NewStreamCommand, "list", []string{"max-streams", "prefix"}},
+		{"stream/events", NewStreamCommand, "events", []string{"max-events"}},
 		{"stream/export", NewStreamCommand, "export", []string{"output"}},
 		{"schema/generate", NewSchemaCommand, "generate", []string{"output"}},
 	}
@@ -1544,10 +1544,10 @@ func TestProjectionRebuildCommand_Structure(t *testing.T) {
 
 	assert.Equal(t, "rebuild <name>", rebuildCmd.Use)
 
-	// Check force flag exists
-	forceFlag := rebuildCmd.Flags().Lookup("force")
-	assert.NotNil(t, forceFlag)
-	assert.Equal(t, "f", forceFlag.Shorthand)
+	// Check yes flag exists (skip confirmation)
+	yesFlag := rebuildCmd.Flags().Lookup("yes")
+	assert.NotNil(t, yesFlag)
+	assert.Equal(t, "y", yesFlag.Shorthand)
 }
 
 // Test migrate status command more thoroughly
@@ -1744,7 +1744,7 @@ func TestMigrateUpCommand_InvalidDBURL(t *testing.T) {
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	require.NoError(t, upCmd.Flags().Set("force", "true"))
+	require.NoError(t, upCmd.Flags().Set("non-interactive", "true"))
 
 	err := upCmd.RunE(upCmd, []string{})
 	// Should fail when trying to connect with invalid DB URL
@@ -1777,7 +1777,7 @@ func TestGenerateAggregateCommand_MultipleEvents(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(env.tmpDir, cfg.Generation.EventPackage), 0755))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "MultiTest", "--events", "Created,Updated,Deleted", "--force"})
+	cmd.SetArgs([]string{"aggregate", "MultiTest", "--events", "Created,Updated,Deleted", "--non-interactive"})
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
@@ -1807,14 +1807,14 @@ func TestCommandsRequireDatabaseURL(t *testing.T) {
 		{"projection pause", NewProjectionCommand, []string{"pause"}, []string{"TestProj"}, nil},
 		{"projection resume", NewProjectionCommand, []string{"resume"}, []string{"TestProj"}, nil},
 		{"projection rebuild", NewProjectionCommand, []string{"rebuild"}, []string{"TestProj"}, func(cmd *cobra.Command) {
-			_ = cmd.Flags().Set("force", "true")
+			_ = cmd.Flags().Set("non-interactive", "true")
 		}},
 		{"stream list", NewStreamCommand, []string{"list"}, nil, nil},
 		{"stream events", NewStreamCommand, []string{"events"}, []string{"test-stream"}, nil},
 		{"stream stats", NewStreamCommand, []string{"stats"}, nil, nil},
 		{"stream export", NewStreamCommand, []string{"export"}, []string{"stream-123"}, nil},
 		{"migrate up", NewMigrateCommand, []string{"up"}, nil, func(cmd *cobra.Command) {
-			_ = cmd.Flags().Set("force", "true")
+			_ = cmd.Flags().Set("non-interactive", "true")
 		}},
 	}
 
@@ -1858,7 +1858,7 @@ func TestGenerateCommandsWithoutConfig(t *testing.T) {
 
 			cmd := NewGenerateCommand()
 			subCmd, _, _ := cmd.Find([]string{tt.subcommand})
-			require.NoError(t, subCmd.Flags().Set("force", "true"))
+			require.NoError(t, subCmd.Flags().Set("non-interactive", "true"))
 
 			err := subCmd.RunE(subCmd, []string{tt.arg})
 			assert.NoError(t, err)
@@ -1933,10 +1933,10 @@ func TestStreamEventsCommand_Flags(t *testing.T) {
 	eventsCmd, _, err := cmd.Find([]string{"events"})
 	require.NoError(t, err)
 
-	// Check limit flag
-	limitFlag := eventsCmd.Flags().Lookup("limit")
-	assert.NotNil(t, limitFlag)
-	assert.Equal(t, "n", limitFlag.Shorthand)
+	// Check max-events flag
+	maxEventsFlag := eventsCmd.Flags().Lookup("max-events")
+	assert.NotNil(t, maxEventsFlag)
+	assert.Equal(t, "n", maxEventsFlag.Shorthand)
 
 	// Check from flag
 	fromFlag := eventsCmd.Flags().Lookup("from")
@@ -1997,7 +1997,7 @@ func TestGenerateAggregateCommand_WithExistingConfig(t *testing.T) {
 	)
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "Custom", "--force"})
+	cmd.SetArgs([]string{"aggregate", "Custom", "--non-interactive"})
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
@@ -2014,7 +2014,7 @@ func TestGenerateEventCommand_WithAggregate(t *testing.T) {
 	cfg := env.createConfig(withModule("github.com/test/evtagg"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"event", "OrderShipped", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"event", "OrderShipped", "--aggregate", "Order", "--non-interactive"})
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
@@ -2031,7 +2031,7 @@ func TestGenerateCommandCommand_WithAggregate(t *testing.T) {
 	cfg := env.createConfig(withModule("github.com/test/cmdagg"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "ShipOrder", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"command", "ShipOrder", "--aggregate", "Order", "--non-interactive"})
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
@@ -2048,7 +2048,7 @@ func TestGenerateProjectionCommand_WithEvents(t *testing.T) {
 	cfg := env.createConfig(withModule("github.com/test/projevt"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--force"})
+	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--non-interactive"})
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
@@ -2095,7 +2095,7 @@ func TestGenerateAggregateCommand_ForceNoEventsUnit(t *testing.T) {
 	aggCmd, _, _ := cmd.Find([]string{"aggregate"})
 
 	// Set the force flag
-	require.NoError(t, aggCmd.Flags().Set("force", "true"))
+	require.NoError(t, aggCmd.Flags().Set("non-interactive", "true"))
 
 	err := aggCmd.RunE(aggCmd, []string{"TestAggregate"})
 	assert.NoError(t, err)
@@ -2125,7 +2125,7 @@ func TestGenerateEventCommand_ForceNoAggregate(t *testing.T) {
 	eventCmd, _, _ := cmd.Find([]string{"event"})
 
 	// Set the force flag
-	require.NoError(t, eventCmd.Flags().Set("force", "true"))
+	require.NoError(t, eventCmd.Flags().Set("non-interactive", "true"))
 
 	err := eventCmd.RunE(eventCmd, []string{"OrderCreated"})
 	assert.NoError(t, err)
@@ -2140,7 +2140,7 @@ func TestGenerateCommandCommand_ForceNoAggregate(t *testing.T) {
 	cmdCmd, _, _ := cmd.Find([]string{"command"})
 
 	// Set the force flag
-	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
+	require.NoError(t, cmdCmd.Flags().Set("non-interactive", "true"))
 
 	err := cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
 	assert.NoError(t, err)
@@ -2155,7 +2155,7 @@ func TestGenerateProjectionCommand_ForceNoEvents(t *testing.T) {
 	projCmd, _, _ := cmd.Find([]string{"projection"})
 
 	// Set the force flag
-	require.NoError(t, projCmd.Flags().Set("force", "true"))
+	require.NoError(t, projCmd.Flags().Set("non-interactive", "true"))
 
 	err := projCmd.RunE(projCmd, []string{"OrderView"})
 	assert.NoError(t, err)
@@ -2183,7 +2183,7 @@ func TestMigrateUpCommand_NoPending(t *testing.T) {
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	require.NoError(t, upCmd.Flags().Set("force", "true"))
+	require.NoError(t, upCmd.Flags().Set("non-interactive", "true"))
 
 	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err) // Should succeed even with no migrations
@@ -2201,7 +2201,7 @@ func TestMigrateDownCommand_MemoryDriverUnit(t *testing.T) {
 
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
-	require.NoError(t, downCmd.Flags().Set("force", "true"))
+	require.NoError(t, downCmd.Flags().Set("non-interactive", "true"))
 
 	err := downCmd.RunE(downCmd, []string{})
 	assert.NoError(t, err)
@@ -2214,7 +2214,7 @@ func TestSchemaGenerateCommand_WithForce(t *testing.T) {
 
 	cmd := NewSchemaCommand()
 	genCmd, _, _ := cmd.Find([]string{"generate"})
-	require.NoError(t, genCmd.Flags().Set("force", "true"))
+	require.NoError(t, genCmd.Flags().Set("non-interactive", "true"))
 
 	err := genCmd.RunE(genCmd, []string{})
 	assert.NoError(t, err)
@@ -2231,7 +2231,7 @@ func TestProjectionRebuildCommand_ForceInvalidURL(t *testing.T) {
 
 	cmd := NewProjectionCommand()
 	rebuildCmd, _, _ := cmd.Find([]string{"rebuild"})
-	require.NoError(t, rebuildCmd.Flags().Set("force", "true"))
+	require.NoError(t, rebuildCmd.Flags().Set("yes", "true"))
 
 	err := rebuildCmd.RunE(rebuildCmd, []string{"TestProj"})
 	assert.Error(t, err)
@@ -2263,7 +2263,7 @@ func TestGenerateAggregateCommand_WithEventsFlag(t *testing.T) {
 
 	// Set the events flag
 	require.NoError(t, aggCmd.Flags().Set("events", "Created,Updated,Deleted"))
-	require.NoError(t, aggCmd.Flags().Set("force", "true"))
+	require.NoError(t, aggCmd.Flags().Set("non-interactive", "true"))
 
 	err := aggCmd.RunE(aggCmd, []string{"TestAggregate"})
 	assert.NoError(t, err)
@@ -2288,7 +2288,7 @@ func TestGenerateProjectionCommand_WithEventsFlag(t *testing.T) {
 
 	// Set the events flag
 	require.NoError(t, projCmd.Flags().Set("events", "OrderCreated,OrderShipped"))
-	require.NoError(t, projCmd.Flags().Set("force", "true"))
+	require.NoError(t, projCmd.Flags().Set("non-interactive", "true"))
 
 	err := projCmd.RunE(projCmd, []string{"OrderView"})
 	assert.NoError(t, err)
@@ -2309,7 +2309,7 @@ func TestGenerateEventCommand_WithAggregateFlag(t *testing.T) {
 
 	// Set the aggregate flag
 	require.NoError(t, eventCmd.Flags().Set("aggregate", "Order"))
-	require.NoError(t, eventCmd.Flags().Set("force", "true"))
+	require.NoError(t, eventCmd.Flags().Set("non-interactive", "true"))
 
 	err := eventCmd.RunE(eventCmd, []string{"ItemAdded"})
 	assert.NoError(t, err)
@@ -2330,7 +2330,7 @@ func TestGenerateCommandCommand_WithAggregateFlag(t *testing.T) {
 
 	// Set the aggregate flag
 	require.NoError(t, cmdCmd.Flags().Set("aggregate", "Order"))
-	require.NoError(t, cmdCmd.Flags().Set("force", "true"))
+	require.NoError(t, cmdCmd.Flags().Set("non-interactive", "true"))
 
 	err := cmdCmd.RunE(cmdCmd, []string{"CancelOrder"})
 	assert.NoError(t, err)
@@ -2354,7 +2354,7 @@ func TestMigrateUpCommand_WithStepsFlag(t *testing.T) {
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
 	require.NoError(t, upCmd.Flags().Set("steps", "1"))
-	require.NoError(t, upCmd.Flags().Set("force", "true"))
+	require.NoError(t, upCmd.Flags().Set("non-interactive", "true"))
 
 	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err)
@@ -2373,7 +2373,7 @@ func TestMigrateDownCommand_WithStepsFlag(t *testing.T) {
 	cmd := NewMigrateCommand()
 	downCmd, _, _ := cmd.Find([]string{"down"})
 	require.NoError(t, downCmd.Flags().Set("steps", "1"))
-	require.NoError(t, downCmd.Flags().Set("force", "true"))
+	require.NoError(t, downCmd.Flags().Set("non-interactive", "true"))
 
 	err := downCmd.RunE(downCmd, []string{})
 	assert.NoError(t, err)
@@ -2532,7 +2532,7 @@ func TestStreamListCommand_WithLimit(t *testing.T) {
 
 	cmd := NewStreamCommand()
 	listCmd, _, _ := cmd.Find([]string{"list"})
-	require.NoError(t, listCmd.Flags().Set("limit", "10"))
+	require.NoError(t, listCmd.Flags().Set("max-streams", "10"))
 
 	err := listCmd.RunE(listCmd, []string{})
 	assert.Error(t, err)
@@ -2648,7 +2648,7 @@ func TestMigrateUpCommand_NoPendingMigrations(t *testing.T) {
 
 	cmd := NewMigrateCommand()
 	upCmd, _, _ := cmd.Find([]string{"up"})
-	require.NoError(t, upCmd.Flags().Set("force", "true"))
+	require.NoError(t, upCmd.Flags().Set("non-interactive", "true"))
 
 	err := upCmd.RunE(upCmd, []string{})
 	assert.NoError(t, err)
@@ -3147,7 +3147,7 @@ func TestMigrateCommand_Execute_WithMemoryDriver(t *testing.T) {
 
 	t.Run("migrate up executes without error", func(t *testing.T) {
 		cmd := NewMigrateCommand()
-		cmd.SetArgs([]string{"up", "--force"})
+		cmd.SetArgs([]string{"up", "--non-interactive"})
 
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
@@ -3159,7 +3159,7 @@ func TestMigrateCommand_Execute_WithMemoryDriver(t *testing.T) {
 
 	t.Run("migrate down executes without error", func(t *testing.T) {
 		cmd := NewMigrateCommand()
-		cmd.SetArgs([]string{"down", "--force"})
+		cmd.SetArgs([]string{"down", "--non-interactive"})
 
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
@@ -3256,7 +3256,7 @@ func TestProjectionCommand_Execute_WithMemoryDriver(t *testing.T) {
 
 	t.Run("projection rebuild with non-existent projection", func(t *testing.T) {
 		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"rebuild", "non-existent", "--force"})
+		cmd.SetArgs([]string{"rebuild", "non-existent", "--yes"})
 
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
@@ -3372,7 +3372,7 @@ func TestMigrateUpCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 	)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3391,7 +3391,7 @@ func TestMigrateDownCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 	)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--force"})
+	cmd.SetArgs([]string{"down", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3430,7 +3430,7 @@ func TestStreamEventsCommand_WithFlags(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream", "--limit", "5", "--from", "10"})
+	cmd.SetArgs([]string{"events", "test-stream", "--max-events", "5", "--from", "10"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3445,7 +3445,7 @@ func TestStreamListCommand_WithLimitFlag(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list", "--limit", "50"})
+	cmd.SetArgs([]string{"list", "--max-streams", "50"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3537,7 +3537,7 @@ func TestProjectionRebuildCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 	)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "test-projection", "--force"})
+	cmd.SetArgs([]string{"rebuild", "test-projection", "--yes"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3654,8 +3654,8 @@ func TestGenerateAggregateCommand_WithEvents(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewGenerateCommand()
-	// Use --force to skip interactive prompts and --events with predefined events
-	cmd.SetArgs([]string{"aggregate", "TestAggregate", "--events", "Created,Updated", "--force"})
+	// Use --non-interactive to skip interactive prompts and --events with predefined events
+	cmd.SetArgs([]string{"aggregate", "TestAggregate", "--events", "Created,Updated", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3690,8 +3690,8 @@ func TestGenerateProjectionCommand_Execute(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewGenerateCommand()
-	// Use --events (plural) or -e, and --force to skip interactive prompts
-	cmd.SetArgs([]string{"projection", "TestProjection", "--events", "TestEvent", "--force"})
+	// Use --events (plural) or -e, and --non-interactive to skip interactive prompts
+	cmd.SetArgs([]string{"projection", "TestProjection", "--events", "TestEvent", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4100,7 +4100,7 @@ func TestStreamEventsCommand_WithLimit(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream", "--limit", "5"})
+	cmd.SetArgs([]string{"events", "test-stream", "--max-events", "5"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4197,7 +4197,7 @@ func TestGenerateAggregateCommand_WithForce(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "ForceTest", "--force"})
+	cmd.SetArgs([]string{"aggregate", "ForceTest", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4212,7 +4212,7 @@ func TestGenerateProjectionCommand_WithForce(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "ForceProjection", "--force"})
+	cmd.SetArgs([]string{"projection", "ForceProjection", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4227,7 +4227,7 @@ func TestGenerateCommandCommand_WithForce(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "ForceCommand", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"command", "ForceCommand", "--aggregate", "Order", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4381,7 +4381,7 @@ func TestMigrateUpCommand_PostgreSQL_Integration(t *testing.T) {
 	))
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4415,7 +4415,7 @@ func TestMigrateDownCommand_PostgreSQL_Integration(t *testing.T) {
 	))
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--force"})
+	cmd.SetArgs([]string{"down", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4435,7 +4435,7 @@ func TestMigrateStatusCommand_PostgreSQL_Integration(t *testing.T) {
 	)
 
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status", "--force"})
+	cmd.SetArgs([]string{"status", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4495,7 +4495,7 @@ func TestProjectionRebuildCommand_PostgreSQL_Integration(t *testing.T) {
 	)
 
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "test-projection", "--force"})
+	cmd.SetArgs([]string{"rebuild", "test-projection", "--yes"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4748,9 +4748,9 @@ func TestMigrateStatusCommand_PostgreSQL_WithMigrations(t *testing.T) {
 	err := os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_test.sql"), []byte(migrationSQL), 0644)
 	require.NoError(t, err)
 
-	// Run migrate up first to apply migration (use --force to skip interactive UI)
+	// Run migrate up first to apply migration (use --non-interactive to skip interactive UI)
 	upCmd := NewMigrateCommand()
-	upCmd.SetArgs([]string{"up", "--force"})
+	upCmd.SetArgs([]string{"up", "--non-interactive"})
 	var upBuf bytes.Buffer
 	upCmd.SetOut(&upBuf)
 	upCmd.SetErr(&upBuf)
@@ -4789,9 +4789,9 @@ func TestMigrateDownCommand_PostgreSQL_WithAppliedMigration(t *testing.T) {
 	err = os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_down_test.down.sql"), []byte(downSQL), 0644)
 	require.NoError(t, err)
 
-	// Apply migration first (use --force to skip interactive UI)
+	// Apply migration first (use --non-interactive to skip interactive UI)
 	upCmd := NewMigrateCommand()
-	upCmd.SetArgs([]string{"up", "--force"})
+	upCmd.SetArgs([]string{"up", "--non-interactive"})
 	var upBuf bytes.Buffer
 	upCmd.SetOut(&upBuf)
 	upCmd.SetErr(&upBuf)
@@ -4799,7 +4799,7 @@ func TestMigrateDownCommand_PostgreSQL_WithAppliedMigration(t *testing.T) {
 
 	// Now roll back
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--force"})
+	cmd.SetArgs([]string{"down", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4905,7 +4905,7 @@ func TestProjectionRebuildCommand_PostgreSQL_WithProjection(t *testing.T) {
 
 	// Now run rebuild
 	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "test-rebuild-projection", "--force"})
+	cmd.SetArgs([]string{"rebuild", "test-rebuild-projection", "--yes"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -5112,9 +5112,9 @@ func TestMigrateDownCommand_PostgreSQL_NoDownFile(t *testing.T) {
 	err := os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_uponly.sql"), []byte(upSQL), 0644)
 	require.NoError(t, err)
 
-	// Apply migration first (use --force to skip interactive UI)
+	// Apply migration first (use --non-interactive to skip interactive UI)
 	upCmd := NewMigrateCommand()
-	upCmd.SetArgs([]string{"up", "--force"})
+	upCmd.SetArgs([]string{"up", "--non-interactive"})
 	var upBuf bytes.Buffer
 	upCmd.SetOut(&upBuf)
 	upCmd.SetErr(&upBuf)
@@ -5122,7 +5122,7 @@ func TestMigrateDownCommand_PostgreSQL_NoDownFile(t *testing.T) {
 
 	// Now try to roll back (should skip due to no down file)
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--force"})
+	cmd.SetArgs([]string{"down", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -5199,9 +5199,9 @@ func TestMigrateDownCommand_PostgreSQL_MultipleSteps(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Apply all migrations (use --force to skip interactive UI)
+	// Apply all migrations (use --non-interactive to skip interactive UI)
 	upCmd := NewMigrateCommand()
-	upCmd.SetArgs([]string{"up", "--force"})
+	upCmd.SetArgs([]string{"up", "--non-interactive"})
 	var upBuf bytes.Buffer
 	upCmd.SetOut(&upBuf)
 	upCmd.SetErr(&upBuf)
@@ -5209,7 +5209,7 @@ func TestMigrateDownCommand_PostgreSQL_MultipleSteps(t *testing.T) {
 
 	// Roll back 2 steps
 	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--steps", "2", "--force"})
+	cmd.SetArgs([]string{"down", "--steps", "2", "--non-interactive"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)

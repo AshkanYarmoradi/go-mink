@@ -40,7 +40,7 @@ Examples:
 
 func newMigrateUpCommand() *cobra.Command {
 	var steps int
-	var force bool
+	var nonInteractive bool
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -72,8 +72,8 @@ By default, applies all pending migrations. Use --steps to limit.`,
 			}
 			defer cleanup()
 
-			// Show spinner while connecting (skip if --force)
-			if !force {
+			// Show spinner while connecting (skip if --non-interactive)
+			if !nonInteractive {
 				spinner := ui.NewSpinner("Connecting to database...", ui.SpinnerDots)
 				p := tea.NewProgram(spinner)
 
@@ -136,14 +136,14 @@ By default, applies all pending migrations. Use --steps to limit.`,
 	}
 
 	cmd.Flags().IntVarP(&steps, "steps", "n", 0, "Number of migrations to apply (0 = all)")
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive elements (for scripting)")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive elements (for scripting)")
 
 	return cmd
 }
 
 func newMigrateDownCommand() *cobra.Command {
 	var steps int
-	var force bool
+	var nonInteractive bool
 
 	cmd := &cobra.Command{
 		Use:   "down",
@@ -152,7 +152,7 @@ func newMigrateDownCommand() *cobra.Command {
 
 By default, rolls back the last migration. Use --steps to rollback more.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = force // Used for scripting (skip interactive elements)
+			_ = nonInteractive // Used for scripting (skip interactive elements)
 			ctx := cmd.Context()
 
 			cwd, err := os.Getwd()
@@ -234,7 +234,7 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 	}
 
 	cmd.Flags().IntVarP(&steps, "steps", "n", 1, "Number of migrations to rollback")
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip interactive elements (for scripting)")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive elements (for scripting)")
 
 	return cmd
 }

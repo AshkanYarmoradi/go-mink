@@ -78,7 +78,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 2: Generate Order aggregate with events")
 
 	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "Order", "--events", "Created,ItemAdded,Shipped", "--force"})
+	cmd.SetArgs([]string{"aggregate", "Order", "--events", "Created,ItemAdded,Shipped", "--non-interactive"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -92,7 +92,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 3: Generate OrderSummary projection")
 
 	cmd = NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderItemAdded,OrderShipped", "--force"})
+	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderItemAdded,OrderShipped", "--non-interactive"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -105,7 +105,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 4: Generate CreateOrder command")
 
 	cmd = NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "CreateOrder", "--aggregate", "Order", "--force"})
+	cmd.SetArgs([]string{"command", "CreateOrder", "--aggregate", "Order", "--non-interactive"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -162,7 +162,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 7: Apply migration")
 
 	cmd = NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -300,7 +300,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 17: Rebuild projection")
 
 	cmd = NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "E2EOrderSummary", "--force"})
+	cmd.SetArgs([]string{"rebuild", "E2EOrderSummary", "--yes"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -401,7 +401,7 @@ func TestE2E_MultiAggregateWorkflow(t *testing.T) {
 
 	for _, agg := range aggregates {
 		cmd := NewGenerateCommand()
-		cmd.SetArgs([]string{"aggregate", agg.name, "--events", agg.events, "--force"})
+		cmd.SetArgs([]string{"aggregate", agg.name, "--events", agg.events, "--non-interactive"})
 		err := cmd.Execute()
 		require.NoError(t, err)
 		assert.FileExists(t, filepath.Join(tmpDir, "internal/domain", strings.ToLower(agg.name)+".go"))
@@ -419,7 +419,7 @@ func TestE2E_MultiAggregateWorkflow(t *testing.T) {
 
 	for _, proj := range projections {
 		cmd := NewGenerateCommand()
-		cmd.SetArgs([]string{"projection", proj.name, "--events", proj.events, "--force"})
+		cmd.SetArgs([]string{"projection", proj.name, "--events", proj.events, "--non-interactive"})
 		err := cmd.Execute()
 		require.NoError(t, err)
 		assert.FileExists(t, filepath.Join(tmpDir, "internal/projections", strings.ToLower(proj.name)+".go"))
@@ -520,7 +520,7 @@ func TestE2E_MigrationLifecycle(t *testing.T) {
 	// Apply all migrations
 	t.Log("Applying all migrations")
 	cmd = NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--force"})
+	cmd.SetArgs([]string{"up", "--non-interactive"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -639,7 +639,7 @@ func TestE2E_ProjectionManagement(t *testing.T) {
 	// Rebuild projection
 	t.Log("Rebuilding SalesReport")
 	cmd = NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "SalesReport", "--force"})
+	cmd.SetArgs([]string{"rebuild", "SalesReport", "--yes"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
