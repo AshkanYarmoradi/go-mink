@@ -6198,9 +6198,9 @@ func TestMigrateCommands_ErrorConditions(t *testing.T) {
 			err := executeCmd(NewMigrateCommand(), tt.args)
 			if tt.wantErr {
 				assert.Error(t, err)
-			} else {
-				// Don't assert NoError - may succeed or fail based on impl
 			}
+			// Note: When wantErr is false, we don't assert NoError since
+			// the command may succeed or fail based on implementation details
 		})
 	}
 }
