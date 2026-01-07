@@ -1339,14 +1339,6 @@ func TestPostgresAdapter_ListStreams(t *testing.T) {
 		require.NoError(t, err)
 		assert.LessOrEqual(t, len(streams), 1)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.ListStreams(ctx, "", 10)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
@@ -1397,14 +1389,6 @@ func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
 		assert.Len(t, result, 1)
 		assert.Equal(t, "E2", result[0].Type)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetStreamEvents(ctx, "any", 0, 10)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
@@ -1429,14 +1413,6 @@ func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, stats.TotalEvents, int64(0))
 		assert.GreaterOrEqual(t, stats.TotalStreams, int64(0))
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetEventStoreStats(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 
@@ -1478,14 +1454,6 @@ func TestPostgresAdapter_ListProjections(t *testing.T) {
 		}
 		assert.True(t, found)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.ListProjections(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_GetProjection(t *testing.T) {
@@ -1522,14 +1490,6 @@ func TestPostgresAdapter_GetProjection(t *testing.T) {
 		assert.Equal(t, projName, proj.Name)
 		assert.Equal(t, int64(100), proj.Position)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetProjection(ctx, "any")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
@@ -1560,14 +1520,6 @@ func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
 		proj, err := adapter.GetProjection(ctx, projName)
 		require.NoError(t, err)
 		assert.Equal(t, "paused", proj.Status)
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		err := closedAdapter.SetProjectionStatus(ctx, "any", "running")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 
@@ -1600,14 +1552,6 @@ func TestPostgresAdapter_ResetProjectionCheckpoint(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, uint64(0), pos)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		err := closedAdapter.ResetProjectionCheckpoint(ctx, "any")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
@@ -1631,14 +1575,6 @@ func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
 		count, err := adapter.GetTotalEventCount(ctx)
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, count, int64(0))
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetTotalEventCount(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 
@@ -1686,20 +1622,6 @@ func TestPostgresAdapter_Migrations(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotContains(t, migrations, migName)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetAppliedMigrations(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-
-		err = closedAdapter.RecordMigration(ctx, "any")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-
-		err = closedAdapter.RemoveMigrationRecord(ctx, "any")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
@@ -1726,14 +1648,6 @@ func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
 
 		// Cleanup
 		_ = adapter.ExecuteSQL(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		err := closedAdapter.ExecuteSQL(ctx, "SELECT 1")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 
@@ -1782,14 +1696,6 @@ func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
 		assert.True(t, info.Connected)
 		assert.NotEmpty(t, info.Version)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.GetDiagnosticInfo(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
 }
 
 func TestPostgresAdapter_CheckSchema(t *testing.T) {
@@ -1814,14 +1720,6 @@ func TestPostgresAdapter_CheckSchema(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.TableExists)
 		assert.GreaterOrEqual(t, result.EventCount, int64(0))
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
-
-		_, err := closedAdapter.CheckSchema(ctx, "events")
-		assert.ErrorIs(t, err, ErrAdapterClosed)
 	})
 }
 
@@ -1879,14 +1777,52 @@ func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
 		assert.GreaterOrEqual(t, health.TotalProjections, int64(1))
 		assert.NotEmpty(t, health.Message)
 	})
+}
 
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+// TestPostgresAdapter_ClosedAdapterErrors consolidates all "closed adapter" error tests
+// to reduce code duplication. Each operation on a closed adapter should return ErrAdapterClosed.
+func TestPostgresAdapter_ClosedAdapterErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
 
-		_, err := closedAdapter.GetProjectionHealth(ctx)
-		assert.ErrorIs(t, err, ErrAdapterClosed)
-	})
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+
+	// Define test cases for each adapter method that should fail when closed
+	tests := []struct {
+		name string
+		fn   func(*PostgresAdapter) error
+	}{
+		{"ListStreams", func(a *PostgresAdapter) error { _, err := a.ListStreams(ctx, "", 10); return err }},
+		{"GetStreamEvents", func(a *PostgresAdapter) error { _, err := a.GetStreamEvents(ctx, "any", 0, 10); return err }},
+		{"GetEventStoreStats", func(a *PostgresAdapter) error { _, err := a.GetEventStoreStats(ctx); return err }},
+		{"ListProjections", func(a *PostgresAdapter) error { _, err := a.ListProjections(ctx); return err }},
+		{"GetProjection", func(a *PostgresAdapter) error { _, err := a.GetProjection(ctx, "test"); return err }},
+		{"SetProjectionStatus", func(a *PostgresAdapter) error { return a.SetProjectionStatus(ctx, "test", "paused") }},
+		{"ResetProjectionCheckpoint", func(a *PostgresAdapter) error { return a.ResetProjectionCheckpoint(ctx, "test") }},
+		{"GetTotalEventCount", func(a *PostgresAdapter) error { _, err := a.GetTotalEventCount(ctx); return err }},
+		{"GetAppliedMigrations", func(a *PostgresAdapter) error { _, err := a.GetAppliedMigrations(ctx); return err }},
+		{"RecordMigration", func(a *PostgresAdapter) error { return a.RecordMigration(ctx, "test") }},
+		{"GetDiagnosticInfo", func(a *PostgresAdapter) error { _, err := a.GetDiagnosticInfo(ctx); return err }},
+		{"CheckSchema", func(a *PostgresAdapter) error { _, err := a.CheckSchema(ctx, "events"); return err }},
+		{"GetProjectionHealth", func(a *PostgresAdapter) error { _, err := a.GetProjectionHealth(ctx); return err }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create and immediately close adapter
+			closedAdapter, _ := NewAdapter(connStr)
+			closedAdapter.Close()
+
+			err := tt.fn(closedAdapter)
+			assert.ErrorIs(t, err, ErrAdapterClosed)
+		})
+	}
 }
 
 func TestSubscriptionConfig(t *testing.T) {
