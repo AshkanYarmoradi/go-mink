@@ -151,6 +151,16 @@ func getSubcommandNames(cmd *cobra.Command) map[string]bool {
 	return names
 }
 
+// executeCmd runs a cobra command with args and returns the error.
+// It configures output/error buffers automatically.
+func executeCmd(cmd *cobra.Command, args []string) error {
+	cmd.SetArgs(args)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	return cmd.Execute()
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -3052,180 +3062,84 @@ func TestMigrateCommand_Execute_WithMemoryDriver(t *testing.T) {
 	env.createConfig(withDriver("memory"))
 	env.createMigrationFile("001_init.sql", "-- test")
 
-	t.Run("migrate status executes without error", func(t *testing.T) {
-		cmd := NewMigrateCommand()
-		cmd.SetArgs([]string{"status"})
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"migrate status executes without error", []string{"status"}},
+		{"migrate up executes without error", []string{"up", "--non-interactive"}},
+		{"migrate down executes without error", []string{"down", "--non-interactive"}},
+	}
 
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
-
-	t.Run("migrate up executes without error", func(t *testing.T) {
-		cmd := NewMigrateCommand()
-		cmd.SetArgs([]string{"up", "--non-interactive"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
-
-	t.Run("migrate down executes without error", func(t *testing.T) {
-		cmd := NewMigrateCommand()
-		cmd.SetArgs([]string{"down", "--non-interactive"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executeCmd(NewMigrateCommand(), tt.args)
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // Test stream commands via Execute
 func TestStreamCommand_Execute_WithMemoryDriver(t *testing.T) {
 	env := setupTestEnv(t, "mink-stream-exec-*")
 	env.createConfig(withDriver("memory"))
+	_ = env // cleanup is automatic
 
-	t.Run("stream list with memory driver", func(t *testing.T) {
-		cmd := NewStreamCommand()
-		cmd.SetArgs([]string{"list"})
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"stream list with memory driver", []string{"list"}},
+		{"stream stats with memory driver", []string{"stats"}},
+		{"stream events with memory driver", []string{"events", "test-stream"}},
+		{"stream export with memory driver", []string{"export", "test-stream"}},
+	}
 
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
-
-	t.Run("stream stats with memory driver", func(t *testing.T) {
-		cmd := NewStreamCommand()
-		cmd.SetArgs([]string{"stats"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
-
-	t.Run("stream events with memory driver", func(t *testing.T) {
-		cmd := NewStreamCommand()
-		cmd.SetArgs([]string{"events", "test-stream"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
-
-	t.Run("stream export with memory driver", func(t *testing.T) {
-		cmd := NewStreamCommand()
-		cmd.SetArgs([]string{"export", "test-stream"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		assert.NoError(t, err)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executeCmd(NewStreamCommand(), tt.args)
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // Test projection commands via Execute
 func TestProjectionCommand_Execute_WithMemoryDriver(t *testing.T) {
 	env := setupTestEnv(t, "mink-proj-exec-*")
 	env.createConfig(withDriver("memory"))
+	_ = env // cleanup is automatic
 
 	t.Run("projection list executes without error", func(t *testing.T) {
-		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"list"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
+		err := executeCmd(NewProjectionCommand(), []string{"list"})
 		assert.NoError(t, err)
 	})
 
-	t.Run("projection status with non-existent projection", func(t *testing.T) {
-		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"status", "non-existent"})
+	// Tests that should error because projection doesn't exist
+	errorTests := []struct {
+		name string
+		args []string
+	}{
+		{"projection status with non-existent projection", []string{"status", "non-existent"}},
+		{"projection rebuild with non-existent projection", []string{"rebuild", "non-existent", "--yes"}},
+		{"projection pause with non-existent projection", []string{"pause", "non-existent"}},
+		{"projection resume with non-existent projection", []string{"resume", "non-existent"}},
+	}
 
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		// Should error because projection doesn't exist
-		assert.Error(t, err)
-	})
-
-	t.Run("projection rebuild with non-existent projection", func(t *testing.T) {
-		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"rebuild", "non-existent", "--yes"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		// Should error because projection doesn't exist
-		assert.Error(t, err)
-	})
-
-	t.Run("projection pause with non-existent projection", func(t *testing.T) {
-		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"pause", "non-existent"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		// Should error because projection doesn't exist
-		assert.Error(t, err)
-	})
-
-	t.Run("projection resume with non-existent projection", func(t *testing.T) {
-		cmd := NewProjectionCommand()
-		cmd.SetArgs([]string{"resume", "non-existent"})
-
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-
-		err := cmd.Execute()
-		// Should error because projection doesn't exist
-		assert.Error(t, err)
-	})
+	for _, tt := range errorTests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executeCmd(NewProjectionCommand(), tt.args)
+			assert.Error(t, err)
+		})
+	}
 }
 
 // Test diagnose command execution
 func TestDiagnoseCommand_Execute(t *testing.T) {
 	env := setupTestEnv(t, "mink-diag-exec-*")
 	env.createConfig(withDriver("memory"))
+	_ = env // cleanup is automatic
 
-	cmd := NewDiagnoseCommand()
-	cmd.SetArgs([]string{})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewDiagnoseCommand(), []string{})
 	assert.NoError(t, err)
 	// The command should execute without error
 	// (Output goes to direct fmt.Print, not cmd.SetOut)
@@ -3239,14 +3153,7 @@ func TestMigrateUpCommand_WithPostgresDriver_NoConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-pg-noconfig-*")
 	_ = env // Don't create config - should fail
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"up"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
@@ -3255,14 +3162,7 @@ func TestMigrateDownCommand_WithPostgresDriver_NoConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-pg-down-*")
 	_ = env // Don't create config - should fail
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"down"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
@@ -3271,14 +3171,7 @@ func TestMigrateStatusCommand_WithPostgresDriver_NoConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-pg-status-*")
 	_ = env // Don't create config - should fail
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"status"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mink.yaml")
 }
@@ -3290,14 +3183,7 @@ func TestMigrateUpCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 		withDatabaseURL(""), // Empty URL
 	)
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"up", "--non-interactive"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
@@ -3309,14 +3195,7 @@ func TestMigrateDownCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 		withDatabaseURL(""),
 	)
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"down", "--non-interactive"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
@@ -3328,14 +3207,7 @@ func TestMigrateStatusCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 		withDatabaseURL(""),
 	)
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewMigrateCommand(), []string{"status"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL")
 }
@@ -3347,30 +3219,18 @@ func TestMigrateStatusCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 func TestStreamEventsCommand_WithFlags(t *testing.T) {
 	env := setupTestEnv(t, "mink-stream-flags-*")
 	env.createConfig(withDriver("memory"))
+	_ = env // cleanup is automatic
 
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream", "--max-events", "5", "--from", "10"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewStreamCommand(), []string{"events", "test-stream", "--max-events", "5", "--from", "10"})
 	assert.NoError(t, err)
 }
 
 func TestStreamListCommand_WithLimitFlag(t *testing.T) {
 	env := setupTestEnv(t, "mink-stream-list-limit-*")
 	env.createConfig(withDriver("memory"))
+	_ = env // cleanup is automatic
 
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list", "--max-streams", "50"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
+	err := executeCmd(NewStreamCommand(), []string{"list", "--max-streams", "50"})
 	assert.NoError(t, err)
 }
 
