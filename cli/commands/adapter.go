@@ -205,3 +205,66 @@ func SetupMigrationEnv(ctx context.Context) (*MigrationEnv, bool, error) {
 		cleanup:       cleanup,
 	}, false, nil
 }
+
+// DiagnosticSkipReason represents why a diagnostic check was skipped.
+type DiagnosticSkipReason int
+
+const (
+	// DiagnosticNotSkipped means the diagnostic should proceed.
+	DiagnosticNotSkipped DiagnosticSkipReason = iota
+	// DiagnosticSkipNoConfig means no configuration was found.
+	DiagnosticSkipNoConfig
+	// DiagnosticSkipMemoryDriver means the memory driver is being used.
+	DiagnosticSkipMemoryDriver
+	// DiagnosticSkipNoDBURL means the database URL is not set.
+	DiagnosticSkipNoDBURL
+)
+
+// DiagnosticEnv holds the environment for diagnostic checks that need database access.
+// This consolidates the repeated pattern of checking config, memory driver, and DB URL.
+type DiagnosticEnv struct {
+	Adapter CLIAdapter
+	Config  *config.Config
+	cleanup func()
+}
+
+// Close cleans up the DiagnosticEnv resources.
+func (e *DiagnosticEnv) Close() {
+	if e.cleanup != nil {
+		e.cleanup()
+	}
+}
+
+// SetupDiagnosticEnv creates a DiagnosticEnv for diagnostic checks.
+// Returns (env, skipReason, error). If skipReason != DiagnosticNotSkipped, the check should be skipped.
+func SetupDiagnosticEnv(ctx context.Context) (*DiagnosticEnv, DiagnosticSkipReason, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, DiagnosticNotSkipped, err
+	}
+
+	_, cfg, err := config.FindConfig(cwd)
+	if err != nil {
+		return nil, DiagnosticSkipNoConfig, nil
+	}
+
+	if cfg.Database.Driver == "memory" {
+		return nil, DiagnosticSkipMemoryDriver, nil
+	}
+
+	dbURL := os.ExpandEnv(cfg.Database.URL)
+	if dbURL == "" || dbURL == "${DATABASE_URL}" {
+		return nil, DiagnosticSkipNoDBURL, nil
+	}
+
+	adapter, cleanup, err := getAdapter(ctx)
+	if err != nil {
+		return nil, DiagnosticNotSkipped, err
+	}
+
+	return &DiagnosticEnv{
+		Adapter: adapter,
+		Config:  cfg,
+		cleanup: cleanup,
+	}, DiagnosticNotSkipped, nil
+}

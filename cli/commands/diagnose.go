@@ -186,27 +186,25 @@ func checkConfiguration() CheckResult {
 }
 
 func checkDatabaseConnection() CheckResult {
-	cwd, _ := os.Getwd()
-	_, cfg, err := config.FindConfig(cwd)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	env, skipReason, err := SetupDiagnosticEnv(ctx)
+	switch skipReason {
+	case DiagnosticSkipNoConfig:
 		return CheckResult{
 			Name:           "Database Connection",
 			Status:         StatusWarning,
 			Message:        "No configuration found",
 			Recommendation: "Run 'mink init' first",
 		}
-	}
-
-	if cfg.Database.Driver == "memory" {
+	case DiagnosticSkipMemoryDriver:
 		return CheckResult{
 			Name:    "Database Connection",
 			Status:  StatusOK,
 			Message: "Using in-memory driver (no connection needed)",
 		}
-	}
-
-	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if dbURL == "" || dbURL == "${DATABASE_URL}" {
+	case DiagnosticSkipNoDBURL:
 		return CheckResult{
 			Name:           "Database Connection",
 			Status:         StatusWarning,
@@ -214,12 +212,6 @@ func checkDatabaseConnection() CheckResult {
 			Recommendation: "Set DATABASE_URL environment variable",
 		}
 	}
-
-	// Use the adapter to check connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	adapter, cleanup, err := getAdapter(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:           "Database Connection",
@@ -228,10 +220,10 @@ func checkDatabaseConnection() CheckResult {
 			Recommendation: "Verify database credentials",
 		}
 	}
-	defer cleanup()
+	defer env.Close()
 
 	// Get diagnostic info via adapter
-	info, err := adapter.GetDiagnosticInfo(ctx)
+	info, err := env.Adapter.GetDiagnosticInfo(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:           "Database Connection",
@@ -258,30 +250,24 @@ func checkDatabaseConnection() CheckResult {
 }
 
 func checkEventStoreSchema() CheckResult {
-	cwd, _ := os.Getwd()
-	_, cfg, err := config.FindConfig(cwd)
-	if err != nil || cfg.Database.Driver == "memory" {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	env, skipReason, err := SetupDiagnosticEnv(ctx)
+	if skipReason == DiagnosticSkipNoConfig || skipReason == DiagnosticSkipMemoryDriver {
 		return CheckResult{
 			Name:    "Event Store Schema",
 			Status:  StatusOK,
 			Message: "Skipped (memory driver or no config)",
 		}
 	}
-
-	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if dbURL == "" || dbURL == "${DATABASE_URL}" {
+	if skipReason == DiagnosticSkipNoDBURL {
 		return CheckResult{
 			Name:    "Event Store Schema",
 			Status:  StatusWarning,
 			Message: "Skipped (no database URL)",
 		}
 	}
-
-	// Use adapter to check schema
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	adapter, cleanup, err := getAdapter(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:           "Event Store Schema",
@@ -290,9 +276,9 @@ func checkEventStoreSchema() CheckResult {
 			Recommendation: "Check database connection",
 		}
 	}
-	defer cleanup()
+	defer env.Close()
 
-	result, err := adapter.CheckSchema(ctx, cfg.EventStore.TableName)
+	result, err := env.Adapter.CheckSchema(ctx, env.Config.EventStore.TableName)
 	if err != nil {
 		return CheckResult{
 			Name:           "Event Store Schema",
@@ -319,30 +305,24 @@ func checkEventStoreSchema() CheckResult {
 }
 
 func checkProjections() CheckResult {
-	cwd, _ := os.Getwd()
-	_, cfg, err := config.FindConfig(cwd)
-	if err != nil || cfg.Database.Driver == "memory" {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	env, skipReason, err := SetupDiagnosticEnv(ctx)
+	if skipReason == DiagnosticSkipNoConfig || skipReason == DiagnosticSkipMemoryDriver {
 		return CheckResult{
 			Name:    "Projections",
 			Status:  StatusOK,
 			Message: "Skipped (memory driver or no config)",
 		}
 	}
-
-	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if dbURL == "" || dbURL == "${DATABASE_URL}" {
+	if skipReason == DiagnosticSkipNoDBURL {
 		return CheckResult{
 			Name:    "Projections",
 			Status:  StatusWarning,
 			Message: "Skipped (no database URL)",
 		}
 	}
-
-	// Use adapter to check projections
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	adapter, cleanup, err := getAdapter(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:           "Projections",
@@ -351,9 +331,9 @@ func checkProjections() CheckResult {
 			Recommendation: "Check database connection",
 		}
 	}
-	defer cleanup()
+	defer env.Close()
 
-	health, err := adapter.GetProjectionHealth(ctx)
+	health, err := env.Adapter.GetProjectionHealth(ctx)
 	if err != nil {
 		return CheckResult{
 			Name:    "Projections",
