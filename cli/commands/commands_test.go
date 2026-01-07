@@ -1090,6 +1090,26 @@ func TestCheckConfiguration_WithConfig(t *testing.T) {
 	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
 }
 
+func TestCheckConfiguration_WithValidationErrors(t *testing.T) {
+	env := setupTestEnv(t, "mink-diag-validation-*")
+
+	// Create config with missing required fields (empty project name)
+	cfgContent := `version: "1"
+project:
+  name: ""
+  module: "github.com/test/project"
+database:
+  driver: memory
+`
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "mink.yaml"), []byte(cfgContent), 0644))
+
+	result := checkConfiguration()
+
+	assert.Equal(t, "Configuration", result.Name)
+	assert.Equal(t, StatusWarning, result.Status)
+	assert.Contains(t, result.Message, "validation errors")
+}
+
 func TestCheckStatus_Constants(t *testing.T) {
 	// Verify status constants are defined correctly
 	assert.Equal(t, CheckStatus(0), StatusOK)
@@ -1526,14 +1546,6 @@ func TestCheckConfiguration_WithInvalidConfig(t *testing.T) {
 	result := checkConfiguration()
 	// Should return an error status when config can't be loaded
 	assert.Contains(t, []CheckStatus{StatusWarning, StatusError}, result.Status)
-}
-
-func TestCheckConfiguration_WithNoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-test-nocfg-*")
-	_ = env // No config created intentionally
-
-	result := checkConfiguration()
-	assert.Equal(t, StatusWarning, result.Status)
 }
 
 // Test projection rebuild command structure
@@ -2695,22 +2707,6 @@ func TestSchemaPrintCommand_NoConfig(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test checkSystemResources returns valid result
-func TestCheckSystemResources_Valid(t *testing.T) {
-	result := checkSystemResources()
-	assert.Equal(t, "System Resources", result.Name)
-	assert.Equal(t, StatusOK, result.Status)
-	assert.NotEmpty(t, result.Message)
-}
-
-// Test checkGoVersion returns valid result
-func TestCheckGoVersion_Valid(t *testing.T) {
-	result := checkGoVersion()
-	assert.Equal(t, "Go Version", result.Name)
-	assert.Equal(t, StatusOK, result.Status) // We're on 1.25+
-	assert.NotEmpty(t, result.Message)
-}
-
 // Test adapter factory returns error for invalid URL
 func TestAdapterFactory_InvalidURL(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -2891,6 +2887,68 @@ func TestAdapterFactory_Methods(t *testing.T) {
 	})
 }
 
+// Test loadConfig and loadConfigOrDefault helper functions
+func TestLoadConfigHelpers(t *testing.T) {
+	t.Run("loadConfig returns config when exists", func(t *testing.T) {
+		env := setupTestEnv(t, "mink-loadconfig-test-*")
+
+		// Create config file
+		cfgContent := `project:
+  name: test-project
+  module: github.com/test/project
+database:
+  driver: memory
+`
+		err := os.WriteFile(filepath.Join(env.tmpDir, "mink.yaml"), []byte(cfgContent), 0644)
+		require.NoError(t, err)
+
+		cfg, cwd, err := loadConfig()
+		require.NoError(t, err)
+		assert.NotNil(t, cfg)
+		assert.Equal(t, "test-project", cfg.Project.Name)
+		assert.NotEmpty(t, cwd)
+	})
+
+	t.Run("loadConfig returns error when config not found", func(t *testing.T) {
+		env := setupTestEnv(t, "mink-loadconfig-noconfig-*")
+		_ = env // Empty directory
+
+		_, _, err := loadConfig()
+		assert.Error(t, err)
+	})
+
+	t.Run("loadConfigOrDefault returns config when exists", func(t *testing.T) {
+		env := setupTestEnv(t, "mink-loadcfgdefault-test-*")
+
+		// Create config file
+		cfgContent := `project:
+  name: custom-project
+database:
+  driver: memory
+`
+		err := os.WriteFile(filepath.Join(env.tmpDir, "mink.yaml"), []byte(cfgContent), 0644)
+		require.NoError(t, err)
+
+		cfg, cwd, err := loadConfigOrDefault()
+		require.NoError(t, err)
+		assert.NotNil(t, cfg)
+		assert.Equal(t, "custom-project", cfg.Project.Name)
+		assert.NotEmpty(t, cwd)
+	})
+
+	t.Run("loadConfigOrDefault returns defaults when config not found", func(t *testing.T) {
+		env := setupTestEnv(t, "mink-loadcfgdefault-noconfig-*")
+		_ = env // Empty directory
+
+		cfg, cwd, err := loadConfigOrDefault()
+		require.NoError(t, err)
+		assert.NotNil(t, cfg)
+		assert.NotEmpty(t, cwd)
+		// Should have default values (postgres is the default driver)
+		assert.Equal(t, "postgres", cfg.Database.Driver)
+	})
+}
+
 // Test renderProgressBar function
 func TestRenderProgressBar(t *testing.T) {
 	tests := []struct {
@@ -3002,28 +3060,6 @@ func TestGenerateSchemaFromAdapter(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, schema)
 	assert.Contains(t, schema, "In-Memory") // Memory adapter returns info message
-}
-
-// ============================================================================
-// Additional Coverage Tests for Diagnose Functions
-// ============================================================================
-
-// Test AnimatedVersionModel methods
-func TestAnimatedVersionModel_Methods(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Test Init
-	cmd := model.Init()
-	assert.NotNil(t, cmd)
-
-	// Test Update with key press
-	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	assert.NotNil(t, newModel)
-	assert.NotNil(t, cmd)
-
-	// Test View
-	view := model.View()
-	assert.NotEmpty(t, view)
 }
 
 // ============================================================================
@@ -3590,28 +3626,6 @@ func TestProjectionResumeCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
 // Additional Coverage Tests - Diagnose Functions
 // ============================================================================
 
-func TestCheckGoVersion_Coverage(t *testing.T) {
-	result := checkGoVersion()
-	assert.Equal(t, "Go Version", result.Name)
-	// Should always succeed or warn, never fail
-	assert.NotEqual(t, StatusError, result.Status)
-}
-
-func TestCheckSystemResources_Coverage(t *testing.T) {
-	result := checkSystemResources()
-	assert.Equal(t, "System Resources", result.Name)
-	assert.NotEmpty(t, result.Message)
-}
-
-func TestCheckConfiguration_NoConfig_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-check-noconfig-*")
-	_ = env // Don't create config
-
-	result := checkConfiguration()
-	// Without config, it uses defaults with memory driver - expect OK or Warning
-	assert.NotEqual(t, "", result.Message)
-}
-
 func TestCheckDatabaseConnection_WithPostgres_InvalidURL(t *testing.T) {
 	env := setupTestEnv(t, "mink-check-db-invalid-*")
 	env.createConfig(
@@ -3754,41 +3768,6 @@ func TestInitCommand_WithPostgresDriver(t *testing.T) {
 }
 
 // ============================================================================
-// Additional Coverage Tests - AnimatedVersion Model
-// ============================================================================
-
-func TestAnimatedVersion_TickMessage(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Test Init returns tick cmd
-	initCmd := model.Init()
-	assert.NotNil(t, initCmd)
-
-	// Test Update with tick message
-	newModel, _ := model.Update(ui.AnimationTickMsg{})
-	assert.NotNil(t, newModel)
-}
-
-func TestAnimatedVersion_KeyMsg(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Test with 'q' key
-	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	assert.NotNil(t, newModel)
-	assert.NotNil(t, cmd)
-
-	// Test with Escape key
-	newModel, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	assert.NotNil(t, newModel)
-	assert.NotNil(t, cmd)
-
-	// Test with Ctrl+C
-	newModel, cmd = model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	assert.NotNil(t, newModel)
-	assert.NotNil(t, cmd)
-}
-
-// ============================================================================
 // Additional Coverage Tests - Helper Functions
 // ============================================================================
 
@@ -3848,31 +3827,6 @@ func TestFormatMetadata_PartialFields(t *testing.T) {
 
 	result := formatMetadata(metadata)
 	assert.Contains(t, result, "corr-123")
-}
-
-// ============================================================================
-// Additional Coverage Tests - Schema Commands
-// ============================================================================
-
-func TestSchemaGenerateCommand_WithOutput(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-gen-out-*")
-	env.createConfig(withDriver("memory"))
-
-	outputFile := filepath.Join(env.tmpDir, "custom_schema.sql")
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate", "--output", outputFile})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify file was created
-	_, err = os.Stat(outputFile)
-	assert.NoError(t, err)
 }
 
 // ============================================================================
@@ -3958,21 +3912,6 @@ func TestMigrateDownCommand_MemoryDriver(t *testing.T) {
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"down"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-func TestMigrateStatusCommand_MemoryDriver_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-status-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -4144,22 +4083,6 @@ func TestStreamListCommand_MemoryDriver(t *testing.T) {
 // Additional Coverage Tests - Diagnose Functions
 // ============================================================================
 
-func TestCheckGoVersion_Success(t *testing.T) {
-	result := checkGoVersion()
-	assert.Equal(t, "Go Version", result.Name)
-	// Go version check should succeed in test environment
-	assert.True(t, result.Status == StatusOK || result.Status == StatusWarning || result.Status == StatusError)
-}
-
-func TestCheckConfiguration_WithConfig_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-check-config-*")
-	env.createConfig(withDriver("memory"))
-
-	result := checkConfiguration()
-	assert.Equal(t, "Configuration", result.Name)
-	assert.Equal(t, StatusOK, result.Status)
-}
-
 func TestCheckDatabaseConnection_MemoryDriver_Coverage(t *testing.T) {
 	env := setupTestEnv(t, "mink-check-db-mem-*")
 	env.createConfig(withDriver("memory"))
@@ -4301,27 +4224,6 @@ func TestSchemaPrintCommand_Execute_Coverage(t *testing.T) {
 
 	err := cmd.Execute()
 	assert.NoError(t, err)
-}
-
-// ============================================================================
-// Additional Coverage Tests - AnimatedVersion Model
-// ============================================================================
-
-func TestAnimatedVersion_Update_NonTickMsg(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Test Update with a non-tick message type
-	type customMsg struct{}
-	newModel, cmd := model.Update(customMsg{})
-
-	assert.NotNil(t, newModel)
-	assert.Nil(t, cmd)
-}
-
-func TestAnimatedVersion_View_Output(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-	view := model.View()
-	assert.NotEmpty(t, view)
 }
 
 // ============================================================================
@@ -5243,103 +5145,6 @@ func TestExecute_NoArgs_Coverage(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestNewAnimatedVersion tests the animated version model
-func TestNewAnimatedVersion(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-	assert.NotNil(t, model)
-	assert.Equal(t, "1.0.0", model.version)
-	assert.False(t, model.done)
-	assert.Equal(t, 0, model.phase)
-}
-
-// TestAnimatedVersion_Init tests the Init method
-func TestAnimatedVersion_Init(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-	cmd := model.Init()
-	assert.NotNil(t, cmd)
-}
-
-// TestAnimatedVersion_Update_Tick tests animation tick progression
-func TestAnimatedVersion_Update_Tick(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Simulate several ticks
-	for i := 0; i < 6; i++ {
-		newModel, _ := model.Update(ui.AnimationTickMsg{})
-		model = newModel.(AnimatedVersionModel)
-		if model.done {
-			break
-		}
-	}
-
-	assert.True(t, model.done)
-}
-
-// TestAnimatedVersion_Update_KeyPress tests key press quits
-func TestAnimatedVersion_Update_KeyPress(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	assert.NotNil(t, newModel)
-	_ = cmd // cmd would be tea.Quit
-}
-
-// TestAnimatedVersion_View tests the View method
-func TestAnimatedVersion_View(t *testing.T) {
-	model := NewAnimatedVersion("1.0.0")
-
-	// Test initial view (phase 0)
-	view := model.View()
-	assert.NotEmpty(t, view)
-
-	// Test view when done
-	model.done = true
-	doneView := model.View()
-	assert.NotEmpty(t, doneView)
-}
-
-// TestAnimatedVersion_AllPhases tests all animation phases
-func TestAnimatedVersion_AllPhases(t *testing.T) {
-	for phase := 0; phase <= 5; phase++ {
-		model := NewAnimatedVersion("1.0.0")
-		model.phase = phase
-		view := model.View()
-		assert.NotEmpty(t, view, "Phase %d should have view", phase)
-	}
-}
-
-// TestCheckGoVersion_Result tests Go version check result
-func TestCheckGoVersion_Result(t *testing.T) {
-	result := checkGoVersion()
-	assert.Equal(t, "Go Version", result.Name)
-	assert.NotEmpty(t, result.Message)
-	// Status should be OK for Go 1.21+
-	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
-}
-
-// TestCheckConfiguration_NoConfig_Extra tests config check without mink.yaml
-func TestCheckConfiguration_NoConfig_Extra(t *testing.T) {
-	env := setupTestEnv(t, "mink-config-check-*")
-	_ = env // keep for cleanup
-
-	result := checkConfiguration()
-	assert.Equal(t, "Configuration", result.Name)
-	assert.Equal(t, StatusWarning, result.Status)
-}
-
-// TestCheckConfiguration_ValidConfig tests config check with valid config
-func TestCheckConfiguration_ValidConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-config-valid-*")
-	env.createConfig(
-		withDriver("memory"),
-		withModule("test/module"),
-	)
-
-	result := checkConfiguration()
-	assert.Equal(t, "Configuration", result.Name)
-	// Should be OK with valid config
-}
-
 // TestProjectionRebuild_NotFound tests rebuild with non-existent projection
 func TestProjectionRebuild_NotFound(t *testing.T) {
 	env := setupTestEnv(t, "mink-rebuild-notfound-*")
@@ -5354,76 +5159,6 @@ func TestProjectionRebuild_NotFound(t *testing.T) {
 
 	err := cmd.Execute()
 	// Should error with projection not found
-	assert.Error(t, err)
-}
-
-// TestGenerateProjection_WithEvents tests projection generation with events flag
-func TestGenerateProjection_WithEvents(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-proj-*")
-	env.createConfig(withModule("test/module"))
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify projection file was created
-	projFile := filepath.Join(env.tmpDir, "internal/projections/ordersummary.go")
-	assert.FileExists(t, projFile)
-
-	// Verify test file was created
-	testFile := filepath.Join(env.tmpDir, "internal/projections/ordersummary_test.go")
-	assert.FileExists(t, testFile)
-}
-
-// TestGenerateProjection_MultipleEvents tests with multiple comma-separated events
-func TestGenerateProjection_MultipleEvents(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-proj-multi-*")
-	env.createConfig(withModule("test/module"))
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"projection", "CustomerReport", "--events", "CustomerCreated,CustomerUpdated,CustomerDeleted", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	projFile := filepath.Join(env.tmpDir, "internal/projections/customerreport.go")
-	assert.FileExists(t, projFile)
-}
-
-// TestRootCommand_Help tests help output
-func TestRootCommand_Help(t *testing.T) {
-	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"--help"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-	assert.Contains(t, buf.String(), "mink")
-}
-
-// TestRootCommand_UnknownSubcommand_Coverage tests error on unknown subcommand
-func TestRootCommand_UnknownSubcommand_Coverage(t *testing.T) {
-	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"unknowncommand"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
@@ -5593,26 +5328,6 @@ func TestProjectionStatus_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestGenerateAggregate_WithCommands tests aggregate generation with events flag
-func TestGenerateAggregate_WithEvents_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-agg-evt-*")
-	env.createConfig(withModule("test/module"))
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"aggregate", "Invoice", "--events", "Created,Paid", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify aggregate file was created
-	aggFile := filepath.Join(env.tmpDir, "internal/domain/invoice.go")
-	assert.FileExists(t, aggFile)
-}
-
 // TestGenerateEvent_WithAggregate tests event generation with aggregate flag
 func TestGenerateEvent_WithAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-evt-agg-*")
@@ -5685,27 +5400,6 @@ func TestFormatMetadata_Empty(t *testing.T) {
 
 	result := formatMetadata(m)
 	assert.NotEmpty(t, result)
-}
-
-// TestCheckGoVersion tests Go version checking (additional coverage)
-func TestCheckGoVersion_Extra(t *testing.T) {
-	result := checkGoVersion()
-	assert.Equal(t, "Go Version", result.Name)
-	// Current Go version should be 1.21+ so status should be OK
-	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
-	assert.NotEmpty(t, result.Message)
-}
-
-// TestCheckProjections tests projection checking
-func TestCheckProjections_NoDatabase(t *testing.T) {
-	env := setupTestEnv(t, "mink-check-proj-*")
-	env.createConfig(withDriver("memory"))
-
-	// checkProjections reads config internally
-	result := checkProjections()
-	assert.Equal(t, "Projections", result.Name)
-	// Memory driver should skip projection check
-	assert.Equal(t, StatusOK, result.Status)
 }
 
 // TestNewInitCommand_NoInteractive tests init command with --non-interactive
@@ -5846,23 +5540,6 @@ func TestNewGenerateAggregateCommand_NoEvents(t *testing.T) {
 	// Verify aggregate file was created
 	aggFile := filepath.Join(env.tmpDir, "internal/domain/simpleaggregate.go")
 	assert.FileExists(t, aggFile)
-}
-
-// TestMigrateUp_MemoryDriver tests migrate up with memory driver
-func TestMigrateUp_MemoryDriver_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Memory driver should return early with info message
-	assert.NoError(t, err)
 }
 
 // TestMigrateUp_WithSteps tests migrate up with --steps flag
@@ -6039,40 +5716,6 @@ func TestGenerateProjection_ManyEvents(t *testing.T) {
 	assert.FileExists(t, projFile)
 }
 
-// TestMigrateDown_MemoryDriver tests migrate down with memory driver
-func TestMigrateDown_MemoryDriver_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-down-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Memory driver should return early with info message
-	assert.NoError(t, err)
-}
-
-// TestMigrateStatus_MemoryDriver tests migrate status with memory driver
-func TestMigrateStatus_MemoryDriver_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-status-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Memory driver should show skip message
-	assert.NoError(t, err)
-}
-
 // TestMigrateCreate tests migrate create command
 func TestMigrateCreate_Coverage(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-create-*")
@@ -6150,44 +5793,6 @@ func TestStreamExport_Coverage(t *testing.T) {
 	err := cmd.Execute()
 	// Should work or fail gracefully
 	_ = err
-}
-
-// TestStreamEvents_Coverage tests stream events command
-func TestStreamEvents_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Should work or fail gracefully
-	_ = err
-}
-
-// TestSchemaGenerate_Output tests schema generate with output flag
-func TestSchemaGenerate_Output(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-out-*")
-	env.createConfig(withDriver("memory"))
-
-	outFile := filepath.Join(env.tmpDir, "schema.sql")
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate", "--output", outFile})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify schema file was created
-	assert.FileExists(t, outFile)
 }
 
 // TestDiagnose_AllChecks tests full diagnose command

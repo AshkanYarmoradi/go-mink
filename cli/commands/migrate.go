@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/styles"
 	"github.com/AshkanYarmoradi/go-mink/cli/ui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -51,12 +50,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
+			cfg, cwd, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("no mink.yaml found: %w", err)
 			}
@@ -155,12 +149,7 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 			_ = nonInteractive // Used for scripting (skip interactive elements)
 			ctx := cmd.Context()
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
+			cfg, cwd, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("no mink.yaml found: %w", err)
 			}
@@ -246,12 +235,7 @@ func newMigrateStatusCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
+			cfg, cwd, err := loadConfig()
 			if err != nil {
 				return fmt.Errorf("no mink.yaml found: %w", err)
 			}
@@ -329,14 +313,9 @@ func newMigrateCreateCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			cwd, err := os.Getwd()
+			cfg, cwd, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				cfg = config.DefaultConfig()
 			}
 
 			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)

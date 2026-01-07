@@ -124,126 +124,95 @@ func cleanupTestDB(t *testing.T, db *sql.DB) {
 // Helper functions that wrap the postgres adapter
 // ============================================================================
 
-// listProjections wraps postgres adapter's ListProjections
-func listProjections(dbURL string) ([]adapters.ProjectionInfo, error) {
+// withAdapter executes a function with a postgres adapter, handling creation and cleanup
+func withAdapter[T any](dbURL string, fn func(*postgres.PostgresAdapter, context.Context) (T, error)) (T, error) {
+	var zero T
 	adapter, err := postgres.NewAdapter(dbURL)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.ListProjections(ctx)
+	return fn(adapter, context.Background())
 }
 
-// getProjection wraps postgres adapter's GetProjection
-func getProjection(dbURL string, name string) (*adapters.ProjectionInfo, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.GetProjection(ctx, name)
-}
-
-// setProjectionStatus wraps postgres adapter's SetProjectionStatus
-func setProjectionStatus(dbURL string, name string, status string) error {
+// withAdapterNoResult executes a function with a postgres adapter for operations that don't return a value
+func withAdapterNoResult(dbURL string, fn func(*postgres.PostgresAdapter, context.Context) error) error {
 	adapter, err := postgres.NewAdapter(dbURL)
 	if err != nil {
 		return err
 	}
 	defer adapter.Close()
+	return fn(adapter, context.Background())
+}
 
-	ctx := context.Background()
-	return adapter.SetProjectionStatus(ctx, name, status)
+// listProjections wraps postgres adapter's ListProjections
+func listProjections(dbURL string) ([]adapters.ProjectionInfo, error) {
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]adapters.ProjectionInfo, error) {
+		return a.ListProjections(ctx)
+	})
+}
+
+// getProjection wraps postgres adapter's GetProjection
+func getProjection(dbURL string, name string) (*adapters.ProjectionInfo, error) {
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) (*adapters.ProjectionInfo, error) {
+		return a.GetProjection(ctx, name)
+	})
+}
+
+// setProjectionStatus wraps postgres adapter's SetProjectionStatus
+func setProjectionStatus(dbURL string, name string, status string) error {
+	return withAdapterNoResult(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) error {
+		return a.SetProjectionStatus(ctx, name, status)
+	})
 }
 
 // getTotalEventCount wraps postgres adapter's GetTotalEventCount
 func getTotalEventCount(dbURL string) (int64, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return 0, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.GetTotalEventCount(ctx)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) (int64, error) {
+		return a.GetTotalEventCount(ctx)
+	})
 }
 
 // listStreams wraps postgres adapter's ListStreams
 func listStreams(dbURL string, prefix string, limit int) ([]adapters.StreamSummary, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.ListStreams(ctx, prefix, limit)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]adapters.StreamSummary, error) {
+		return a.ListStreams(ctx, prefix, limit)
+	})
 }
 
 // getStreamEvents wraps postgres adapter's GetStreamEvents
 func getStreamEvents(dbURL string, streamID string, fromVersion int64, limit int) ([]adapters.StoredEvent, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.GetStreamEvents(ctx, streamID, fromVersion, limit)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]adapters.StoredEvent, error) {
+		return a.GetStreamEvents(ctx, streamID, fromVersion, limit)
+	})
 }
 
 // getEventStoreStats wraps postgres adapter's GetEventStoreStats
 func getEventStoreStats(dbURL string) (*adapters.EventStoreStats, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.GetEventStoreStats(ctx)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) (*adapters.EventStoreStats, error) {
+		return a.GetEventStoreStats(ctx)
+	})
 }
 
 // getPendingMigrationsHelper returns migrations that haven't been applied yet
-// (wrapper with different signature for testing)
 func getPendingMigrationsHelper(dbURL string, migrationsDir string) ([]Migration, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return getPendingMigrations(ctx, adapter, migrationsDir)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]Migration, error) {
+		return getPendingMigrations(ctx, a, migrationsDir)
+	})
 }
 
 // getAppliedMigrationsHelper returns migrations that have been applied
-// (wrapper with different signature for testing)
 func getAppliedMigrationsHelper(dbURL string, migrationsDir string) ([]Migration, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return getAppliedMigrations(ctx, adapter, migrationsDir)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]Migration, error) {
+		return getAppliedMigrations(ctx, a, migrationsDir)
+	})
 }
 
 // getAppliedMigrationNames wraps postgres adapter's GetAppliedMigrations
 func getAppliedMigrationNames(dbURL string) ([]string, error) {
-	adapter, err := postgres.NewAdapter(dbURL)
-	if err != nil {
-		return nil, err
-	}
-	defer adapter.Close()
-
-	ctx := context.Background()
-	return adapter.GetAppliedMigrations(ctx)
+	return withAdapter(dbURL, func(a *postgres.PostgresAdapter, ctx context.Context) ([]string, error) {
+		return a.GetAppliedMigrations(ctx)
+	})
 }
 
 // recordMigration records a migration as applied
@@ -256,6 +225,101 @@ func recordMigration(db *sql.DB, name string) error {
 func removeMigrationRecord(db *sql.DB, name string) error {
 	_, err := db.Exec(`DELETE FROM mink.migrations WHERE name = $1`, name)
 	return err
+}
+
+// ============================================================================
+// Test environment helper for reducing duplication
+// ============================================================================
+
+// integrationTestEnv holds common integration test environment state
+type integrationTestEnv struct {
+	t      *testing.T
+	db     *sql.DB
+	tmpDir string
+	origWd string
+}
+
+// setupIntegrationEnv creates a test environment with database, temp dir, and config
+func setupIntegrationEnv(t *testing.T, prefix string) *integrationTestEnv {
+	t.Helper()
+	db := setupTestDB(t)
+
+	tmpDir, err := os.MkdirTemp("", prefix)
+	require.NoError(t, err)
+
+	origWd, _ := os.Getwd()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	env := &integrationTestEnv{
+		t:      t,
+		db:     db,
+		tmpDir: tmpDir,
+		origWd: origWd,
+	}
+	t.Cleanup(env.cleanup)
+	return env
+}
+
+// cleanup restores the original working directory and cleans up resources
+func (e *integrationTestEnv) cleanup() {
+	_ = os.Chdir(e.origWd)
+	cleanupTestDB(e.t, e.db)
+	os.RemoveAll(e.tmpDir)
+}
+
+// createConfig creates and saves a config file with postgres settings
+func (e *integrationTestEnv) createConfig() {
+	e.t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.Database.Driver = "postgres"
+	cfg.Database.URL = testDBURL
+	cfg.Project.Module = "github.com/test/project"
+	err := cfg.SaveFile(filepath.Join(e.tmpDir, "mink.yaml"))
+	require.NoError(e.t, err)
+}
+
+// createConfigWithMigrations creates config and migrations directory
+func (e *integrationTestEnv) createConfigWithMigrations() string {
+	e.t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.Database.Driver = "postgres"
+	cfg.Database.URL = testDBURL
+	cfg.Database.MigrationsDir = "migrations"
+	cfg.Project.Module = "github.com/test/project"
+	err := cfg.SaveFile(filepath.Join(e.tmpDir, "mink.yaml"))
+	require.NoError(e.t, err)
+
+	migrationsDir := filepath.Join(e.tmpDir, "migrations")
+	require.NoError(e.t, os.MkdirAll(migrationsDir, 0755))
+	return migrationsDir
+}
+
+// insertEvents inserts test events into the database
+func (e *integrationTestEnv) insertEvents(streamID string, eventTypes ...string) {
+	e.t.Helper()
+	// Insert stream first
+	_, err := e.db.Exec(`INSERT INTO mink.streams (stream_id, version) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		streamID, len(eventTypes))
+	require.NoError(e.t, err)
+
+	// Insert events
+	for i, eventType := range eventTypes {
+		_, err := e.db.Exec(`
+			INSERT INTO mink.events (stream_id, version, event_type, data) 
+			VALUES ($1, $2, $3, '{}')`,
+			streamID, i+1, eventType)
+		require.NoError(e.t, err)
+	}
+}
+
+// insertProjection inserts a test projection checkpoint
+func (e *integrationTestEnv) insertProjection(name string, position int64, status string) {
+	e.t.Helper()
+	_, err := e.db.Exec(`
+		INSERT INTO mink.checkpoints (projection_name, position, status) 
+		VALUES ($1, $2, $3)`,
+		name, position, status)
+	require.NoError(e.t, err)
 }
 
 // ============================================================================
@@ -662,22 +726,8 @@ func TestGetAppliedMigrations_Integration(t *testing.T) {
 // Test diagnose database connection check
 func TestCheckDatabaseConnection_Integration(t *testing.T) {
 	skipIfNoDatabase(t)
-
-	// Create temp dir with config
-	tmpDir, err := os.MkdirTemp("", "mink-diag-db-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-diag-db-test-*")
+	env.createConfig()
 
 	result := checkDatabaseConnection()
 
@@ -688,23 +738,8 @@ func TestCheckDatabaseConnection_Integration(t *testing.T) {
 
 // Test diagnose event store schema check
 func TestCheckEventStoreSchema_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-diag-schema-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-diag-schema-test-*")
+	env.createConfig()
 
 	result := checkEventStoreSchema()
 
@@ -716,37 +751,10 @@ func TestCheckEventStoreSchema_Integration(t *testing.T) {
 
 // Test diagnose projections check
 func TestCheckProjections_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	// Insert test projection
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('TestProjection', 100, 'active')
-	`)
-	require.NoError(t, err)
-
-	// Insert matching events
-	_, err = db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
-		('stream-1', 1, 'Event1', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-diag-proj-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-diag-proj-test-*")
+	env.createConfig()
+	env.insertProjection("TestProjection", 100, "active")
+	env.insertEvents("stream-1", "Event1")
 
 	result := checkProjections()
 
@@ -757,200 +765,78 @@ func TestCheckProjections_Integration(t *testing.T) {
 
 // Test command execution with database
 func TestProjectionListCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('OrderView', 50, 'active')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-proj-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-cmd-test-*")
+	env.createConfig()
+	env.insertProjection("OrderView", 50, "active")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"list"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestStreamListCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
-		('order-123', 1, 'OrderCreated', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-stream-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-stream-cmd-test-*")
+	env.createConfig()
+	env.insertEvents("order-123", "OrderCreated")
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"list"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestStreamEventsCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
-		('order-123', 1, 'OrderCreated', '{"orderId": "123"}'),
-		('order-123', 2, 'ItemAdded', '{"item": "widget"}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-stream-events-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-stream-events-test-*")
+	env.createConfig()
+	env.insertEvents("order-123", "OrderCreated", "ItemAdded")
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"events", "order-123"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestStreamStatsCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
-		('order-1', 1, 'OrderCreated', '{}'),
-		('order-2', 1, 'OrderCreated', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-stream-stats-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-stream-stats-test-*")
+	env.createConfig()
+	env.insertEvents("order-1", "OrderCreated")
+	env.insertEvents("order-2", "OrderCreated")
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"stats"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestMigrateStatusCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-status-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create migrations dir with files
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
+	env := setupIntegrationEnv(t, "mink-migrate-status-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 	os.WriteFile(filepath.Join(migrationsDir, "001_initial.sql"), []byte("-- up"), 0644)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"status"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 // Test stream export command
 func TestStreamExportCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
+	env := setupIntegrationEnv(t, "mink-export-test-*")
+	env.createConfig()
+	env.insertEvents("export-stream", "Created", "Updated")
 
-	_, err := db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data, metadata) VALUES
-		('export-stream', 1, 'Created', '{"id": "123"}', '{"user": "test"}'),
-		('export-stream', 2, 'Updated', '{"status": "active"}', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-export-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
-
-	outputFile := filepath.Join(tmpDir, "export.json")
+	outputFile := filepath.Join(env.tmpDir, "export.json")
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"export", "export-stream", "--output", outputFile})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify export file exists and has content
@@ -961,188 +847,84 @@ func TestStreamExportCommand_Integration(t *testing.T) {
 
 // Test projection status command
 func TestProjectionStatusCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('DetailedProjection', 100, 'active')
-	`)
-	require.NoError(t, err)
-
-	// Insert some events for lag calculation
-	_, err = db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
-		('stream-1', 1, 'Event1', '{}'),
-		('stream-1', 2, 'Event2', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-proj-status-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-status-test-*")
+	env.createConfig()
+	env.insertProjection("DetailedProjection", 100, "active")
+	env.insertEvents("stream-1", "Event1", "Event2")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"status", "DetailedProjection"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 // Test projection pause command
 func TestProjectionPauseCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('PauseTestProj', 50, 'active')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-proj-pause-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-pause-test-*")
+	env.createConfig()
+	env.insertProjection("PauseTestProj", 50, "active")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"pause", "PauseTestProj"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify status changed to paused
 	var status string
-	err = db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "PauseTestProj").Scan(&status)
+	err = env.db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "PauseTestProj").Scan(&status)
 	require.NoError(t, err)
 	assert.Equal(t, "paused", status)
 }
 
 // Test projection resume command
 func TestProjectionResumeCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('ResumeTestProj', 50, 'paused')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-proj-resume-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-resume-test-*")
+	env.createConfig()
+	env.insertProjection("ResumeTestProj", 50, "paused")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"resume", "ResumeTestProj"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify status changed to active
 	var status string
-	err = db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "ResumeTestProj").Scan(&status)
+	err = env.db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "ResumeTestProj").Scan(&status)
 	require.NoError(t, err)
 	assert.Equal(t, "active", status)
 }
 
 // Test projection rebuild command
 func TestProjectionRebuildCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
-		('RebuildTestProj', 100, 'active')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-proj-rebuild-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-rebuild-test-*")
+	env.createConfig()
+	env.insertProjection("RebuildTestProj", 100, "active")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"rebuild", "RebuildTestProj", "--yes"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify position reset to 0
 	var position int64
-	err = db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "RebuildTestProj").Scan(&position)
+	err = env.db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "RebuildTestProj").Scan(&position)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), position)
 }
 
 // Test migrate create command - non-interactive
 func TestMigrateCreateCommand_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-create-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create migrations dir
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	os.MkdirAll(migrationsDir, 0755)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-migrate-create-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"create", "add_users_table"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify migration files were created (up and down)
@@ -1163,233 +945,131 @@ func TestMigrateCreateCommand_Integration(t *testing.T) {
 
 // Test generate aggregate command with --non-interactive (skips interactive)
 func TestGenerateAggregateCommand_Force_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create mink.yaml config
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-agg-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"aggregate", "Order", "--events", "Created,Shipped", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify files were created (uses default config paths)
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/domain/order.go"))
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/domain/order_test.go"))
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/events/order_events.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/domain/order.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/domain/order_test.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/events/order_events.go"))
 }
 
 func TestGenerateAggregateCommand_ForceNoEvents_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-agg-noevt-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-agg-noevt-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	// Use --non-interactive without --events to skip the interactive form
 	cmd.SetArgs([]string{"aggregate", "Customer", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Should still create aggregate file, just without events
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/domain/customer.go"))
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/domain/customer_test.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/domain/customer.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/domain/customer_test.go"))
 }
 
 // Test generate event command with --non-interactive
 func TestGenerateEventCommand_Force_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-evt-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-evt-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"event", "OrderCreated", "--aggregate", "Order", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/events/ordercreated.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/events/ordercreated.go"))
 }
 
 func TestGenerateEventCommand_ForceNoAggregate_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-evt-noagg-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-evt-noagg-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	// Use --non-interactive without --aggregate to skip interactive form
 	cmd.SetArgs([]string{"event", "ItemAdded", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Event file should still be created even without aggregate
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/events/itemadded.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/events/itemadded.go"))
 }
 
 // Test generate projection command with --non-interactive
 func TestGenerateProjectionCommand_Force_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-proj-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/projections/ordersummary.go"))
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/projections/ordersummary_test.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/projections/ordersummary.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/projections/ordersummary_test.go"))
 }
 
 func TestGenerateProjectionCommand_ForceNoEvents_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-proj-noevt-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-proj-noevt-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"projection", "UserProfile", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/projections/userprofile.go"))
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/projections/userprofile_test.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/projections/userprofile.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/projections/userprofile_test.go"))
 }
 
 // Test generate command command with --non-interactive
 func TestGenerateCommandCommand_Force_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-cmd-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"command", "CreateOrder", "--aggregate", "Order", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/commands/createorder.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/commands/createorder.go"))
 }
 
 func TestGenerateCommandCommand_ForceNoAggregate_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-gen-cmd-noagg-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-gen-cmd-noagg-test-*")
+	env.createConfig()
 
 	cmd := NewGenerateCommand()
 	cmd.SetArgs([]string{"command", "UpdateItem", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
-	assert.FileExists(t, filepath.Join(tmpDir, "internal/commands/updateitem.go"))
+	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/commands/updateitem.go"))
 }
 
 // Test migrate up command with --non-interactive (skips spinner)
 func TestMigrateUpCommand_Force_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
+	env := setupIntegrationEnv(t, "mink-migrate-up-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create mink.yaml config
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations directory with a test migration
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	err = os.MkdirAll(migrationsDir, 0755)
-	require.NoError(t, err)
-
+	// Create a test migration
 	migrationContent := `CREATE TABLE IF NOT EXISTS test_migrate_up (id INT);`
-	err = os.WriteFile(filepath.Join(migrationsDir, "001_create_test.sql"), []byte(migrationContent), 0644)
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_create_test.sql"), []byte(migrationContent), 0644)
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--non-interactive"})
@@ -1399,68 +1079,32 @@ func TestMigrateUpCommand_Force_Integration(t *testing.T) {
 
 	// Verify the migration was applied
 	var exists bool
-	err = db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_up')`).Scan(&exists)
+	err = env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_up')`).Scan(&exists)
 	assert.NoError(t, err)
 	assert.True(t, exists, "Migration should have created test_migrate_up table")
 
 	// Cleanup
-	db.Exec(`DROP TABLE IF EXISTS test_migrate_up`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_migrate_up`)
 }
 
 func TestMigrateUpCommand_ForceNoMigrations_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-empty-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create empty migrations directory
-	err = os.MkdirAll(filepath.Join(tmpDir, "migrations"), 0755)
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-migrate-up-empty-test-*")
+	env.createConfigWithMigrations()
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--non-interactive"})
 
 	// Should succeed with "up to date" message
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestMigrateUpCommand_WithSteps_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-steps-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	err = os.MkdirAll(migrationsDir, 0755)
-	require.NoError(t, err)
+	env := setupIntegrationEnv(t, "mink-migrate-steps-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create 3 migrations
-	err = os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"),
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"),
 		[]byte(`CREATE TABLE IF NOT EXISTS test_up_first (id INT);`), 0644)
 	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(migrationsDir, "002_second.sql"),
@@ -1469,10 +1113,6 @@ func TestMigrateUpCommand_WithSteps_Integration(t *testing.T) {
 	err = os.WriteFile(filepath.Join(migrationsDir, "003_third.sql"),
 		[]byte(`CREATE TABLE IF NOT EXISTS test_up_third (id INT);`), 0644)
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	// Apply only 2 migrations
 	cmd := NewMigrateCommand()
@@ -1483,33 +1123,27 @@ func TestMigrateUpCommand_WithSteps_Integration(t *testing.T) {
 
 	// Verify only first two tables exist
 	var exists1, exists2, exists3 bool
-	db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_first')`).Scan(&exists1)
-	db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_second')`).Scan(&exists2)
-	db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_third')`).Scan(&exists3)
+	env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_first')`).Scan(&exists1)
+	env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_second')`).Scan(&exists2)
+	env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_up_third')`).Scan(&exists3)
 
 	assert.True(t, exists1, "First table should exist")
 	assert.True(t, exists2, "Second table should exist")
 	assert.False(t, exists3, "Third table should NOT exist (only 2 steps)")
 
 	// Cleanup
-	db.Exec(`DROP TABLE IF EXISTS test_up_first`)
-	db.Exec(`DROP TABLE IF EXISTS test_up_second`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_up_first`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_up_second`)
 }
 
 func TestMigrateUpCommand_MemoryDriver_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-memory-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
+	env := setupIntegrationEnv(t, "mink-migrate-up-memory-test-*")
+	// Override config with memory driver
 	cfg := config.DefaultConfig()
 	cfg.Database.Driver = "memory"
 	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
+	err := cfg.SaveFile(filepath.Join(env.tmpDir, "mink.yaml"))
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--non-interactive"})
@@ -1521,38 +1155,16 @@ func TestMigrateUpCommand_MemoryDriver_Integration(t *testing.T) {
 
 // Test migrate down command
 func TestMigrateDownCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create mink.yaml config
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations directory
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	err = os.MkdirAll(migrationsDir, 0755)
-	require.NoError(t, err)
+	env := setupIntegrationEnv(t, "mink-migrate-down-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create up and down migration files
 	upMigration := `CREATE TABLE IF NOT EXISTS test_migrate_down (id INT);`
 	downMigration := `DROP TABLE IF EXISTS test_migrate_down;`
-	err = os.WriteFile(filepath.Join(migrationsDir, "001_create_test.sql"), []byte(upMigration), 0644)
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_create_test.sql"), []byte(upMigration), 0644)
 	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(migrationsDir, "001_create_test.down.sql"), []byte(downMigration), 0644)
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	// First apply the migration
 	cmdUp := NewMigrateCommand()
@@ -1562,7 +1174,7 @@ func TestMigrateDownCommand_Integration(t *testing.T) {
 
 	// Verify table exists
 	var exists bool
-	err = db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_down')`).Scan(&exists)
+	err = env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_down')`).Scan(&exists)
 	require.NoError(t, err)
 	assert.True(t, exists, "Table should exist after migration up")
 
@@ -1573,74 +1185,34 @@ func TestMigrateDownCommand_Integration(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify table no longer exists
-	err = db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_down')`).Scan(&exists)
+	err = env.db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_migrate_down')`).Scan(&exists)
 	assert.NoError(t, err)
 	assert.False(t, exists, "Table should be dropped after migration down")
 
 	// Cleanup
-	db.Exec(`DROP TABLE IF EXISTS test_migrate_down`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_migrate_down`)
 }
 
 func TestMigrateDownCommand_NoMigrations_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-empty-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create empty migrations directory
-	err = os.MkdirAll(filepath.Join(tmpDir, "migrations"), 0755)
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-migrate-down-empty-test-*")
+	env.createConfigWithMigrations()
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"down"})
 
 	// Should succeed with "no migrations to rollback" message
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 func TestMigrateDownCommand_NoDownFile_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-nofile-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	err = os.MkdirAll(migrationsDir, 0755)
-	require.NoError(t, err)
+	env := setupIntegrationEnv(t, "mink-migrate-down-nofile-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create only up migration (no down file)
 	upMigration := `CREATE TABLE IF NOT EXISTS test_migrate_down_nofile (id INT);`
-	err = os.WriteFile(filepath.Join(migrationsDir, "001_create_nodown.sql"), []byte(upMigration), 0644)
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_create_nodown.sql"), []byte(upMigration), 0644)
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	// Apply the migration
 	cmdUp := NewMigrateCommand()
@@ -1655,31 +1227,15 @@ func TestMigrateDownCommand_NoDownFile_Integration(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Cleanup
-	db.Exec(`DROP TABLE IF EXISTS test_migrate_down_nofile`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_migrate_down_nofile`)
 }
 
 func TestMigrateDownCommand_MultipleSteps_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-steps-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	err = os.MkdirAll(migrationsDir, 0755)
-	require.NoError(t, err)
+	env := setupIntegrationEnv(t, "mink-migrate-down-steps-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create two migrations
-	err = os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"),
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_first.sql"),
 		[]byte(`CREATE TABLE IF NOT EXISTS test_first (id INT);`), 0644)
 	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(migrationsDir, "001_first.down.sql"),
@@ -1691,10 +1247,6 @@ func TestMigrateDownCommand_MultipleSteps_Integration(t *testing.T) {
 	err = os.WriteFile(filepath.Join(migrationsDir, "002_second.down.sql"),
 		[]byte(`DROP TABLE IF EXISTS test_second;`), 0644)
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	// Apply both migrations
 	cmdUp := NewMigrateCommand()
@@ -1709,24 +1261,18 @@ func TestMigrateDownCommand_MultipleSteps_Integration(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Cleanup
-	db.Exec(`DROP TABLE IF EXISTS test_first`)
-	db.Exec(`DROP TABLE IF EXISTS test_second`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_first`)
+	env.db.Exec(`DROP TABLE IF EXISTS test_second`)
 }
 
 func TestMigrateDownCommand_MemoryDriver_Integration(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-down-memory-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
+	env := setupIntegrationEnv(t, "mink-migrate-down-memory-test-*")
+	// Override config with memory driver
 	cfg := config.DefaultConfig()
 	cfg.Database.Driver = "memory"
 	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
+	err := cfg.SaveFile(filepath.Join(env.tmpDir, "mink.yaml"))
 	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
 
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"down"})
@@ -1738,27 +1284,12 @@ func TestMigrateDownCommand_MemoryDriver_Integration(t *testing.T) {
 
 // Test diagnose command with database
 func TestDiagnoseCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-diagnose-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-diagnose-test-*")
+	env.createConfig()
 
 	cmd := NewDiagnoseCommand()
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
@@ -1784,44 +1315,19 @@ func TestGetAllMigrations_Integration(t *testing.T) {
 
 // Test projection rebuild command with --yes
 func TestProjectionRebuildCommand_Force_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	// Create checkpoints table and projection entry
-	db.Exec(`
-		CREATE TABLE IF NOT EXISTS mink_checkpoints (
-			projection_name VARCHAR(255) PRIMARY KEY,
-			position BIGINT NOT NULL DEFAULT 0,
-			status VARCHAR(50) DEFAULT 'active',
-			updated_at TIMESTAMPTZ DEFAULT NOW()
-		)
-	`)
-	db.Exec(`INSERT INTO mink.checkpoints (projection_name, position) VALUES ('TestRebuildProj', 100)`)
-
-	tmpDir, err := os.MkdirTemp("", "mink-rebuild-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-proj-rebuild-force-test-*")
+	env.createConfig()
+	env.insertProjection("TestRebuildProj", 100, "active")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"rebuild", "TestRebuildProj", "--yes"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify checkpoint was reset
 	var position int64
-	err = db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "TestRebuildProj").Scan(&position)
+	err = env.db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "TestRebuildProj").Scan(&position)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), position)
 }
@@ -1871,272 +1377,126 @@ func TestProjectionRebuildCommand_NoDBURL_Integration(t *testing.T) {
 
 // Test stream events command
 func TestStreamEventsCommand_WithNoEvents_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-stream-events-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-stream-events-noevt-test-*")
+	env.createConfig()
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"events", "nonexistent-stream"})
 
 	// Should work even with no events
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 // Test stream stats command with data
 func TestStreamStatsCommand_WithData_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	// Insert some test events
-	db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) 
-		VALUES 
-			('stats-stream-1', 1, 'TestEvent', '{}'),
-			('stats-stream-2', 1, 'TestEvent', '{}')
-	`)
-
-	tmpDir, err := os.MkdirTemp("", "mink-stream-stats-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-stream-stats-data-test-*")
+	env.createConfig()
+	env.insertEvents("stats-stream-1", "TestEvent")
+	env.insertEvents("stats-stream-2", "TestEvent")
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"stats"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 }
 
 // Test migrate up command with actual PostgreSQL
 func TestMigrateUpCommand_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-up-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create config
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	// Create migrations directory
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	env := setupIntegrationEnv(t, "mink-migrate-up-pg-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create a test migration
 	migrationSQL := "-- Test migration\nSELECT 1;"
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_test.sql"), []byte(migrationSQL), 0644))
 
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
-
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify migration was recorded
 	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM mink.migrations WHERE name LIKE '001_%'`).Scan(&count)
+	err = env.db.QueryRow(`SELECT COUNT(*) FROM mink.migrations WHERE name LIKE '001_%'`).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 }
 
 // Test migrate up command with multiple migrations
 func TestMigrateUpCommand_MultipleMigrations_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-multi-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	env := setupIntegrationEnv(t, "mink-migrate-multi-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create multiple migrations
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_first.sql"), []byte("SELECT 1;"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_20260106000001_second.sql"), []byte("SELECT 2;"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "003_20260106000002_third.sql"), []byte("SELECT 3;"), 0644))
 
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
-
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify all migrations were applied
 	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM mink.migrations`).Scan(&count)
+	err = env.db.QueryRow(`SELECT COUNT(*) FROM mink.migrations`).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 3, count)
 }
 
 // Test migrate up with --steps flag (additional coverage)
 func TestMigrateUpCommand_WithSteps_Coverage(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	tmpDir, err := os.MkdirTemp("", "mink-migrate-steps-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Database.MigrationsDir = "migrations"
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	env := setupIntegrationEnv(t, "mink-migrate-steps-cov-test-*")
+	migrationsDir := env.createConfigWithMigrations()
 
 	// Create multiple migrations
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_first.sql"), []byte("SELECT 1;"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "002_20260106000001_second.sql"), []byte("SELECT 2;"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(migrationsDir, "003_20260106000002_third.sql"), []byte("SELECT 3;"), 0644))
 
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
-
 	// Only apply 2 steps
 	cmd := NewMigrateCommand()
 	cmd.SetArgs([]string{"up", "--steps", "2", "--non-interactive"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify only 2 migrations were applied
 	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM mink.migrations`).Scan(&count)
+	err = env.db.QueryRow(`SELECT COUNT(*) FROM mink.migrations`).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 }
 
 // Test projection rebuild with actual projection (additional coverage)
 func TestProjectionRebuildCommand_Coverage(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	// Insert a projection checkpoint
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) 
-		VALUES ('TestProjection', 100, 'active')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-rebuild-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-rebuild-cov-test-*")
+	env.createConfig()
+	env.insertProjection("TestProjection", 100, "active")
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"rebuild", "TestProjection", "--yes"})
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.NoError(t, err)
 
 	// Verify checkpoint was reset
 	var position int64
-	err = db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "TestProjection").Scan(&position)
+	err = env.db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "TestProjection").Scan(&position)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), position)
 }
 
 // Test checkProjections with actual projections (additional coverage)
 func TestCheckProjections_Coverage(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	// Insert some projections
-	_, err := db.Exec(`
-		INSERT INTO mink.checkpoints (projection_name, position, status) 
-		VALUES 
-			('Projection1', 50, 'active'),
-			('Projection2', 100, 'active')
-	`)
-	require.NoError(t, err)
-
-	// Insert some events to have a total count
-	_, err = db.Exec(`
-		INSERT INTO mink.events (stream_id, version, event_type, data) 
-		VALUES 
-			('check-proj-stream', 1, 'TestEvent', '{}'),
-			('check-proj-stream', 2, 'TestEvent', '{}')
-	`)
-	require.NoError(t, err)
-
-	tmpDir, err := os.MkdirTemp("", "mink-check-proj-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	cfg := config.DefaultConfig()
-	cfg.Database.Driver = "postgres"
-	cfg.Database.URL = testDBURL
-	cfg.Project.Module = "github.com/test/project"
-	err = cfg.SaveFile(filepath.Join(tmpDir, "mink.yaml"))
-	require.NoError(t, err)
-
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	env := setupIntegrationEnv(t, "mink-check-proj-cov-test-*")
+	env.createConfig()
+	env.insertProjection("Projection1", 50, "active")
+	env.insertProjection("Projection2", 100, "active")
+	env.insertEvents("check-proj-stream", "TestEvent", "TestEvent")
 
 	result := checkProjections()
 	assert.Equal(t, "Projections", result.Name)

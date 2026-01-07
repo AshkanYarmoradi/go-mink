@@ -40,14 +40,9 @@ func newSchemaGenerateCommand() *cobra.Command {
 			_ = nonInteractive // Used for scripting (skip interactive elements)
 			ctx := cmd.Context()
 
-			cwd, err := os.Getwd()
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				cfg = config.DefaultConfig()
 			}
 
 			schema, err := generateSchemaFromAdapter(ctx, cfg)
@@ -81,12 +76,10 @@ func newSchemaPrintCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			cwd, err := os.Getwd()
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
 			}
-
-			_, cfg, err := config.FindConfig(cwd)
 			if err != nil {
 				cfg = config.DefaultConfig()
 			}

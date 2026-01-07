@@ -9,7 +9,6 @@ import (
 	"text/template"
 	"unicode"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/styles"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -55,16 +54,10 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			// Find config
-			cwd, err := os.Getwd()
+			// Find config (use defaults if not found)
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				fmt.Println(styles.FormatWarning("No mink.yaml found. Using defaults."))
-				cfg = config.DefaultConfig()
 			}
 
 			// Interactive event selection if none provided (skip if --non-interactive)
@@ -182,14 +175,9 @@ func newGenerateEventCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			cwd, err := os.Getwd()
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				cfg = config.DefaultConfig()
 			}
 
 			// Interactive aggregate selection if not provided (skip if --non-interactive)
@@ -249,14 +237,9 @@ func newGenerateProjectionCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			cwd, err := os.Getwd()
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				cfg = config.DefaultConfig()
 			}
 
 			// Interactive event selection if none provided (skip if --non-interactive)
@@ -331,14 +314,9 @@ func newGenerateCommandCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			cwd, err := os.Getwd()
+			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
-			}
-
-			_, cfg, err := config.FindConfig(cwd)
-			if err != nil {
-				cfg = config.DefaultConfig()
 			}
 
 			// Interactive aggregate selection if not provided (skip if --non-interactive)

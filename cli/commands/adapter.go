@@ -95,12 +95,8 @@ func ensureContext(ctx context.Context) context.Context {
 // It handles config loading, URL resolution, and adapter creation.
 func getAdapter(ctx context.Context) (CLIAdapter, func(), error) {
 	ctx = ensureContext(ctx)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, nil, err
-	}
 
-	_, cfg, err := config.FindConfig(cwd)
+	cfg, _, err := loadConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("no mink.yaml found: %w", err)
 	}
@@ -128,12 +124,7 @@ func getAdapter(ctx context.Context) (CLIAdapter, func(), error) {
 func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func(), error) {
 	ctx = ensureContext(ctx)
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	_, cfg, err := config.FindConfig(cwd)
+	cfg, _, err := loadConfig()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("no mink.yaml found: %w", err)
 	}
@@ -155,4 +146,36 @@ func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func
 	}
 
 	return adapter, cfg, cleanup, nil
+}
+
+// loadConfig is a helper that loads config from the current working directory.
+// Returns (config, cwd, error).
+func loadConfig() (*config.Config, string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, "", err
+	}
+
+	_, cfg, err := config.FindConfig(cwd)
+	if err != nil {
+		return nil, cwd, err
+	}
+
+	return cfg, cwd, nil
+}
+
+// loadConfigOrDefault is like loadConfig but returns defaults if no config found.
+// Returns (config, cwd, error) - error only for os.Getwd failures.
+func loadConfigOrDefault() (*config.Config, string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, "", err
+	}
+
+	_, cfg, err := config.FindConfig(cwd)
+	if err != nil {
+		return config.DefaultConfig(), cwd, nil
+	}
+
+	return cfg, cwd, nil
 }
