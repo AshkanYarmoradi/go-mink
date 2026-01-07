@@ -1279,3 +1279,674 @@ func TestPostgresAdapter_WithConnectionMaxIdleTime(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// ============================================================================
+// CLI Support Functions Tests
+// ============================================================================
+
+func TestPostgresAdapter_ListStreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns empty list when no streams", func(t *testing.T) {
+		streams, err := adapter.ListStreams(ctx, "", 10)
+		require.NoError(t, err)
+		// May have streams from other tests - just verify it works
+		assert.NotNil(t, streams)
+	})
+
+	t.Run("returns streams after append", func(t *testing.T) {
+		// Create a unique stream
+		streamID := fmt.Sprintf("ListTest-%d", time.Now().UnixNano())
+		events := []adapters.EventRecord{
+			{Type: "TestEvent", Data: []byte(`{}`)},
+		}
+		_, err := adapter.Append(ctx, streamID, events, mink.NoStream)
+		require.NoError(t, err)
+
+		streams, err := adapter.ListStreams(ctx, "ListTest-", 10)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, len(streams), 1)
+
+		// Find our stream
+		found := false
+		for _, s := range streams {
+			if s.StreamID == streamID {
+				found = true
+				assert.Equal(t, int64(1), s.EventCount)
+				assert.Equal(t, "TestEvent", s.LastEventType)
+				break
+			}
+		}
+		assert.True(t, found, "Expected to find created stream")
+	})
+
+	t.Run("respects limit", func(t *testing.T) {
+		streams, err := adapter.ListStreams(ctx, "", 1)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(streams), 1)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.ListStreams(ctx, "", 10)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns events for stream", func(t *testing.T) {
+		streamID := fmt.Sprintf("EventsTest-%d", time.Now().UnixNano())
+		events := []adapters.EventRecord{
+			{Type: "Event1", Data: []byte(`{"seq":1}`)},
+			{Type: "Event2", Data: []byte(`{"seq":2}`)},
+		}
+		_, err := adapter.Append(ctx, streamID, events, mink.NoStream)
+		require.NoError(t, err)
+
+		result, err := adapter.GetStreamEvents(ctx, streamID, 0, 10)
+		require.NoError(t, err)
+		assert.Len(t, result, 2)
+		assert.Equal(t, "Event1", result[0].Type)
+		assert.Equal(t, "Event2", result[1].Type)
+	})
+
+	t.Run("respects offset and limit", func(t *testing.T) {
+		streamID := fmt.Sprintf("EventsOffsetTest-%d", time.Now().UnixNano())
+		events := []adapters.EventRecord{
+			{Type: "E1", Data: []byte(`{}`)},
+			{Type: "E2", Data: []byte(`{}`)},
+			{Type: "E3", Data: []byte(`{}`)},
+		}
+		_, err := adapter.Append(ctx, streamID, events, mink.NoStream)
+		require.NoError(t, err)
+
+		result, err := adapter.GetStreamEvents(ctx, streamID, 1, 1)
+		require.NoError(t, err)
+		assert.Len(t, result, 1)
+		assert.Equal(t, "E2", result[0].Type)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetStreamEvents(ctx, "any", 0, 10)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns stats", func(t *testing.T) {
+		stats, err := adapter.GetEventStoreStats(ctx)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, stats.TotalEvents, int64(0))
+		assert.GreaterOrEqual(t, stats.TotalStreams, int64(0))
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetEventStoreStats(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_ListProjections(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns projections list", func(t *testing.T) {
+		// Create a checkpoint which creates a projection entry
+		projName := fmt.Sprintf("TestProj-%d", time.Now().UnixNano())
+		err := adapter.SetCheckpoint(ctx, projName, 42)
+		require.NoError(t, err)
+
+		projections, err := adapter.ListProjections(ctx)
+		require.NoError(t, err)
+		assert.NotNil(t, projections)
+
+		// Find our projection
+		found := false
+		for _, p := range projections {
+			if p.Name == projName {
+				found = true
+				assert.Equal(t, int64(42), p.Position)
+				break
+			}
+		}
+		assert.True(t, found)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.ListProjections(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GetProjection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns nil for non-existent projection", func(t *testing.T) {
+		proj, err := adapter.GetProjection(ctx, "nonexistent-projection")
+		require.NoError(t, err)
+		assert.Nil(t, proj)
+	})
+
+	t.Run("returns projection info", func(t *testing.T) {
+		projName := fmt.Sprintf("GetProjTest-%d", time.Now().UnixNano())
+		err := adapter.SetCheckpoint(ctx, projName, 100)
+		require.NoError(t, err)
+
+		proj, err := adapter.GetProjection(ctx, projName)
+		require.NoError(t, err)
+		require.NotNil(t, proj)
+		assert.Equal(t, projName, proj.Name)
+		assert.Equal(t, int64(100), proj.Position)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetProjection(ctx, "any")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("sets projection status", func(t *testing.T) {
+		projName := fmt.Sprintf("StatusTest-%d", time.Now().UnixNano())
+		err := adapter.SetCheckpoint(ctx, projName, 50)
+		require.NoError(t, err)
+
+		err = adapter.SetProjectionStatus(ctx, projName, "paused")
+		require.NoError(t, err)
+
+		proj, err := adapter.GetProjection(ctx, projName)
+		require.NoError(t, err)
+		assert.Equal(t, "paused", proj.Status)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		err := closedAdapter.SetProjectionStatus(ctx, "any", "running")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_ResetProjectionCheckpoint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("resets checkpoint to zero", func(t *testing.T) {
+		projName := fmt.Sprintf("ResetTest-%d", time.Now().UnixNano())
+		err := adapter.SetCheckpoint(ctx, projName, 200)
+		require.NoError(t, err)
+
+		err = adapter.ResetProjectionCheckpoint(ctx, projName)
+		require.NoError(t, err)
+
+		pos, err := adapter.GetCheckpoint(ctx, projName)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		err := closedAdapter.ResetProjectionCheckpoint(ctx, "any")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns event count", func(t *testing.T) {
+		count, err := adapter.GetTotalEventCount(ctx)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, count, int64(0))
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetTotalEventCount(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_Migrations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("GetAppliedMigrations returns list", func(t *testing.T) {
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+		require.NoError(t, err)
+		assert.NotNil(t, migrations)
+	})
+
+	t.Run("RecordMigration and RemoveMigrationRecord", func(t *testing.T) {
+		migName := fmt.Sprintf("test_migration_%d", time.Now().UnixNano())
+
+		// Record
+		err := adapter.RecordMigration(ctx, migName)
+		require.NoError(t, err)
+
+		// Verify recorded
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, migrations, migName)
+
+		// Remove
+		err = adapter.RemoveMigrationRecord(ctx, migName)
+		require.NoError(t, err)
+
+		// Verify removed
+		migrations, err = adapter.GetAppliedMigrations(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, migrations, migName)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetAppliedMigrations(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+
+		err = closedAdapter.RecordMigration(ctx, "any")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+
+		err = closedAdapter.RemoveMigrationRecord(ctx, "any")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("executes SQL successfully", func(t *testing.T) {
+		tableName := fmt.Sprintf("test_table_%d", time.Now().UnixNano())
+		err := adapter.ExecuteSQL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT)", tableName))
+		require.NoError(t, err)
+
+		// Cleanup
+		_ = adapter.ExecuteSQL(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		err := closedAdapter.ExecuteSQL(ctx, "SELECT 1")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GenerateSchema(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	t.Run("generates schema SQL", func(t *testing.T) {
+		schema := adapter.GenerateSchema("test-project", "events", "snapshots", "outbox")
+		assert.Contains(t, schema, "CREATE TABLE")
+		assert.Contains(t, schema, "events")
+		assert.Contains(t, schema, "test-project")
+	})
+}
+
+func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns diagnostic info", func(t *testing.T) {
+		info, err := adapter.GetDiagnosticInfo(ctx)
+		require.NoError(t, err)
+		assert.True(t, info.Connected)
+		assert.NotEmpty(t, info.Version)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetDiagnosticInfo(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_CheckSchema(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("checks schema", func(t *testing.T) {
+		result, err := adapter.CheckSchema(ctx, "events")
+		require.NoError(t, err)
+		assert.True(t, result.TableExists)
+		assert.GreaterOrEqual(t, result.EventCount, int64(0))
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.CheckSchema(ctx, "events")
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	defer adapter.Close()
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+
+	t.Run("returns projection health", func(t *testing.T) {
+		health, err := adapter.GetProjectionHealth(ctx)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, health.TotalProjections, int64(0))
+	})
+
+	t.Run("returns health with projections behind", func(t *testing.T) {
+		// Create checkpoints table if it doesn't exist
+		_, _ = adapter.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS mink_checkpoints (
+				name VARCHAR(255) PRIMARY KEY,
+				position BIGINT NOT NULL DEFAULT 0,
+				updated_at TIMESTAMPTZ DEFAULT NOW()
+			)
+		`)
+
+		// Use a unique stream name
+		streamID := fmt.Sprintf("health-test-stream-%d", time.Now().UnixNano())
+
+		// Add some events first
+		events := []adapters.EventRecord{
+			{Type: "TestHealthEvent", Data: []byte(`{"test":"health"}`)},
+		}
+		_, err := adapter.Append(ctx, streamID, events, 0)
+		require.NoError(t, err)
+
+		// Create a checkpoint that is behind
+		_, err = adapter.db.ExecContext(ctx,
+			"INSERT INTO mink_checkpoints (name, position, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET position = $2",
+			"health_test_projection", 0)
+		require.NoError(t, err)
+
+		health, err := adapter.GetProjectionHealth(ctx)
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, health.TotalProjections, int64(1))
+		assert.NotEmpty(t, health.Message)
+	})
+
+	t.Run("returns error on closed adapter", func(t *testing.T) {
+		closedAdapter, _ := NewAdapter(connStr)
+		closedAdapter.Close()
+
+		_, err := closedAdapter.GetProjectionHealth(ctx)
+		assert.ErrorIs(t, err, ErrAdapterClosed)
+	})
+}
+
+func TestSubscriptionConfig(t *testing.T) {
+	t.Run("newSubscriptionConfig with defaults", func(t *testing.T) {
+		cfg := newSubscriptionConfig(nil)
+		assert.Equal(t, defaultSubscriptionBuffer, cfg.bufferSize)
+		assert.Equal(t, defaultPollInterval, cfg.pollInterval)
+		assert.Equal(t, defaultMaxRetries, cfg.maxRetries)
+		assert.Nil(t, cfg.onError)
+	})
+
+	t.Run("newSubscriptionConfig with empty options", func(t *testing.T) {
+		cfg := newSubscriptionConfig([]adapters.SubscriptionOptions{})
+		assert.Equal(t, defaultSubscriptionBuffer, cfg.bufferSize)
+		assert.Equal(t, defaultPollInterval, cfg.pollInterval)
+	})
+
+	t.Run("newSubscriptionConfig with custom options", func(t *testing.T) {
+		errorHandler := func(err error) {}
+		opts := []adapters.SubscriptionOptions{
+			{
+				BufferSize:   200,
+				PollInterval: time.Second * 5,
+				OnError:      errorHandler,
+			},
+		}
+		cfg := newSubscriptionConfig(opts)
+		assert.Equal(t, 200, cfg.bufferSize)
+		assert.Equal(t, time.Second*5, cfg.pollInterval)
+		assert.NotNil(t, cfg.onError)
+	})
+
+	t.Run("newSubscriptionConfig ignores zero values", func(t *testing.T) {
+		opts := []adapters.SubscriptionOptions{
+			{
+				BufferSize:   0,
+				PollInterval: 0,
+			},
+		}
+		cfg := newSubscriptionConfig(opts)
+		assert.Equal(t, defaultSubscriptionBuffer, cfg.bufferSize)
+		assert.Equal(t, defaultPollInterval, cfg.pollInterval)
+	})
+
+	t.Run("handleError with custom handler", func(t *testing.T) {
+		var capturedErr error
+		cfg := subscriptionConfig{
+			onError: func(err error) {
+				capturedErr = err
+			},
+		}
+		testErr := errors.New("test error")
+		cfg.handleError(testErr, "test context")
+		assert.Equal(t, testErr, capturedErr)
+	})
+
+	t.Run("handleError without custom handler logs error", func(t *testing.T) {
+		cfg := subscriptionConfig{}
+		// This will log to stdout but won't panic
+		cfg.handleError(errors.New("test error"), "test context")
+		// No assertion needed - just verify it doesn't panic
+	})
+}
