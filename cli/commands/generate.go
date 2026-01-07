@@ -502,20 +502,6 @@ func (a *{{$.Name}}) apply{{.Name}}(e {{.Name}}) error {
 // }
 `
 
-// eventTypeBlock is the template fragment for a single event type definition
-const eventTypeBlock = `// {{.EventName}} is emitted when {{.Aggregate}} {{.EventName | ToLower}}.
-type {{.EventName}} struct {
-	{{.Aggregate}}ID string    ` + "`json:\"{{.Aggregate | ToLower}}_id\"`" + `
-	Timestamp        time.Time ` + "`json:\"timestamp\"`" + `
-	// Add event-specific fields here
-}
-
-// EventType returns the event type name.
-func (e {{.EventName}}) EventType() string {
-	return "{{.EventName}}"
-}
-`
-
 var eventsFileTemplate = `package {{.Package}}
 
 import "time"
