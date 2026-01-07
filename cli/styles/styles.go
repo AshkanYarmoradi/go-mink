@@ -227,29 +227,25 @@ const (
 // InfoBox style for information boxes
 var InfoBox = newRoundedBox(Info).MarginTop(1)
 
+// allColorPointers returns pointers to all color variables for bulk operations.
+func allColorPointers() []*lipgloss.Color {
+	return []*lipgloss.Color{
+		&Primary, &PrimaryLight, &PrimaryDark,
+		&Secondary, &SecondaryDark,
+		&Success, &SuccessLight,
+		&Warning, &WarningLight,
+		&Error, &ErrorLight,
+		&Info, &InfoLight,
+		&Text, &TextMuted, &TextDim,
+		&Background, &Surface, &Border,
+		&Accent1, &Accent2, &Accent3,
+	}
+}
+
 // DisableColors disables all colors for terminals that don't support them
 func DisableColors() {
-	// Reset all colors to empty string (no color)
-	Primary = lipgloss.Color("")
-	PrimaryLight = lipgloss.Color("")
-	PrimaryDark = lipgloss.Color("")
-	Secondary = lipgloss.Color("")
-	SecondaryDark = lipgloss.Color("")
-	Success = lipgloss.Color("")
-	SuccessLight = lipgloss.Color("")
-	Warning = lipgloss.Color("")
-	WarningLight = lipgloss.Color("")
-	Error = lipgloss.Color("")
-	ErrorLight = lipgloss.Color("")
-	Info = lipgloss.Color("")
-	InfoLight = lipgloss.Color("")
-	Text = lipgloss.Color("")
-	TextMuted = lipgloss.Color("")
-	TextDim = lipgloss.Color("")
-	Background = lipgloss.Color("")
-	Surface = lipgloss.Color("")
-	Border = lipgloss.Color("")
-	Accent1 = lipgloss.Color("")
-	Accent2 = lipgloss.Color("")
-	Accent3 = lipgloss.Color("")
+	noColor := lipgloss.Color("")
+	for _, c := range allColorPointers() {
+		*c = noColor
+	}
 }

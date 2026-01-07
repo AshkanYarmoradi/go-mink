@@ -9,6 +9,7 @@ import (
 	"text/template"
 	"unicode"
 
+	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/styles"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -170,14 +171,25 @@ Next steps:
 	return cmd
 }
 
-func newGenerateEventCommand() *cobra.Command {
+// generateWithAggregate is a helper that creates generator commands that need an aggregate reference.
+type generateWithAggregateParams struct {
+	use            string
+	short          string
+	aliases        []string
+	aggregateLabel string
+	getOutputDir   func(*config.Config) string
+	template       string
+	makeData       func(cfg *config.Config, name, aggregate string) interface{}
+}
+
+func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.Command {
 	var aggregate string
 	var nonInteractive bool
 
 	cmd := &cobra.Command{
-		Use:     "event <name>",
-		Short:   "Generate an event",
-		Aliases: []string{"evt", "e"},
+		Use:     params.use,
+		Short:   params.short,
+		Aliases: params.aliases,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -186,36 +198,49 @@ func newGenerateEventCommand() *cobra.Command {
 				return err
 			}
 
-			if err := promptInput("Aggregate Name", "The aggregate this event belongs to",
+			if err := promptInput("Aggregate Name", params.aggregateLabel,
 				"Order", &aggregate, nonInteractive); err != nil {
 				return err
 			}
 
-			eventsDir := cfg.Generation.EventPackage
-			if err := os.MkdirAll(eventsDir, 0755); err != nil {
+			outputDir := params.getOutputDir(cfg)
+			if err := os.MkdirAll(outputDir, 0755); err != nil {
 				return err
 			}
 
-			eventData := SingleEventData{
+			data := params.makeData(cfg, name, aggregate)
+			outputFile := filepath.Join(outputDir, strings.ToLower(name)+".go")
+			if err := generateFile(outputFile, params.template, data); err != nil {
+				return err
+			}
+			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", outputFile)))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this belongs to")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
+
+	return cmd
+}
+
+func newGenerateEventCommand() *cobra.Command {
+	return newGenerateWithAggregateCommand(generateWithAggregateParams{
+		use:            "event <name>",
+		short:          "Generate an event",
+		aliases:        []string{"evt", "e"},
+		aggregateLabel: "The aggregate this event belongs to",
+		getOutputDir:   func(cfg *config.Config) string { return cfg.Generation.EventPackage },
+		template:       singleEventTemplate,
+		makeData: func(cfg *config.Config, name, aggregate string) interface{} {
+			return SingleEventData{
 				Module:    cfg.Project.Module,
 				Package:   filepath.Base(cfg.Generation.EventPackage),
 				Name:      toPascalCase(name),
 				Aggregate: toPascalCase(aggregate),
 			}
-
-			eventFile := filepath.Join(eventsDir, strings.ToLower(name)+".go")
-			if err := generateFile(eventFile, singleEventTemplate, eventData); err != nil {
-				return err
-			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", eventFile)))
-			return nil
 		},
-	}
-
-	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this event belongs to")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
-
-	return cmd
+	})
 }
 
 func newGenerateProjectionCommand() *cobra.Command {
@@ -278,50 +303,22 @@ func newGenerateProjectionCommand() *cobra.Command {
 }
 
 func newGenerateCommandCommand() *cobra.Command {
-	var aggregate string
-	var nonInteractive bool
-	cmd := &cobra.Command{
-		Use:     "command <name>",
-		Short:   "Generate a command and handler",
-		Aliases: []string{"cmd", "c"},
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			cfg, _, err := loadConfigOrDefault()
-			if err != nil {
-				return err
-			}
-
-			if err := promptInput("Aggregate Name", "The aggregate this command operates on",
-				"Order", &aggregate, nonInteractive); err != nil {
-				return err
-			}
-
-			cmdDir := cfg.Generation.CommandPackage
-			if err := os.MkdirAll(cmdDir, 0755); err != nil {
-				return err
-			}
-
-			cmdData := CommandData{
+	return newGenerateWithAggregateCommand(generateWithAggregateParams{
+		use:            "command <name>",
+		short:          "Generate a command and handler",
+		aliases:        []string{"cmd", "c"},
+		aggregateLabel: "The aggregate this command operates on",
+		getOutputDir:   func(cfg *config.Config) string { return cfg.Generation.CommandPackage },
+		template:       commandTemplate,
+		makeData: func(cfg *config.Config, name, aggregate string) interface{} {
+			return CommandData{
 				Module:    cfg.Project.Module,
 				Package:   filepath.Base(cfg.Generation.CommandPackage),
 				Name:      toPascalCase(name),
 				Aggregate: toPascalCase(aggregate),
 			}
-
-			cmdFile := filepath.Join(cmdDir, strings.ToLower(name)+".go")
-			if err := generateFile(cmdFile, commandTemplate, cmdData); err != nil {
-				return err
-			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", cmdFile)))
-			return nil
 		},
-	}
-
-	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this command operates on")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
-
-	return cmd
+	})
 }
 
 // Helper functions and templates
