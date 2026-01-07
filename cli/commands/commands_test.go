@@ -163,48 +163,18 @@ func TestNewRootCommand(t *testing.T) {
 	assert.NotEmpty(t, cmd.Long)
 
 	// Check subcommands are registered
-	subcommands := cmd.Commands()
-	assert.NotEmpty(t, subcommands)
+	subNames := getSubcommandNames(cmd)
+	assert.NotEmpty(t, subNames)
 
 	// Check for expected subcommands
-	foundInit := false
-	foundGenerate := false
-	foundMigrate := false
-	foundProjection := false
-	foundStream := false
-	foundDiagnose := false
-	foundSchema := false
-	foundVersion := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "init":
-			foundInit = true
-		case "generate":
-			foundGenerate = true
-		case "migrate":
-			foundMigrate = true
-		case "projection":
-			foundProjection = true
-		case "stream":
-			foundStream = true
-		case "diagnose":
-			foundDiagnose = true
-		case "schema":
-			foundSchema = true
-		case "version":
-			foundVersion = true
-		}
-	}
-
-	assert.True(t, foundInit, "init command should be registered")
-	assert.True(t, foundGenerate, "generate command should be registered")
-	assert.True(t, foundMigrate, "migrate command should be registered")
-	assert.True(t, foundProjection, "projection command should be registered")
-	assert.True(t, foundStream, "stream command should be registered")
-	assert.True(t, foundDiagnose, "diagnose command should be registered")
-	assert.True(t, foundSchema, "schema command should be registered")
-	assert.True(t, foundVersion, "version command should be registered")
+	assert.True(t, subNames["init"], "init command should be registered")
+	assert.True(t, subNames["generate"], "generate command should be registered")
+	assert.True(t, subNames["migrate"], "migrate command should be registered")
+	assert.True(t, subNames["projection"], "projection command should be registered")
+	assert.True(t, subNames["stream"], "stream command should be registered")
+	assert.True(t, subNames["diagnose"], "diagnose command should be registered")
+	assert.True(t, subNames["schema"], "schema command should be registered")
+	assert.True(t, subNames["version"], "version command should be registered")
 }
 
 func TestNewRootCommand_NoColorFlag(t *testing.T) {
@@ -237,29 +207,11 @@ func TestNewGenerateCommand(t *testing.T) {
 	assert.Contains(t, cmd.Aliases, "g")
 
 	// Check subcommands
-	subcommands := cmd.Commands()
-	foundAggregate := false
-	foundEvent := false
-	foundProjection := false
-	foundCommand := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "aggregate":
-			foundAggregate = true
-		case "event":
-			foundEvent = true
-		case "projection":
-			foundProjection = true
-		case "command":
-			foundCommand = true
-		}
-	}
-
-	assert.True(t, foundAggregate)
-	assert.True(t, foundEvent)
-	assert.True(t, foundProjection)
-	assert.True(t, foundCommand)
+	subNames := getSubcommandNames(cmd)
+	assert.True(t, subNames["aggregate"])
+	assert.True(t, subNames["event"])
+	assert.True(t, subNames["projection"])
+	assert.True(t, subNames["command"])
 }
 
 func TestNewMigrateCommand(t *testing.T) {
@@ -269,29 +221,11 @@ func TestNewMigrateCommand(t *testing.T) {
 	assert.NotEmpty(t, cmd.Short)
 
 	// Check subcommands
-	subcommands := cmd.Commands()
-	foundUp := false
-	foundDown := false
-	foundStatus := false
-	foundCreate := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "up":
-			foundUp = true
-		case "down":
-			foundDown = true
-		case "status":
-			foundStatus = true
-		case "create":
-			foundCreate = true
-		}
-	}
-
-	assert.True(t, foundUp)
-	assert.True(t, foundDown)
-	assert.True(t, foundStatus)
-	assert.True(t, foundCreate)
+	subNames := getSubcommandNames(cmd)
+	assert.True(t, subNames["up"])
+	assert.True(t, subNames["down"])
+	assert.True(t, subNames["status"])
+	assert.True(t, subNames["create"])
 }
 
 func TestNewProjectionCommand(t *testing.T) {
@@ -302,33 +236,12 @@ func TestNewProjectionCommand(t *testing.T) {
 	assert.Contains(t, cmd.Aliases, "proj")
 
 	// Check subcommands
-	subcommands := cmd.Commands()
-	foundList := false
-	foundStatus := false
-	foundRebuild := false
-	foundPause := false
-	foundResume := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "list":
-			foundList = true
-		case "status":
-			foundStatus = true
-		case "rebuild":
-			foundRebuild = true
-		case "pause":
-			foundPause = true
-		case "resume":
-			foundResume = true
-		}
-	}
-
-	assert.True(t, foundList)
-	assert.True(t, foundStatus)
-	assert.True(t, foundRebuild)
-	assert.True(t, foundPause)
-	assert.True(t, foundResume)
+	subNames := getSubcommandNames(cmd)
+	assert.True(t, subNames["list"])
+	assert.True(t, subNames["status"])
+	assert.True(t, subNames["rebuild"])
+	assert.True(t, subNames["pause"])
+	assert.True(t, subNames["resume"])
 }
 
 func TestNewStreamCommand(t *testing.T) {
@@ -338,29 +251,11 @@ func TestNewStreamCommand(t *testing.T) {
 	assert.NotEmpty(t, cmd.Short)
 
 	// Check subcommands
-	subcommands := cmd.Commands()
-	foundList := false
-	foundEvents := false
-	foundExport := false
-	foundStats := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "list":
-			foundList = true
-		case "events":
-			foundEvents = true
-		case "export":
-			foundExport = true
-		case "stats":
-			foundStats = true
-		}
-	}
-
-	assert.True(t, foundList)
-	assert.True(t, foundEvents)
-	assert.True(t, foundExport)
-	assert.True(t, foundStats)
+	subNames := getSubcommandNames(cmd)
+	assert.True(t, subNames["list"])
+	assert.True(t, subNames["events"])
+	assert.True(t, subNames["export"])
+	assert.True(t, subNames["stats"])
 }
 
 func TestNewDiagnoseCommand(t *testing.T) {
@@ -379,21 +274,9 @@ func TestNewSchemaCommand(t *testing.T) {
 	assert.NotEmpty(t, cmd.Short)
 
 	// Check subcommands
-	subcommands := cmd.Commands()
-	foundGenerate := false
-	foundPrint := false
-
-	for _, sub := range subcommands {
-		switch sub.Name() {
-		case "generate":
-			foundGenerate = true
-		case "print":
-			foundPrint = true
-		}
-	}
-
-	assert.True(t, foundGenerate)
-	assert.True(t, foundPrint)
+	subNames := getSubcommandNames(cmd)
+	assert.True(t, subNames["generate"])
+	assert.True(t, subNames["print"])
 }
 
 func TestNewVersionCommand(t *testing.T) {
@@ -6631,16 +6514,11 @@ func TestVersionCommand_Output(t *testing.T) {
 // TestGetAdapter_NoConfig_Coverage tests getAdapter without config
 func TestGetAdapter_NoConfig_Coverage(t *testing.T) {
 	// Create temp dir without config
-	tmpDir, err := os.MkdirTemp("", "mink-no-config-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-no-config-*")
+	_ = env // cleanup is automatic
 
 	ctx := context.Background()
-	_, _, err = getAdapter(ctx)
+	_, _, err := getAdapter(ctx)
 	assert.Error(t, err)
 }
 
@@ -6659,27 +6537,17 @@ func TestGetAdapterWithConfig_Coverage(t *testing.T) {
 
 // TestLoadConfig_NoConfig tests loadConfig without config file
 func TestLoadConfig_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-load-config-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	env := setupTestEnv(t, "mink-load-config-*")
+	_ = env // cleanup is automatic
 
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
-
-	_, _, err = loadConfig()
+	_, _, err := loadConfig()
 	assert.Error(t, err)
 }
 
 // TestLoadConfigOrDefault_NoConfig tests loadConfigOrDefault without config file
 func TestLoadConfigOrDefault_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-load-config-default-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-load-config-default-*")
+	_ = env // cleanup is automatic
 
 	cfg, dir, err := loadConfigOrDefault()
 	require.NoError(t, err)
@@ -6782,13 +6650,8 @@ func TestSchemaDiff_Memory(t *testing.T) {
 
 // TestStreamDelete_NoConfig tests stream delete without config
 func TestStreamDelete_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-delete-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-stream-delete-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"delete", "test-stream"})
@@ -6797,19 +6660,14 @@ func TestStreamDelete_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestProjectionPause_NoConfig tests projection pause without config
 func TestProjectionPause_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-pause-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-proj-pause-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"pause", "TestProjection"})
@@ -6818,19 +6676,14 @@ func TestProjectionPause_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestProjectionResume_NoConfig tests projection resume without config
 func TestProjectionResume_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-resume-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-proj-resume-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"resume", "TestProjection"})
@@ -6839,7 +6692,7 @@ func TestProjectionResume_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
@@ -7393,13 +7246,8 @@ func TestMigrateCreate_EmptyName(t *testing.T) {
 
 // TestStreamList_NoConfig tests stream list without config
 func TestStreamList_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-stream-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"list"})
@@ -7408,19 +7256,14 @@ func TestStreamList_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestStreamEvents_NoConfig tests stream events without config
 func TestStreamEvents_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-events-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-stream-events-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"events", "test-stream"})
@@ -7429,19 +7272,14 @@ func TestStreamEvents_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestStreamStats_NoConfig tests stream stats without config
 func TestStreamStats_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-stream-stats-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-stream-stats-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"stats"})
@@ -7450,19 +7288,14 @@ func TestStreamStats_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestProjectionList_NoConfig tests projection list without config
 func TestProjectionList_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-list-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-proj-list-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"list"})
@@ -7471,19 +7304,14 @@ func TestProjectionList_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestProjectionStatus_NoConfig tests projection status without config
 func TestProjectionStatus_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-status-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-proj-status-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"status", "TestProj"})
@@ -7492,19 +7320,14 @@ func TestProjectionStatus_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestProjectionRebuild_NoConfig tests projection rebuild without config
 func TestProjectionRebuild_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-proj-rebuild-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-proj-rebuild-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"rebuild", "TestProj", "--yes"})
@@ -7513,19 +7336,14 @@ func TestProjectionRebuild_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	assert.Error(t, err)
 }
 
 // TestSchemaGenerate_NoConfig tests schema generate without config
 func TestSchemaGenerate_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-gen-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-schema-gen-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"generate"})
@@ -7534,20 +7352,15 @@ func TestSchemaGenerate_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// May use default config
 	_ = err
 }
 
 // TestSchemaPrint_NoConfig tests schema print without config
 func TestSchemaPrint_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-schema-print-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-schema-print-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"print"})
@@ -7556,20 +7369,15 @@ func TestSchemaPrint_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// May use default config
 	_ = err
 }
 
 // TestDiagnose_NoConfig tests diagnose without config
 func TestDiagnose_NoConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mink-diagnose-no-cfg-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	oldWd, _ := os.Getwd()
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() { _ = os.Chdir(oldWd) }()
+	env := setupTestEnv(t, "mink-diagnose-no-cfg-*")
+	_ = env // cleanup is automatic
 
 	cmd := NewDiagnoseCommand()
 	cmd.SetArgs([]string{})
@@ -7578,7 +7386,7 @@ func TestDiagnose_NoConfig(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	err = cmd.Execute()
+	err := cmd.Execute()
 	// Should work with defaults
 	_ = err
 }
