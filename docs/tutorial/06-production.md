@@ -1072,9 +1072,19 @@ scrape_configs:
 # Set environment variables
 export POSTGRES_PASSWORD=your-secure-password
 export GRAFANA_PASSWORD=your-grafana-password
+export DATABASE_URL="postgres://minkshop:${POSTGRES_PASSWORD}@localhost:5432/minkshop?sslmode=require"
 
 # Start services
 docker-compose -f docker-compose.prod.yml up -d
+
+# Run migrations using CLI
+mink migrate up
+
+# Verify setup
+mink diagnose
+
+# Check projection status
+mink projection list
 
 # Check health
 curl http://localhost:8080/health/ready
@@ -1088,6 +1098,36 @@ open http://localhost:16686
 # View dashboards
 open http://localhost:3000
 ```
+
+### Using CLI for Operations
+
+The `mink` CLI provides essential operational commands:
+
+```bash
+# Check system health
+mink diagnose
+
+# View projection status and lag
+mink projection status OrderSummary
+
+# Rebuild a projection after schema changes
+mink projection rebuild OrderSummary --yes
+
+# Pause projection for maintenance
+mink projection pause OrderSummary
+
+# Check migration status
+mink migrate status
+
+# View stream statistics
+mink stream stats
+
+# Export stream for debugging
+mink stream export Order-12345 --output debug_order.json
+```
+
+{: .tip }
+> For CI/CD pipelines, use `--non-interactive` flags and exit codes to automate deployments.
 
 ---
 

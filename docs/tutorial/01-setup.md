@@ -33,14 +33,30 @@ In this first part, you'll:
 
 {: .note }
 > **Alternative: Use CLI Tool**  
-> You can also use the `mink` CLI to scaffold your project:
+> You can use the `mink` CLI to scaffold your project quickly:
 > ```bash
-> mink init
-> mink generate aggregate Product
-> mink generate aggregate Cart
-> mink generate aggregate Order
+> # Install CLI
+> go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+>
+> # Initialize project
+> mkdir minkshop && cd minkshop
+> go mod init minkshop
+> mink init --name=minkshop --driver=postgres
+>
+> # Generate aggregates
+> mink generate aggregate Product --events Created,StockAdded,StockReserved
+> mink generate aggregate Cart --events Created,ItemAdded,ItemRemoved
+> mink generate aggregate Order --events Created,Paid,Shipped
+>
+> # Run migrations
+> export DATABASE_URL="postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"
+> mink migrate up
+>
+> # Verify setup
+> mink diagnose
 > ```
 > This tutorial shows the manual approach to help you understand the internals.
+> See the [CLI documentation](/docs/cli) for more details.
 
 ---
 
