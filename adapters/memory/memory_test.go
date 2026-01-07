@@ -653,8 +653,6 @@ func TestExtractCategory(t *testing.T) {
 	}
 }
 
-
-
 func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -664,8 +662,6 @@ func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-
-
 func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -674,8 +670,6 @@ func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	_, err := adapter.GetLastPosition(ctx)
 	assert.Error(t, err)
 }
-
-
 
 func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -691,8 +685,6 @@ func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	err = adapter.DeleteSnapshot(ctx, "Order-123")
 	assert.Error(t, err)
 }
-
-
 
 func TestMemoryAdapter_Checkpoints_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -714,8 +706,6 @@ func TestMemoryAdapter_Ping_ContextCancellation(t *testing.T) {
 	err := adapter.Ping(ctx)
 	assert.Error(t, err)
 }
-
-
 
 func TestMemoryAdapter_SubscribeStream(t *testing.T) {
 	t.Run("filters events by stream", func(t *testing.T) {

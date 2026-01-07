@@ -2582,8 +2582,8 @@ func TestMigrateStatusCommand_WithMigrations(t *testing.T) {
 // TestSchemaCommands_NoConfig tests schema commands work without config.
 func TestSchemaCommands_NoConfig(t *testing.T) {
 	tests := []struct {
-		name    string
-		subCmd  string
+		name   string
+		subCmd string
 	}{
 		{"generate", "generate"},
 		{"print", "print"},
@@ -3312,9 +3312,9 @@ func TestDiagnoseChecks_WithPostgres_InvalidURL(t *testing.T) {
 
 func TestGenerateCommands_Execute(t *testing.T) {
 	tests := []struct {
-		name          string
-		args          []string
-		checkFile     string // relative to tmpDir, empty to skip file check
+		name      string
+		args      []string
+		checkFile string // relative to tmpDir, empty to skip file check
 	}{
 		{
 			name:      "aggregate with events",
@@ -5065,11 +5065,11 @@ func TestMigrateCreate_WithSQLContent(t *testing.T) {
 // TestMemoryDriverCommands_Basic tests various commands with memory driver
 func TestMemoryDriverCommands_Basic(t *testing.T) {
 	tests := []struct {
-		name       string
-		newCmd     func() *cobra.Command
-		args       []string
-		wantErr    bool
-		ignoreErr  bool // Some tests may fail if resource doesn't exist
+		name      string
+		newCmd    func() *cobra.Command
+		args      []string
+		wantErr   bool
+		ignoreErr bool // Some tests may fail if resource doesn't exist
 	}{
 		{name: "stream list", newCmd: NewStreamCommand, args: []string{"list"}, wantErr: false},
 		{name: "stream events", newCmd: NewStreamCommand, args: []string{"events", "test-stream"}, ignoreErr: true},
@@ -5781,9 +5781,9 @@ func TestSchemaDiff_Memory(t *testing.T) {
 // TestAdditionalCommandsWithoutConfig tests additional commands without config.
 func TestAdditionalCommandsWithoutConfig(t *testing.T) {
 	tests := []struct {
-		name   string
-		cmdFn  func() *cobra.Command
-		args   []string
+		name  string
+		cmdFn func() *cobra.Command
+		args  []string
 	}{
 		{"stream delete", NewStreamCommand, []string{"delete", "test-stream"}},
 		{"projection pause", NewProjectionCommand, []string{"pause", "TestProjection"}},
@@ -6117,49 +6117,49 @@ func TestSchemaCommands_PostgreSQL_Full(t *testing.T) {
 // TestMigrateCommands_ErrorConditions tests various migrate error scenarios.
 func TestMigrateCommands_ErrorConditions(t *testing.T) {
 	tests := []struct {
-		name          string
-		args          []string
-		setupMigFile  string // optional migration file to create
-		migContent    string // content for migration file
-		createMigDir  bool   // whether to create migrations dir
-		wantErr       bool
+		name           string
+		args           []string
+		setupMigFile   string // optional migration file to create
+		migContent     string // content for migration file
+		createMigDir   bool   // whether to create migrations dir
+		wantErr        bool
 		skipNoPostgres bool
 	}{
 		{
-			name:          "up with invalid SQL",
-			args:          []string{"up", "--non-interactive"},
-			setupMigFile:  "001_20260107000005_invalid.sql",
-			migContent:    "THIS IS NOT VALID SQL SYNTAX!!! @#$%",
-			createMigDir:  true,
-			wantErr:       true,
+			name:           "up with invalid SQL",
+			args:           []string{"up", "--non-interactive"},
+			setupMigFile:   "001_20260107000005_invalid.sql",
+			migContent:     "THIS IS NOT VALID SQL SYNTAX!!! @#$%",
+			createMigDir:   true,
+			wantErr:        true,
 			skipNoPostgres: true,
 		},
 		{
-			name:          "up with missing migrations dir",
-			args:          []string{"up", "--non-interactive"},
-			createMigDir:  false,
-			wantErr:       false, // may succeed with "no migrations found"
+			name:           "up with missing migrations dir",
+			args:           []string{"up", "--non-interactive"},
+			createMigDir:   false,
+			wantErr:        false, // may succeed with "no migrations found"
 			skipNoPostgres: true,
 		},
 		{
-			name:          "down with no applied migrations",
-			args:          []string{"down", "--non-interactive"},
-			createMigDir:  true,
-			wantErr:       false, // succeeds with "no migrations to rollback"
+			name:           "down with no applied migrations",
+			args:           []string{"down", "--non-interactive"},
+			createMigDir:   true,
+			wantErr:        false, // succeeds with "no migrations to rollback"
 			skipNoPostgres: true,
 		},
 		{
-			name:          "status with empty dir",
-			args:          []string{"status"},
-			createMigDir:  true,
-			wantErr:       false,
+			name:           "status with empty dir",
+			args:           []string{"status"},
+			createMigDir:   true,
+			wantErr:        false,
 			skipNoPostgres: true,
 		},
 		{
-			name:         "create without name",
-			args:         []string{"create"},
-			createMigDir: true,
-			wantErr:      true,
+			name:           "create without name",
+			args:           []string{"create"},
+			createMigDir:   true,
+			wantErr:        true,
 			skipNoPostgres: false, // doesn't need postgres
 		},
 	}
@@ -6250,9 +6250,9 @@ func TestCommandsWithoutConfig(t *testing.T) {
 // TestGenerateCommands_NonInteractive_Full tests all generate subcommands with non-interactive flag.
 func TestGenerateCommands_NonInteractive_Full(t *testing.T) {
 	tests := []struct {
-		name           string
-		args           []string
-		expectedFiles  []string
+		name          string
+		args          []string
+		expectedFiles []string
 	}{
 		{
 			name: "aggregate with events",
