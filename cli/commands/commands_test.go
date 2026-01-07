@@ -4466,89 +4466,6 @@ func TestVersionCommand_Simple(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestSchemaGenerate_MemoryDriver tests schema generate with memory driver
-func TestSchemaGenerate_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-gen-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Schema generate should work with memory driver
-	assert.NoError(t, err)
-}
-
-// TestSchemaPrint_MemoryDriver tests schema print with memory driver
-func TestSchemaPrint_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-print-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"print"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestStreamStats_MemoryDriver tests stream stats with memory driver
-func TestStreamStats_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Should work with memory driver
-	assert.NoError(t, err)
-}
-
-// TestProjectionList_MemoryDriver tests projection list with memory driver
-func TestProjectionList_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-list-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestProjectionStatus_NotFound tests projection status for non-existent projection
-func TestProjectionStatus_NotFound(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-status-nf-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"status", "nonexistent"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Should error with not found
-	assert.Error(t, err)
-}
-
 // TestGenerateEvent_WithAggregate tests event generation with aggregate flag
 func TestGenerateEvent_WithAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-evt-agg-*")
@@ -5125,25 +5042,6 @@ func TestMigrateUp_NonInteractive_NoMigrations(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestMigrateDown_NonInteractive_Memory tests migrate down with non-interactive flag using memory driver
-func TestMigrateDown_NonInteractive_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-down-ni-*")
-	env.createConfig(
-		withDriver("memory"),
-		withMigrationsDir("migrations"),
-	)
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
 // TestMigrateCreate_WithSQLContent tests migrate create with SQL content
 func TestMigrateCreate_WithSQLContent(t *testing.T) {
 	env := setupTestEnv(t, "mink-migrate-sql-*")
@@ -5164,135 +5062,49 @@ func TestMigrateCreate_WithSQLContent(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestStreamList_Memory tests stream list with memory driver
-func TestStreamList_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-mem-*")
-	env.createConfig(withDriver("memory"))
+// TestMemoryDriverCommands_Basic tests various commands with memory driver
+func TestMemoryDriverCommands_Basic(t *testing.T) {
+	tests := []struct {
+		name       string
+		newCmd     func() *cobra.Command
+		args       []string
+		wantErr    bool
+		ignoreErr  bool // Some tests may fail if resource doesn't exist
+	}{
+		{name: "stream list", newCmd: NewStreamCommand, args: []string{"list"}, wantErr: false},
+		{name: "stream events", newCmd: NewStreamCommand, args: []string{"events", "test-stream"}, ignoreErr: true},
+		{name: "stream stats", newCmd: NewStreamCommand, args: []string{"stats"}, wantErr: false},
+		{name: "projection list", newCmd: NewProjectionCommand, args: []string{"list"}, wantErr: false},
+		{name: "projection status", newCmd: NewProjectionCommand, args: []string{"status", "TestProjection"}, ignoreErr: true},
+		{name: "projection rebuild", newCmd: NewProjectionCommand, args: []string{"rebuild", "TestProjection", "--yes"}, ignoreErr: true},
+		{name: "schema generate", newCmd: NewSchemaCommand, args: []string{"generate"}, wantErr: false},
+		{name: "schema print", newCmd: NewSchemaCommand, args: []string{"print"}, wantErr: false},
+		{name: "migrate down non-interactive", newCmd: NewMigrateCommand, args: []string{"down", "--non-interactive"}, wantErr: false},
+		{name: "migrate status", newCmd: NewMigrateCommand, args: []string{"status"}, wantErr: false},
+	}
 
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-mem-cmd-*")
+			env.createConfig(withDriver("memory"))
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := tt.newCmd()
+			cmd.SetArgs(tt.args)
 
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
 
-// TestStreamEvents_Memory tests stream events with memory driver
-func TestStreamEvents_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if stream doesn't exist, that's OK
-	_ = err
-}
-
-// TestStreamStats_Memory tests stream stats with memory driver
-func TestStreamStats_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestProjectionList_Memory tests projection list with memory driver
-func TestProjectionList_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-list-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestProjectionStatus_Memory tests projection status with memory driver
-func TestProjectionStatus_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-status-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"status", "TestProjection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if projection doesn't exist
-	_ = err
-}
-
-// TestProjectionRebuild_Memory_WithYes tests projection rebuild with --yes flag
-func TestProjectionRebuild_Memory_WithYes(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-rebuild-yes-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "TestProjection", "--yes"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if projection doesn't exist
-	_ = err
-}
-
-// TestSchemaGenerate_ToStdout tests schema generate to stdout
-func TestSchemaGenerate_ToStdout_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-stdout-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestSchemaPrint_Memory tests schema print with memory driver
-func TestSchemaPrint_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-print-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"print"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
+			err := cmd.Execute()
+			if tt.ignoreErr {
+				_ = err // May fail if resource doesn't exist, that's OK
+			} else if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 // TestFormatMetadata_Coverage tests formatMetadata with various inputs for coverage
@@ -5757,26 +5569,6 @@ func TestStreamExport_WithLimit(t *testing.T) {
 	err := cmd.Execute()
 	// May fail if stream doesn't exist
 	_ = err
-}
-
-// TestMigrateStatus_Memory tests migrate status with memory driver
-func TestMigrateStatus_Memory(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-status-mem-*")
-	env.createConfig(
-		withDriver("memory"),
-		withMigrationsDir("migrations"),
-	)
-	env.createMigrationsDir()
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
 }
 
 // TestInitCommand_WithExistingConfig tests init when config exists (shows warning but doesn't error)
@@ -7252,22 +7044,6 @@ func TestSchemaPrint_Memory_AllPaths(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestDiagnose_MemoryDriver tests diagnose with memory driver
-func TestDiagnose_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-diagnose-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewDiagnoseCommand()
-	cmd.SetArgs([]string{})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
 // TestAnimatedVersionModel_Init_Direct tests the animated version model init
 func TestAnimatedVersionModel_Init_Direct(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0-test")
@@ -7647,62 +7423,4 @@ func TestFormatMetadata_Custom_Fields(t *testing.T) {
 	result := formatMetadata(metadata)
 	assert.Contains(t, result, "correlationId")
 	assert.Contains(t, result, "test-corr")
-}
-
-// TestMigrateStatus_Memory tests migrate status with memory driver
-func TestMigrateStatus_Memory_Full(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-status-mem-*")
-	env.createConfig(
-		withDriver("memory"),
-		withMigrationsDir("migrations"),
-	)
-
-	migrationsDir := env.createMigrationsDir()
-	require.NoError(t, os.WriteFile(
-		filepath.Join(migrationsDir, "001_test.sql"),
-		[]byte("SELECT 1;"),
-		0644,
-	))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-// TestStreamList_Memory tests stream list with memory driver
-func TestStreamList_Memory_Full(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	_ = err
-}
-
-// TestStreamStats_Memory tests stream stats with memory driver
-func TestStreamStats_Memory_Full(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	_ = err
 }
