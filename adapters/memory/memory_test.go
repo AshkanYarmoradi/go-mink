@@ -653,33 +653,7 @@ func TestExtractCategory(t *testing.T) {
 	}
 }
 
-func TestMemoryAdapter_Load_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
-	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
-
-	adapter.Close()
-
-	_, err := adapter.Load(ctx, "Order-123", 0)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
-
-func TestMemoryAdapter_GetStreamInfo_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
-
-	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
-	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
-
-	adapter.Close()
-
-	_, err := adapter.GetStreamInfo(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -690,15 +664,7 @@ func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_GetLastPosition_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
 
-	adapter.Close()
-
-	_, err := adapter.GetLastPosition(context.Background())
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -709,24 +675,7 @@ func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_Snapshots_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	adapter.Close()
-
-	err := adapter.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`))
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-
-	_, err = adapter.LoadSnapshot(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-
-	err = adapter.DeleteSnapshot(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -743,20 +692,7 @@ func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_Checkpoints_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	adapter.Close()
-
-	err := adapter.SetCheckpoint(ctx, "Projection", 100)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-
-	_, err = adapter.GetCheckpoint(ctx, "Projection")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_Checkpoints_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -779,14 +715,7 @@ func TestMemoryAdapter_Ping_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_SubscribeAll_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	adapter.Close()
 
-	_, err := adapter.SubscribeAll(context.Background(), 0)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_SubscribeStream(t *testing.T) {
 	t.Run("filters events by stream", func(t *testing.T) {
@@ -949,14 +878,6 @@ func TestMemoryAdapter_LoadFromPosition(t *testing.T) {
 		assert.Len(t, events, 1)
 	})
 
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.LoadFromPosition(context.Background(), 0, 10)
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
 	t.Run("respects context cancellation", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1062,6 +983,66 @@ func BenchmarkMemoryAdapter_Concurrent(b *testing.B) {
 }
 
 // ============================================================================
+// Consolidated Closed Adapter Tests
+// ============================================================================
+
+// TestMemoryAdapter_ClosedAdapterErrors consolidates all "returns error on closed adapter"
+// tests into a single table-driven test. This reduces code duplication while maintaining
+// the same test coverage.
+func TestMemoryAdapter_ClosedAdapterErrors(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		fn   func(*MemoryAdapter) error
+	}{
+		// Core operations
+		{"Load", func(a *MemoryAdapter) error { _, err := a.Load(ctx, "Order-123", 0); return err }},
+		{"GetStreamInfo", func(a *MemoryAdapter) error { _, err := a.GetStreamInfo(ctx, "Order-123"); return err }},
+		{"GetLastPosition", func(a *MemoryAdapter) error { _, err := a.GetLastPosition(ctx); return err }},
+		{"LoadFromPosition", func(a *MemoryAdapter) error { _, err := a.LoadFromPosition(ctx, 0, 10); return err }},
+		// Snapshots
+		{"SaveSnapshot", func(a *MemoryAdapter) error { return a.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`)) }},
+		{"LoadSnapshot", func(a *MemoryAdapter) error { _, err := a.LoadSnapshot(ctx, "Order-123"); return err }},
+		{"DeleteSnapshot", func(a *MemoryAdapter) error { return a.DeleteSnapshot(ctx, "Order-123") }},
+		// Checkpoints
+		{"SetCheckpoint", func(a *MemoryAdapter) error { return a.SetCheckpoint(ctx, "Projection", 100) }},
+		{"GetCheckpoint", func(a *MemoryAdapter) error { _, err := a.GetCheckpoint(ctx, "Projection"); return err }},
+		// Subscriptions
+		{"SubscribeAll", func(a *MemoryAdapter) error { _, err := a.SubscribeAll(ctx, 0); return err }},
+		// Migrations
+		{"GetAppliedMigrations", func(a *MemoryAdapter) error { _, err := a.GetAppliedMigrations(ctx); return err }},
+		{"RecordMigration", func(a *MemoryAdapter) error { return a.RecordMigration(ctx, "test") }},
+		{"RemoveMigrationRecord", func(a *MemoryAdapter) error { return a.RemoveMigrationRecord(ctx, "test") }},
+		{"ExecuteSQL", func(a *MemoryAdapter) error { return a.ExecuteSQL(ctx, "SELECT 1") }},
+		// Diagnostics
+		{"GetDiagnosticInfo", func(a *MemoryAdapter) error { _, err := a.GetDiagnosticInfo(ctx); return err }},
+		{"CheckSchema", func(a *MemoryAdapter) error { _, err := a.CheckSchema(ctx, "mink_events"); return err }},
+		{"GetProjectionHealth", func(a *MemoryAdapter) error { _, err := a.GetProjectionHealth(ctx); return err }},
+		// Projections
+		{"ListProjections", func(a *MemoryAdapter) error { _, err := a.ListProjections(ctx); return err }},
+		{"GetProjection", func(a *MemoryAdapter) error { _, err := a.GetProjection(ctx, "test"); return err }},
+		{"SetProjectionStatus", func(a *MemoryAdapter) error { return a.SetProjectionStatus(ctx, "test", "paused") }},
+		{"ResetProjectionCheckpoint", func(a *MemoryAdapter) error { return a.ResetProjectionCheckpoint(ctx, "test") }},
+		{"GetTotalEventCount", func(a *MemoryAdapter) error { _, err := a.GetTotalEventCount(ctx); return err }},
+		{"GetEventStoreStats", func(a *MemoryAdapter) error { _, err := a.GetEventStoreStats(ctx); return err }},
+		// Streams
+		{"ListStreams", func(a *MemoryAdapter) error { _, err := a.ListStreams(ctx, "", 10); return err }},
+		{"GetStreamEvents", func(a *MemoryAdapter) error { _, err := a.GetStreamEvents(ctx, "stream-1", 0, 10); return err }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := NewAdapter()
+			_ = adapter.Close()
+
+			err := tt.fn(adapter)
+			assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+		})
+	}
+}
+
+// ============================================================================
 // Migration Tests
 // ============================================================================
 
@@ -1102,15 +1083,6 @@ func TestMemoryAdapter_GetAppliedMigrations(t *testing.T) {
 		memoryMigrationsMu.Unlock()
 	})
 
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetAppliedMigrations(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
 	t.Run("respects context cancellation", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1145,15 +1117,6 @@ func TestMemoryAdapter_RecordMigration(t *testing.T) {
 		memoryMigrationsMu.Lock()
 		memoryMigrations = make(map[string]*migrationRecord)
 		memoryMigrationsMu.Unlock()
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		err := adapter.RecordMigration(context.Background(), "001_initial")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
 	})
 
 	t.Run("respects context cancellation", func(t *testing.T) {
@@ -1197,25 +1160,6 @@ func TestMemoryAdapter_RemoveMigrationRecord(t *testing.T) {
 
 		assert.NoError(t, err)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		err := adapter.RemoveMigrationRecord(context.Background(), "001_initial")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		err := adapter.RemoveMigrationRecord(ctx, "001_initial")
-
-		assert.Error(t, err)
-	})
 }
 
 func TestMemoryAdapter_ExecuteSQL(t *testing.T) {
@@ -1226,25 +1170,6 @@ func TestMemoryAdapter_ExecuteSQL(t *testing.T) {
 		err := adapter.ExecuteSQL(ctx, "CREATE TABLE test (id INT)")
 
 		assert.NoError(t, err)
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		err := adapter.ExecuteSQL(context.Background(), "SELECT 1")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		err := adapter.ExecuteSQL(ctx, "SELECT 1")
-
-		assert.Error(t, err)
 	})
 }
 
@@ -1275,25 +1200,6 @@ func TestMemoryAdapter_GetDiagnosticInfo(t *testing.T) {
 		assert.True(t, info.Connected)
 		assert.Contains(t, info.Version, "In-Memory")
 		assert.Contains(t, info.Message, "in-memory")
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetDiagnosticInfo(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.GetDiagnosticInfo(ctx)
-
-		assert.Error(t, err)
 	})
 }
 
@@ -1326,25 +1232,6 @@ func TestMemoryAdapter_CheckSchema(t *testing.T) {
 		assert.True(t, result.TableExists)
 		assert.Equal(t, int64(2), result.EventCount)
 		assert.Contains(t, result.Message, "2 events")
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.CheckSchema(context.Background(), "mink_events")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.CheckSchema(ctx, "mink_events")
-
-		assert.Error(t, err)
 	})
 }
 
@@ -1423,25 +1310,6 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 		memoryProjections = make(map[string]*projectionInfo)
 		memoryProjectionsMu.Unlock()
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetProjectionHealth(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.GetProjectionHealth(ctx)
-
-		assert.Error(t, err)
-	})
 }
 
 // ============================================================================
@@ -1494,25 +1362,6 @@ func TestMemoryAdapter_ListProjections(t *testing.T) {
 		memoryProjections = make(map[string]*projectionInfo)
 		memoryProjectionsMu.Unlock()
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.ListProjections(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.ListProjections(ctx)
-
-		assert.Error(t, err)
-	})
 }
 
 func TestMemoryAdapter_GetProjection(t *testing.T) {
@@ -1558,25 +1407,6 @@ func TestMemoryAdapter_GetProjection(t *testing.T) {
 		memoryProjections = make(map[string]*projectionInfo)
 		memoryProjectionsMu.Unlock()
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetProjection(context.Background(), "test")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.GetProjection(ctx, "test")
-
-		assert.Error(t, err)
-	})
 }
 
 func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
@@ -1621,25 +1451,6 @@ func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
 
 		assert.ErrorIs(t, err, adapters.ErrStreamNotFound)
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		err := adapter.SetProjectionStatus(context.Background(), "test", "stopped")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		err := adapter.SetProjectionStatus(ctx, "test", "stopped")
-
-		assert.Error(t, err)
-	})
 }
 
 func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
@@ -1678,25 +1489,6 @@ func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
 		memoryProjections = make(map[string]*projectionInfo)
 		memoryProjectionsMu.Unlock()
 	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		err := adapter.ResetProjectionCheckpoint(context.Background(), "test")
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		err := adapter.ResetProjectionCheckpoint(ctx, "test")
-
-		assert.Error(t, err)
-	})
 }
 
 func TestMemoryAdapter_GetTotalEventCount(t *testing.T) {
@@ -1728,25 +1520,6 @@ func TestMemoryAdapter_GetTotalEventCount(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, int64(3), count)
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetTotalEventCount(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.GetTotalEventCount(ctx)
-
-		assert.Error(t, err)
 	})
 }
 
@@ -1801,24 +1574,5 @@ func TestMemoryAdapter_GetEventStoreStats(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Len(t, stats.TopEventTypes, 5)
-	})
-
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.GetEventStoreStats(context.Background())
-
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
-	t.Run("respects context cancellation", func(t *testing.T) {
-		adapter := NewAdapter()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		_, err := adapter.GetEventStoreStats(ctx)
-
-		assert.Error(t, err)
 	})
 }
