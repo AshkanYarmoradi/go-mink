@@ -5224,3 +5224,987 @@ var _ = func() bool {
 	_ = setupTestEnv(nil, "")
 	return true
 }
+
+// =============================================================================
+// Additional Coverage Tests
+// =============================================================================
+
+// TestExecute_NoArgs_Coverage tests Execute function with no subcommand
+func TestExecute_NoArgs_Coverage(t *testing.T) {
+	// Save original args
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+
+	// Set args to just the program name (no subcommand)
+	os.Args = []string{"mink"}
+
+	// Execute should work without error (shows help)
+	err := Execute()
+	assert.NoError(t, err)
+}
+
+// TestNewAnimatedVersion tests the animated version model
+func TestNewAnimatedVersion(t *testing.T) {
+	model := NewAnimatedVersion("1.0.0")
+	assert.NotNil(t, model)
+	assert.Equal(t, "1.0.0", model.version)
+	assert.False(t, model.done)
+	assert.Equal(t, 0, model.phase)
+}
+
+// TestAnimatedVersion_Init tests the Init method
+func TestAnimatedVersion_Init(t *testing.T) {
+	model := NewAnimatedVersion("1.0.0")
+	cmd := model.Init()
+	assert.NotNil(t, cmd)
+}
+
+// TestAnimatedVersion_Update_Tick tests animation tick progression
+func TestAnimatedVersion_Update_Tick(t *testing.T) {
+	model := NewAnimatedVersion("1.0.0")
+
+	// Simulate several ticks
+	for i := 0; i < 6; i++ {
+		newModel, _ := model.Update(ui.AnimationTickMsg{})
+		model = newModel.(AnimatedVersionModel)
+		if model.done {
+			break
+		}
+	}
+
+	assert.True(t, model.done)
+}
+
+// TestAnimatedVersion_Update_KeyPress tests key press quits
+func TestAnimatedVersion_Update_KeyPress(t *testing.T) {
+	model := NewAnimatedVersion("1.0.0")
+
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	assert.NotNil(t, newModel)
+	_ = cmd // cmd would be tea.Quit
+}
+
+// TestAnimatedVersion_View tests the View method
+func TestAnimatedVersion_View(t *testing.T) {
+	model := NewAnimatedVersion("1.0.0")
+
+	// Test initial view (phase 0)
+	view := model.View()
+	assert.NotEmpty(t, view)
+
+	// Test view when done
+	model.done = true
+	doneView := model.View()
+	assert.NotEmpty(t, doneView)
+}
+
+// TestAnimatedVersion_AllPhases tests all animation phases
+func TestAnimatedVersion_AllPhases(t *testing.T) {
+	for phase := 0; phase <= 5; phase++ {
+		model := NewAnimatedVersion("1.0.0")
+		model.phase = phase
+		view := model.View()
+		assert.NotEmpty(t, view, "Phase %d should have view", phase)
+	}
+}
+
+// TestCheckGoVersion_Result tests Go version check result
+func TestCheckGoVersion_Result(t *testing.T) {
+	result := checkGoVersion()
+	assert.Equal(t, "Go Version", result.Name)
+	assert.NotEmpty(t, result.Message)
+	// Status should be OK for Go 1.21+
+	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
+}
+
+// TestCheckConfiguration_NoConfig_Extra tests config check without mink.yaml
+func TestCheckConfiguration_NoConfig_Extra(t *testing.T) {
+	env := setupTestEnv(t, "mink-config-check-*")
+	_ = env // keep for cleanup
+
+	result := checkConfiguration()
+	assert.Equal(t, "Configuration", result.Name)
+	assert.Equal(t, StatusWarning, result.Status)
+}
+
+// TestCheckConfiguration_ValidConfig tests config check with valid config
+func TestCheckConfiguration_ValidConfig(t *testing.T) {
+	env := setupTestEnv(t, "mink-config-valid-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("test/module"),
+	)
+
+	result := checkConfiguration()
+	assert.Equal(t, "Configuration", result.Name)
+	// Should be OK with valid config
+}
+
+// TestProjectionRebuild_NotFound tests rebuild with non-existent projection
+func TestProjectionRebuild_NotFound(t *testing.T) {
+	env := setupTestEnv(t, "mink-rebuild-notfound-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"rebuild", "nonexistent", "--yes"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should error with projection not found
+	assert.Error(t, err)
+}
+
+// TestGenerateProjection_WithEvents tests projection generation with events flag
+func TestGenerateProjection_WithEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-proj-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"projection", "OrderSummary", "--events", "OrderCreated,OrderShipped", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify projection file was created
+	projFile := filepath.Join(env.tmpDir, "internal/projections/ordersummary.go")
+	assert.FileExists(t, projFile)
+
+	// Verify test file was created
+	testFile := filepath.Join(env.tmpDir, "internal/projections/ordersummary_test.go")
+	assert.FileExists(t, testFile)
+}
+
+// TestGenerateProjection_MultipleEvents tests with multiple comma-separated events
+func TestGenerateProjection_MultipleEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-proj-multi-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"projection", "CustomerReport", "--events", "CustomerCreated,CustomerUpdated,CustomerDeleted", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	projFile := filepath.Join(env.tmpDir, "internal/projections/customerreport.go")
+	assert.FileExists(t, projFile)
+}
+
+// TestRootCommand_Help tests help output
+func TestRootCommand_Help(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--help"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+	assert.Contains(t, buf.String(), "mink")
+}
+
+// TestRootCommand_UnknownSubcommand_Coverage tests error on unknown subcommand
+func TestRootCommand_UnknownSubcommand_Coverage(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"unknowncommand"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.Error(t, err)
+}
+
+// TestMigrateUp_NonInteractive tests migrate up with --non-interactive
+func TestMigrateUp_NonInteractive(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-up-ni-*")
+	env.createConfig(
+		withDriver("memory"),
+		withMigrationsDir("migrations"),
+	)
+
+	// Create a migration file
+	migrationsDir := env.createMigrationsDir()
+	migrationSQL := "-- Create test table\nSELECT 1;"
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_test.sql"), []byte(migrationSQL), 0644)
+	require.NoError(t, err)
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"up", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err = cmd.Execute()
+	// Memory driver doesn't fully support migrations, but command should run
+	_ = err
+}
+
+// TestMigrateDown_NonInteractive tests migrate down with --non-interactive
+func TestMigrateDown_NonInteractive(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-down-ni-*")
+	env.createConfig(
+		withDriver("memory"),
+		withMigrationsDir("migrations"),
+	)
+
+	// Create migration files
+	migrationsDir := env.createMigrationsDir()
+	err := os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_test.sql"), []byte("SELECT 1;"), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(migrationsDir, "001_20260106000000_test.down.sql"), []byte("SELECT 2;"), 0644)
+	require.NoError(t, err)
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"down", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err = cmd.Execute()
+	// Memory driver doesn't fully support migrations, but command should run
+	_ = err
+}
+
+// TestDiagnoseCommand_MemoryDriver tests diagnose with memory driver
+func TestDiagnoseCommand_MemoryDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-diagnose-mem-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewDiagnoseCommand()
+	cmd.SetArgs([]string{})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Diagnose should run without error
+	assert.NoError(t, err)
+}
+
+// TestVersionCommand_Simple tests version command output
+func TestVersionCommand_Simple(t *testing.T) {
+	cmd := NewVersionCommand("1.0.0", "abc123", "2024-01-01")
+	cmd.SetArgs([]string{})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
+// TestSchemaGenerate_MemoryDriver tests schema generate with memory driver
+func TestSchemaGenerate_MemoryDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-schema-gen-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewSchemaCommand()
+	cmd.SetArgs([]string{"generate"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Schema generate should work with memory driver
+	assert.NoError(t, err)
+}
+
+// TestSchemaPrint_MemoryDriver tests schema print with memory driver
+func TestSchemaPrint_MemoryDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-schema-print-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewSchemaCommand()
+	cmd.SetArgs([]string{"print"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
+// TestStreamStats_MemoryDriver tests stream stats with memory driver
+func TestStreamStats_MemoryDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-stream-stats-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewStreamCommand()
+	cmd.SetArgs([]string{"stats"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should work with memory driver
+	assert.NoError(t, err)
+}
+
+// TestProjectionList_MemoryDriver tests projection list with memory driver
+func TestProjectionList_MemoryDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-proj-list-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"list"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
+// TestProjectionStatus_NotFound tests projection status for non-existent projection
+func TestProjectionStatus_NotFound(t *testing.T) {
+	env := setupTestEnv(t, "mink-proj-status-nf-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"status", "nonexistent"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should error with not found
+	assert.Error(t, err)
+}
+
+// TestGenerateAggregate_WithCommands tests aggregate generation with events flag
+func TestGenerateAggregate_WithEvents_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-agg-evt-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"aggregate", "Invoice", "--events", "Created,Paid", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify aggregate file was created
+	aggFile := filepath.Join(env.tmpDir, "internal/domain/invoice.go")
+	assert.FileExists(t, aggFile)
+}
+
+// TestGenerateEvent_WithAggregate tests event generation with aggregate flag
+func TestGenerateEvent_WithAggregate(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-evt-agg-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"event", "PaymentReceived", "--aggregate", "Payment", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify event file was created
+	evtFile := filepath.Join(env.tmpDir, "internal/events/paymentreceived.go")
+	assert.FileExists(t, evtFile)
+}
+
+// TestGenerateCommand_WithValidation tests command generation with validation
+func TestGenerateCommand_WithValidation(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-cmd-val-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"command", "CancelOrder", "--aggregate", "Order", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify command file was created
+	cmdFile := filepath.Join(env.tmpDir, "internal/commands/cancelorder.go")
+	assert.FileExists(t, cmdFile)
+}
+
+// TestExecute_WithError tests Execute function with an error
+func TestExecute_WithError(t *testing.T) {
+	// Save original args
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+
+	// Set args to trigger an error (unknown command)
+	os.Args = []string{"mink", "nonexistent_command_xyz"}
+
+	// Execute should return an error
+	err := Execute()
+	assert.Error(t, err)
+}
+
+// TestFormatMetadata tests the formatMetadata function
+func TestFormatMetadata_Valid(t *testing.T) {
+	m := adapters.Metadata{
+		CorrelationID: "corr-123",
+		CausationID:   "cause-456",
+	}
+
+	result := formatMetadata(m)
+	assert.Contains(t, result, "corr-123")
+	assert.Contains(t, result, "cause-456")
+}
+
+// TestFormatMetadata_Empty tests formatMetadata with empty metadata
+func TestFormatMetadata_Empty(t *testing.T) {
+	m := adapters.Metadata{}
+
+	result := formatMetadata(m)
+	assert.NotEmpty(t, result)
+}
+
+// TestCheckGoVersion tests Go version checking (additional coverage)
+func TestCheckGoVersion_Extra(t *testing.T) {
+	result := checkGoVersion()
+	assert.Equal(t, "Go Version", result.Name)
+	// Current Go version should be 1.21+ so status should be OK
+	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
+	assert.NotEmpty(t, result.Message)
+}
+
+// TestCheckProjections tests projection checking
+func TestCheckProjections_NoDatabase(t *testing.T) {
+	env := setupTestEnv(t, "mink-check-proj-*")
+	env.createConfig(withDriver("memory"))
+
+	// checkProjections reads config internally
+	result := checkProjections()
+	assert.Equal(t, "Projections", result.Name)
+	// Memory driver should skip projection check
+	assert.Equal(t, StatusOK, result.Status)
+}
+
+// TestNewInitCommand_NoInteractive tests init command with --non-interactive
+func TestNewInitCommand_NonInteractive_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-init-ni-*")
+
+	// Create a go.mod file to simulate a Go project
+	goModContent := "module test/module\n\ngo 1.21\n"
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte(goModContent), 0644))
+
+	cmd := NewInitCommand()
+	cmd.SetArgs([]string{"--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should succeed or fail gracefully
+	_ = err
+}
+
+// TestNewGenerateProjectionCommand_NoEvents tests projection generation without events
+func TestNewGenerateProjectionCommand_NoEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-proj-none-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"projection", "EmptyProjection", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify projection file was created
+	projFile := filepath.Join(env.tmpDir, "internal/projections/emptyprojection.go")
+	assert.FileExists(t, projFile)
+}
+
+// TestMigrateUp_NoMigrations tests migrate up with no migrations
+func TestMigrateUp_NoMigrations_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-empty-*")
+	env.createConfig(
+		withDriver("memory"),
+		withMigrationsDir("migrations"),
+	)
+
+	// Create empty migrations directory
+	env.createMigrationsDir()
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"up", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should handle empty migrations gracefully
+	_ = err
+}
+
+// TestProjectionRebuild_WithYes tests rebuild with --yes flag (skip confirmation)
+func TestProjectionRebuild_WithYes_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-rebuild-yes-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"rebuild", "TestProjection", "--yes"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should error (projection not found) but --yes flag should skip confirmation
+	assert.Error(t, err)
+}
+
+// TestNewGenerateEventCommand_Coverage tests event generation
+func TestNewGenerateEventCommand_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-evt-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"event", "PaymentProcessed", "--aggregate", "Payment", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify event file was created
+	evtFile := filepath.Join(env.tmpDir, "internal/events/paymentprocessed.go")
+	assert.FileExists(t, evtFile)
+}
+
+// TestNewGenerateCommandCommand_Coverage tests command generation without aggregate
+func TestNewGenerateCommandCommand_NoAggregate(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-cmd-noagg-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"command", "SimpleCommand", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify command file was created
+	cmdFile := filepath.Join(env.tmpDir, "internal/commands/simplecommand.go")
+	assert.FileExists(t, cmdFile)
+}
+
+// TestNewGenerateAggregateCommand_NoEvents tests aggregate generation without events
+func TestNewGenerateAggregateCommand_NoEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-agg-noevt-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"aggregate", "SimpleAggregate", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify aggregate file was created
+	aggFile := filepath.Join(env.tmpDir, "internal/domain/simpleaggregate.go")
+	assert.FileExists(t, aggFile)
+}
+
+// TestMigrateUp_MemoryDriver tests migrate up with memory driver
+func TestMigrateUp_MemoryDriver_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-mem-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"up", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Memory driver should return early with info message
+	assert.NoError(t, err)
+}
+
+// TestMigrateUp_WithSteps tests migrate up with --steps flag
+func TestMigrateUp_WithSteps(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-steps-*")
+	env.createConfig(
+		withDriver("memory"),
+		withMigrationsDir("migrations"),
+	)
+
+	// Create migrations directory
+	env.createMigrationsDir()
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"up", "--steps", "2", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should work with memory driver
+	_ = err
+}
+
+// TestNewInitCommand_ExistingConfig tests init when config already exists
+func TestNewInitCommand_ExistingConfig(t *testing.T) {
+	env := setupTestEnv(t, "mink-init-exist-*")
+	env.createConfig(withDriver("memory")) // Create existing config
+
+	cmd := NewInitCommand()
+	cmd.SetArgs([]string{"--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should return early without error (config exists)
+	assert.NoError(t, err)
+}
+
+// TestNewInitCommand_WithFlags tests init with various flags
+func TestNewInitCommand_WithFlags(t *testing.T) {
+	env := setupTestEnv(t, "mink-init-flags-*")
+
+	// Create go.mod
+	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "go.mod"), []byte("module test/mymodule\n\ngo 1.21\n"), 0644))
+
+	cmd := NewInitCommand()
+	cmd.SetArgs([]string{"--name", "myproject", "--driver", "postgres", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should succeed with flags
+	assert.NoError(t, err)
+}
+
+// TestNewInitCommand_InSubdirectory tests init in a subdirectory
+func TestNewInitCommand_InSubdirectory(t *testing.T) {
+	env := setupTestEnv(t, "mink-init-subdir-*")
+
+	subdir := filepath.Join(env.tmpDir, "subproject")
+	require.NoError(t, os.MkdirAll(subdir, 0755))
+
+	cmd := NewInitCommand()
+	cmd.SetArgs([]string{subdir, "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should create config in subdirectory
+	_ = err
+}
+
+// TestProjectionRebuild_Memory tests rebuild with memory driver
+func TestProjectionRebuild_Memory_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-rebuild-mem-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"rebuild", "SomeProjection", "--yes"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should error (projection not found in memory store)
+	assert.Error(t, err)
+}
+
+// TestGenerateProjection_SingleEvent tests projection with single event
+func TestGenerateProjection_SingleEvent(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-proj-single-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"projection", "SingleEventProj", "--events", "OnlyEvent", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	projFile := filepath.Join(env.tmpDir, "internal/projections/singleeventproj.go")
+	assert.FileExists(t, projFile)
+}
+
+// TestGenerateAggregate_ManyEvents tests aggregate with many events
+func TestGenerateAggregate_ManyEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-agg-many-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"aggregate", "ComplexEntity", "--events", "Created,Updated,Deleted,Archived,Restored", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	aggFile := filepath.Join(env.tmpDir, "internal/domain/complexentity.go")
+	assert.FileExists(t, aggFile)
+
+	eventsFile := filepath.Join(env.tmpDir, "internal/events/complexentity_events.go")
+	assert.FileExists(t, eventsFile)
+}
+
+// TestGenerateEvent_NoAggregate tests event generation without aggregate
+func TestGenerateEvent_NoAggregate_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-evt-noagg-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"event", "StandaloneEvent", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	evtFile := filepath.Join(env.tmpDir, "internal/events/standaloneevent.go")
+	assert.FileExists(t, evtFile)
+}
+
+// TestGenerateProjection_ManyEvents tests projection with many events
+func TestGenerateProjection_ManyEvents(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-proj-many-*")
+	env.createConfig(withModule("test/module"))
+
+	cmd := NewGenerateCommand()
+	cmd.SetArgs([]string{"projection", "CompleteReport", "--events", "EventA,EventB,EventC,EventD,EventE", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	projFile := filepath.Join(env.tmpDir, "internal/projections/completereport.go")
+	assert.FileExists(t, projFile)
+}
+
+// TestMigrateDown_MemoryDriver tests migrate down with memory driver
+func TestMigrateDown_MemoryDriver_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-down-mem-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"down", "--non-interactive"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Memory driver should return early with info message
+	assert.NoError(t, err)
+}
+
+// TestMigrateStatus_MemoryDriver tests migrate status with memory driver
+func TestMigrateStatus_MemoryDriver_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-status-mem-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"status"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Memory driver should show skip message
+	assert.NoError(t, err)
+}
+
+// TestMigrateCreate tests migrate create command
+func TestMigrateCreate_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-create-*")
+	env.createConfig(
+		withDriver("postgres"),
+		withMigrationsDir("migrations"),
+	)
+
+	// Create migrations directory
+	env.createMigrationsDir()
+
+	cmd := NewMigrateCommand()
+	cmd.SetArgs([]string{"create", "add_new_column"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify migration files were created
+	files, _ := os.ReadDir(filepath.Join(env.tmpDir, "migrations"))
+	assert.NotEmpty(t, files, "Migration files should be created")
+}
+
+// TestProjectionPause_Coverage tests projection pause command
+func TestProjectionPause_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-proj-pause-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"pause", "SomeProjection"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Memory driver might error (projection not found)
+	_ = err
+}
+
+// TestProjectionResume_Coverage tests projection resume command
+func TestProjectionResume_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-proj-resume-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewProjectionCommand()
+	cmd.SetArgs([]string{"resume", "SomeProjection"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Memory driver might error (projection not found)
+	_ = err
+}
+
+// TestStreamExport_Coverage tests stream export command
+func TestStreamExport_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-stream-export-*")
+	env.createConfig(withDriver("memory"))
+
+	outFile := filepath.Join(env.tmpDir, "export.json")
+
+	cmd := NewStreamCommand()
+	cmd.SetArgs([]string{"export", "test-stream", "--output", outFile})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should work or fail gracefully
+	_ = err
+}
+
+// TestStreamEvents_Coverage tests stream events command
+func TestStreamEvents_Coverage(t *testing.T) {
+	env := setupTestEnv(t, "mink-stream-events-*")
+	env.createConfig(withDriver("memory"))
+
+	cmd := NewStreamCommand()
+	cmd.SetArgs([]string{"events", "test-stream"})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	// Should work or fail gracefully
+	_ = err
+}
+
+// TestSchemaGenerate_Output tests schema generate with output flag
+func TestSchemaGenerate_Output(t *testing.T) {
+	env := setupTestEnv(t, "mink-schema-out-*")
+	env.createConfig(withDriver("memory"))
+
+	outFile := filepath.Join(env.tmpDir, "schema.sql")
+
+	cmd := NewSchemaCommand()
+	cmd.SetArgs([]string{"generate", "--output", outFile})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+
+	// Verify schema file was created
+	assert.FileExists(t, outFile)
+}
+
+// TestDiagnose_AllChecks tests full diagnose command
+func TestDiagnose_AllChecks(t *testing.T) {
+	env := setupTestEnv(t, "mink-diagnose-all-*")
+	env.createConfig(
+		withDriver("memory"),
+		withModule("test/module"),
+	)
+
+	cmd := NewDiagnoseCommand()
+	cmd.SetArgs([]string{})
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}

@@ -177,8 +177,17 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	// ==========================================================================
 	t.Log("Step 8: Insert test events")
 
+	// First insert streams
 	_, err = db.Exec(`
-		INSERT INTO mink_events (stream_id, version, type, data, metadata) VALUES
+		INSERT INTO mink.streams (stream_id, version) VALUES
+		('order-e2e-001', 4),
+		('order-e2e-002', 2)
+	`)
+	require.NoError(t, err)
+
+	// Then insert events
+	_, err = db.Exec(`
+		INSERT INTO mink.events (stream_id, version, event_type, data, metadata) VALUES
 		('order-e2e-001', 1, 'OrderCreated', '{"orderId": "e2e-001", "customerId": "cust-123"}', '{"correlationId": "corr-001"}'),
 		('order-e2e-001', 2, 'OrderItemAdded', '{"orderId": "e2e-001", "sku": "SKU-001", "quantity": 2}', '{}'),
 		('order-e2e-001', 3, 'OrderItemAdded', '{"orderId": "e2e-001", "sku": "SKU-002", "quantity": 1}', '{}'),
@@ -242,7 +251,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	t.Log("Step 13: Create projection checkpoint")
 
 	_, err = db.Exec(`
-		INSERT INTO mink_checkpoints (projection_name, position, status) VALUES
+		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
 		('E2EOrderSummary', 4, 'active')
 	`)
 	require.NoError(t, err)
@@ -275,7 +284,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 
 	// Verify status changed
 	var status string
-	err = db.QueryRow(`SELECT status FROM mink_checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&status)
+	err = db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&status)
 	require.NoError(t, err)
 	assert.Equal(t, "paused", status)
 
@@ -290,7 +299,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify status changed
-	err = db.QueryRow(`SELECT status FROM mink_checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&status)
+	err = db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&status)
 	require.NoError(t, err)
 	assert.Equal(t, "active", status)
 
@@ -306,7 +315,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 
 	// Verify position reset
 	var position int64
-	err = db.QueryRow(`SELECT position FROM mink_checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&position)
+	err = db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = $1`, "E2EOrderSummary").Scan(&position)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), position)
 
@@ -355,7 +364,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 
 	// Verify events are still in database
 	var eventCount int64
-	err = db.QueryRow(`SELECT COUNT(*) FROM mink_events WHERE stream_id LIKE 'order-e2e-%'`).Scan(&eventCount)
+	err = db.QueryRow(`SELECT COUNT(*) FROM mink.events WHERE stream_id LIKE 'order-e2e-%'`).Scan(&eventCount)
 	require.NoError(t, err)
 	assert.Equal(t, int64(6), eventCount, "All test events should still exist")
 
@@ -426,8 +435,18 @@ func TestE2E_MultiAggregateWorkflow(t *testing.T) {
 	}
 
 	// Insert events for multiple streams
+	// First insert streams
 	_, err = db.Exec(`
-		INSERT INTO mink_events (stream_id, version, type, data) VALUES
+		INSERT INTO mink.streams (stream_id, version) VALUES
+		('order-multi-001', 2),
+		('customer-multi-001', 2),
+		('product-multi-001', 2)
+	`)
+	require.NoError(t, err)
+
+	// Then insert events
+	_, err = db.Exec(`
+		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
 		('order-multi-001', 1, 'OrderCreated', '{}'),
 		('order-multi-001', 2, 'OrderShipped', '{}'),
 		('customer-multi-001', 1, 'CustomerRegistered', '{}'),
@@ -588,7 +607,7 @@ func TestE2E_ProjectionManagement(t *testing.T) {
 
 	// Create multiple projections in database
 	_, err = db.Exec(`
-		INSERT INTO mink_checkpoints (projection_name, position, status) VALUES
+		INSERT INTO mink.checkpoints (projection_name, position, status) VALUES
 		('OrderSummary', 100, 'active'),
 		('CustomerStats', 75, 'active'),
 		('ProductInventory', 50, 'paused'),
@@ -597,8 +616,17 @@ func TestE2E_ProjectionManagement(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert events
+	// First insert streams
 	_, err = db.Exec(`
-		INSERT INTO mink_events (stream_id, version, type, data) VALUES
+		INSERT INTO mink.streams (stream_id, version) VALUES
+		('stream-1', 2),
+		('stream-2', 1)
+	`)
+	require.NoError(t, err)
+
+	// Then insert events
+	_, err = db.Exec(`
+		INSERT INTO mink.events (stream_id, version, event_type, data) VALUES
 		('stream-1', 1, 'Event1', '{}'),
 		('stream-1', 2, 'Event2', '{}'),
 		('stream-2', 1, 'Event3', '{}')
@@ -647,9 +675,9 @@ func TestE2E_ProjectionManagement(t *testing.T) {
 	var orderStatus, inventoryStatus string
 	var salesPosition int64
 
-	db.QueryRow(`SELECT status FROM mink_checkpoints WHERE projection_name = 'OrderSummary'`).Scan(&orderStatus)
-	db.QueryRow(`SELECT status FROM mink_checkpoints WHERE projection_name = 'ProductInventory'`).Scan(&inventoryStatus)
-	db.QueryRow(`SELECT position FROM mink_checkpoints WHERE projection_name = 'SalesReport'`).Scan(&salesPosition)
+	db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = 'OrderSummary'`).Scan(&orderStatus)
+	db.QueryRow(`SELECT status FROM mink.checkpoints WHERE projection_name = 'ProductInventory'`).Scan(&inventoryStatus)
+	db.QueryRow(`SELECT position FROM mink.checkpoints WHERE projection_name = 'SalesReport'`).Scan(&salesPosition)
 
 	assert.Equal(t, "paused", orderStatus, "OrderSummary should be paused")
 	assert.Equal(t, "active", inventoryStatus, "ProductInventory should be active")
