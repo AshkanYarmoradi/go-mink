@@ -6842,6 +6842,7 @@ func TestProjectionResume_NoConfig(t *testing.T) {
 	err = cmd.Execute()
 	assert.Error(t, err)
 }
+
 // ============================================================================
 // COMPREHENSIVE POSTGRESQL INTEGRATION TESTS
 // ============================================================================
