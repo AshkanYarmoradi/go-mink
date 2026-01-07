@@ -6637,7 +6637,7 @@ func TestGetAdapter_NoConfig_Coverage(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	ctx := context.Background()
 	_, _, err = getAdapter(ctx)
@@ -6665,7 +6665,7 @@ func TestLoadConfig_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	_, _, err = loadConfig()
 	assert.Error(t, err)
@@ -6679,7 +6679,7 @@ func TestLoadConfigOrDefault_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, dir, err := loadConfigOrDefault()
 	require.NoError(t, err)
@@ -6788,7 +6788,7 @@ func TestStreamDelete_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"delete", "test-stream"})
@@ -6809,7 +6809,7 @@ func TestProjectionPause_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"pause", "TestProjection"})
@@ -6830,7 +6830,7 @@ func TestProjectionResume_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"resume", "TestProjection"})
@@ -7399,7 +7399,7 @@ func TestStreamList_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"list"})
@@ -7420,7 +7420,7 @@ func TestStreamEvents_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"events", "test-stream"})
@@ -7441,7 +7441,7 @@ func TestStreamStats_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"stats"})
@@ -7462,7 +7462,7 @@ func TestProjectionList_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"list"})
@@ -7483,7 +7483,7 @@ func TestProjectionStatus_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"status", "TestProj"})
@@ -7504,7 +7504,7 @@ func TestProjectionRebuild_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewProjectionCommand()
 	cmd.SetArgs([]string{"rebuild", "TestProj", "--yes"})
@@ -7525,7 +7525,7 @@ func TestSchemaGenerate_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"generate"})
@@ -7547,7 +7547,7 @@ func TestSchemaPrint_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewSchemaCommand()
 	cmd.SetArgs([]string{"print"})
@@ -7569,7 +7569,7 @@ func TestDiagnose_NoConfig(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cmd := NewDiagnoseCommand()
 	cmd.SetArgs([]string{})
@@ -8283,7 +8283,7 @@ func TestCheckConfiguration_NoConfig_Direct(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	result := checkConfiguration()
 	assert.Equal(t, "Configuration", result.Name)
@@ -8404,7 +8404,7 @@ func TestLoadConfig_NotExists_Direct(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, _, err := loadConfig()
 	assert.Error(t, err)
@@ -8419,7 +8419,7 @@ func TestLoadConfigOrDefault_NoConfig_Direct(t *testing.T) {
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	cfg, _, _ := loadConfigOrDefault()
 	assert.NotNil(t, cfg)
