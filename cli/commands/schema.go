@@ -80,9 +80,6 @@ func newSchemaPrintCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err != nil {
-				cfg = config.DefaultConfig()
-			}
 
 			schema, err := generateSchemaFromAdapter(ctx, cfg)
 			if err != nil {
