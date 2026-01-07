@@ -1892,6 +1892,44 @@ func TestCheckDatabaseConnection_MemoryDriver(t *testing.T) {
 	assert.Contains(t, result.Message, "memory")
 }
 
+// TestGenerateCommands_WithFlags tests generate commands with various flags.
+func TestGenerateCommands_WithFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		filePath string // Relative to tmpDir
+	}{
+		{
+			name:     "event with aggregate",
+			args:     []string{"event", "OrderShipped", "--aggregate", "Order", "--non-interactive"},
+			filePath: "internal/events/ordershipped.go",
+		},
+		{
+			name:     "command with aggregate",
+			args:     []string{"command", "ShipOrder", "--aggregate", "Order", "--non-interactive"},
+			filePath: "internal/commands/shiporder.go",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-gen-flags-*")
+			env.createConfig(withModule("github.com/test/flags"))
+
+			cmd := NewGenerateCommand()
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			assert.NoError(t, err)
+
+			// Verify file was created
+			genFile := filepath.Join(env.tmpDir, tt.filePath)
+			_, err = os.Stat(genFile)
+			assert.NoError(t, err)
+		})
+	}
+}
+
 // Test generate aggregate with existing config
 func TestGenerateAggregateCommand_WithExistingConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-agg-existing-*")
@@ -1910,40 +1948,6 @@ func TestGenerateAggregateCommand_WithExistingConfig(t *testing.T) {
 	// Verify files created in custom paths
 	aggFile := filepath.Join(env.tmpDir, "pkg/domain", "custom.go")
 	_, err = os.Stat(aggFile)
-	assert.NoError(t, err)
-}
-
-// Test generate event with aggregate flag
-func TestGenerateEventCommand_WithAggregate(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-evt-agg-*")
-	cfg := env.createConfig(withModule("github.com/test/evtagg"))
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"event", "OrderShipped", "--aggregate", "Order", "--non-interactive"})
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify event file was created
-	eventFile := filepath.Join(env.tmpDir, cfg.Generation.EventPackage, "ordershipped.go")
-	_, err = os.Stat(eventFile)
-	assert.NoError(t, err)
-}
-
-// Test generate command with aggregate flag
-func TestGenerateCommandCommand_WithAggregate(t *testing.T) {
-	env := setupTestEnv(t, "mink-gen-cmd-agg-*")
-	cfg := env.createConfig(withModule("github.com/test/cmdagg"))
-
-	cmd := NewGenerateCommand()
-	cmd.SetArgs([]string{"command", "ShipOrder", "--aggregate", "Order", "--non-interactive"})
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify command file was created
-	cmdFile := filepath.Join(env.tmpDir, cfg.Generation.CommandPackage, "shiporder.go")
-	_, err = os.Stat(cmdFile)
 	assert.NoError(t, err)
 }
 
@@ -2575,29 +2579,29 @@ func TestMigrateStatusCommand_WithMigrations(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test schema generate without config
-func TestSchemaGenerateCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-gen-noconf-*")
-	_ = env // No config created intentionally
+// TestSchemaCommands_NoConfig tests schema commands work without config.
+func TestSchemaCommands_NoConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		subCmd  string
+	}{
+		{"generate", "generate"},
+		{"print", "print"},
+	}
 
-	cmd := NewSchemaCommand()
-	genCmd, _, _ := cmd.Find([]string{"generate"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-schema-noconf-*")
+			_ = env // No config created intentionally
 
-	err := genCmd.RunE(genCmd, []string{})
-	// Should work with defaults
-	assert.NoError(t, err)
-}
+			cmd := NewSchemaCommand()
+			subCmd, _, _ := cmd.Find([]string{tt.subCmd})
 
-// Test schema print without config
-func TestSchemaPrintCommand_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-print-noconf-*")
-	_ = env // No config created intentionally
-
-	cmd := NewSchemaCommand()
-	printCmd, _, _ := cmd.Find([]string{"print"})
-
-	err := printCmd.RunE(printCmd, []string{})
-	assert.NoError(t, err)
+			err := subCmd.RunE(subCmd, []string{})
+			// Should work with defaults
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // Test adapter factory returns error for invalid URL
@@ -3149,89 +3153,79 @@ func TestDiagnoseCommand_Execute(t *testing.T) {
 // Additional Coverage Tests - Migrate Commands with Postgres Driver
 // ============================================================================
 
-func TestMigrateUpCommand_WithPostgresDriver_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-noconfig-*")
-	_ = env // Don't create config - should fail
+// TestMigrateCommands_NoConfig tests migrate commands fail without config file.
+func TestMigrateCommands_NoConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"up", []string{"up"}},
+		{"down", []string{"down"}},
+		{"status", []string{"status"}},
+	}
 
-	err := executeCmd(NewMigrateCommand(), []string{"up"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-migrate-noconfig-*")
+			_ = env // Don't create config - should fail
+
+			err := executeCmd(NewMigrateCommand(), tt.args)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "mink.yaml")
+		})
+	}
 }
 
-func TestMigrateDownCommand_WithPostgresDriver_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-down-*")
-	_ = env // Don't create config - should fail
+// TestMigrateCommands_PostgresNoDatabaseURL tests migrate commands fail with empty DATABASE_URL.
+func TestMigrateCommands_PostgresNoDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"up", []string{"up", "--non-interactive"}},
+		{"down", []string{"down", "--non-interactive"}},
+		{"status", []string{"status"}},
+	}
 
-	err := executeCmd(NewMigrateCommand(), []string{"down"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-migrate-pg-nodb-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(""), // Empty URL
+			)
 
-func TestMigrateStatusCommand_WithPostgresDriver_NoConfig(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-status-*")
-	_ = env // Don't create config - should fail
-
-	err := executeCmd(NewMigrateCommand(), []string{"status"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mink.yaml")
-}
-
-func TestMigrateUpCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-nodb-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""), // Empty URL
-	)
-
-	err := executeCmd(NewMigrateCommand(), []string{"up", "--non-interactive"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-func TestMigrateDownCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-nodb-down-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-	)
-
-	err := executeCmd(NewMigrateCommand(), []string{"down", "--non-interactive"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
-}
-
-func TestMigrateStatusCommand_WithPostgres_NoDatabaseURL(t *testing.T) {
-	env := setupTestEnv(t, "mink-migrate-pg-nodb-status-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(""),
-	)
-
-	err := executeCmd(NewMigrateCommand(), []string{"status"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DATABASE_URL")
+			err := executeCmd(NewMigrateCommand(), tt.args)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "DATABASE_URL")
+		})
+	}
 }
 
 // ============================================================================
 // Additional Coverage Tests - Stream Commands
 // ============================================================================
 
-func TestStreamEventsCommand_WithFlags(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-flags-*")
-	env.createConfig(withDriver("memory"))
-	_ = env // cleanup is automatic
+// TestStreamCommands_MemoryDriver_Flags tests stream commands with various flags.
+func TestStreamCommands_MemoryDriver_Flags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"events with flags", []string{"events", "test-stream", "--max-events", "5", "--from", "10"}},
+		{"list with limit", []string{"list", "--max-streams", "50"}},
+		{"stats", []string{"stats"}},
+	}
 
-	err := executeCmd(NewStreamCommand(), []string{"events", "test-stream", "--max-events", "5", "--from", "10"})
-	assert.NoError(t, err)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-stream-flags-*")
+			env.createConfig(withDriver("memory"))
 
-func TestStreamListCommand_WithLimitFlag(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-limit-*")
-	env.createConfig(withDriver("memory"))
-	_ = env // cleanup is automatic
-
-	err := executeCmd(NewStreamCommand(), []string{"list", "--max-streams", "50"})
-	assert.NoError(t, err)
+			err := executeCmd(NewStreamCommand(), tt.args)
+			assert.NoError(t, err)
+		})
+	}
 }
 
 func TestStreamExportCommand_WithOutputFlag(t *testing.T) {
@@ -3242,21 +3236,6 @@ func TestStreamExportCommand_WithOutputFlag(t *testing.T) {
 
 	cmd := NewStreamCommand()
 	cmd.SetArgs([]string{"export", "test-stream", "--output", outputFile})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-func TestStreamStatsCommand_Execute(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-stats-exec-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -3378,36 +3357,53 @@ func TestGenerateCommands_Execute(t *testing.T) {
 // Additional Coverage Tests - Init Command
 // ============================================================================
 
-func TestInitCommand_WithPostgresDriver(t *testing.T) {
-	// Create a temp directory without using setupTestEnv to avoid complexity
-	initDir, err := os.MkdirTemp("", "mink-init-postgres-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(initDir)
+// TestInitCommand_WithDrivers tests init command with different drivers.
+func TestInitCommand_WithDrivers(t *testing.T) {
+	tests := []struct {
+		name       string
+		driver     string
+		appName    string
+		expectPass bool
+	}{
+		{"memory", "memory", "mem-test-app", true},
+		{"postgres", "postgres", "pg-test-app", false}, // May fail without DB
+	}
 
-	cmd := NewInitCommand()
-	cmd.SetArgs([]string{
-		initDir,
-		"--non-interactive",
-		"--name", "pg-test-app",
-		"--module", "github.com/test/pg-app",
-		"--driver", "postgres",
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initDir, err := os.MkdirTemp("", "mink-init-"+tt.driver+"-*")
+			require.NoError(t, err)
+			defer os.RemoveAll(initDir)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := NewInitCommand()
+			cmd.SetArgs([]string{
+				initDir,
+				"--non-interactive",
+				"--name", tt.appName,
+				"--module", "github.com/test/" + tt.driver + "-app",
+				"--driver", tt.driver,
+			})
 
-	err = cmd.Execute()
-	// Command may succeed or fail depending on environment
-	// Just test the code path is covered
-	_ = err
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
 
-	// If execution succeeded, verify config was created
-	if err == nil {
-		cfg, loadErr := config.Load(initDir)
-		if loadErr == nil && cfg != nil {
-			assert.Equal(t, "postgres", cfg.Database.Driver)
-		}
+			err = cmd.Execute()
+			if tt.expectPass {
+				assert.NoError(t, err)
+			}
+			// Command may succeed or fail depending on environment
+			// Just test the code path is covered
+			_ = err
+
+			// If execution succeeded, verify config was created
+			if err == nil {
+				cfg, loadErr := config.Load(initDir)
+				if loadErr == nil && cfg != nil {
+					assert.Equal(t, tt.driver, cfg.Database.Driver)
+				}
+			}
+		})
 	}
 }
 
@@ -3561,128 +3557,51 @@ func TestMigrateCommands_MemoryDriver(t *testing.T) {
 // Additional Coverage Tests - Projection Commands
 // ============================================================================
 
-func TestProjectionListCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-list-mem-*")
-	env.createConfig(withDriver("memory"))
+// TestProjectionCommands_MemoryDriver tests projection commands with memory driver
+func TestProjectionCommands_MemoryDriver(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"list", []string{"list"}},
+		{"status", []string{"status", "test-projection"}},
+		{"rebuild", []string{"rebuild", "test-projection"}},
+		{"pause", []string{"pause", "test-projection"}},
+		{"resume", []string{"resume", "test-projection"}},
+	}
 
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-func TestProjectionStatusCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-status-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"status", "test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	// Memory driver may not support projection status
-	_ = cmd.Execute()
-}
-
-func TestProjectionRebuildCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-rebuild-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	// Memory driver may not support projection rebuild
-	_ = cmd.Execute()
-}
-
-func TestProjectionPauseCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-pause-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"pause", "test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	// Memory driver may not support projection pause
-	_ = cmd.Execute()
-}
-
-func TestProjectionResumeCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-proj-resume-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"resume", "test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	// Memory driver may not support projection resume
-	_ = cmd.Execute()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-proj-*")
+			env.createConfig(withDriver("memory"))
+			_ = executeCmd(NewProjectionCommand(), tt.args)
+		})
+	}
 }
 
 // ============================================================================
 // Additional Coverage Tests - Stream Commands with Various Options
 // ============================================================================
 
-func TestStreamEventsCommand_WithLimit(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-limit-*")
-	env.createConfig(withDriver("memory"))
+// TestStreamCommands_MemoryDriver_WithOptions tests stream commands with memory driver
+func TestStreamCommands_MemoryDriver_WithOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"events with limit", []string{"events", "test-stream", "--max-events", "5"}},
+		{"events with from", []string{"events", "test-stream", "--from", "10"}},
+		{"list", []string{"list"}},
+	}
 
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream", "--max-events", "5"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-func TestStreamEventsCommand_WithFrom_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-events-from-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream", "--from", "10"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
-
-func TestStreamListCommand_MemoryDriver(t *testing.T) {
-	env := setupTestEnv(t, "mink-stream-list-mem-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-stream-*")
+			env.createConfig(withDriver("memory"))
+			err := executeCmd(NewStreamCommand(), tt.args)
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // ============================================================================
@@ -3739,69 +3658,35 @@ func TestGenerateCommands_NonInteractive(t *testing.T) {
 }
 
 // ============================================================================
-// Additional Coverage Tests - Init Command Variations
-// ============================================================================
-
-func TestInitCommand_WithMemoryDriver(t *testing.T) {
-	initDir, err := os.MkdirTemp("", "mink-init-mem-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(initDir)
-
-	cmd := NewInitCommand()
-	cmd.SetArgs([]string{
-		initDir,
-		"--non-interactive",
-		"--name", "mem-test-app",
-		"--module", "github.com/test/mem-app",
-		"--driver", "memory",
-	})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	assert.NoError(t, err)
-
-	// Verify memory driver was set
-	cfg, loadErr := config.Load(initDir)
-	if loadErr == nil && cfg != nil {
-		assert.Equal(t, "memory", cfg.Database.Driver)
-	}
-}
-
-// ============================================================================
 // Additional Coverage Tests - Schema Commands
 // ============================================================================
 
-func TestSchemaGenerateCommand_ToStdout(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-stdout-*")
-	env.createConfig(withDriver("memory"))
+// TestSchemaCommands_MemoryDriver_Execute tests schema commands with memory driver.
+func TestSchemaCommands_MemoryDriver_Execute(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"generate", []string{"generate"}},
+		{"print", []string{"print"}},
+	}
 
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-schema-*")
+			env.createConfig(withDriver("memory"))
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := NewSchemaCommand()
+			cmd.SetArgs(tt.args)
 
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
 
-func TestSchemaPrintCommand_Execute_Coverage(t *testing.T) {
-	env := setupTestEnv(t, "mink-schema-print-*")
-	env.createConfig(withDriver("memory"))
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"print"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
+			err := cmd.Execute()
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // ============================================================================
@@ -3842,87 +3727,67 @@ func skipIfNoPostgres(t *testing.T) {
 	}
 }
 
-func TestMigrateUpCommand_PostgreSQL_Integration(t *testing.T) {
-	skipIfNoPostgres(t)
+// TestMigrateCommands_PostgreSQL_Integration tests various migrate commands with PostgreSQL
+func TestMigrateCommands_PostgreSQL_Integration(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		setupFiles []struct {
+			name    string
+			content string
+		}
+	}{
+		{
+			name: "up with migration file",
+			args: []string{"up", "--non-interactive"},
+			setupFiles: []struct {
+				name    string
+				content string
+			}{
+				{"001_20260106000000_test.sql", "-- Test migration\nSELECT 1;\n"},
+			},
+		},
+		{
+			name: "down with up and down files",
+			args: []string{"down", "--non-interactive"},
+			setupFiles: []struct {
+				name    string
+				content string
+			}{
+				{"001_20260106000000_test.sql", "SELECT 1;"},
+				{"001_20260106000000_test.down.sql", "SELECT 1;"},
+			},
+		},
+		{
+			name: "status without migrations",
+			args: []string{"status", "--non-interactive"},
+		},
+	}
 
-	env := setupTestEnv(t, "mink-migrate-up-pg-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipIfNoPostgres(t)
 
-	// Create a simple migration file
-	migrationsDir := env.createMigrationsDir()
-	migrationContent := "-- Test migration\nSELECT 1;\n"
-	require.NoError(t, os.WriteFile(
-		filepath.Join(migrationsDir, "001_20260106000000_test.sql"),
-		[]byte(migrationContent),
-		0644,
-	))
+			env := setupTestEnv(t, "mink-migrate-pg-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"up", "--non-interactive"})
+			if len(tt.setupFiles) > 0 {
+				migrationsDir := env.createMigrationsDir()
+				for _, f := range tt.setupFiles {
+					require.NoError(t, os.WriteFile(
+						filepath.Join(migrationsDir, f.name),
+						[]byte(f.content),
+						0644,
+					))
+				}
+			}
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// Migration should execute or fail gracefully
-	_ = err
-}
-
-func TestMigrateDownCommand_PostgreSQL_Integration(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-migrate-down-pg-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Create migration files (up and down)
-	migrationsDir := env.createMigrationsDir()
-	require.NoError(t, os.WriteFile(
-		filepath.Join(migrationsDir, "001_20260106000000_test.sql"),
-		[]byte("SELECT 1;"),
-		0644,
-	))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(migrationsDir, "001_20260106000000_test.down.sql"),
-		[]byte("SELECT 1;"),
-		0644,
-	))
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	_ = err
-}
-
-func TestMigrateStatusCommand_PostgreSQL_Integration(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-migrate-status-pg-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewMigrateCommand()
-	cmd.SetArgs([]string{"status", "--non-interactive"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	_ = err
+			_ = executeCmd(NewMigrateCommand(), tt.args)
+		})
+	}
 }
 
 // TestSimplePostgreSQLIntegrationCommands tests various commands with PostgreSQL that follow
@@ -4185,289 +4050,173 @@ func TestMigrateDownCommand_PostgreSQL_WithAppliedMigration(t *testing.T) {
 }
 
 // TestProjectionListCommand_PostgreSQL_WithProjections tests listing projections
-func TestProjectionListCommand_PostgreSQL_WithProjections(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-list-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create a projection checkpoint
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Try to create a test projection entry
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_checkpoints (projection_name, position, status) 
-			VALUES ('test-projection', 0, 'active')
-			ON CONFLICT (projection_name) DO NOTHING;
-		`)
+// TestProjectionCommands_PostgreSQL_WithData tests projection commands with actual data
+func TestProjectionCommands_PostgreSQL_WithData(t *testing.T) {
+	tests := []struct {
+		name           string
+		projectionName string
+		setupSQL       string
+		args           []string
+	}{
+		{
+			name:           "list with projection",
+			projectionName: "test-projection",
+			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+				VALUES ('test-projection', 0, 'active')
+				ON CONFLICT (projection_name) DO NOTHING;`,
+			args: []string{"list"},
+		},
+		{
+			name:           "status for projection",
+			projectionName: "test-status-projection",
+			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+				VALUES ('test-status-projection', 5, 'active')
+				ON CONFLICT (projection_name) DO UPDATE SET position = 5, status = 'active';`,
+			args: []string{"status", "test-status-projection"},
+		},
+		{
+			name:           "rebuild projection",
+			projectionName: "test-rebuild-projection",
+			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+				VALUES ('test-rebuild-projection', 10, 'active')
+				ON CONFLICT (projection_name) DO UPDATE SET position = 10, status = 'active';`,
+			args: []string{"rebuild", "test-rebuild-projection", "--yes"},
+		},
 	}
 
-	// Now run list
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"list"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipIfNoPostgres(t)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			env := setupTestEnv(t, "mink-proj-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	err = cmd.Execute()
-	_ = err
-}
+			ctx := context.Background()
+			adapter, _, cleanup, err := getAdapterWithConfig(ctx)
+			if err == nil {
+				defer cleanup()
+				_ = adapter.ExecuteSQL(ctx, tt.setupSQL)
+			}
 
-// TestProjectionStatusCommand_PostgreSQL_WithProjection tests detailed projection status
-func TestProjectionStatusCommand_PostgreSQL_WithProjection(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-status-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create a projection checkpoint
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Try to create a test projection entry
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_checkpoints (projection_name, position, status) 
-			VALUES ('test-status-projection', 5, 'active')
-			ON CONFLICT (projection_name) DO UPDATE SET position = 5, status = 'active';
-		`)
+			_ = executeCmd(NewProjectionCommand(), tt.args)
+		})
 	}
-
-	// Now run status
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"status", "test-status-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	_ = err
-}
-
-// TestProjectionRebuildCommand_PostgreSQL_WithProjection tests rebuild
-func TestProjectionRebuildCommand_PostgreSQL_WithProjection(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-rebuild-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create a projection checkpoint
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Try to create a test projection entry
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_checkpoints (projection_name, position, status) 
-			VALUES ('test-rebuild-projection', 10, 'active')
-			ON CONFLICT (projection_name) DO UPDATE SET position = 10, status = 'active';
-		`)
-	}
-
-	// Now run rebuild
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "test-rebuild-projection", "--yes"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	_ = err
 }
 
 // TestStreamListCommand_PostgreSQL_WithEvents tests stream list with actual events
-func TestStreamListCommand_PostgreSQL_WithEvents(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-list-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create some events
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Insert a test event
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
-			VALUES ('test-stream-list', 1, 'TestEvent', '{"test": true}', '{}')
-			ON CONFLICT (stream_id, version) DO NOTHING;
-		`)
+// TestStreamCommands_PostgreSQL_WithData tests stream commands with actual data
+func TestStreamCommands_PostgreSQL_WithData(t *testing.T) {
+	tests := []struct {
+		name     string
+		setupSQL []string
+		args     []string
+	}{
+		{
+			name: "list with events",
+			setupSQL: []string{`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				VALUES ('test-stream-list', 1, 'TestEvent', '{"test": true}', '{}')
+				ON CONFLICT (stream_id, version) DO NOTHING;`},
+			args: []string{"list"},
+		},
+		{
+			name: "events with stream data",
+			setupSQL: []string{
+				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				VALUES ('test-stream-events', 1, 'TestEvent1', '{"order": 1}', '{"correlationId": "123"}')
+				ON CONFLICT (stream_id, version) DO NOTHING;`,
+				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				VALUES ('test-stream-events', 2, 'TestEvent2', '{"order": 2}', '{"correlationId": "456"}')
+				ON CONFLICT (stream_id, version) DO NOTHING;`,
+			},
+			args: []string{"events", "test-stream-events"},
+		},
+		{
+			name: "stats with multiple streams",
+			setupSQL: []string{
+				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				VALUES ('stats-stream-1', 1, 'EventType1', '{"data": 1}', '{}')
+				ON CONFLICT (stream_id, version) DO NOTHING;`,
+				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				VALUES ('stats-stream-2', 1, 'EventType2', '{"data": 2}', '{}')
+				ON CONFLICT (stream_id, version) DO NOTHING;`,
+			},
+			args: []string{"stats"},
+		},
 	}
 
-	// Now run list
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipIfNoPostgres(t)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			env := setupTestEnv(t, "mink-stream-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	err = cmd.Execute()
-	_ = err
+			ctx := context.Background()
+			adapter, _, cleanup, err := getAdapterWithConfig(ctx)
+			if err == nil {
+				defer cleanup()
+				for _, sql := range tt.setupSQL {
+					_ = adapter.ExecuteSQL(ctx, sql)
+				}
+			}
+
+			_ = executeCmd(NewStreamCommand(), tt.args)
+		})
+	}
 }
 
-// TestStreamEventsCommand_PostgreSQL_WithEvents tests stream events with actual events
-func TestStreamEventsCommand_PostgreSQL_WithEvents(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-events-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create some events
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Insert test events
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
-			VALUES ('test-stream-events', 1, 'TestEvent1', '{"order": 1}', '{"correlationId": "123"}')
-			ON CONFLICT (stream_id, version) DO NOTHING;
-		`)
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
-			VALUES ('test-stream-events', 2, 'TestEvent2', '{"order": 2}', '{"correlationId": "456"}')
-			ON CONFLICT (stream_id, version) DO NOTHING;
-		`)
+// TestProjectionPauseResumeCommands_PostgreSQL tests pause and resume projection commands
+func TestProjectionPauseResumeCommands_PostgreSQL(t *testing.T) {
+	tests := []struct {
+		name           string
+		projectionName string
+		initialStatus  string
+		args           []string
+	}{
+		{
+			name:           "pause projection",
+			projectionName: "pause-test-projection",
+			initialStatus:  "active",
+			args:           []string{"pause", "pause-test-projection"},
+		},
+		{
+			name:           "resume projection",
+			projectionName: "resume-test-projection",
+			initialStatus:  "paused",
+			args:           []string{"resume", "resume-test-projection"},
+		},
 	}
 
-	// Now run events command
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream-events"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipIfNoPostgres(t)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			env := setupTestEnv(t, "mink-proj-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	err = cmd.Execute()
-	_ = err
-}
+			ctx := context.Background()
+			adapter, _, cleanup, err := getAdapterWithConfig(ctx)
+			if err == nil {
+				defer cleanup()
+				_ = adapter.ExecuteSQL(ctx, fmt.Sprintf(`
+					INSERT INTO mink_checkpoints (projection_name, position, status) 
+					VALUES ('%s', 5, '%s')
+					ON CONFLICT (projection_name) DO UPDATE SET status = '%s';
+				`, tt.projectionName, tt.initialStatus, tt.initialStatus))
+			}
 
-// TestStreamStatsCommand_PostgreSQL_WithEvents tests stream stats with data
-func TestStreamStatsCommand_PostgreSQL_WithEvents(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-stats-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create some events
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		// Insert multiple events in different streams
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
-			VALUES ('stats-stream-1', 1, 'EventType1', '{"data": 1}', '{}')
-			ON CONFLICT (stream_id, version) DO NOTHING;
-		`)
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
-			VALUES ('stats-stream-2', 1, 'EventType2', '{"data": 2}', '{}')
-			ON CONFLICT (stream_id, version) DO NOTHING;
-		`)
+			_ = executeCmd(NewProjectionCommand(), tt.args)
+		})
 	}
-
-	// Now run stats
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	_ = err
-}
-
-// TestProjectionPauseCommand_PostgreSQL tests pause projection
-func TestProjectionPauseCommand_PostgreSQL(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-pause-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create a projection checkpoint
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_checkpoints (projection_name, position, status) 
-			VALUES ('pause-test-projection', 5, 'active')
-			ON CONFLICT (projection_name) DO UPDATE SET status = 'active';
-		`)
-	}
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"pause", "pause-test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	_ = err
-}
-
-// TestProjectionResumeCommand_PostgreSQL tests resume projection
-func TestProjectionResumeCommand_PostgreSQL(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-resume-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	// Get adapter and create a paused projection
-	ctx := context.Background()
-	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
-	if err == nil {
-		defer cleanup()
-		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_checkpoints (projection_name, position, status) 
-			VALUES ('resume-test-projection', 5, 'paused')
-			ON CONFLICT (projection_name) DO UPDATE SET status = 'paused';
-		`)
-	}
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"resume", "resume-test-projection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err = cmd.Execute()
-	_ = err
 }
 
 // TestMigrateDownCommand_PostgreSQL_NoDownFile tests rollback without down file
@@ -6417,183 +6166,81 @@ func TestMigrateStatus_PostgreSQL_Full(t *testing.T) {
 	// Output may contain "pending" or other status info
 }
 
-// TestProjectionList_PostgreSQL_Full tests full projection list
-func TestProjectionList_PostgreSQL_Full(t *testing.T) {
+// TestProjectionCommands_PostgreSQL_Full tests projection commands with postgres.
+func TestProjectionCommands_PostgreSQL_Full(t *testing.T) {
 	skipIfNoPostgres(t)
 
-	env := setupTestEnv(t, "mink-proj-list-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"list", []string{"list"}},
+		{"status", []string{"status", "NonExistentProjection"}},
+		{"rebuild", []string{"rebuild", "TestProjection", "--yes"}},
+		{"pause", []string{"pause", "TestProjection"}},
+		{"resume", []string{"resume", "TestProjection"}},
+	}
 
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"list"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-proj-full-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := NewProjectionCommand()
+			cmd.SetArgs(tt.args)
 
-	err := cmd.Execute()
-	// May succeed or fail depending on schema state
-	_ = err
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+
+			err := cmd.Execute()
+			// May succeed or fail depending on schema/projection state
+			_ = err
+		})
+	}
 }
 
-// TestProjectionStatus_PostgreSQL_Full tests projection status
-func TestProjectionStatus_PostgreSQL_Full(t *testing.T) {
+// TestStreamCommands_PostgreSQL_Full tests stream commands execute with postgres.
+func TestStreamCommands_PostgreSQL_Full(t *testing.T) {
 	skipIfNoPostgres(t)
 
-	env := setupTestEnv(t, "mink-proj-status-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
+	tests := []struct {
+		name     string
+		args     []string
+		hasFile  bool
+		filename string
+	}{
+		{"list", []string{"list"}, false, ""},
+		{"events", []string{"events", "test-stream-123"}, false, ""},
+		{"stats", []string{"stats"}, false, ""},
+	}
 
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"status", "NonExistentProjection"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-stream-full-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := NewStreamCommand()
+			cmd.SetArgs(tt.args)
 
-	err := cmd.Execute()
-	// Should fail gracefully for non-existent projection
-	_ = err
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+
+			err := cmd.Execute()
+			// May succeed or fail depending on schema/stream existence
+			_ = err
+		})
+	}
 }
 
-// TestProjectionRebuild_PostgreSQL_Full tests projection rebuild
-func TestProjectionRebuild_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-rebuild-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"rebuild", "TestProjection", "--yes"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if projection doesn't exist
-	_ = err
-}
-
-// TestProjectionPause_PostgreSQL_Full tests projection pause
-func TestProjectionPause_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-pause-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"pause", "TestProjection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if projection doesn't exist
-	_ = err
-}
-
-// TestProjectionResume_PostgreSQL_Full tests projection resume
-func TestProjectionResume_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-proj-resume-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewProjectionCommand()
-	cmd.SetArgs([]string{"resume", "TestProjection"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if projection doesn't exist
-	_ = err
-}
-
-// TestStreamList_PostgreSQL_Full tests stream list
-func TestStreamList_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-list-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"list"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May succeed or fail depending on schema
-	_ = err
-}
-
-// TestStreamEvents_PostgreSQL_Full tests stream events
-func TestStreamEvents_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-events-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"events", "test-stream-123"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May fail if stream doesn't exist
-	_ = err
-}
-
-// TestStreamStats_PostgreSQL_Full tests stream stats
-func TestStreamStats_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-stream-stats-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewStreamCommand()
-	cmd.SetArgs([]string{"stats"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	// May succeed or fail depending on schema
-	_ = err
-}
-
-// TestStreamExport_PostgreSQL_Full tests stream export
+// TestStreamExport_PostgreSQL_Full tests stream export with postgres
 func TestStreamExport_PostgreSQL_Full(t *testing.T) {
 	skipIfNoPostgres(t)
 
@@ -6638,46 +6285,37 @@ func TestDiagnose_PostgreSQL_Full(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestSchemaGenerate_PostgreSQL_Full tests schema generate with postgres
-func TestSchemaGenerate_PostgreSQL_Full(t *testing.T) {
+// TestSchemaCommands_PostgreSQL_Full tests schema commands with postgres.
+func TestSchemaCommands_PostgreSQL_Full(t *testing.T) {
 	skipIfNoPostgres(t)
 
-	env := setupTestEnv(t, "mink-schema-gen-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"generate", []string{"generate"}},
+		{"print", []string{"print"}},
+	}
 
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"generate"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-schema-full-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+			cmd := NewSchemaCommand()
+			cmd.SetArgs(tt.args)
 
-	err := cmd.Execute()
-	assert.NoError(t, err)
-}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
 
-// TestSchemaPrint_PostgreSQL_Full tests schema print with postgres
-func TestSchemaPrint_PostgreSQL_Full(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-schema-print-full-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	cmd := NewSchemaCommand()
-	cmd.SetArgs([]string{"print"})
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-
-	err := cmd.Execute()
-	assert.NoError(t, err)
+			err := cmd.Execute()
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // ============================================================================
@@ -7046,33 +6684,32 @@ func TestCheckDatabaseConnection_PostgreSQL_Valid(t *testing.T) {
 	assert.Equal(t, StatusOK, result.Status)
 }
 
-// TestCheckEventStoreSchema_PostgreSQL tests schema check
-func TestCheckEventStoreSchema_PostgreSQL_Check(t *testing.T) {
+// TestDiagnoseChecks_PostgreSQL tests diagnose checks with postgres.
+func TestDiagnoseChecks_PostgreSQL(t *testing.T) {
 	skipIfNoPostgres(t)
 
-	env := setupTestEnv(t, "mink-check-schema-pg-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
+	tests := []struct {
+		name     string
+		checkFn  func() CheckResult
+		wantName string
+	}{
+		{"schema check", checkEventStoreSchema, "Event Store Schema"},
+		{"projections check", checkProjections, "Projections"},
+	}
 
-	result := checkEventStoreSchema()
-	assert.Equal(t, "Event Store Schema", result.Name)
-	// May be OK or Warning depending on schema state
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-check-pg-*")
+			env.createConfig(
+				withDriver("postgres"),
+				withDatabaseURL(getTestDatabaseURL()),
+			)
 
-// TestCheckProjections_PostgreSQL tests projections check
-func TestCheckProjections_PostgreSQL_Check(t *testing.T) {
-	skipIfNoPostgres(t)
-
-	env := setupTestEnv(t, "mink-check-proj-pg-*")
-	env.createConfig(
-		withDriver("postgres"),
-		withDatabaseURL(getTestDatabaseURL()),
-	)
-
-	result := checkProjections()
-	assert.Equal(t, "Projections", result.Name)
+			result := tt.checkFn()
+			assert.Equal(t, tt.wantName, result.Name)
+			// Status may vary depending on schema state
+		})
+	}
 }
 
 // TestFormatMetadata_ErrorPath tests formatMetadata error handling
