@@ -750,7 +750,7 @@ func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit 
 	}
 	defer rows.Close()
 
-	var streams []adapters.StreamSummary
+	streams := make([]adapters.StreamSummary, 0)
 	for rows.Next() {
 		var s adapters.StreamSummary
 		if err := rows.Scan(&s.StreamID, &s.EventCount, &s.LastEventType, &s.LastUpdated); err != nil {
@@ -848,7 +848,7 @@ func (a *PostgresAdapter) ListProjections(ctx context.Context) ([]adapters.Proje
 	}
 	defer rows.Close()
 
-	var projections []adapters.ProjectionInfo
+	projections := make([]adapters.ProjectionInfo, 0)
 	for rows.Next() {
 		var p adapters.ProjectionInfo
 		if err := rows.Scan(&p.Name, &p.Position, &p.Status, &p.UpdatedAt); err != nil {
@@ -963,7 +963,7 @@ func (a *PostgresAdapter) GetAppliedMigrations(ctx context.Context) ([]string, e
 	}
 	defer rows.Close()
 
-	var names []string
+	names := make([]string, 0)
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
