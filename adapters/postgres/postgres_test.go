@@ -288,6 +288,31 @@ func newTestSchema() string {
 	return fmt.Sprintf("test_%d", time.Now().UnixNano())
 }
 
+// setupIntegrationTest creates a test adapter with a unique schema and performs cleanup.
+// It skips the test if Short() is true or TEST_DATABASE_URL is not set.
+// Returns the adapter and automatically registers cleanup with t.Cleanup.
+func setupIntegrationTest(t *testing.T, opts ...Option) *PostgresAdapter {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	db := getTestDB(t)
+	schema := newTestSchema()
+
+	// Register cleanup to run after test completes
+	t.Cleanup(func() {
+		cleanupSchema(t, db, schema)
+		db.Close()
+	})
+
+	allOpts := append([]Option{WithSchema(schema)}, opts...)
+	adapter := newTestAdapter(t, db, allOpts...)
+	require.NoError(t, adapter.Initialize(context.Background()))
+
+	return adapter
+}
+
 func TestNewAdapter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
@@ -457,19 +482,7 @@ func TestPostgresAdapter_MigrationVersion(t *testing.T) {
 }
 
 func TestPostgresAdapter_Append(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("append to new stream", func(t *testing.T) {
@@ -667,19 +680,7 @@ func TestPostgresAdapter_Append(t *testing.T) {
 }
 
 func TestPostgresAdapter_Load(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("load empty stream", func(t *testing.T) {
@@ -752,19 +753,7 @@ func TestPostgresAdapter_Load(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetStreamInfo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("stream not found", func(t *testing.T) {
@@ -822,19 +811,7 @@ func TestPostgresAdapter_GetStreamInfo(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetLastPosition(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("empty store returns 0", func(t *testing.T) {
@@ -871,19 +848,7 @@ func TestPostgresAdapter_GetLastPosition(t *testing.T) {
 }
 
 func TestPostgresAdapter_Snapshots(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("save and load snapshot", func(t *testing.T) {
@@ -939,19 +904,7 @@ func TestPostgresAdapter_Snapshots(t *testing.T) {
 }
 
 func TestPostgresAdapter_Checkpoints(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
-
-	adapter := newTestAdapter(t, db, WithSchema(schema))
-	require.NoError(t, adapter.Initialize(context.Background()))
-
+	adapter := setupIntegrationTest(t)
 	ctx := context.Background()
 
 	t.Run("set and get checkpoint", func(t *testing.T) {
