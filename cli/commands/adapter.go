@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
@@ -159,4 +160,48 @@ func loadConfigOrDefault() (*config.Config, string, error) {
 	}
 
 	return cfg, cwd, nil
+}
+
+// MigrationEnv holds the environment for migration-related commands.
+// This consolidates the repeated pattern of loading config, checking for memory driver,
+// and creating the adapter used across migrate up/down/status commands.
+type MigrationEnv struct {
+	Adapter       CLIAdapter
+	Config        *config.Config
+	Cwd           string
+	MigrationsDir string
+	cleanup       func()
+}
+
+// Close cleans up the MigrationEnv resources.
+func (e *MigrationEnv) Close() {
+	if e.cleanup != nil {
+		e.cleanup()
+	}
+}
+
+// SetupMigrationEnv creates a MigrationEnv for migration commands.
+// Returns (env, isMemory, error). If isMemory is true, migrations are not needed.
+func SetupMigrationEnv(ctx context.Context) (*MigrationEnv, bool, error) {
+	cfg, cwd, err := loadConfig()
+	if err != nil {
+		return nil, false, fmt.Errorf("no mink.yaml found: %w", err)
+	}
+
+	if cfg.Database.Driver == "memory" {
+		return nil, true, nil
+	}
+
+	adapter, cleanup, err := getAdapter(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return &MigrationEnv{
+		Adapter:       adapter,
+		Config:        cfg,
+		Cwd:           cwd,
+		MigrationsDir: filepath.Join(cwd, cfg.Database.MigrationsDir),
+		cleanup:       cleanup,
+	}, false, nil
 }

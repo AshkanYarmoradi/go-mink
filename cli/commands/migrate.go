@@ -50,21 +50,15 @@ By default, applies all pending migrations. Use --steps to limit.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			cfg, cwd, err := loadConfig()
-			if err != nil {
-				return fmt.Errorf("no mink.yaml found: %w", err)
-			}
-
-			if cfg.Database.Driver == "memory" {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
-				return nil
-			}
-
-			adapter, cleanup, err := getAdapter(ctx)
+			env, isMemory, err := SetupMigrationEnv(ctx)
 			if err != nil {
 				return err
 			}
-			defer cleanup()
+			if isMemory {
+				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
+				return nil
+			}
+			defer env.Close()
 
 			// Show spinner while connecting (skip if --non-interactive)
 			if !nonInteractive {
@@ -82,8 +76,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 			}
 
 			// Get pending migrations
-			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
-			pending, err := getPendingMigrations(ctx, adapter, migrationsDir)
+			pending, err := getPendingMigrations(ctx, env.Adapter, env.MigrationsDir)
 			if err != nil {
 				return err
 			}
@@ -109,13 +102,13 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				}
 
 				// Execute migration using adapter
-				if err := adapter.ExecuteSQL(ctx, string(content)); err != nil {
+				if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
 					fmt.Println(styles.ErrorStyle.Render("FAILED"))
 					return fmt.Errorf("migration failed: %w", err)
 				}
 
 				// Record migration using adapter
-				if err := adapter.RecordMigration(ctx, m.Name); err != nil {
+				if err := env.Adapter.RecordMigration(ctx, m.Name); err != nil {
 					fmt.Println(styles.WarningStyle.Render("WARNING"))
 					fmt.Printf("    %s\n", styles.FormatWarning("Migration applied but not recorded"))
 				} else {
@@ -149,24 +142,17 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 			_ = nonInteractive // Used for scripting (skip interactive elements)
 			ctx := cmd.Context()
 
-			cfg, cwd, err := loadConfig()
-			if err != nil {
-				return fmt.Errorf("no mink.yaml found: %w", err)
-			}
-
-			if cfg.Database.Driver == "memory" {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
-				return nil
-			}
-
-			adapter, cleanup, err := getAdapter(ctx)
+			env, isMemory, err := SetupMigrationEnv(ctx)
 			if err != nil {
 				return err
 			}
-			defer cleanup()
+			if isMemory {
+				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
+				return nil
+			}
+			defer env.Close()
 
-			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
-			applied, err := getAppliedMigrations(ctx, adapter, migrationsDir)
+			applied, err := getAppliedMigrations(ctx, env.Adapter, env.MigrationsDir)
 			if err != nil {
 				return err
 			}
@@ -204,12 +190,12 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 					return fmt.Errorf("failed to read down migration: %w", err)
 				}
 
-				if err := adapter.ExecuteSQL(ctx, string(content)); err != nil {
+				if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
 					fmt.Println(styles.ErrorStyle.Render("FAILED"))
 					return fmt.Errorf("rollback failed: %w", err)
 				}
 
-				if err := adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
+				if err := env.Adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
 					fmt.Println(styles.WarningStyle.Render("WARNING"))
 				} else {
 					fmt.Println(styles.SuccessStyle.Render("OK"))
@@ -235,32 +221,24 @@ func newMigrateStatusCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			cfg, cwd, err := loadConfig()
-			if err != nil {
-				return fmt.Errorf("no mink.yaml found: %w", err)
-			}
-
-			if cfg.Database.Driver == "memory" {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't use migrations"))
-				return nil
-			}
-
-			adapter, cleanup, err := getAdapter(ctx)
+			env, isMemory, err := SetupMigrationEnv(ctx)
 			if err != nil {
 				return err
 			}
-			defer cleanup()
-
-			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
+			if isMemory {
+				fmt.Println(styles.FormatInfo("Memory driver doesn't use migrations"))
+				return nil
+			}
+			defer env.Close()
 
 			// Get all migrations
-			all, err := getAllMigrations(migrationsDir)
+			all, err := getAllMigrations(env.MigrationsDir)
 			if err != nil {
 				return err
 			}
 
 			// Get applied migrations using adapter
-			applied, err := adapter.GetAppliedMigrations(ctx)
+			applied, err := env.Adapter.GetAppliedMigrations(ctx)
 			if err != nil {
 				return err
 			}
