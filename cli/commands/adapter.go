@@ -91,36 +91,17 @@ func ensureContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-// getAdapter is a helper function used by CLI commands to get an adapter.
-// It handles config loading, URL resolution, and adapter creation.
-func getAdapter(ctx context.Context) (CLIAdapter, func(), error) {
-	ctx = ensureContext(ctx)
-
-	cfg, _, err := loadConfig()
-	if err != nil {
-		return nil, nil, fmt.Errorf("no mink.yaml found: %w", err)
-	}
-
-	factory, err := NewAdapterFactory(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	adapter, err := factory.CreateAdapter(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	cleanup := func() {
+// createAdapterCleanup returns a cleanup function for closing adapters.
+func createAdapterCleanup(adapter CLIAdapter) func() {
+	return func() {
 		if closer, ok := adapter.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
 	}
-
-	return adapter, cleanup, nil
 }
 
-// getAdapterWithConfig is like getAdapter but also returns the config.
+// getAdapterWithConfig loads config and creates an adapter with cleanup function.
+// This is the primary function - getAdapter is a convenience wrapper.
 func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func(), error) {
 	ctx = ensureContext(ctx)
 
@@ -139,13 +120,13 @@ func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func
 		return nil, nil, nil, err
 	}
 
-	cleanup := func() {
-		if closer, ok := adapter.(interface{ Close() error }); ok {
-			_ = closer.Close()
-		}
-	}
+	return adapter, cfg, createAdapterCleanup(adapter), nil
+}
 
-	return adapter, cfg, cleanup, nil
+// getAdapter is a convenience wrapper that returns adapter without config.
+func getAdapter(ctx context.Context) (CLIAdapter, func(), error) {
+	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
+	return adapter, cleanup, err
 }
 
 // loadConfig is a helper that loads config from the current working directory.

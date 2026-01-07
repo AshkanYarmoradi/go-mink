@@ -211,10 +211,11 @@ func newProjectionRebuildCommand() *cobra.Command {
 	return cmd
 }
 
-func newProjectionPauseCommand() *cobra.Command {
+// setProjectionStatusCommand creates a command that sets projection status.
+func setProjectionStatusCommand(use, short, status, successVerb string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "pause <name>",
-		Short: "Pause a projection",
+		Use:   use + " <name>",
+		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -226,39 +227,22 @@ func newProjectionPauseCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			if err := adapter.SetProjectionStatus(ctx, name, "paused"); err != nil {
+			if err := adapter.SetProjectionStatus(ctx, name, status); err != nil {
 				return err
 			}
 
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Paused projection '%s'", name)))
+			fmt.Println(styles.FormatSuccess(fmt.Sprintf("%s projection '%s'", successVerb, name)))
 			return nil
 		},
 	}
 }
 
+func newProjectionPauseCommand() *cobra.Command {
+	return setProjectionStatusCommand("pause", "Pause a projection", "paused", "Paused")
+}
+
 func newProjectionResumeCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "resume <name>",
-		Short: "Resume a paused projection",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			ctx := cmd.Context()
-
-			adapter, cleanup, err := getAdapter(ctx)
-			if err != nil {
-				return err
-			}
-			defer cleanup()
-
-			if err := adapter.SetProjectionStatus(ctx, name, "active"); err != nil {
-				return err
-			}
-
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Resumed projection '%s'", name)))
-			return nil
-		},
-	}
+	return setProjectionStatusCommand("resume", "Resume a paused projection", "active", "Resumed")
 }
 
 // NewStreamCommand creates the stream command
