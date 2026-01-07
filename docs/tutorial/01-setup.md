@@ -31,6 +31,17 @@ In this first part, you'll:
 
 **Time**: ~20 minutes
 
+{: .note }
+> **Alternative: Use CLI Tool**  
+> You can also use the `mink` CLI to scaffold your project:
+> ```bash
+> mink init
+> mink generate aggregate Product
+> mink generate aggregate Cart
+> mink generate aggregate Order
+> ```
+> This tutorial shows the manual approach to help you understand the internals.
+
 ---
 
 ## Step 1: Create the Project

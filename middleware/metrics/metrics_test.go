@@ -486,3 +486,308 @@ func TestMetrics_Getters(t *testing.T) {
 		assert.NotNil(t, m.ErrorsTotal())
 	})
 }
+
+// =============================================================================
+// Subscription Tests
+// =============================================================================
+
+func TestEventStoreMiddleware_SupportsSubscriptions(t *testing.T) {
+	t.Run("returns true for subscription adapter", func(t *testing.T) {
+		m := New()
+		adapter := &minktest.MockAdapter{}
+		middleware := m.WrapEventStore(adapter)
+
+		// MockAdapter implements SubscriptionAdapter
+		assert.True(t, middleware.SupportsSubscriptions())
+	})
+}
+
+func TestEventStoreMiddleware_LoadFromPosition(t *testing.T) {
+	t.Run("records successful load from position", func(t *testing.T) {
+		m := New(WithNamespace("es_lfp_success"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{
+			Events: []adapters.StoredEvent{
+				{ID: "event-1", GlobalPosition: 10},
+				{ID: "event-2", GlobalPosition: 11},
+			},
+		}
+		middleware := m.WrapEventStore(adapter)
+
+		events, err := middleware.LoadFromPosition(context.Background(), 0, 10)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 2)
+
+		// Verify metrics
+		successCount := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", "load_from_position", StatusSuccess))
+		assert.Equal(t, float64(1), successCount)
+	})
+
+	t.Run("records failed load from position", func(t *testing.T) {
+		m := New(WithNamespace("es_lfp_fail"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{LoadFromPositionErr: errors.New("load failed")}
+		middleware := m.WrapEventStore(adapter)
+
+		_, err := middleware.LoadFromPosition(context.Background(), 0, 10)
+
+		require.Error(t, err)
+
+		// Verify error metrics
+		errorCount := testutil.ToFloat64(m.errorsTotal.WithLabelValues("test", "load_from_position_error"))
+		assert.Equal(t, float64(1), errorCount)
+	})
+}
+
+func TestEventStoreMiddleware_SubscribeAll(t *testing.T) {
+	t.Run("records successful subscribe all", func(t *testing.T) {
+		m := New(WithNamespace("es_sub_all"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{}
+		middleware := m.WrapEventStore(adapter)
+
+		ch, err := middleware.SubscribeAll(context.Background(), 0)
+
+		require.NoError(t, err)
+		assert.NotNil(t, ch)
+
+		// Verify metrics
+		count := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", OperationSubscribe, StatusSuccess))
+		assert.Equal(t, float64(1), count)
+	})
+}
+
+func TestEventStoreMiddleware_SubscribeStream(t *testing.T) {
+	t.Run("records successful subscribe stream", func(t *testing.T) {
+		m := New(WithNamespace("es_sub_stream"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{}
+		middleware := m.WrapEventStore(adapter)
+
+		ch, err := middleware.SubscribeStream(context.Background(), "order-123", 0)
+
+		require.NoError(t, err)
+		assert.NotNil(t, ch)
+
+		// Verify metrics
+		count := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", OperationSubscribe, StatusSuccess))
+		assert.Equal(t, float64(1), count)
+	})
+}
+
+func TestEventStoreMiddleware_SubscribeCategory(t *testing.T) {
+	t.Run("records successful subscribe category", func(t *testing.T) {
+		m := New(WithNamespace("es_sub_cat"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{}
+		middleware := m.WrapEventStore(adapter)
+
+		ch, err := middleware.SubscribeCategory(context.Background(), "Order", 0)
+
+		require.NoError(t, err)
+		assert.NotNil(t, ch)
+
+		// Verify metrics
+		count := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", OperationSubscribe, StatusSuccess))
+		assert.Equal(t, float64(1), count)
+	})
+}
+
+func TestEventStoreMiddleware_Close(t *testing.T) {
+	t.Run("closes underlying adapter", func(t *testing.T) {
+		m := New()
+		adapter := &minktest.MockAdapter{}
+		middleware := m.WrapEventStore(adapter)
+
+		err := middleware.Close()
+
+		require.NoError(t, err)
+	})
+}
+
+// =============================================================================
+// Error Type Name Tests
+// =============================================================================
+
+func TestErrorTypeName(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: "none",
+		},
+		{
+			name:     "concurrency conflict",
+			err:      mink.ErrConcurrencyConflict,
+			expected: "concurrency_conflict",
+		},
+		{
+			name:     "stream not found",
+			err:      mink.ErrStreamNotFound,
+			expected: "stream_not_found",
+		},
+		{
+			name:     "handler not found",
+			err:      mink.ErrHandlerNotFound,
+			expected: "handler_not_found",
+		},
+		{
+			name:     "validation failed",
+			err:      mink.ErrValidationFailed,
+			expected: "validation_failed",
+		},
+		{
+			name:     "command already processed",
+			err:      mink.ErrCommandAlreadyProcessed,
+			expected: "command_already_processed",
+		},
+		{
+			name:     "handler panicked",
+			err:      mink.ErrHandlerPanicked,
+			expected: "handler_panicked",
+		},
+		{
+			name:     "serialization failed",
+			err:      mink.ErrSerializationFailed,
+			expected: "serialization_failed",
+		},
+		{
+			name:     "event type not registered",
+			err:      mink.ErrEventTypeNotRegistered,
+			expected: "event_type_not_registered",
+		},
+		{
+			name:     "nil aggregate",
+			err:      mink.ErrNilAggregate,
+			expected: "nil_aggregate",
+		},
+		{
+			name:     "nil command",
+			err:      mink.ErrNilCommand,
+			expected: "nil_command",
+		},
+		{
+			name:     "projection failed",
+			err:      mink.ErrProjectionFailed,
+			expected: "projection_failed",
+		},
+		{
+			name:     "empty stream id",
+			err:      adapters.ErrEmptyStreamID,
+			expected: "empty_stream_id",
+		},
+		{
+			name:     "no events",
+			err:      adapters.ErrNoEvents,
+			expected: "no_events",
+		},
+		{
+			name:     "invalid version",
+			err:      adapters.ErrInvalidVersion,
+			expected: "invalid_version",
+		},
+		{
+			name:     "adapter closed",
+			err:      adapters.ErrAdapterClosed,
+			expected: "adapter_closed",
+		},
+		{
+			name:     "unknown error",
+			err:      errors.New("some random error"),
+			expected: "unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := errorTypeName(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// =============================================================================
+// Command Result Error Recording Tests
+// =============================================================================
+
+func TestMetrics_CommandMiddleware_ErrorResult(t *testing.T) {
+	t.Run("records error from result when no handler error", func(t *testing.T) {
+		m := New(WithNamespace("cmd_result_err"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		middleware := m.CommandMiddleware()
+		cmd := &minktest.TestCommand{ID: "test-123"}
+		resultErr := mink.ErrValidationFailed
+
+		handler := middleware(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+			return mink.NewErrorResult(resultErr), nil // Error in result, not handler
+		})
+
+		result, err := handler(context.Background(), cmd)
+
+		require.NoError(t, err) // Handler didn't return error
+		assert.True(t, result.IsError())
+
+		// Verify error was recorded
+		errorCount := testutil.ToFloat64(m.errorsTotal.WithLabelValues("test", "validation_failed"))
+		assert.Equal(t, float64(1), errorCount)
+	})
+}
+
+// =============================================================================
+// GetStreamInfo Error Test
+// =============================================================================
+
+func TestEventStoreMiddleware_GetStreamInfo_Error(t *testing.T) {
+	t.Run("records error for get stream info", func(t *testing.T) {
+		m := New(WithNamespace("es_info_err"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{GetStreamInfoErr: errors.New("stream info error")}
+		middleware := m.WrapEventStore(adapter)
+
+		_, err := middleware.GetStreamInfo(context.Background(), "order-123")
+
+		require.Error(t, err)
+
+		// Verify error metrics
+		errorCount := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", "get_stream_info", StatusError))
+		assert.Equal(t, float64(1), errorCount)
+	})
+}
+
+func TestEventStoreMiddleware_GetLastPosition_Error(t *testing.T) {
+	t.Run("records error for get last position", func(t *testing.T) {
+		m := New(WithNamespace("es_pos_err"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		adapter := &minktest.MockAdapter{GetLastPositionErr: errors.New("position error")}
+		middleware := m.WrapEventStore(adapter)
+
+		_, err := middleware.GetLastPosition(context.Background())
+
+		require.Error(t, err)
+
+		// Verify error metrics
+		errorCount := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", "get_last_position", StatusError))
+		assert.Equal(t, float64(1), errorCount)
+	})
+}

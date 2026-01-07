@@ -653,33 +653,7 @@ func TestExtractCategory(t *testing.T) {
 	}
 }
 
-func TestMemoryAdapter_Load_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
-	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
-
-	adapter.Close()
-
-	_, err := adapter.Load(ctx, "Order-123", 0)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
-
-func TestMemoryAdapter_GetStreamInfo_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
-
-	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
-	_, _ = adapter.Append(ctx, "Order-123", events, mink.NoStream)
-
-	adapter.Close()
-
-	_, err := adapter.GetStreamInfo(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -690,15 +664,7 @@ func TestMemoryAdapter_GetStreamInfo_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_GetLastPosition_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
 
-	adapter.Close()
-
-	_, err := adapter.GetLastPosition(context.Background())
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -709,24 +675,7 @@ func TestMemoryAdapter_GetLastPosition_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_Snapshots_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	adapter.Close()
-
-	err := adapter.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`))
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-
-	_, err = adapter.LoadSnapshot(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-
-	err = adapter.DeleteSnapshot(ctx, "Order-123")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -743,20 +692,7 @@ func TestMemoryAdapter_Snapshots_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_Checkpoints_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	ctx := context.Background()
 
-	adapter.Close()
-
-	err := adapter.SetCheckpoint(ctx, "Projection", 100)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-
-	_, err = adapter.GetCheckpoint(ctx, "Projection")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_Checkpoints_ContextCancellation(t *testing.T) {
 	adapter := NewAdapter()
@@ -779,14 +715,7 @@ func TestMemoryAdapter_Ping_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestMemoryAdapter_SubscribeAll_ClosedAdapter(t *testing.T) {
-	adapter := NewAdapter()
-	adapter.Close()
 
-	_, err := adapter.SubscribeAll(context.Background(), 0)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
-}
 
 func TestMemoryAdapter_SubscribeStream(t *testing.T) {
 	t.Run("filters events by stream", func(t *testing.T) {
@@ -949,14 +878,6 @@ func TestMemoryAdapter_LoadFromPosition(t *testing.T) {
 		assert.Len(t, events, 1)
 	})
 
-	t.Run("returns error on closed adapter", func(t *testing.T) {
-		adapter := NewAdapter()
-		_ = adapter.Close()
-
-		_, err := adapter.LoadFromPosition(context.Background(), 0, 10)
-		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
-	})
-
 	t.Run("respects context cancellation", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1058,5 +979,600 @@ func BenchmarkMemoryAdapter_Concurrent(b *testing.B) {
 			_, _ = adapter.Append(ctx, streamID, events, mink.AnyVersion)
 			i++
 		}
+	})
+}
+
+// ============================================================================
+// Consolidated Closed Adapter Tests
+// ============================================================================
+
+// TestMemoryAdapter_ClosedAdapterErrors consolidates all "returns error on closed adapter"
+// tests into a single table-driven test. This reduces code duplication while maintaining
+// the same test coverage.
+func TestMemoryAdapter_ClosedAdapterErrors(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		fn   func(*MemoryAdapter) error
+	}{
+		// Core operations
+		{"Load", func(a *MemoryAdapter) error { _, err := a.Load(ctx, "Order-123", 0); return err }},
+		{"GetStreamInfo", func(a *MemoryAdapter) error { _, err := a.GetStreamInfo(ctx, "Order-123"); return err }},
+		{"GetLastPosition", func(a *MemoryAdapter) error { _, err := a.GetLastPosition(ctx); return err }},
+		{"LoadFromPosition", func(a *MemoryAdapter) error { _, err := a.LoadFromPosition(ctx, 0, 10); return err }},
+		// Snapshots
+		{"SaveSnapshot", func(a *MemoryAdapter) error { return a.SaveSnapshot(ctx, "Order-123", 1, []byte(`{}`)) }},
+		{"LoadSnapshot", func(a *MemoryAdapter) error { _, err := a.LoadSnapshot(ctx, "Order-123"); return err }},
+		{"DeleteSnapshot", func(a *MemoryAdapter) error { return a.DeleteSnapshot(ctx, "Order-123") }},
+		// Checkpoints
+		{"SetCheckpoint", func(a *MemoryAdapter) error { return a.SetCheckpoint(ctx, "Projection", 100) }},
+		{"GetCheckpoint", func(a *MemoryAdapter) error { _, err := a.GetCheckpoint(ctx, "Projection"); return err }},
+		// Subscriptions
+		{"SubscribeAll", func(a *MemoryAdapter) error { _, err := a.SubscribeAll(ctx, 0); return err }},
+		// Migrations
+		{"GetAppliedMigrations", func(a *MemoryAdapter) error { _, err := a.GetAppliedMigrations(ctx); return err }},
+		{"RecordMigration", func(a *MemoryAdapter) error { return a.RecordMigration(ctx, "test") }},
+		{"RemoveMigrationRecord", func(a *MemoryAdapter) error { return a.RemoveMigrationRecord(ctx, "test") }},
+		{"ExecuteSQL", func(a *MemoryAdapter) error { return a.ExecuteSQL(ctx, "SELECT 1") }},
+		// Diagnostics
+		{"GetDiagnosticInfo", func(a *MemoryAdapter) error { _, err := a.GetDiagnosticInfo(ctx); return err }},
+		{"CheckSchema", func(a *MemoryAdapter) error { _, err := a.CheckSchema(ctx, "mink_events"); return err }},
+		{"GetProjectionHealth", func(a *MemoryAdapter) error { _, err := a.GetProjectionHealth(ctx); return err }},
+		// Projections
+		{"ListProjections", func(a *MemoryAdapter) error { _, err := a.ListProjections(ctx); return err }},
+		{"GetProjection", func(a *MemoryAdapter) error { _, err := a.GetProjection(ctx, "test"); return err }},
+		{"SetProjectionStatus", func(a *MemoryAdapter) error { return a.SetProjectionStatus(ctx, "test", "paused") }},
+		{"ResetProjectionCheckpoint", func(a *MemoryAdapter) error { return a.ResetProjectionCheckpoint(ctx, "test") }},
+		{"GetTotalEventCount", func(a *MemoryAdapter) error { _, err := a.GetTotalEventCount(ctx); return err }},
+		{"GetEventStoreStats", func(a *MemoryAdapter) error { _, err := a.GetEventStoreStats(ctx); return err }},
+		// Streams
+		{"ListStreams", func(a *MemoryAdapter) error { _, err := a.ListStreams(ctx, "", 10); return err }},
+		{"GetStreamEvents", func(a *MemoryAdapter) error { _, err := a.GetStreamEvents(ctx, "stream-1", 0, 10); return err }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := NewAdapter()
+			_ = adapter.Close()
+
+			err := tt.fn(adapter)
+			assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+		})
+	}
+}
+
+// ============================================================================
+// Migration Tests
+// ============================================================================
+
+func TestMemoryAdapter_GetAppliedMigrations(t *testing.T) {
+	// Clean up migrations between tests
+	memoryMigrationsMu.Lock()
+	memoryMigrations = make(map[string]*migrationRecord)
+	memoryMigrationsMu.Unlock()
+
+	t.Run("returns empty when no migrations", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+
+		require.NoError(t, err)
+		assert.Empty(t, migrations)
+	})
+
+	t.Run("returns sorted migration names", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Record migrations out of order
+		_ = adapter.RecordMigration(ctx, "003_migration")
+		_ = adapter.RecordMigration(ctx, "001_migration")
+		_ = adapter.RecordMigration(ctx, "002_migration")
+
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+
+		require.NoError(t, err)
+		assert.Len(t, migrations, 3)
+		assert.Equal(t, []string{"001_migration", "002_migration", "003_migration"}, migrations)
+
+		// Clean up
+		memoryMigrationsMu.Lock()
+		memoryMigrations = make(map[string]*migrationRecord)
+		memoryMigrationsMu.Unlock()
+	})
+
+	t.Run("respects context cancellation", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := adapter.GetAppliedMigrations(ctx)
+
+		assert.Error(t, err)
+	})
+}
+
+func TestMemoryAdapter_RecordMigration(t *testing.T) {
+	// Clean up migrations between tests
+	memoryMigrationsMu.Lock()
+	memoryMigrations = make(map[string]*migrationRecord)
+	memoryMigrationsMu.Unlock()
+
+	t.Run("records migration successfully", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		err := adapter.RecordMigration(ctx, "001_initial")
+
+		require.NoError(t, err)
+
+		// Verify it was recorded
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, migrations, "001_initial")
+
+		// Clean up
+		memoryMigrationsMu.Lock()
+		memoryMigrations = make(map[string]*migrationRecord)
+		memoryMigrationsMu.Unlock()
+	})
+
+	t.Run("respects context cancellation", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := adapter.RecordMigration(ctx, "001_initial")
+
+		assert.Error(t, err)
+	})
+}
+
+func TestMemoryAdapter_RemoveMigrationRecord(t *testing.T) {
+	// Clean up migrations between tests
+	memoryMigrationsMu.Lock()
+	memoryMigrations = make(map[string]*migrationRecord)
+	memoryMigrationsMu.Unlock()
+
+	t.Run("removes existing migration", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Record then remove
+		_ = adapter.RecordMigration(ctx, "001_initial")
+		err := adapter.RemoveMigrationRecord(ctx, "001_initial")
+
+		require.NoError(t, err)
+
+		// Verify it was removed
+		migrations, err := adapter.GetAppliedMigrations(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, migrations, "001_initial")
+	})
+
+	t.Run("no error when removing non-existent migration", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		err := adapter.RemoveMigrationRecord(ctx, "nonexistent")
+
+		assert.NoError(t, err)
+	})
+}
+
+func TestMemoryAdapter_ExecuteSQL(t *testing.T) {
+	t.Run("executes SQL successfully (no-op)", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		err := adapter.ExecuteSQL(ctx, "CREATE TABLE test (id INT)")
+
+		assert.NoError(t, err)
+	})
+}
+
+func TestMemoryAdapter_GenerateSchema(t *testing.T) {
+	t.Run("returns schema with project name", func(t *testing.T) {
+		adapter := NewAdapter()
+
+		schema := adapter.GenerateSchema("test-project", "mink_events", "mink_snapshots", "mink_outbox")
+
+		assert.Contains(t, schema, "test-project")
+		assert.Contains(t, schema, "In-Memory")
+		assert.Contains(t, schema, "memory adapter")
+	})
+}
+
+// ============================================================================
+// Diagnostic Tests
+// ============================================================================
+
+func TestMemoryAdapter_GetDiagnosticInfo(t *testing.T) {
+	t.Run("returns diagnostic info successfully", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		info, err := adapter.GetDiagnosticInfo(ctx)
+
+		require.NoError(t, err)
+		assert.True(t, info.Connected)
+		assert.Contains(t, info.Version, "In-Memory")
+		assert.Contains(t, info.Message, "in-memory")
+	})
+}
+
+func TestMemoryAdapter_CheckSchema(t *testing.T) {
+	t.Run("returns schema check with no events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		result, err := adapter.CheckSchema(ctx, "mink_events")
+
+		require.NoError(t, err)
+		assert.True(t, result.TableExists)
+		assert.Equal(t, int64(0), result.EventCount)
+		assert.Contains(t, result.Message, "active")
+	})
+
+	t.Run("returns schema check with events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Add some events
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		result, err := adapter.CheckSchema(ctx, "mink_events")
+
+		require.NoError(t, err)
+		assert.True(t, result.TableExists)
+		assert.Equal(t, int64(2), result.EventCount)
+		assert.Contains(t, result.Message, "2 events")
+	})
+}
+
+func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
+	// Clean up projections between tests
+	memoryProjectionsMu.Lock()
+	memoryProjections = make(map[string]*projectionInfo)
+	memoryProjectionsMu.Unlock()
+
+	t.Run("returns health with no projections", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		result, err := adapter.GetProjectionHealth(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), result.TotalProjections)
+		assert.Contains(t, result.Message, "No projections")
+	})
+
+	t.Run("returns health with all projections up to date", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Register a projection that's up to date
+		memoryProjectionsMu.Lock()
+		memoryProjections["test-projection"] = &projectionInfo{
+			name:      "test-projection",
+			position:  0,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		result, err := adapter.GetProjectionHealth(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), result.TotalProjections)
+		assert.Equal(t, int64(0), result.ProjectionsBehind)
+		assert.Contains(t, result.Message, "all up to date")
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+
+	t.Run("returns health with projections behind", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Add events to increase global position
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		// Register a projection that's behind
+		memoryProjectionsMu.Lock()
+		memoryProjections["test-projection"] = &projectionInfo{
+			name:      "test-projection",
+			position:  0,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		result, err := adapter.GetProjectionHealth(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), result.TotalProjections)
+		assert.Equal(t, int64(1), result.ProjectionsBehind)
+		assert.Contains(t, result.Message, "behind")
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+}
+
+// ============================================================================
+// Projection Management Tests
+// ============================================================================
+
+func TestMemoryAdapter_ListProjections(t *testing.T) {
+	// Clean up projections between tests
+	memoryProjectionsMu.Lock()
+	memoryProjections = make(map[string]*projectionInfo)
+	memoryProjectionsMu.Unlock()
+
+	t.Run("returns empty when no projections", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		projections, err := adapter.ListProjections(ctx)
+
+		require.NoError(t, err)
+		assert.Empty(t, projections)
+	})
+
+	t.Run("returns all projections", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Register projections
+		memoryProjectionsMu.Lock()
+		memoryProjections["projection-1"] = &projectionInfo{
+			name:      "projection-1",
+			position:  10,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjections["projection-2"] = &projectionInfo{
+			name:      "projection-2",
+			position:  5,
+			status:    "stopped",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		projections, err := adapter.ListProjections(ctx)
+
+		require.NoError(t, err)
+		assert.Len(t, projections, 2)
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+}
+
+func TestMemoryAdapter_GetProjection(t *testing.T) {
+	// Clean up projections between tests
+	memoryProjectionsMu.Lock()
+	memoryProjections = make(map[string]*projectionInfo)
+	memoryProjectionsMu.Unlock()
+
+	t.Run("returns nil for non-existent projection", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		projection, err := adapter.GetProjection(ctx, "nonexistent")
+
+		require.NoError(t, err)
+		assert.Nil(t, projection)
+	})
+
+	t.Run("returns projection info", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Register projection
+		memoryProjectionsMu.Lock()
+		memoryProjections["test-projection"] = &projectionInfo{
+			name:      "test-projection",
+			position:  42,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		projection, err := adapter.GetProjection(ctx, "test-projection")
+
+		require.NoError(t, err)
+		require.NotNil(t, projection)
+		assert.Equal(t, "test-projection", projection.Name)
+		assert.Equal(t, int64(42), projection.Position)
+		assert.Equal(t, "running", projection.Status)
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+}
+
+func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
+	// Clean up projections between tests
+	memoryProjectionsMu.Lock()
+	memoryProjections = make(map[string]*projectionInfo)
+	memoryProjectionsMu.Unlock()
+
+	t.Run("sets status for existing projection", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Register projection
+		memoryProjectionsMu.Lock()
+		memoryProjections["test-projection"] = &projectionInfo{
+			name:      "test-projection",
+			position:  0,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		err := adapter.SetProjectionStatus(ctx, "test-projection", "stopped")
+
+		require.NoError(t, err)
+
+		// Verify status changed
+		projection, _ := adapter.GetProjection(ctx, "test-projection")
+		assert.Equal(t, "stopped", projection.Status)
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+
+	t.Run("returns error for non-existent projection", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		err := adapter.SetProjectionStatus(ctx, "nonexistent", "stopped")
+
+		assert.ErrorIs(t, err, adapters.ErrStreamNotFound)
+	})
+}
+
+func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
+	// Clean up projections between tests
+	memoryProjectionsMu.Lock()
+	memoryProjections = make(map[string]*projectionInfo)
+	memoryProjectionsMu.Unlock()
+
+	t.Run("resets checkpoint for projection", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Set initial checkpoint
+		_ = adapter.SetCheckpoint(ctx, "test-projection", 100)
+
+		// Register projection
+		memoryProjectionsMu.Lock()
+		memoryProjections["test-projection"] = &projectionInfo{
+			name:      "test-projection",
+			position:  100,
+			status:    "running",
+			updatedAt: time.Now(),
+		}
+		memoryProjectionsMu.Unlock()
+
+		err := adapter.ResetProjectionCheckpoint(ctx, "test-projection")
+
+		require.NoError(t, err)
+
+		// Verify checkpoint reset
+		checkpoint, _ := adapter.GetCheckpoint(ctx, "test-projection")
+		assert.Equal(t, uint64(0), checkpoint)
+
+		// Clean up
+		memoryProjectionsMu.Lock()
+		memoryProjections = make(map[string]*projectionInfo)
+		memoryProjectionsMu.Unlock()
+	})
+}
+
+func TestMemoryAdapter_GetTotalEventCount(t *testing.T) {
+	t.Run("returns 0 when no events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		count, err := adapter.GetTotalEventCount(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), count)
+	})
+
+	t.Run("returns correct count after appending", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Add events
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		_, _ = adapter.Append(ctx, "Order-2", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		count, err := adapter.GetTotalEventCount(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), count)
+	})
+}
+
+// ============================================================================
+// Statistics Tests
+// ============================================================================
+
+func TestMemoryAdapter_GetEventStoreStats(t *testing.T) {
+	t.Run("returns empty stats for new adapter", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		stats, err := adapter.GetEventStoreStats(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), stats.TotalEvents)
+		assert.Equal(t, int64(0), stats.TotalStreams)
+		assert.Empty(t, stats.TopEventTypes)
+	})
+
+	t.Run("returns stats with events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Add events
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		stats, err := adapter.GetEventStoreStats(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), stats.TotalEvents)
+		assert.Equal(t, int64(1), stats.TotalStreams)
+		assert.Len(t, stats.TopEventTypes, 2)
+	})
+
+	t.Run("returns top 5 event types only", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		// Add events with 7 different types
+		for i := 0; i < 7; i++ {
+			_, _ = adapter.Append(ctx, "Stream-1", []adapters.EventRecord{
+				{Type: "EventType" + string(rune('A'+i)), Data: []byte(`{}`)},
+			}, mink.AnyVersion)
+		}
+
+		stats, err := adapter.GetEventStoreStats(ctx)
+
+		require.NoError(t, err)
+		assert.Len(t, stats.TopEventTypes, 5)
 	})
 }
