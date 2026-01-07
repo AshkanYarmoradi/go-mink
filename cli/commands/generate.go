@@ -14,6 +14,32 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// promptInput runs an interactive input form and returns the entered value.
+// It only prompts if nonInteractive is false and the current value is empty.
+func promptInput(title, description, placeholder string, value *string, nonInteractive bool) error {
+	if nonInteractive || *value != "" {
+		return nil
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title(title).Description(description).Value(value).Placeholder(placeholder),
+		),
+	).WithTheme(huh.ThemeDracula())
+	return form.Run()
+}
+
+// parseCommaSeparated splits a comma-separated string into trimmed parts.
+func parseCommaSeparated(input string) []string {
+	if input == "" {
+		return nil
+	}
+	parts := strings.Split(input, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
 // NewGenerateCommand creates the generate command
 func NewGenerateCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -53,46 +79,27 @@ Examples:
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-
-			// Find config (use defaults if not found)
 			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
 			}
 
-			// Interactive event selection if none provided (skip if --non-interactive)
-			if len(events) == 0 && !nonInteractive {
+			// Interactive event selection if none provided
+			if len(events) == 0 {
 				var eventsInput string
-				form := huh.NewForm(
-					huh.NewGroup(
-						huh.NewInput().
-							Title("Events").
-							Description("Comma-separated list of events (e.g., Created,Updated,Deleted)").
-							Value(&eventsInput).
-							Placeholder("Created,Updated,Deleted"),
-					),
-				).WithTheme(huh.ThemeDracula())
-
-				if err := form.Run(); err != nil {
+				if err := promptInput("Events", "Comma-separated list of events (e.g., Created,Updated,Deleted)",
+					"Created,Updated,Deleted", &eventsInput, nonInteractive); err != nil {
 					return err
 				}
-
-				if eventsInput != "" {
-					events = strings.Split(eventsInput, ",")
-					for i := range events {
-						events[i] = strings.TrimSpace(events[i])
-					}
-				}
+				events = parseCommaSeparated(eventsInput)
 			}
 
-			// Generate aggregate
 			data := AggregateData{
 				Name:    toPascalCase(name),
 				Module:  cfg.Project.Module,
 				Package: filepath.Base(cfg.Generation.AggregatePackage),
 				Events:  make([]EventData, 0, len(events)),
 			}
-
 			for _, e := range events {
 				data.Events = append(data.Events, EventData{
 					Name:          toPascalCase(e),
@@ -174,27 +181,14 @@ func newGenerateEventCommand() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-
 			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
 			}
 
-			// Interactive aggregate selection if not provided (skip if --non-interactive)
-			if aggregate == "" && !nonInteractive {
-				form := huh.NewForm(
-					huh.NewGroup(
-						huh.NewInput().
-							Title("Aggregate Name").
-							Description("The aggregate this event belongs to").
-							Value(&aggregate).
-							Placeholder("Order"),
-					),
-				).WithTheme(huh.ThemeDracula())
-
-				if err := form.Run(); err != nil {
-					return err
-				}
+			if err := promptInput("Aggregate Name", "The aggregate this event belongs to",
+				"Order", &aggregate, nonInteractive); err != nil {
+				return err
 			}
 
 			eventsDir := cfg.Generation.EventPackage
@@ -214,7 +208,6 @@ func newGenerateEventCommand() *cobra.Command {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", eventFile)))
-
 			return nil
 		},
 	}
@@ -236,35 +229,19 @@ func newGenerateProjectionCommand() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-
 			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
 			}
 
-			// Interactive event selection if none provided (skip if --non-interactive)
-			if len(events) == 0 && !nonInteractive {
+			// Interactive event selection if none provided
+			if len(events) == 0 {
 				var eventsInput string
-				form := huh.NewForm(
-					huh.NewGroup(
-						huh.NewInput().
-							Title("Handled Events").
-							Description("Comma-separated list of event types this projection handles").
-							Value(&eventsInput).
-							Placeholder("OrderCreated,ItemAdded,OrderShipped"),
-					),
-				).WithTheme(huh.ThemeDracula())
-
-				if err := form.Run(); err != nil {
+				if err := promptInput("Handled Events", "Comma-separated list of event types this projection handles",
+					"OrderCreated,ItemAdded,OrderShipped", &eventsInput, nonInteractive); err != nil {
 					return err
 				}
-
-				if eventsInput != "" {
-					events = strings.Split(eventsInput, ",")
-					for i := range events {
-						events[i] = strings.TrimSpace(events[i])
-					}
-				}
+				events = parseCommaSeparated(eventsInput)
 			}
 
 			projDir := cfg.Generation.ProjectionPackage
@@ -285,13 +262,11 @@ func newGenerateProjectionCommand() *cobra.Command {
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", projFile)))
 
-			// Create test file
 			testFile := filepath.Join(projDir, strings.ToLower(name)+"_test.go")
 			if err := generateFile(testFile, projectionTestTemplate, projData); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
-
 			return nil
 		},
 	}
@@ -305,7 +280,6 @@ func newGenerateProjectionCommand() *cobra.Command {
 func newGenerateCommandCommand() *cobra.Command {
 	var aggregate string
 	var nonInteractive bool
-
 	cmd := &cobra.Command{
 		Use:     "command <name>",
 		Short:   "Generate a command and handler",
@@ -313,27 +287,14 @@ func newGenerateCommandCommand() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-
 			cfg, _, err := loadConfigOrDefault()
 			if err != nil {
 				return err
 			}
 
-			// Interactive aggregate selection if not provided (skip if --non-interactive)
-			if aggregate == "" && !nonInteractive {
-				form := huh.NewForm(
-					huh.NewGroup(
-						huh.NewInput().
-							Title("Aggregate Name").
-							Description("The aggregate this command operates on").
-							Value(&aggregate).
-							Placeholder("Order"),
-					),
-				).WithTheme(huh.ThemeDracula())
-
-				if err := form.Run(); err != nil {
-					return err
-				}
+			if err := promptInput("Aggregate Name", "The aggregate this command operates on",
+				"Order", &aggregate, nonInteractive); err != nil {
+				return err
 			}
 
 			cmdDir := cfg.Generation.CommandPackage
@@ -353,7 +314,6 @@ func newGenerateCommandCommand() *cobra.Command {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", cmdFile)))
-
 			return nil
 		},
 	}

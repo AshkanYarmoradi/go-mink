@@ -114,6 +114,17 @@ type CheckResult struct {
 	Recommendation string
 }
 
+// newCheckResult creates a CheckResult with the given name.
+func newCheckResult(name string, status CheckStatus, message string) CheckResult {
+	return CheckResult{Name: name, Status: status, Message: message}
+}
+
+// withRecommendation adds a recommendation to a CheckResult.
+func (r CheckResult) withRecommendation(rec string) CheckResult {
+	r.Recommendation = rec
+	return r
+}
+
 // DiagnosticCheck represents a diagnostic check function
 type DiagnosticCheck struct {
 	Name  string
@@ -122,275 +133,132 @@ type DiagnosticCheck struct {
 
 func checkGoVersion() CheckResult {
 	version := runtime.Version()
-	result := CheckResult{
-		Name:    "Go Version",
-		Status:  StatusOK,
-		Message: version,
-	}
-
-	// Check if Go version is 1.21+
 	if version < "go1.21" {
-		result.Status = StatusWarning
-		result.Recommendation = "Upgrade to Go 1.21 or later for best performance"
+		return newCheckResult("Go Version", StatusWarning, version).
+			withRecommendation("Upgrade to Go 1.21 or later for best performance")
 	}
-
-	return result
+	return newCheckResult("Go Version", StatusOK, version)
 }
 
 func checkConfiguration() CheckResult {
+	const name = "Configuration"
 	cwd, err := os.Getwd()
 	if err != nil {
-		return CheckResult{
-			Name:           "Configuration",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Check directory permissions",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Check directory permissions")
 	}
-
 	if !config.Exists(cwd) {
-		return CheckResult{
-			Name:           "Configuration",
-			Status:         StatusWarning,
-			Message:        "No mink.yaml found",
-			Recommendation: "Run 'mink init' to create a configuration file",
-		}
+		return newCheckResult(name, StatusWarning, "No mink.yaml found").
+			withRecommendation("Run 'mink init' to create a configuration file")
 	}
-
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return CheckResult{
-			Name:           "Configuration",
-			Status:         StatusError,
-			Message:        fmt.Sprintf("Invalid config: %v", err),
-			Recommendation: "Check mink.yaml syntax",
-		}
+		return newCheckResult(name, StatusError, fmt.Sprintf("Invalid config: %v", err)).
+			withRecommendation("Check mink.yaml syntax")
 	}
-
-	// Validate config
-	errors := cfg.Validate()
-	if len(errors) > 0 {
-		return CheckResult{
-			Name:           "Configuration",
-			Status:         StatusWarning,
-			Message:        fmt.Sprintf("%d validation errors", len(errors)),
-			Recommendation: errors[0],
-		}
+	if errors := cfg.Validate(); len(errors) > 0 {
+		return newCheckResult(name, StatusWarning, fmt.Sprintf("%d validation errors", len(errors))).
+			withRecommendation(errors[0])
 	}
-
-	return CheckResult{
-		Name:    "Configuration",
-		Status:  StatusOK,
-		Message: fmt.Sprintf("Project: %s, Driver: %s", cfg.Project.Name, cfg.Database.Driver),
-	}
+	return newCheckResult(name, StatusOK, fmt.Sprintf("Project: %s, Driver: %s", cfg.Project.Name, cfg.Database.Driver))
 }
 
 func checkDatabaseConnection() CheckResult {
+	const name = "Database Connection"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	env, skipReason, err := SetupDiagnosticEnv(ctx)
 	switch skipReason {
 	case DiagnosticSkipNoConfig:
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusWarning,
-			Message:        "No configuration found",
-			Recommendation: "Run 'mink init' first",
-		}
+		return newCheckResult(name, StatusWarning, "No configuration found").withRecommendation("Run 'mink init' first")
 	case DiagnosticSkipMemoryDriver:
-		return CheckResult{
-			Name:    "Database Connection",
-			Status:  StatusOK,
-			Message: "Using in-memory driver (no connection needed)",
-		}
+		return newCheckResult(name, StatusOK, "Using in-memory driver (no connection needed)")
 	case DiagnosticSkipNoDBURL:
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusWarning,
-			Message:        "DATABASE_URL not set",
-			Recommendation: "Set DATABASE_URL environment variable",
-		}
+		return newCheckResult(name, StatusWarning, "DATABASE_URL not set").withRecommendation("Set DATABASE_URL environment variable")
 	}
 	if err != nil {
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Verify database credentials",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Verify database credentials")
 	}
 	defer env.Close()
 
-	// Get diagnostic info via adapter
 	info, err := env.Adapter.GetDiagnosticInfo(ctx)
 	if err != nil {
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Check database server status",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Check database server status")
 	}
-
 	if !info.Connected {
-		return CheckResult{
-			Name:           "Database Connection",
-			Status:         StatusError,
-			Message:        info.Message,
-			Recommendation: "Verify database credentials",
-		}
+		return newCheckResult(name, StatusError, info.Message).withRecommendation("Verify database credentials")
 	}
-
-	return CheckResult{
-		Name:    "Database Connection",
-		Status:  StatusOK,
-		Message: info.Message,
-	}
+	return newCheckResult(name, StatusOK, info.Message)
 }
 
 func checkEventStoreSchema() CheckResult {
+	const name = "Event Store Schema"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	env, skipReason, err := SetupDiagnosticEnv(ctx)
 	if skipReason == DiagnosticSkipNoConfig || skipReason == DiagnosticSkipMemoryDriver {
-		return CheckResult{
-			Name:    "Event Store Schema",
-			Status:  StatusOK,
-			Message: "Skipped (memory driver or no config)",
-		}
+		return newCheckResult(name, StatusOK, "Skipped (memory driver or no config)")
 	}
 	if skipReason == DiagnosticSkipNoDBURL {
-		return CheckResult{
-			Name:    "Event Store Schema",
-			Status:  StatusWarning,
-			Message: "Skipped (no database URL)",
-		}
+		return newCheckResult(name, StatusWarning, "Skipped (no database URL)")
 	}
 	if err != nil {
-		return CheckResult{
-			Name:           "Event Store Schema",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Check database connection",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Check database connection")
 	}
 	defer env.Close()
 
 	result, err := env.Adapter.CheckSchema(ctx, env.Config.EventStore.TableName)
 	if err != nil {
-		return CheckResult{
-			Name:           "Event Store Schema",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Check database permissions",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Check database permissions")
 	}
-
 	if !result.TableExists {
-		return CheckResult{
-			Name:           "Event Store Schema",
-			Status:         StatusWarning,
-			Message:        result.Message,
-			Recommendation: "Run 'mink migrate up' to create tables",
-		}
+		return newCheckResult(name, StatusWarning, result.Message).withRecommendation("Run 'mink migrate up' to create tables")
 	}
-
-	return CheckResult{
-		Name:    "Event Store Schema",
-		Status:  StatusOK,
-		Message: result.Message,
-	}
+	return newCheckResult(name, StatusOK, result.Message)
 }
 
 func checkProjections() CheckResult {
+	const name = "Projections"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	env, skipReason, err := SetupDiagnosticEnv(ctx)
 	if skipReason == DiagnosticSkipNoConfig || skipReason == DiagnosticSkipMemoryDriver {
-		return CheckResult{
-			Name:    "Projections",
-			Status:  StatusOK,
-			Message: "Skipped (memory driver or no config)",
-		}
+		return newCheckResult(name, StatusOK, "Skipped (memory driver or no config)")
 	}
 	if skipReason == DiagnosticSkipNoDBURL {
-		return CheckResult{
-			Name:    "Projections",
-			Status:  StatusWarning,
-			Message: "Skipped (no database URL)",
-		}
+		return newCheckResult(name, StatusWarning, "Skipped (no database URL)")
 	}
 	if err != nil {
-		return CheckResult{
-			Name:           "Projections",
-			Status:         StatusError,
-			Message:        err.Error(),
-			Recommendation: "Check database connection",
-		}
+		return newCheckResult(name, StatusError, err.Error()).withRecommendation("Check database connection")
 	}
 	defer env.Close()
 
 	health, err := env.Adapter.GetProjectionHealth(ctx)
 	if err != nil {
-		return CheckResult{
-			Name:    "Projections",
-			Status:  StatusError,
-			Message: err.Error(),
-		}
+		return newCheckResult(name, StatusError, err.Error())
 	}
-
-	if health.TotalProjections == 0 {
-		return CheckResult{
-			Name:    "Projections",
-			Status:  StatusOK,
-			Message: health.Message,
-		}
+	if health.TotalProjections == 0 || health.ProjectionsBehind == 0 {
+		return newCheckResult(name, StatusOK, health.Message)
 	}
-
-	if health.ProjectionsBehind > 0 {
-		return CheckResult{
-			Name:           "Projections",
-			Status:         StatusWarning,
-			Message:        health.Message,
-			Recommendation: "Check projection workers or run 'mink projection status'",
-		}
-	}
-
-	return CheckResult{
-		Name:    "Projections",
-		Status:  StatusOK,
-		Message: health.Message,
-	}
+	return newCheckResult(name, StatusWarning, health.Message).
+		withRecommendation("Check projection workers or run 'mink projection status'")
 }
 
 func checkSystemResources() CheckResult {
+	const name = "System Resources"
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	// Convert to MB
 	allocMB := float64(m.Alloc) / 1024 / 1024
 	sysMB := float64(m.Sys) / 1024 / 1024
-
 	message := fmt.Sprintf("Memory: %.1f MB used, %.1f MB total", allocMB, sysMB)
 
-	// Warning if using too much memory
 	if allocMB > 500 {
-		return CheckResult{
-			Name:           "System Resources",
-			Status:         StatusWarning,
-			Message:        message,
-			Recommendation: "Consider optimizing memory usage",
-		}
+		return newCheckResult(name, StatusWarning, message).withRecommendation("Consider optimizing memory usage")
 	}
-
-	return CheckResult{
-		Name:    "System Resources",
-		Status:  StatusOK,
-		Message: message,
-	}
+	return newCheckResult(name, StatusOK, message)
 }
 
 // NewVersionCommand creates the version command

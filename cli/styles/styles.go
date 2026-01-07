@@ -143,37 +143,21 @@ const (
 	IconMink     = "🦫" // Mink emoji (beaver closest match)
 )
 
+// newRoundedBox creates a box style with rounded border and specified border color.
+func newRoundedBox(borderColor lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(1, 2)
+}
+
 // Box styles for containers
 var (
-	// Box with a subtle border
-	Box = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Border).
-		Padding(1, 2)
-
-	// BoxHighlight with primary color border
-	BoxHighlight = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(Primary).
-			Padding(1, 2)
-
-	// BoxSuccess with success color border
-	BoxSuccess = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(Success).
-			Padding(1, 2)
-
-	// BoxError with error color border
-	BoxError = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(Error).
-			Padding(1, 2)
-
-	// BoxWarning with warning color border
-	BoxWarning = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(Warning).
-			Padding(1, 2)
+	Box          = newRoundedBox(Border)   // Box with a subtle border
+	BoxHighlight = newRoundedBox(Primary)  // BoxHighlight with primary color border
+	BoxSuccess   = newRoundedBox(Success)  // BoxSuccess with success color border
+	BoxError     = newRoundedBox(Error)    // BoxError with error color border
+	BoxWarning   = newRoundedBox(Warning)  // BoxWarning with warning color border
 )
 
 // Component styles
@@ -261,11 +245,7 @@ const (
 )
 
 // InfoBox style for information boxes
-var InfoBox = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(Info).
-	Padding(1, 2).
-	MarginTop(1)
+var InfoBox = newRoundedBox(Info).MarginTop(1)
 
 // DisableColors disables all colors for terminals that don't support them
 func DisableColors() {
