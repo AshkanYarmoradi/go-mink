@@ -80,43 +80,26 @@ var (
 		Padding(0, 1)
 )
 
-// Status styles
+// newStatusStyle creates a style with the given foreground color.
+func newStatusStyle(color lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(color)
+}
+
+// newStatusBoldStyle creates a bold style with the given foreground color.
+func newStatusBoldStyle(color lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(color)
+}
+
+// Status styles - using helper functions to reduce duplication
 var (
-	// SuccessStyle for success messages
-	SuccessStyle = lipgloss.NewStyle().
-			Foreground(Success)
-
-	// SuccessBold for emphasized success
-	SuccessBold = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(Success)
-
-	// WarningStyle for warning messages
-	WarningStyle = lipgloss.NewStyle().
-			Foreground(Warning)
-
-	// WarningBold for emphasized warnings
-	WarningBold = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(Warning)
-
-	// ErrorStyle for error messages
-	ErrorStyle = lipgloss.NewStyle().
-			Foreground(Error)
-
-	// ErrorBold for emphasized errors
-	ErrorBold = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(Error)
-
-	// InfoStyle for informational messages
-	InfoStyle = lipgloss.NewStyle().
-			Foreground(Info)
-
-	// InfoBold for emphasized info
-	InfoBold = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(Info)
+	SuccessStyle = newStatusStyle(Success)     // SuccessStyle for success messages
+	SuccessBold  = newStatusBoldStyle(Success) // SuccessBold for emphasized success
+	WarningStyle = newStatusStyle(Warning)     // WarningStyle for warning messages
+	WarningBold  = newStatusBoldStyle(Warning) // WarningBold for emphasized warnings
+	ErrorStyle   = newStatusStyle(Error)       // ErrorStyle for error messages
+	ErrorBold    = newStatusBoldStyle(Error)   // ErrorBold for emphasized errors
+	InfoStyle    = newStatusStyle(Info)        // InfoStyle for informational messages
+	InfoBold     = newStatusBoldStyle(Info)    // InfoBold for emphasized info
 )
 
 // Icons - using Unicode symbols for beautiful indicators
@@ -199,25 +182,22 @@ var (
 		MarginBottom(1)
 )
 
-// FormatSuccess formats a success message with icon
-func FormatSuccess(msg string) string {
-	return SuccessStyle.Render(IconSuccess) + " " + Normal.Render(msg)
+// formatMessage is a helper that formats a message with an icon using the given style.
+func formatMessage(style lipgloss.Style, icon, msg string) string {
+	return style.Render(icon) + " " + Normal.Render(msg)
 }
+
+// FormatSuccess formats a success message with icon
+func FormatSuccess(msg string) string { return formatMessage(SuccessStyle, IconSuccess, msg) }
 
 // FormatError formats an error message with icon
-func FormatError(msg string) string {
-	return ErrorStyle.Render(IconError) + " " + Normal.Render(msg)
-}
+func FormatError(msg string) string { return formatMessage(ErrorStyle, IconError, msg) }
 
 // FormatWarning formats a warning message with icon
-func FormatWarning(msg string) string {
-	return WarningStyle.Render(IconWarning) + " " + Normal.Render(msg)
-}
+func FormatWarning(msg string) string { return formatMessage(WarningStyle, IconWarning, msg) }
 
 // FormatInfo formats an info message with icon
-func FormatInfo(msg string) string {
-	return InfoStyle.Render(IconInfo) + " " + Normal.Render(msg)
-}
+func FormatInfo(msg string) string { return formatMessage(InfoStyle, IconInfo, msg) }
 
 // FormatStep formats a step in a process
 func FormatStep(step int, total int, msg string) string {
