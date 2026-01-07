@@ -5,8 +5,11 @@ nav_order: 10
 permalink: /docs/cli
 ---
 
-# CLI Tool
+# Mink CLI Tool
 {: .no_toc }
+
+The `mink` CLI provides essential tooling for development and operations with event-sourced applications.
+{: .fs-6 .fw-300 }
 
 ## Table of contents
 {: .no_toc .text-delta }
@@ -16,422 +19,767 @@ permalink: /docs/cli
 
 ---
 
-## Overview
+## Installation
 
-The `go-mink` CLI provides essential tooling for development and operations.
+Install the CLI using Go:
 
 ```bash
-$ go-mink --help
+go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+```
 
-go-mink - Event Sourcing Toolkit for Go
+Or build from source:
+
+```bash
+git clone https://github.com/AshkanYarmoradi/go-mink.git
+cd go-mink
+go build -o mink ./cmd/mink
+```
+
+Verify installation:
+
+```bash
+mink version
+```
+
+---
+
+## Overview
+
+```bash
+$ mink --help
+
+🦫 Mink - Event Sourcing toolkit for Go
+
+Mink is an Event Sourcing and CQRS toolkit for Go applications.
+It provides a complete solution for building event-driven systems.
+
+Quick Start:
+
+  mink init           Initialize a new project
+  mink generate       Generate code scaffolding
+  mink migrate up     Run database migrations
+  mink diagnose       Check your setup
 
 Usage:
-  go-mink [command]
+  mink [command]
 
 Available Commands:
-  init        Initialize a new go-mink project
-  generate    Generate code (events, projections, aggregates)
-  migrate     Database schema migrations
+  init        Initialize a new mink project
+  generate    Generate code scaffolding
+  migrate     Database migrations
   projection  Manage projections
   stream      Inspect and manage event streams
-  diagnose    Health checks and diagnostics
-  version     Print version information
+  diagnose    Run diagnostic checks
+  schema      Schema management
+  version     Show version information
+  help        Help about any command
 
 Flags:
-  -c, --config string   Config file (default "./go-mink.yaml")
-  -v, --verbose         Verbose output
-  -h, --help            Help for go-mink
-
-Use "go-mink [command] --help" for more information about a command.
+      --no-color   Disable colored output
+  -h, --help       Help for mink
 ```
+
+---
 
 ## Commands
 
-### `go-mink init`
+### `mink init`
 
-Initialize a new go-mink project.
+Initialize a new mink project with configuration and directory structure.
 
 ```bash
-$ go-mink init
+# Interactive mode (default)
+$ mink init
 
-? Project name: myapp
-? Event store adapter: PostgreSQL
-? Read model adapter: PostgreSQL
-? Include example code? Yes
+🦫 Welcome to Mink!
 
-Creating project structure...
-✓ Created go-mink.yaml
-✓ Created internal/events/
-✓ Created internal/aggregates/
-✓ Created internal/projections/
-✓ Created internal/readmodels/
-✓ Created cmd/migrate/main.go
+? Project name: minkshop
+? Go module path: github.com/mycompany/minkshop  
+? Database driver: 
+  > postgres
+    memory
 
-Next steps:
-  1. Update go-mink.yaml with your database connection
-  2. Run 'go-mink migrate up' to create tables
-  3. Define your first aggregate with 'go-mink generate aggregate'
+✓ Created mink.yaml
+✓ Created migrations directory
+
+Next Steps:
+  1. Set DATABASE_URL environment variable
+  2. Run 'mink migrate up' to create schema
+  3. Generate your first aggregate with 'mink generate aggregate'
+
+# Non-interactive mode
+$ mink init --name=myapp --module=github.com/me/myapp --driver=postgres --non-interactive
+
+# Initialize in a subdirectory
+$ mink init my-project
 ```
 
-Generated `go-mink.yaml`:
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--name` | Project name |
+| `--module` | Go module path (auto-detected from go.mod) |
+| `--driver` | Database driver: `postgres` or `memory` |
+| `--non-interactive` | Skip interactive prompts |
+
+**Generated `mink.yaml`:**
 
 ```yaml
 version: "1"
-name: myapp
+project:
+  name: minkshop
+  module: github.com/mycompany/minkshop
+
+database:
+  driver: postgres
+  url: ${DATABASE_URL}
+  migrations_dir: migrations
 
 eventstore:
-  adapter: postgres
-  connection: ${DATABASE_URL}
-  schema: events
-  
-readmodels:
-  adapter: postgres
-  connection: ${DATABASE_URL}
-  schema: readmodels
+  table_name: mink_events
+  schema: mink
 
-snapshots:
-  adapter: postgres
-  connection: ${DATABASE_URL}
-  interval: 100  # Snapshot every 100 events
-
-projections:
-  checkpoint_interval: 100
-  batch_size: 500
-  
-serialization:
-  format: json  # json, protobuf, msgpack
-  
-logging:
-  level: info
+generation:
+  aggregate_package: internal/domain
+  event_package: internal/events
+  projection_package: internal/projections
+  command_package: internal/commands
 ```
 
-### `go-mink generate`
+---
 
-Generate boilerplate code.
+### `mink generate`
+
+Generate boilerplate code for aggregates, events, projections, and commands.
+
+**Aliases:** `gen`, `g`
+
+#### Generate Aggregate
 
 ```bash
-# Generate aggregate
-$ go-mink generate aggregate Order
-? Events for Order aggregate: OrderCreated, ItemAdded, ItemRemoved, OrderShipped
+# Interactive mode
+$ mink generate aggregate Order
+? Events (comma-separated): Created,ItemAdded,Shipped
 
-✓ Created internal/aggregates/order.go
+✓ Created internal/domain/order.go
 ✓ Created internal/events/order_events.go
-✓ Created internal/aggregates/order_test.go
+✓ Created internal/domain/order_test.go
 
-# Generate projection  
-$ go-mink generate projection OrderSummary --events OrderCreated,ItemAdded,OrderShipped
-? Projection type: Inline (same transaction)
-? Read model fields: ID, CustomerID, Status, ItemCount, TotalAmount, CreatedAt
-
-✓ Created internal/projections/order_summary.go
-✓ Created internal/readmodels/order_summary.go
-
-# Generate event
-$ go-mink generate event PaymentReceived --aggregate Order
-? Event fields: OrderID (string), Amount (float64), PaymentMethod (string)
-
-✓ Updated internal/events/order_events.go
+# With flags
+$ mink generate aggregate Order --events Created,ItemAdded,Shipped --non-interactive
 ```
 
-Generated aggregate code:
+**Generated aggregate code:**
 
 ```go
-// internal/aggregates/order.go
-package aggregates
+// internal/domain/order.go
+package domain
 
 import (
+    "errors"
     "github.com/AshkanYarmoradi/go-mink"
-    "myapp/internal/events"
 )
 
 type Order struct {
-    go-mink.AggregateBase
-    
-    // State
-    CustomerID string
-    Items      []OrderItem
-    Status     string
-    Total      float64
+    mink.AggregateBase
+    // Add your aggregate state here
 }
 
 func NewOrder(id string) *Order {
-    o := &Order{}
-    o.SetID(id)
-    return o
+    agg := &Order{}
+    agg.SetID(id)
+    agg.SetType("Order")
+    return agg
 }
 
-// Commands
-func (o *Order) Create(customerID string) error {
-    if o.Version() > 0 {
-        return errors.New("order already exists")
-    }
-    
-    o.Apply(events.OrderCreated{
-        OrderID:    o.ID(),
-        CustomerID: customerID,
-        CreatedAt:  time.Now(),
-    })
-    return nil
-}
-
-func (o *Order) AddItem(sku string, quantity int, price float64) error {
-    if o.Status == "Shipped" {
-        return errors.New("cannot modify shipped order")
-    }
-    
-    o.Apply(events.ItemAdded{
-        OrderID:  o.ID(),
-        SKU:      sku,
-        Quantity: quantity,
-        Price:    price,
-    })
-    return nil
-}
-
-// Event handlers
-func (o *Order) ApplyEvent(event go-mink.Event) error {
+func (a *Order) ApplyEvent(event interface{}) error {
     switch e := event.(type) {
-    case events.OrderCreated:
-        o.CustomerID = e.CustomerID
-        o.Status = "Created"
-        
-    case events.ItemAdded:
-        o.Items = append(o.Items, OrderItem{
-            SKU:      e.SKU,
-            Quantity: e.Quantity,
-            Price:    e.Price,
-        })
-        o.Total += e.Price * float64(e.Quantity)
-        
-    case events.OrderShipped:
-        o.Status = "Shipped"
+    case Created:
+        return a.applyCreated(e)
+    case *Created:
+        return a.applyCreated(*e)
+    case ItemAdded:
+        return a.applyItemAdded(e)
+    // ... other events
+    default:
+        return errors.New("unknown event type")
+    }
+}
+
+func (a *Order) applyCreated(e Created) error {
+    // TODO: Apply the event to aggregate state
+    return nil
+}
+
+// ... other apply methods
+```
+
+#### Generate Event
+
+```bash
+$ mink generate event PaymentReceived --aggregate Order
+
+✓ Created internal/events/paymentreceived.go
+```
+
+**Flags:**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--aggregate` | `-a` | Aggregate this event belongs to |
+| `--non-interactive` | | Skip prompts |
+
+#### Generate Projection
+
+```bash
+$ mink generate projection OrderSummary --events OrderCreated,ItemAdded,OrderShipped
+
+✓ Created internal/projections/ordersummary.go
+✓ Created internal/projections/ordersummary_test.go
+```
+
+**Generated projection:**
+
+```go
+// internal/projections/ordersummary.go
+package projections
+
+import (
+    "context"
+    "encoding/json"
+    "github.com/AshkanYarmoradi/go-mink"
+)
+
+type OrderSummaryProjection struct {
+    // Add dependencies here
+}
+
+func NewOrderSummaryProjection() *OrderSummaryProjection {
+    return &OrderSummaryProjection{}
+}
+
+func (p *OrderSummaryProjection) Name() string {
+    return "OrderSummary"
+}
+
+func (p *OrderSummaryProjection) HandledEvents() []string {
+    return []string{
+        "OrderCreated",
+        "ItemAdded", 
+        "OrderShipped",
+    }
+}
+
+func (p *OrderSummaryProjection) Apply(ctx context.Context, event mink.StoredEvent) error {
+    switch event.Type {
+    case "OrderCreated":
+        return p.handleOrderCreated(ctx, event)
+    case "ItemAdded":
+        return p.handleItemAdded(ctx, event)
+    case "OrderShipped":
+        return p.handleOrderShipped(ctx, event)
     }
     return nil
 }
 ```
 
-### `go-mink migrate`
-
-Database schema management.
+#### Generate Command
 
 ```bash
-# Create migration
-$ go-mink migrate create add_customer_index
+$ mink generate command CreateOrder --aggregate Order
 
-✓ Created migrations/20251227120000_add_customer_index.sql
+✓ Created internal/commands/createorder.go
+```
 
-# Run migrations
-$ go-mink migrate up
+**Generated command:**
 
-Applying migrations...
-✓ 20251227100000_initial_schema.sql
-✓ 20251227110000_add_projections.sql  
-✓ 20251227120000_add_customer_index.sql
+```go
+// internal/commands/createorder.go
+package commands
+
+import (
+    "context"
+    "errors"
+    "github.com/AshkanYarmoradi/go-mink"
+)
+
+type CreateOrder struct {
+    OrderID string
+    // Add command fields here
+}
+
+func (c CreateOrder) AggregateID() string {
+    return c.OrderID
+}
+
+func (c CreateOrder) CommandType() string {
+    return "CreateOrder"
+}
+
+func (c CreateOrder) Validate() error {
+    if c.OrderID == "" {
+        return errors.New("order_id is required")
+    }
+    return nil
+}
+
+type CreateOrderHandler struct {
+    store *mink.EventStore
+}
+
+func NewCreateOrderHandler(store *mink.EventStore) *CreateOrderHandler {
+    return &CreateOrderHandler{store: store}
+}
+
+func (h *CreateOrderHandler) Handle(ctx context.Context, cmd CreateOrder) error {
+    // TODO: Implement command handling
+    return nil
+}
+```
+
+---
+
+### `mink migrate`
+
+Database schema migration management.
+
+#### Create Migration
+
+```bash
+$ mink migrate create add_customer_index
+
+✓ Created migrations/20260107120000_add_customer_index.sql
+✓ Created migrations/20260107120000_add_customer_index.down.sql
+```
+
+**With SQL content:**
+
+```bash
+$ mink migrate create add_index --sql "CREATE INDEX idx_customer ON orders(customer_id);"
+```
+
+#### Run Migrations
+
+```bash
+$ mink migrate up
+
+🦫 Running migrations...
+
+Applying migrations:
+  ✓ 20260107100000_initial_schema.sql
+  ✓ 20260107110000_add_projections.sql
 
 All migrations applied successfully.
 
-# Rollback
-$ go-mink migrate down --steps 1
+# Apply specific number of migrations
+$ mink migrate up --steps 1
+```
+
+#### Rollback Migrations
+
+```bash
+$ mink migrate down
 
 Rolling back 1 migration...
-✓ Rolled back 20251227120000_add_customer_index.sql
+  ✓ Rolled back 20260107110000_add_projections.sql
 
-# Status
-$ go-mink migrate status
+# Rollback multiple
+$ mink migrate down --steps 2
+```
 
-Migration Status:
+#### Check Status
+
+```bash
+$ mink migrate status
+
+📋 Migration Status
+
 ┌────────────────────────────────────────┬─────────┬─────────────────────┐
 │ Migration                              │ Status  │ Applied At          │
 ├────────────────────────────────────────┼─────────┼─────────────────────┤
-│ 20251227100000_initial_schema.sql      │ Applied │ 2025-12-27 10:00:00 │
-│ 20251227110000_add_projections.sql     │ Applied │ 2025-12-27 11:00:00 │
-│ 20251227120000_add_customer_index.sql  │ Pending │ -                   │
+│ 20260107100000_initial_schema.sql      │ Applied │ 2026-01-07 10:00:00 │
+│ 20260107110000_add_projections.sql     │ Applied │ 2026-01-07 11:00:00 │
+│ 20260107120000_add_customer_index.sql  │ Pending │ -                   │
 └────────────────────────────────────────┴─────────┴─────────────────────┘
+
+2 applied, 1 pending
 ```
 
-### `go-mink projection`
+---
 
-Manage projections.
+### `mink projection`
+
+Manage event projections.
+
+**Aliases:** `proj`
+
+#### List Projections
 
 ```bash
-# List projections
-$ go-mink projection list
+$ mink projection list
 
-Projections:
-┌──────────────────┬──────────┬────────────┬─────────────┬──────────────┐
-│ Name             │ Type     │ Status     │ Position    │ Lag          │
-├──────────────────┼──────────┼────────────┼─────────────┼──────────────┤
-│ OrderSummary     │ Inline   │ Active     │ N/A         │ N/A          │
-│ OrderAnalytics   │ Async    │ Running    │ 15,234      │ 12 events    │
-│ CustomerStats    │ Async    │ Paused     │ 14,890      │ 356 events   │
-└──────────────────┴──────────┴────────────┴─────────────┴──────────────┘
+📊 Projections
 
-# Rebuild projection
-$ go-mink projection rebuild OrderAnalytics
-
-Rebuilding OrderAnalytics projection...
-Progress: [████████████████████████████████████████] 100% (15,246/15,246)
-
-✓ Rebuild complete in 45.2s
-
-# Pause/Resume
-$ go-mink projection pause CustomerStats
-$ go-mink projection resume CustomerStats
-
-# Reset checkpoint
-$ go-mink projection reset OrderAnalytics --position 10000
+┌──────────────────┬──────────┬───────────┬─────────────────────┐
+│ Name             │ Position │ Status    │ Last Updated        │
+├──────────────────┼──────────┼───────────┼─────────────────────┤
+│ OrderSummary     │ 15,234   │ ● Active  │ 2026-01-07 09:30:00 │
+│ CustomerStats    │ 14,890   │ ○ Paused  │ 2026-01-06 16:45:00 │
+└──────────────────┴──────────┴───────────┴─────────────────────┘
 ```
 
-### `go-mink stream`
-
-Inspect event streams.
+#### View Projection Status
 
 ```bash
-# List streams
-$ go-mink stream list --category Order
+$ mink projection status OrderSummary
 
-Streams (category: Order):
-┌────────────────┬─────────┬─────────────────────┬──────────────────────┐
-│ Stream ID      │ Version │ Created             │ Last Event           │
-├────────────────┼─────────┼─────────────────────┼──────────────────────┤
-│ Order-abc123   │ 15      │ 2025-12-20 10:00:00 │ 2025-12-27 09:30:00  │
-│ Order-def456   │ 8       │ 2025-12-21 14:30:00 │ 2025-12-26 16:45:00  │
-│ Order-ghi789   │ 3       │ 2025-12-27 08:00:00 │ 2025-12-27 08:15:00  │
-└────────────────┴─────────┴─────────────────────┴──────────────────────┘
+🗄️ Projection: OrderSummary
 
-# View stream events
-$ go-mink stream events Order-abc123
+  Name:        OrderSummary
+  Position:    15,234 / 15,246
+  Status:      ● Active
+  Last Update: 2026-01-07T09:30:00Z
 
-Events in Order-abc123:
+  Progress:
+  [████████████████████████████████████████] 99.9%
+```
+
+#### Rebuild Projection
+
+```bash
+$ mink projection rebuild OrderSummary
+
+? Rebuild projection 'OrderSummary'? This will reset the checkpoint and replay all events.
+> Yes
+
+◌ Rebuilding projection 'OrderSummary'...
+
+✓ Checkpoint reset to 0
+ℹ Projection will rebuild on next run
+
+# Skip confirmation
+$ mink projection rebuild OrderSummary --yes
+```
+
+#### Pause/Resume Projections
+
+```bash
+# Pause
+$ mink projection pause CustomerStats
+✓ Paused projection 'CustomerStats'
+
+# Resume
+$ mink projection resume CustomerStats
+✓ Resumed projection 'CustomerStats'
+```
+
+---
+
+### `mink stream`
+
+Inspect and manage event streams.
+
+#### List Streams
+
+```bash
+$ mink stream list
+
+📑 Event Streams
+
+┌────────────────┬─────────┬───────────────┬─────────────────────┐
+│ Stream ID      │ Events  │ Last Event    │ Updated             │
+├────────────────┼─────────┼───────────────┼─────────────────────┤
+│ Order-abc123   │ 15      │ OrderShipped  │ 2026-01-07 09:30:00 │
+│ Order-def456   │ 8       │ ItemAdded     │ 2026-01-06 16:45:00 │
+│ Cart-xyz789    │ 3       │ ItemRemoved   │ 2026-01-07 08:15:00 │
+└────────────────┴─────────┴───────────────┴─────────────────────┘
+
+# Filter by prefix
+$ mink stream list --prefix Order-
+
+# Limit results
+$ mink stream list --limit 10
+```
+
+#### View Stream Events
+
+```bash
+$ mink stream events Order-abc123
+
+📋 Events in Order-abc123
+
 ┌─────┬────────────────┬─────────────────────┬──────────────────────────┐
-│ Ver │ Type           │ Timestamp           │ Data (preview)           │
+│ Ver │ Type           │ Timestamp           │ Data                     │
 ├─────┼────────────────┼─────────────────────┼──────────────────────────┤
-│ 1   │ OrderCreated   │ 2025-12-20 10:00:00 │ {"customerId":"cust-1"}  │
-│ 2   │ ItemAdded      │ 2025-12-20 10:01:00 │ {"sku":"WIDGET-01",...}  │
-│ 3   │ ItemAdded      │ 2025-12-20 10:02:00 │ {"sku":"GADGET-02",...}  │
-│ ... │ ...            │ ...                 │ ...                      │
+│ 1   │ OrderCreated   │ 2026-01-05 10:00:00 │ {"customerId":"cust-1"}  │
+│ 2   │ ItemAdded      │ 2026-01-05 10:01:00 │ {"sku":"WIDGET-01"}      │
+│ 3   │ ItemAdded      │ 2026-01-05 10:02:00 │ {"sku":"GADGET-02"}      │
 └─────┴────────────────┴─────────────────────┴──────────────────────────┘
 
-# Export stream
-$ go-mink stream export Order-abc123 --format json > order_abc123.json
+# Limit events
+$ mink stream events Order-abc123 --max-events 10
 
-# Replay events (dry-run projections)
-$ go-mink stream replay Order-abc123 --projection OrderSummary --dry-run
+# Start from version
+$ mink stream events Order-abc123 --from 5
 ```
 
-### `go-mink diagnose`
-
-Health checks and diagnostics.
+#### Export Stream
 
 ```bash
-$ go-mink diagnose
+$ mink stream export Order-abc123 --output order_backup.json
 
-Running diagnostics...
+✓ Exported 15 events to order_backup.json
+```
 
-Database Connectivity:
-  ✓ Event store (PostgreSQL) - Connected (latency: 2ms)
-  ✓ Read models (PostgreSQL) - Connected (latency: 3ms)
-  ✓ Snapshots (Redis) - Connected (latency: 1ms)
+#### Stream Statistics
 
-Schema Validation:
-  ✓ Events table - OK
-  ✓ Streams table - OK
-  ✓ Checkpoints table - OK
-  ⚠ Missing index on events.timestamp (recommended for time-based queries)
+```bash
+$ mink stream stats
 
-Projection Health:
-  ✓ OrderSummary - Healthy
-  ✓ OrderAnalytics - Healthy (lag: 12 events)
-  ⚠ CustomerStats - High lag (356 events behind)
+📊 Event Store Statistics
 
-Event Store Statistics:
-  Total streams: 12,456
-  Total events: 1,234,567
-  Events/day (avg): 5,432
-  Largest stream: Order-abc123 (2,345 events)
+Total Streams:     12,456
+Total Events:      1,234,567
+Events Today:      5,432
+Average Events/Stream: 99
+
+Top Event Types:
+  OrderCreated:    45,234 (12.3%)
+  ItemAdded:       123,456 (33.5%)
+  OrderShipped:    34,567 (9.4%)
+```
+
+---
+
+### `mink diagnose`
+
+Run diagnostic checks on your mink setup.
+
+**Aliases:** `diag`, `doctor`
+
+```bash
+$ mink diagnose
+
+🦫 Mink
+
+❤️ Running Diagnostics
+
+  ◌ Checking Go Version... OK
+    go1.22.0
+  ◌ Checking Configuration... OK
+    Project: minkshop, Driver: postgres
+  ◌ Checking Database Connection... OK
+    Connected to PostgreSQL 16.1
+  ◌ Checking Event Store Schema... OK
+    All tables present (events, streams, snapshots, checkpoints)
+  ◌ Checking Projections... OK
+    2 projections healthy
+  ◌ Checking System Resources... OK
+    Memory: 45.2 MB used, 128.0 MB total
+
+──────────────────────────────────────────────────────
+
+✓ All checks passed! Your mink setup is healthy.
+```
+
+**When issues are detected:**
+
+```bash
+$ mink diagnose
+
+  ◌ Checking Database Connection... WARNING
+    DATABASE_URL not set
 
 Recommendations:
-  1. Consider adding index: CREATE INDEX idx_events_timestamp ON events(timestamp)
-  2. Investigate CustomerStats projection lag
-  3. Consider snapshotting Order-abc123 (>100 events)
+  → Set DATABASE_URL environment variable
 ```
+
+---
+
+### `mink schema`
+
+Schema management commands.
+
+#### Generate Schema
+
+```bash
+# Output to file
+$ mink schema generate --output schema.sql
+
+✓ Generated schema to schema.sql
+
+# Output to stdout
+$ mink schema print
+```
+
+**Generated schema:**
+
+```sql
+-- Mink Event Store Schema
+-- Generated for PostgreSQL
+
+CREATE SCHEMA IF NOT EXISTS mink;
+
+CREATE TABLE IF NOT EXISTS mink.events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    stream_id VARCHAR(255) NOT NULL,
+    version BIGINT NOT NULL,
+    type VARCHAR(255) NOT NULL,
+    data JSONB NOT NULL,
+    metadata JSONB DEFAULT '{}',
+    global_position BIGSERIAL,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(stream_id, version)
+);
+
+CREATE INDEX idx_events_stream_id ON mink.events(stream_id);
+CREATE INDEX idx_events_type ON mink.events(type);
+CREATE INDEX idx_events_global_position ON mink.events(global_position);
+CREATE INDEX idx_events_timestamp ON mink.events(timestamp);
+
+-- ... additional tables for streams, snapshots, checkpoints
+```
+
+---
+
+### `mink version`
+
+Display version information with a beautiful animated display.
+
+```bash
+$ mink version
+
+🦫 Mink
+
+┌───────────┬─────────────────────────────┐
+│ Version   │ v0.4.0                      │
+│ Commit    │ abc123def                   │
+│ Built     │ 2026-01-07                  │
+│ Go        │ go1.22.0                    │
+│ OS/Arch   │ darwin/arm64                │
+└───────────┴─────────────────────────────┘
+```
+
+---
+
+## Configuration
+
+### Configuration File
+
+The CLI looks for `mink.yaml` in the current directory or parent directories.
+
+```yaml
+version: "1"
+
+project:
+  name: minkshop
+  module: github.com/mycompany/minkshop
+
+database:
+  driver: postgres           # postgres or memory
+  url: ${DATABASE_URL}       # Environment variable expansion
+  migrations_dir: migrations
+
+eventstore:
+  table_name: mink_events
+  schema: mink
+
+generation:
+  aggregate_package: internal/domain
+  event_package: internal/events
+  projection_package: internal/projections
+  command_package: internal/commands
+```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `MINK_CONFIG` | Path to config file (default: `./mink.yaml`) |
+
+**Example DATABASE_URL:**
+```bash
+export DATABASE_URL="postgres://user:password@localhost:5432/mydb?sslmode=disable"
+```
+
+---
 
 ## Testing
 
-The CLI tool includes comprehensive testing with **84.9% code coverage**:
+The CLI tool has comprehensive test coverage (84.9%):
 
-### Test Categories
+| Category | Tests | Description |
+|----------|-------|-------------|
+| Unit Tests | ~200 | Core logic, helpers, validation |
+| Integration Tests | 67 | PostgreSQL operations |
+| E2E Tests | 4 | Complete workflows |
 
-| Category | Tests | Coverage |
-|----------|-------|----------|
-| Unit Tests | ~200 tests | Core logic, helpers, validation |
-| Integration Tests | 67 tests | PostgreSQL operations |
-| E2E Tests | 4 tests | Complete workflows |
-
-### Running CLI Tests
+### Running Tests
 
 ```bash
-# Run all tests (requires PostgreSQL)
+# Unit tests only
+go test -short ./cli/...
+
+# All tests (requires PostgreSQL)
 docker-compose -f docker-compose.test.yml up -d
-cd cli/commands
-go test -tags=integration -cover ./...
+go test ./cli/...
 
-# Run unit tests only
-go test -short ./...
-
-# Run E2E tests
-go test -tags=integration -run "TestE2E" -v
+# With coverage
+go test -cover ./cli/...
 ```
 
-### E2E Test Workflows
+---
 
-The E2E tests exercise complete CLI workflows against a real PostgreSQL database:
+## Tips & Best Practices
 
-**`TestE2E_CompleteCliWorkflow`** - 20-step workflow:
-1. Initialize mink project
-2. Generate aggregate with events
-3. Generate projection
-4. Generate command
-5. Create migration
-6. Check migration status
-7. Apply migration (creates table)
-8. Insert test events
-9. List streams
-10. Get stream events
-11. Get stream stats
-12. Export stream to JSON
-13. Create projection checkpoint
-14. Get projection status
-15. Pause projection
-16. Resume projection
-17. Rebuild projection
-18. Run diagnostics
-19. Rollback migration
-20. Final verification
+### Use Non-Interactive Mode for CI/CD
 
-**`TestE2E_MultiAggregateWorkflow`** - Multiple aggregates and projections
+```bash
+mink init --name=myapp --driver=postgres --non-interactive
+mink generate aggregate Order --events Created,Shipped --non-interactive
+mink migrate up
+```
 
-**`TestE2E_MigrationLifecycle`** - Full migration up/down cycle
+### Generate with Go Generate
 
-**`TestE2E_ProjectionManagement`** - Complete projection operations
-
-## Integration with Go Generate
+Add to your Go files:
 
 ```go
-//go:generate go-mink generate aggregate Order
-//go:generate go-mink generate projection OrderSummary
+//go:generate mink generate aggregate Order --events Created,Shipped --non-interactive
+//go:generate mink generate projection OrderSummary --events Created,Shipped --non-interactive
 
-package myapp
+package domain
 ```
 
-## Configuration Environments
+Then run:
 
 ```bash
-# Use different configs per environment
-$ go-mink --config go-mink.production.yaml migrate up
+go generate ./...
+```
 
-# Or via environment variable
-$ go-mink_CONFIG=go-mink.staging.yaml go-mink projection list
+---
+
+## Troubleshooting
+
+### "DATABASE_URL not set"
+
+```bash
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+```
+
+### "mink.yaml not found"
+
+Run `mink init` to create the configuration file, or check you're in the correct directory.
+
+### "Permission denied" on migrations
+
+Ensure your database user has CREATE TABLE permissions:
+
+```sql
+GRANT ALL PRIVILEGES ON DATABASE mydb TO myuser;
+GRANT ALL PRIVILEGES ON SCHEMA mink TO myuser;
 ```
 
 ---

@@ -136,11 +136,11 @@ func newRoundedBox(borderColor lipgloss.Color) lipgloss.Style {
 
 // Box styles for containers
 var (
-	Box          = newRoundedBox(Border)   // Box with a subtle border
-	BoxHighlight = newRoundedBox(Primary)  // BoxHighlight with primary color border
-	BoxSuccess   = newRoundedBox(Success)  // BoxSuccess with success color border
-	BoxError     = newRoundedBox(Error)    // BoxError with error color border
-	BoxWarning   = newRoundedBox(Warning)  // BoxWarning with warning color border
+	Box          = newRoundedBox(Border)  // Box with a subtle border
+	BoxHighlight = newRoundedBox(Primary) // BoxHighlight with primary color border
+	BoxSuccess   = newRoundedBox(Success) // BoxSuccess with success color border
+	BoxError     = newRoundedBox(Error)   // BoxError with error color border
+	BoxWarning   = newRoundedBox(Warning) // BoxWarning with warning color border
 )
 
 // Component styles

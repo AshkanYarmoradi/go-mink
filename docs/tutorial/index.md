@@ -185,6 +185,40 @@ minkshop/
 
 Can't wait to get started? Here's the fastest path:
 
+### Option A: Using the CLI (Recommended)
+
+```bash
+# 1. Install the CLI
+go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+
+# 2. Create project
+mkdir minkshop && cd minkshop
+go mod init minkshop
+
+# 3. Initialize with CLI
+mink init --name=minkshop --driver=postgres
+
+# 4. Generate aggregates
+mink generate aggregate Product --events Created,StockAdded,StockReserved
+mink generate aggregate Cart --events Created,ItemAdded,ItemRemoved,Cleared
+mink generate aggregate Order --events Created,Paid,Shipped,Delivered,Cancelled
+
+# 5. Start PostgreSQL
+docker run -d --name minkshop-db \
+  -e POSTGRES_PASSWORD=secret \
+  -p 5432:5432 \
+  postgres:16
+
+# 6. Set connection and migrate
+export DATABASE_URL="postgres://postgres:secret@localhost:5432/postgres?sslmode=disable"
+mink migrate up
+
+# 7. Verify setup
+mink diagnose
+```
+
+### Option B: Manual Setup
+
 ```bash
 # 1. Create project
 mkdir minkshop && cd minkshop
@@ -201,6 +235,9 @@ docker run -d --name minkshop-db \
 
 # 4. Continue to Part 1...
 ```
+
+{: .tip }
+> The CLI generates boilerplate code while teaching you the fundamentals. The manual approach in this tutorial helps you understand what's happening under the hood.
 
 ---
 
