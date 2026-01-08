@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	mink "github.com/AshkanYarmoradi/go-mink"
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -102,6 +103,7 @@ var (
 	_ adapters.CheckpointAdapter   = (*PostgresAdapter)(nil)
 	_ adapters.HealthChecker       = (*PostgresAdapter)(nil)
 	_ adapters.Migrator            = (*PostgresAdapter)(nil)
+	_ mink.CheckpointStore         = (*PostgresAdapter)(nil)
 )
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
@@ -650,6 +652,60 @@ func (a *PostgresAdapter) SetCheckpoint(ctx context.Context, projectionName stri
 	}
 
 	return nil
+}
+
+// DeleteCheckpoint removes the checkpoint for a projection.
+// This implements mink.CheckpointStore interface.
+func (a *PostgresAdapter) DeleteCheckpoint(ctx context.Context, projectionName string) error {
+	if a.closed {
+		return ErrAdapterClosed
+	}
+
+	schemaQ := a.schemaQ
+	_, err := a.db.ExecContext(ctx, `
+		DELETE FROM `+schemaQ+`.checkpoints
+		WHERE projection_name = $1`, projectionName)
+	if err != nil {
+		return fmt.Errorf("mink/postgres: failed to delete checkpoint: %w", err)
+	}
+
+	return nil
+}
+
+// GetAllCheckpoints returns checkpoints for all projections.
+// This implements mink.CheckpointStore interface.
+func (a *PostgresAdapter) GetAllCheckpoints(ctx context.Context) (map[string]uint64, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+
+	schemaQ := a.schemaQ
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT projection_name, position
+		FROM `+schemaQ+`.checkpoints
+		ORDER BY projection_name`)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to get all checkpoints: %w", err)
+	}
+	defer rows.Close()
+
+	checkpoints := make(map[string]uint64)
+	for rows.Next() {
+		var name string
+		var pos sql.NullInt64
+		if err := rows.Scan(&name, &pos); err != nil {
+			return nil, fmt.Errorf("mink/postgres: failed to scan checkpoint: %w", err)
+		}
+		if pos.Valid && pos.Int64 >= 0 {
+			checkpoints[name] = uint64(pos.Int64)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to iterate checkpoints: %w", err)
+	}
+
+	return checkpoints, nil
 }
 
 // Ping checks database connectivity.
