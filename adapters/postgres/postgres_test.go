@@ -935,6 +935,61 @@ func TestPostgresAdapter_Checkpoints(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, uint64(150), pos)
 	})
+
+	t.Run("delete checkpoint", func(t *testing.T) {
+		// Set a checkpoint first
+		err := adapter.SetCheckpoint(ctx, "DeleteTestProj", 200)
+		require.NoError(t, err)
+
+		// Verify it exists
+		pos, err := adapter.GetCheckpoint(ctx, "DeleteTestProj")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(200), pos)
+
+		// Delete it
+		err = adapter.DeleteCheckpoint(ctx, "DeleteTestProj")
+		require.NoError(t, err)
+
+		// Verify it's gone (should return 0)
+		pos, err = adapter.GetCheckpoint(ctx, "DeleteTestProj")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("delete non-existent checkpoint succeeds", func(t *testing.T) {
+		err := adapter.DeleteCheckpoint(ctx, "NonExistentProj")
+		require.NoError(t, err)
+	})
+
+	t.Run("get all checkpoints", func(t *testing.T) {
+		// Set up some checkpoints
+		err := adapter.SetCheckpoint(ctx, "AllTest_Proj1", 100)
+		require.NoError(t, err)
+		err = adapter.SetCheckpoint(ctx, "AllTest_Proj2", 200)
+		require.NoError(t, err)
+		err = adapter.SetCheckpoint(ctx, "AllTest_Proj3", 300)
+		require.NoError(t, err)
+
+		// Get all checkpoints
+		checkpoints, err := adapter.GetAllCheckpoints(ctx)
+		require.NoError(t, err)
+		assert.NotNil(t, checkpoints)
+
+		// Verify our test checkpoints exist with correct values
+		assert.Equal(t, uint64(100), checkpoints["AllTest_Proj1"])
+		assert.Equal(t, uint64(200), checkpoints["AllTest_Proj2"])
+		assert.Equal(t, uint64(300), checkpoints["AllTest_Proj3"])
+	})
+
+	t.Run("get all checkpoints returns empty map when none exist", func(t *testing.T) {
+		// Use a fresh adapter with unique schema to ensure empty state
+		adapter2 := setupIntegrationTest(t)
+
+		checkpoints, err := adapter2.GetAllCheckpoints(ctx)
+		require.NoError(t, err)
+		assert.NotNil(t, checkpoints)
+		assert.Empty(t, checkpoints)
+	})
 }
 
 func TestPostgresAdapter_Close(t *testing.T) {
@@ -991,6 +1046,12 @@ func TestPostgresAdapter_Close(t *testing.T) {
 		assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
 
 		err = adapter.SetCheckpoint(ctx, "test", 1)
+		assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+
+		err = adapter.DeleteCheckpoint(ctx, "test")
+		assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
+
+		_, err = adapter.GetAllCheckpoints(ctx)
 		assert.True(t, errors.Is(err, adapters.ErrAdapterClosed))
 
 		err = adapter.Ping(ctx)

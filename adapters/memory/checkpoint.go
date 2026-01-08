@@ -9,6 +9,8 @@ import (
 )
 
 // Ensure interface compliance at compile time.
+// Note: CheckpointStore also implements mink.CheckpointStore but we cannot
+// verify it here due to import cycle. The interface is verified in tests.
 var _ adapters.CheckpointAdapter = (*CheckpointStore)(nil)
 
 // Checkpoint represents a stored checkpoint.
