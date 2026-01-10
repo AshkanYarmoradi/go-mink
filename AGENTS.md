@@ -65,11 +65,12 @@ github.com/AshkanYarmoradi/go-mink/
 ├── adapters/
 │   ├── adapter.go             # Adapter interfaces
 │   ├── postgres/
-│   │   ├── eventstore.go      # PostgreSQL event store
-│   │   ├── readmodel.go       # PostgreSQL read models
-│   │   ├── snapshot.go        # PostgreSQL snapshots
-│   │   ├── outbox.go          # PostgreSQL outbox
-│   │   └── migrations/        # SQL migration files
+│   │   ├── postgres.go        # PostgreSQL event store
+│   │   ├── readmodel.go       # PostgreSQL read models with auto-migration
+│   │   ├── idempotency.go     # PostgreSQL idempotency store
+│   │   ├── subscription.go    # PostgreSQL subscriptions
+│   │   ├── snapshot.go        # PostgreSQL snapshots (planned)
+│   │   └── outbox.go          # PostgreSQL outbox (Phase 5)
 │   ├── mongodb/
 │   ├── redis/
 │   └── memory/                # In-memory for testing
@@ -157,6 +158,7 @@ github.com/AshkanYarmoradi/go-mink/
 - `ProjectionEngine` with worker pool
 - Checkpoint management and rebuilding
 - `ReadModelRepository` generic interface with query builder
+- PostgreSQL read model repository with auto-migration
 - Event subscriptions (`SubscribeAll`, `SubscribeStream`, `SubscribeCategory`)
 
 **Phase 4 (v0.4.0)**: Developer Experience - COMPLETE
