@@ -66,6 +66,61 @@ func createReadModelTestSchema(t *testing.T, db *sql.DB) string {
 	return schema
 }
 
+// testOrderSummaryRepo is a helper to create an OrderSummary repository for testing.
+type testOrderSummaryRepo struct {
+	repo *PostgresRepository[OrderSummary]
+	db   *sql.DB
+	ctx  context.Context
+	now  time.Time
+}
+
+// setupOrderSummaryRepo creates a repository with standard test setup.
+func setupOrderSummaryRepo(t *testing.T, tableName string) *testOrderSummaryRepo {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+	db := getTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	schema := createReadModelTestSchema(t, db)
+	repo, err := NewPostgresRepository[OrderSummary](db,
+		WithReadModelSchema(schema),
+		WithTableName(tableName),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = repo.DropTable(context.Background()) })
+	return &testOrderSummaryRepo{
+		repo: repo,
+		db:   db,
+		ctx:  context.Background(),
+		now:  time.Now().Truncate(time.Microsecond),
+	}
+}
+
+// newOrder creates a test OrderSummary with the given ID.
+func (tr *testOrderSummaryRepo) newOrder(id, customerID, status string, itemCount int, totalAmount float64) *OrderSummary {
+	return &OrderSummary{
+		OrderID:     id,
+		CustomerID:  customerID,
+		Status:      status,
+		ItemCount:   itemCount,
+		TotalAmount: totalAmount,
+		CreatedAt:   tr.now,
+		UpdatedAt:   tr.now,
+	}
+}
+
+// insertOrders inserts multiple test orders.
+func (tr *testOrderSummaryRepo) insertOrders(t *testing.T, count int, statusFn func(i int) string) {
+	for i := 1; i <= count; i++ {
+		status := "pending"
+		if statusFn != nil {
+			status = statusFn(i)
+		}
+		order := tr.newOrder(fmt.Sprintf("order-%d", i), fmt.Sprintf("cust-%d", i), status, i, float64(i)*10.0)
+		require.NoError(t, tr.repo.Insert(tr.ctx, order))
+	}
+}
+
 func TestNewPostgresRepository(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
@@ -277,103 +332,54 @@ func TestPostgresRepository_CRUD(t *testing.T) {
 }
 
 func TestPostgresRepository_GetMany(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := createReadModelTestSchema(t, db)
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("order_getmany_test"),
-	)
-	require.NoError(t, err)
-	defer func() { _ = repo.DropTable(context.Background()) }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Insert test data
-	for i := 1; i <= 5; i++ {
-		order := &OrderSummary{
-			OrderID:     fmt.Sprintf("order-%d", i),
-			CustomerID:  fmt.Sprintf("cust-%d", i),
-			Status:      "pending",
-			ItemCount:   i,
-			TotalAmount: float64(i) * 10.0,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		require.NoError(t, repo.Insert(ctx, order))
-	}
+	tr := setupOrderSummaryRepo(t, "order_getmany_test")
+	tr.insertOrders(t, 5, nil)
 
 	t.Run("returns requested items", func(t *testing.T) {
-		results, err := repo.GetMany(ctx, []string{"order-1", "order-3", "order-5"})
+		results, err := tr.repo.GetMany(tr.ctx, []string{"order-1", "order-3", "order-5"})
 		require.NoError(t, err)
 		assert.Len(t, results, 3)
 	})
 
 	t.Run("skips non-existent items", func(t *testing.T) {
-		results, err := repo.GetMany(ctx, []string{"order-1", "non-existent", "order-3"})
+		results, err := tr.repo.GetMany(tr.ctx, []string{"order-1", "non-existent", "order-3"})
 		require.NoError(t, err)
 		assert.Len(t, results, 2)
 	})
 
 	t.Run("empty input returns empty slice", func(t *testing.T) {
-		results, err := repo.GetMany(ctx, []string{})
+		results, err := tr.repo.GetMany(tr.ctx, []string{})
 		require.NoError(t, err)
 		assert.Empty(t, results)
 	})
 }
 
 func TestPostgresRepository_Query(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := createReadModelTestSchema(t, db)
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("order_query_test"),
-	)
-	require.NoError(t, err)
-	defer func() { _ = repo.DropTable(context.Background()) }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Insert test data
+	tr := setupOrderSummaryRepo(t, "order_query_test")
 	statuses := []string{"pending", "shipped", "delivered", "pending", "cancelled"}
 	for i := 1; i <= 5; i++ {
 		order := &OrderSummary{
 			OrderID:     fmt.Sprintf("order-%d", i),
-			CustomerID:  fmt.Sprintf("cust-%d", (i-1)/2+1), // cust-1, cust-1, cust-2, cust-2, cust-3
+			CustomerID:  fmt.Sprintf("cust-%d", (i-1)/2+1),
 			Status:      statuses[i-1],
 			ItemCount:   i,
 			TotalAmount: float64(i) * 25.0,
-			CreatedAt:   now.Add(time.Duration(i) * time.Hour),
-			UpdatedAt:   now,
+			CreatedAt:   tr.now.Add(time.Duration(i) * time.Hour),
+			UpdatedAt:   tr.now,
 		}
-		require.NoError(t, repo.Insert(ctx, order))
+		require.NoError(t, tr.repo.Insert(tr.ctx, order))
 	}
 
 	t.Run("Find with equality filter", func(t *testing.T) {
 		query := mink.NewQuery().Where("status", mink.FilterOpEq, "pending")
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 2)
 	})
 
 	t.Run("Find with greater than filter", func(t *testing.T) {
 		query := mink.NewQuery().Where("total_amount", mink.FilterOpGt, 75.0)
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 2) // order-4 (100) and order-5 (125)
 	})
@@ -382,21 +388,21 @@ func TestPostgresRepository_Query(t *testing.T) {
 		query := mink.NewQuery().
 			Where("status", mink.FilterOpEq, "pending").
 			And("item_count", mink.FilterOpGt, 2)
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 1) // order-4
 	})
 
 	t.Run("Find with IN filter", func(t *testing.T) {
 		query := mink.NewQuery().Where("status", mink.FilterOpIn, []string{"shipped", "delivered"})
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 2)
 	})
 
 	t.Run("Find with ordering", func(t *testing.T) {
 		query := mink.NewQuery().OrderByDesc("item_count")
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		require.Len(t, results, 5)
 		assert.Equal(t, 5, results[0].ItemCount)
@@ -408,7 +414,7 @@ func TestPostgresRepository_Query(t *testing.T) {
 			OrderByAsc("order_id").
 			WithLimit(2).
 			WithOffset(2)
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 2)
 		assert.Equal(t, "order-3", results[0].OrderID)
@@ -419,7 +425,7 @@ func TestPostgresRepository_Query(t *testing.T) {
 		query := mink.NewQuery().
 			OrderByAsc("order_id").
 			WithPagination(2, 2) // page 2, pageSize 2
-		results, err := repo.Find(ctx, query.Build())
+		results, err := tr.repo.Find(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Len(t, results, 2)
 		assert.Equal(t, "order-3", results[0].OrderID)
@@ -429,215 +435,115 @@ func TestPostgresRepository_Query(t *testing.T) {
 		query := mink.NewQuery().
 			Where("status", mink.FilterOpEq, "pending").
 			OrderByAsc("order_id")
-		result, err := repo.FindOne(ctx, query.Build())
+		result, err := tr.repo.FindOne(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Equal(t, "order-1", result.OrderID)
 	})
 
 	t.Run("FindOne returns error when no match", func(t *testing.T) {
 		query := mink.NewQuery().Where("status", mink.FilterOpEq, "nonexistent")
-		_, err := repo.FindOne(ctx, query.Build())
+		_, err := tr.repo.FindOne(tr.ctx, query.Build())
 		assert.ErrorIs(t, err, mink.ErrNotFound)
 	})
 
 	t.Run("Count with filter", func(t *testing.T) {
 		query := mink.NewQuery().Where("status", mink.FilterOpEq, "pending")
-		count, err := repo.Count(ctx, query.Build())
+		count, err := tr.repo.Count(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), count)
 	})
 
 	t.Run("Count all", func(t *testing.T) {
-		count, err := repo.Count(ctx, mink.Query{})
+		count, err := tr.repo.Count(tr.ctx, mink.Query{})
 		require.NoError(t, err)
 		assert.Equal(t, int64(5), count)
 	})
 
 	t.Run("GetAll returns all items", func(t *testing.T) {
-		results, err := repo.GetAll(ctx)
+		results, err := tr.repo.GetAll(tr.ctx)
 		require.NoError(t, err)
 		assert.Len(t, results, 5)
 	})
 }
 
 func TestPostgresRepository_DeleteMany(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := createReadModelTestSchema(t, db)
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("order_deletemany_test"),
-	)
-	require.NoError(t, err)
-	defer func() { _ = repo.DropTable(context.Background()) }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Insert test data
+	tr := setupOrderSummaryRepo(t, "order_deletemany_test")
 	statuses := []string{"pending", "shipped", "pending", "cancelled", "pending"}
-	for i := 1; i <= 5; i++ {
-		order := &OrderSummary{
-			OrderID:     fmt.Sprintf("order-%d", i),
-			CustomerID:  "cust-1",
-			Status:      statuses[i-1],
-			ItemCount:   i,
-			TotalAmount: float64(i) * 10.0,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		require.NoError(t, repo.Insert(ctx, order))
-	}
+	tr.insertOrders(t, 5, func(i int) string { return statuses[i-1] })
 
 	t.Run("deletes matching items", func(t *testing.T) {
 		query := mink.NewQuery().Where("status", mink.FilterOpEq, "pending")
-		deleted, err := repo.DeleteMany(ctx, query.Build())
+		deleted, err := tr.repo.DeleteMany(tr.ctx, query.Build())
 		require.NoError(t, err)
 		assert.Equal(t, int64(3), deleted)
 
-		count, err := repo.Count(ctx, mink.Query{})
+		count, err := tr.repo.Count(tr.ctx, mink.Query{})
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), count)
 	})
 }
 
 func TestPostgresRepository_Clear(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+	tr := setupOrderSummaryRepo(t, "order_clear_test")
+	tr.insertOrders(t, 3, nil)
 
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := createReadModelTestSchema(t, db)
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("order_clear_test"),
-	)
-	require.NoError(t, err)
-	defer func() { _ = repo.DropTable(context.Background()) }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Insert test data
-	for i := 1; i <= 3; i++ {
-		order := &OrderSummary{
-			OrderID:    fmt.Sprintf("order-%d", i),
-			CustomerID: "cust-1",
-			Status:     "pending",
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		require.NoError(t, repo.Insert(ctx, order))
-	}
-
-	// Clear all
-	err = repo.Clear(ctx)
+	err := tr.repo.Clear(tr.ctx)
 	require.NoError(t, err)
 
-	// Verify empty
-	count, err := repo.Count(ctx, mink.Query{})
+	count, err := tr.repo.Count(tr.ctx, mink.Query{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestPostgresRepository_Transaction(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer db.Close()
-
-	schema := createReadModelTestSchema(t, db)
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("order_tx_test"),
-	)
-	require.NoError(t, err)
-	defer func() { _ = repo.DropTable(context.Background()) }()
-
-	ctx := context.Background()
-	now := time.Now()
+	tr := setupOrderSummaryRepo(t, "order_tx_test")
 
 	t.Run("commit transaction", func(t *testing.T) {
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
 		require.NoError(t, err)
 
-		txRepo := repo.WithTx(tx)
-
-		order := &OrderSummary{
-			OrderID:    "tx-order-1",
-			CustomerID: "cust-1",
-			Status:     "pending",
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		err = txRepo.Insert(ctx, order)
+		txRepo := tr.repo.WithTx(tx)
+		order := tr.newOrder("tx-order-1", "cust-1", "pending", 0, 0)
+		err = txRepo.Insert(tr.ctx, order)
 		require.NoError(t, err)
 
 		err = tx.Commit()
 		require.NoError(t, err)
 
-		// Should be visible after commit
-		retrieved, err := repo.Get(ctx, "tx-order-1")
+		retrieved, err := tr.repo.Get(tr.ctx, "tx-order-1")
 		require.NoError(t, err)
 		assert.Equal(t, "pending", retrieved.Status)
 	})
 
 	t.Run("rollback transaction", func(t *testing.T) {
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
 		require.NoError(t, err)
 
-		txRepo := repo.WithTx(tx)
-
-		order := &OrderSummary{
-			OrderID:    "tx-order-2",
-			CustomerID: "cust-1",
-			Status:     "pending",
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		err = txRepo.Insert(ctx, order)
+		txRepo := tr.repo.WithTx(tx)
+		order := tr.newOrder("tx-order-2", "cust-1", "pending", 0, 0)
+		err = txRepo.Insert(tr.ctx, order)
 		require.NoError(t, err)
 
 		err = tx.Rollback()
 		require.NoError(t, err)
 
-		// Should not exist after rollback
-		_, err = repo.Get(ctx, "tx-order-2")
+		_, err = tr.repo.Get(tr.ctx, "tx-order-2")
 		assert.ErrorIs(t, err, mink.ErrNotFound)
 	})
 
 	t.Run("transaction upsert", func(t *testing.T) {
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
 		require.NoError(t, err)
 
-		txRepo := repo.WithTx(tx)
-
-		order := &OrderSummary{
-			OrderID:    "tx-order-1",
-			CustomerID: "cust-1",
-			Status:     "shipped",
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		err = txRepo.Upsert(ctx, order)
+		txRepo := tr.repo.WithTx(tx)
+		order := tr.newOrder("tx-order-1", "cust-1", "shipped", 0, 0)
+		err = txRepo.Upsert(tr.ctx, order)
 		require.NoError(t, err)
 
 		err = tx.Commit()
 		require.NoError(t, err)
 
-		retrieved, err := repo.Get(ctx, "tx-order-1")
+		retrieved, err := tr.repo.Get(tr.ctx, "tx-order-1")
 		require.NoError(t, err)
 		assert.Equal(t, "shipped", retrieved.Status)
 	})
@@ -933,31 +839,32 @@ func TestGoTypeToSQL(t *testing.T) {
 
 // Benchmark tests
 
-func BenchmarkPostgresRepository_Insert(b *testing.B) {
+// setupBenchmarkRepo creates a repository for benchmark tests.
+func setupBenchmarkRepo(b *testing.B, tableName string) (*PostgresRepository[OrderSummary], func()) {
 	connStr := os.Getenv("TEST_DATABASE_URL")
 	if connStr == "" {
 		b.Skip("TEST_DATABASE_URL not set")
 	}
-
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer db.Close()
-
 	schema := fmt.Sprintf("bench_%d", time.Now().UnixNano())
 	_, _ = db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(schema)))
-	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
-	}()
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("bench_orders"),
-	)
+	repo, err := NewPostgresRepository[OrderSummary](db, WithReadModelSchema(schema), WithTableName(tableName))
 	if err != nil {
 		b.Fatal(err)
 	}
+	cleanup := func() {
+		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
+		db.Close()
+	}
+	return repo, cleanup
+}
+
+func BenchmarkPostgresRepository_Insert(b *testing.B) {
+	repo, cleanup := setupBenchmarkRepo(b, "bench_orders")
+	defer cleanup()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -965,58 +872,23 @@ func BenchmarkPostgresRepository_Insert(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		order := &OrderSummary{
-			OrderID:     fmt.Sprintf("bench-order-%d", i),
-			CustomerID:  "cust-1",
-			Status:      "pending",
-			ItemCount:   1,
-			TotalAmount: 99.99,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			OrderID: fmt.Sprintf("bench-order-%d", i), CustomerID: "cust-1", Status: "pending",
+			ItemCount: 1, TotalAmount: 99.99, CreatedAt: now, UpdatedAt: now,
 		}
 		_ = repo.Insert(ctx, order)
 	}
 }
 
 func BenchmarkPostgresRepository_Get(b *testing.B) {
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		b.Skip("TEST_DATABASE_URL not set")
-	}
-
-	db, err := sql.Open("pgx", connStr)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer db.Close()
-
-	schema := fmt.Sprintf("bench_%d", time.Now().UnixNano())
-	_, _ = db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(schema)))
-	defer func() {
-		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
-	}()
-
-	repo, err := NewPostgresRepository[OrderSummary](db,
-		WithReadModelSchema(schema),
-		WithTableName("bench_orders_get"),
-	)
-	if err != nil {
-		b.Fatal(err)
-	}
+	repo, cleanup := setupBenchmarkRepo(b, "bench_orders_get")
+	defer cleanup()
 
 	ctx := context.Background()
 	now := time.Now()
-
-	// Insert test data
-	order := &OrderSummary{
-		OrderID:     "bench-order-1",
-		CustomerID:  "cust-1",
-		Status:      "pending",
-		ItemCount:   1,
-		TotalAmount: 99.99,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	_ = repo.Insert(ctx, order)
+	_ = repo.Insert(ctx, &OrderSummary{
+		OrderID: "bench-order-1", CustomerID: "cust-1", Status: "pending",
+		ItemCount: 1, TotalAmount: 99.99, CreatedAt: now, UpdatedAt: now,
+	})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

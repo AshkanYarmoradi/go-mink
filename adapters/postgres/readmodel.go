@@ -657,6 +657,28 @@ func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []in
 	return sqlQuery, args
 }
 
+// filterOpToSQL maps filter operators to SQL operators.
+var filterOpToSQL = map[mink.FilterOp]string{
+	mink.FilterOpEq:   "=",
+	mink.FilterOpNe:   "!=",
+	mink.FilterOpGt:   ">",
+	mink.FilterOpGte:  ">=",
+	mink.FilterOpLt:   "<",
+	mink.FilterOpLte:  "<=",
+	mink.FilterOpLike: "LIKE",
+}
+
+// buildInClause builds an IN or NOT IN clause from a slice of values.
+func buildInClause(quotedCol, keyword string, values []interface{}, paramIdx *int, args *[]interface{}) string {
+	placeholders := make([]string, len(values))
+	for i, v := range values {
+		placeholders[i] = fmt.Sprintf("$%d", *paramIdx)
+		*args = append(*args, v)
+		(*paramIdx)++
+	}
+	return fmt.Sprintf("%s %s (%s)", quotedCol, keyword, strings.Join(placeholders, ", "))
+}
+
 // buildWhereClause builds the WHERE clause from filters.
 func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string, []interface{}) {
 	if len(filters) == 0 {
@@ -672,66 +694,25 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 		if colName == "" {
 			continue
 		}
-
 		quotedCol := quoteIdentifier(colName)
 
+		// Handle simple comparison operators
+		if op, ok := filterOpToSQL[f.Op]; ok {
+			conditions = append(conditions, fmt.Sprintf("%s %s $%d", quotedCol, op, paramIdx))
+			args = append(args, f.Value)
+			paramIdx++
+			continue
+		}
+
+		// Handle special operators
 		switch f.Op {
-		case mink.FilterOpEq:
-			conditions = append(conditions, fmt.Sprintf("%s = $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpNe:
-			conditions = append(conditions, fmt.Sprintf("%s != $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpGt:
-			conditions = append(conditions, fmt.Sprintf("%s > $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpGte:
-			conditions = append(conditions, fmt.Sprintf("%s >= $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpLt:
-			conditions = append(conditions, fmt.Sprintf("%s < $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpLte:
-			conditions = append(conditions, fmt.Sprintf("%s <= $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
-		case mink.FilterOpLike:
-			conditions = append(conditions, fmt.Sprintf("%s LIKE $%d", quotedCol, paramIdx))
-			args = append(args, f.Value)
-			paramIdx++
 		case mink.FilterOpIn:
-			// Handle IN clause with multiple values
-			if vals, ok := f.Value.([]interface{}); ok {
-				placeholders := make([]string, len(vals))
-				for i, v := range vals {
-					placeholders[i] = fmt.Sprintf("$%d", paramIdx)
-					args = append(args, v)
-					paramIdx++
-				}
-				conditions = append(conditions, fmt.Sprintf("%s IN (%s)", quotedCol, strings.Join(placeholders, ", ")))
-			} else if strVals, ok := f.Value.([]string); ok {
-				placeholders := make([]string, len(strVals))
-				for i, v := range strVals {
-					placeholders[i] = fmt.Sprintf("$%d", paramIdx)
-					args = append(args, v)
-					paramIdx++
-				}
-				conditions = append(conditions, fmt.Sprintf("%s IN (%s)", quotedCol, strings.Join(placeholders, ", ")))
+			if vals := toInterfaceSlice(f.Value); vals != nil {
+				conditions = append(conditions, buildInClause(quotedCol, "IN", vals, &paramIdx, &args))
 			}
 		case mink.FilterOpNotIn:
-			if vals, ok := f.Value.([]interface{}); ok {
-				placeholders := make([]string, len(vals))
-				for i, v := range vals {
-					placeholders[i] = fmt.Sprintf("$%d", paramIdx)
-					args = append(args, v)
-					paramIdx++
-				}
-				conditions = append(conditions, fmt.Sprintf("%s NOT IN (%s)", quotedCol, strings.Join(placeholders, ", ")))
+			if vals := toInterfaceSlice(f.Value); vals != nil {
+				conditions = append(conditions, buildInClause(quotedCol, "NOT IN", vals, &paramIdx, &args))
 			}
 		case mink.FilterOpIsNull:
 			conditions = append(conditions, fmt.Sprintf("%s IS NULL", quotedCol))
@@ -749,8 +730,22 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 	if len(conditions) == 0 {
 		return "", nil
 	}
-
 	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// toInterfaceSlice converts various slice types to []interface{}.
+func toInterfaceSlice(v interface{}) []interface{} {
+	if vals, ok := v.([]interface{}); ok {
+		return vals
+	}
+	if strVals, ok := v.([]string); ok {
+		result := make([]interface{}, len(strVals))
+		for i, s := range strVals {
+			result[i] = s
+		}
+		return result
+	}
+	return nil
 }
 
 // buildOrderClause builds the ORDER BY clause.
@@ -833,37 +828,52 @@ func (r *PostgresRepository[T]) scanRows(rows *sql.Rows) ([]*T, error) {
 	return results, nil
 }
 
+// fieldMapper is used to iterate over struct fields and map them to columns.
+type fieldMapper struct {
+	colToIdx map[string]int
+}
+
+// newFieldMapper creates a mapper for the given columns.
+func newFieldMapper(columns []string) *fieldMapper {
+	colToIdx := make(map[string]int, len(columns))
+	for i, col := range columns {
+		colToIdx[col] = i
+	}
+	return &fieldMapper{colToIdx: colToIdx}
+}
+
+// getColumnName returns the column name for a struct field.
+func getColumnName(field reflect.StructField) (string, bool) {
+	tag := field.Tag.Get("mink")
+	if tag == "-" {
+		return "", true // skip
+	}
+	colName := toSnakeCase(field.Name)
+	if tag != "" {
+		if parts := strings.Split(tag, ","); parts[0] != "" {
+			colName = parts[0]
+		}
+	}
+	return colName, false
+}
+
 // getScanPointers returns pointers to struct fields for scanning.
 func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
 	val := reflect.ValueOf(model).Elem()
 	typ := val.Type()
-
+	mapper := newFieldMapper(r.columns)
 	ptrs := make([]interface{}, len(r.columns))
-	colToIdx := make(map[string]int)
-
-	for i, col := range r.columns {
-		colToIdx[col] = i
-	}
 
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if !field.IsExported() {
 			continue
 		}
-
-		colName := toSnakeCase(field.Name)
-		tag := field.Tag.Get("mink")
-		if tag == "-" {
+		colName, skip := getColumnName(field)
+		if skip {
 			continue
 		}
-		if tag != "" {
-			parts := strings.Split(tag, ",")
-			if parts[0] != "" {
-				colName = parts[0]
-			}
-		}
-
-		if idx, ok := colToIdx[colName]; ok {
+		if idx, ok := mapper.colToIdx[colName]; ok {
 			ptrs[idx] = val.Field(i).Addr().Interface()
 		}
 	}
@@ -875,7 +885,6 @@ func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
 			ptrs[i] = &discard
 		}
 	}
-
 	return ptrs
 }
 
@@ -883,12 +892,7 @@ func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
 func (r *PostgresRepository[T]) extractValues(model *T) []interface{} {
 	val := reflect.ValueOf(model).Elem()
 	typ := val.Type()
-
-	colToIdx := make(map[string]int)
-	for i, col := range r.columns {
-		colToIdx[col] = i
-	}
-
+	mapper := newFieldMapper(r.columns)
 	values := make([]interface{}, len(r.columns))
 
 	for i := 0; i < typ.NumField(); i++ {
@@ -896,24 +900,14 @@ func (r *PostgresRepository[T]) extractValues(model *T) []interface{} {
 		if !field.IsExported() {
 			continue
 		}
-
-		colName := toSnakeCase(field.Name)
-		tag := field.Tag.Get("mink")
-		if tag == "-" {
+		colName, skip := getColumnName(field)
+		if skip {
 			continue
 		}
-		if tag != "" {
-			parts := strings.Split(tag, ",")
-			if parts[0] != "" {
-				colName = parts[0]
-			}
-		}
-
-		if idx, ok := colToIdx[colName]; ok {
+		if idx, ok := mapper.colToIdx[colName]; ok {
 			values[idx] = val.Field(i).Interface()
 		}
 	}
-
 	return values
 }
 
