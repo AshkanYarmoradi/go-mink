@@ -464,6 +464,20 @@ func TestPostgresRepository_Query(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, results, 5)
 	})
+
+	t.Run("Find with negative limit returns error", func(t *testing.T) {
+		query := mink.Query{Limit: -1}
+		_, err := tr.repo.Find(tr.ctx, query)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "limit must be non-negative")
+	})
+
+	t.Run("Find with negative offset returns error", func(t *testing.T) {
+		query := mink.Query{Offset: -5}
+		_, err := tr.repo.Find(tr.ctx, query)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "offset must be non-negative")
+	})
 }
 
 func TestPostgresRepository_DeleteMany(t *testing.T) {
@@ -546,6 +560,99 @@ func TestPostgresRepository_Transaction(t *testing.T) {
 		retrieved, err := tr.repo.Get(tr.ctx, "tx-order-1")
 		require.NoError(t, err)
 		assert.Equal(t, "shipped", retrieved.Status)
+	})
+
+	t.Run("transaction Find", func(t *testing.T) {
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+		query := mink.NewQuery().Where("status", mink.FilterOpEq, "shipped")
+		results, err := txRepo.Find(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "tx-order-1", results[0].OrderID)
+	})
+
+	t.Run("transaction FindOne", func(t *testing.T) {
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+		query := mink.NewQuery().Where("status", mink.FilterOpEq, "shipped")
+		result, err := txRepo.FindOne(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Equal(t, "tx-order-1", result.OrderID)
+	})
+
+	t.Run("transaction GetMany", func(t *testing.T) {
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+		results, err := txRepo.GetMany(tr.ctx, []string{"tx-order-1"})
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("transaction Count", func(t *testing.T) {
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+		count, err := txRepo.Count(tr.ctx, mink.Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
+	})
+
+	t.Run("transaction DeleteMany", func(t *testing.T) {
+		// Insert some orders to delete
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+
+		txRepo := tr.repo.WithTx(tx)
+		for i := 10; i <= 12; i++ {
+			order := tr.newOrder(fmt.Sprintf("tx-order-%d", i), "cust-1", "to-delete", i, float64(i)*10)
+			require.NoError(t, txRepo.Insert(tr.ctx, order))
+		}
+		require.NoError(t, tx.Commit())
+
+		// Now delete in transaction
+		tx, err = tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+
+		txRepo = tr.repo.WithTx(tx)
+		query := mink.NewQuery().Where("status", mink.FilterOpEq, "to-delete")
+		deleted, err := txRepo.DeleteMany(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), deleted)
+
+		require.NoError(t, tx.Commit())
+	})
+
+	t.Run("transaction Clear", func(t *testing.T) {
+		// Insert some orders to clear
+		for i := 20; i <= 22; i++ {
+			order := tr.newOrder(fmt.Sprintf("tx-order-%d", i), "cust-1", "to-clear", i, float64(i)*10)
+			require.NoError(t, tr.repo.Insert(tr.ctx, order))
+		}
+
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+
+		txRepo := tr.repo.WithTx(tx)
+		err = txRepo.Clear(tr.ctx)
+		require.NoError(t, err)
+
+		require.NoError(t, tx.Commit())
+
+		count, err := tr.repo.Count(tr.ctx, mink.Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), count)
 	})
 }
 

@@ -465,83 +465,22 @@ func (r *PostgresRepository[T]) Get(ctx context.Context, id string) (*T, error) 
 
 // GetMany retrieves multiple read models by their IDs.
 func (r *PostgresRepository[T]) GetMany(ctx context.Context, ids []string) ([]*T, error) {
-	if len(ids) == 0 {
-		return []*T{}, nil
-	}
-
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	selectCols := make([]string, len(r.columns))
-	for i, col := range r.columns {
-		selectCols[i] = quoteIdentifier(col)
-	}
-
-	// Build parameterized IN clause
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s IN (%s)`,
-		strings.Join(selectCols, ", "),
-		tableQ,
-		quoteIdentifier(pkCol),
-		strings.Join(placeholders, ", "),
-	)
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("mink/postgres/readmodel: getMany failed: %w", err)
-	}
-	defer rows.Close()
-
-	return r.scanRows(rows)
+	return r.getManyWithExecutor(ctx, r.db, ids)
 }
 
 // Find queries read models with the given criteria.
 func (r *PostgresRepository[T]) Find(ctx context.Context, query mink.Query) ([]*T, error) {
-	sqlQuery, args := r.buildSelectQuery(query)
-
-	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("mink/postgres/readmodel: find failed: %w", err)
-	}
-	defer rows.Close()
-
-	return r.scanRows(rows)
+	return r.findWithExecutor(ctx, r.db, query)
 }
 
 // FindOne returns the first read model matching the query.
 func (r *PostgresRepository[T]) FindOne(ctx context.Context, query mink.Query) (*T, error) {
-	query.Limit = 1
-	results, err := r.Find(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if len(results) == 0 {
-		return nil, mink.ErrNotFound
-	}
-	return results[0], nil
+	return r.findOneWithExecutor(ctx, r.db, query)
 }
 
 // Count returns the number of read models matching the query.
 func (r *PostgresRepository[T]) Count(ctx context.Context, query mink.Query) (int64, error) {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-
-	whereClause, args := r.buildWhereClause(query.Filters)
-
-	sqlQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s%s`, tableQ, whereClause)
-
-	var count int64
-	err := r.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("mink/postgres/readmodel: count failed: %w", err)
-	}
-
-	return count, nil
+	return r.countWithExecutor(ctx, r.db, query)
 }
 
 // Insert creates a new read model.
@@ -566,49 +505,17 @@ func (r *PostgresRepository[T]) Delete(ctx context.Context, id string) error {
 
 // DeleteMany removes all read models matching the query.
 func (r *PostgresRepository[T]) DeleteMany(ctx context.Context, query mink.Query) (int64, error) {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-
-	whereClause, args := r.buildWhereClause(query.Filters)
-
-	sqlQuery := fmt.Sprintf(`DELETE FROM %s%s`, tableQ, whereClause)
-
-	result, err := r.db.ExecContext(ctx, sqlQuery, args...)
-	if err != nil {
-		return 0, fmt.Errorf("mink/postgres/readmodel: deleteMany failed: %w", err)
-	}
-
-	return result.RowsAffected()
+	return r.deleteManyWithExecutor(ctx, r.db, query)
 }
 
 // Clear removes all read models.
 func (r *PostgresRepository[T]) Clear(ctx context.Context) error {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf(`TRUNCATE TABLE %s`, tableQ))
-	if err != nil {
-		return fmt.Errorf("mink/postgres/readmodel: clear failed: %w", err)
-	}
-
-	return nil
+	return r.clearWithExecutor(ctx, r.db)
 }
 
 // Exists checks if a read model with the given ID exists.
 func (r *PostgresRepository[T]) Exists(ctx context.Context, id string) (bool, error) {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	var exists bool
-	query := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s WHERE %s = $1)`,
-		tableQ,
-		quoteIdentifier(pkCol),
-	)
-
-	err := r.db.QueryRowContext(ctx, query, id).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("mink/postgres/readmodel: exists check failed: %w", err)
-	}
-
-	return exists, nil
+	return r.existsWithExecutor(ctx, r.db, id)
 }
 
 // GetAll returns all read models in the repository.
@@ -634,7 +541,8 @@ func (r *PostgresRepository[T]) DropTable(ctx context.Context) error {
 }
 
 // buildSelectQuery builds a SELECT query from a mink.Query.
-func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []interface{}) {
+// Returns an error if limit or offset are negative.
+func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []interface{}, error) {
 	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
 
 	selectCols := make([]string, len(r.columns))
@@ -644,7 +552,10 @@ func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []in
 
 	whereClause, args := r.buildWhereClause(query.Filters)
 	orderClause := r.buildOrderClause(query.OrderBy)
-	limitClause := r.buildLimitClause(query.Limit, query.Offset)
+	limitClause, err := r.buildLimitClauseWithValidation(query.Limit, query.Offset)
+	if err != nil {
+		return "", nil, err
+	}
 
 	sqlQuery := fmt.Sprintf(`SELECT %s FROM %s%s%s%s`,
 		strings.Join(selectCols, ", "),
@@ -654,7 +565,7 @@ func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []in
 		limitClause,
 	)
 
-	return sqlQuery, args
+	return sqlQuery, args, nil
 }
 
 // filterOpToSQL maps filter operators to SQL operators.
@@ -775,6 +686,7 @@ func (r *PostgresRepository[T]) buildOrderClause(orderBy []mink.OrderBy) string 
 }
 
 // buildLimitClause builds the LIMIT/OFFSET clause.
+// Negative values are treated as zero (ignored).
 func (r *PostgresRepository[T]) buildLimitClause(limit, offset int) string {
 	var clause string
 	if limit > 0 {
@@ -784,6 +696,18 @@ func (r *PostgresRepository[T]) buildLimitClause(limit, offset int) string {
 		clause += fmt.Sprintf(" OFFSET %d", offset)
 	}
 	return clause
+}
+
+// buildLimitClauseWithValidation builds the LIMIT/OFFSET clause with validation.
+// Returns an error if limit or offset are negative.
+func (r *PostgresRepository[T]) buildLimitClauseWithValidation(limit, offset int) (string, error) {
+	if limit < 0 {
+		return "", fmt.Errorf("mink/postgres/readmodel: limit must be non-negative, got %d", limit)
+	}
+	if offset < 0 {
+		return "", fmt.Errorf("mink/postgres/readmodel: offset must be non-negative, got %d", offset)
+	}
+	return r.buildLimitClause(limit, offset), nil
 }
 
 // fieldToColumn maps a struct field name to a database column name.
@@ -1209,6 +1133,137 @@ func (r *PostgresRepository[T]) deleteWithExecutor(ctx context.Context, exec dbE
 	return nil
 }
 
+// getManyWithExecutor retrieves multiple read models by their IDs using the provided executor.
+func (r *PostgresRepository[T]) getManyWithExecutor(ctx context.Context, exec dbExecutor, ids []string) ([]*T, error) {
+	if len(ids) == 0 {
+		return []*T{}, nil
+	}
+
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	selectCols := make([]string, len(r.columns))
+	for i, col := range r.columns {
+		selectCols[i] = quoteIdentifier(col)
+	}
+
+	// Build parameterized IN clause
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s IN (%s)`,
+		strings.Join(selectCols, ", "),
+		tableQ,
+		quoteIdentifier(pkCol),
+		strings.Join(placeholders, ", "),
+	)
+
+	rows, err := exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres/readmodel: getMany failed: %w", err)
+	}
+	defer rows.Close()
+
+	return r.scanRows(rows)
+}
+
+// findWithExecutor queries read models with the given criteria using the provided executor.
+func (r *PostgresRepository[T]) findWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) ([]*T, error) {
+	sqlQuery, args, err := r.buildSelectQuery(query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := exec.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres/readmodel: find failed: %w", err)
+	}
+	defer rows.Close()
+
+	return r.scanRows(rows)
+}
+
+// findOneWithExecutor returns the first read model matching the query using the provided executor.
+func (r *PostgresRepository[T]) findOneWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) (*T, error) {
+	query.Limit = 1
+	results, err := r.findWithExecutor(ctx, exec, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, mink.ErrNotFound
+	}
+	return results[0], nil
+}
+
+// countWithExecutor returns the count of matching read models using the provided executor.
+func (r *PostgresRepository[T]) countWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) (int64, error) {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+
+	whereClause, args := r.buildWhereClause(query.Filters)
+
+	sqlQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s%s`, tableQ, whereClause)
+
+	var count int64
+	err := exec.QueryRowContext(ctx, sqlQuery, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/readmodel: count failed: %w", err)
+	}
+
+	return count, nil
+}
+
+// deleteManyWithExecutor removes all read models matching the query using the provided executor.
+func (r *PostgresRepository[T]) deleteManyWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) (int64, error) {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+
+	whereClause, args := r.buildWhereClause(query.Filters)
+
+	sqlQuery := fmt.Sprintf(`DELETE FROM %s%s`, tableQ, whereClause)
+
+	result, err := exec.ExecContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/readmodel: deleteMany failed: %w", err)
+	}
+
+	return result.RowsAffected()
+}
+
+// clearWithExecutor removes all read models using the provided executor.
+func (r *PostgresRepository[T]) clearWithExecutor(ctx context.Context, exec dbExecutor) error {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+
+	_, err := exec.ExecContext(ctx, fmt.Sprintf(`TRUNCATE TABLE %s`, tableQ))
+	if err != nil {
+		return fmt.Errorf("mink/postgres/readmodel: clear failed: %w", err)
+	}
+
+	return nil
+}
+
+// existsWithExecutor checks if a read model with the given ID exists using the provided executor.
+func (r *PostgresRepository[T]) existsWithExecutor(ctx context.Context, exec dbExecutor, id string) (bool, error) {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	var exists bool
+	query := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s WHERE %s = $1)`,
+		tableQ,
+		quoteIdentifier(pkCol),
+	)
+
+	err := exec.QueryRowContext(ctx, query, id).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("mink/postgres/readmodel: exists check failed: %w", err)
+	}
+
+	return exists, nil
+}
+
 // Transaction support
 
 // WithTx creates a new repository instance that uses the provided transaction.
@@ -1220,6 +1275,7 @@ func (r *PostgresRepository[T]) WithTx(tx *sql.Tx) *TxRepository[T] {
 }
 
 // TxRepository wraps PostgresRepository for transaction support.
+// It implements all ReadModelRepository methods within a transaction context.
 type TxRepository[T any] struct {
 	repo *PostgresRepository[T]
 	tx   *sql.Tx
@@ -1228,6 +1284,26 @@ type TxRepository[T any] struct {
 // Get retrieves a read model by ID within a transaction.
 func (tr *TxRepository[T]) Get(ctx context.Context, id string) (*T, error) {
 	return tr.repo.getWithExecutor(ctx, tr.tx, id)
+}
+
+// GetMany retrieves multiple read models by their IDs within a transaction.
+func (tr *TxRepository[T]) GetMany(ctx context.Context, ids []string) ([]*T, error) {
+	return tr.repo.getManyWithExecutor(ctx, tr.tx, ids)
+}
+
+// Find queries read models with the given criteria within a transaction.
+func (tr *TxRepository[T]) Find(ctx context.Context, query mink.Query) ([]*T, error) {
+	return tr.repo.findWithExecutor(ctx, tr.tx, query)
+}
+
+// FindOne returns the first read model matching the query within a transaction.
+func (tr *TxRepository[T]) FindOne(ctx context.Context, query mink.Query) (*T, error) {
+	return tr.repo.findOneWithExecutor(ctx, tr.tx, query)
+}
+
+// Count returns the number of read models matching the query within a transaction.
+func (tr *TxRepository[T]) Count(ctx context.Context, query mink.Query) (int64, error) {
+	return tr.repo.countWithExecutor(ctx, tr.tx, query)
 }
 
 // Insert creates a new read model within a transaction.
@@ -1248,6 +1324,16 @@ func (tr *TxRepository[T]) Upsert(ctx context.Context, model *T) error {
 // Delete removes a read model within a transaction.
 func (tr *TxRepository[T]) Delete(ctx context.Context, id string) error {
 	return tr.repo.deleteWithExecutor(ctx, tr.tx, id)
+}
+
+// DeleteMany removes all read models matching the query within a transaction.
+func (tr *TxRepository[T]) DeleteMany(ctx context.Context, query mink.Query) (int64, error) {
+	return tr.repo.deleteManyWithExecutor(ctx, tr.tx, query)
+}
+
+// Clear removes all read models within a transaction.
+func (tr *TxRepository[T]) Clear(ctx context.Context) error {
+	return tr.repo.clearWithExecutor(ctx, tr.tx)
 }
 
 // Ensure interface compliance
