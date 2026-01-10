@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,12 +40,12 @@ type ProductView struct {
 
 // CustomerStats is a test model with various types.
 type CustomerStats struct {
-	CustomerID   string    `mink:"customer_id,pk"`
-	OrderCount   int64     `mink:"order_count"`
-	TotalSpent   float64   `mink:"total_spent"`
-	LastOrderAt  time.Time `mink:"last_order_at,nullable"`
-	IsVIP        bool      `mink:"is_vip"`
-	Tags         []byte    `mink:"tags"` // JSONB stored as bytes
+	CustomerID  string    `mink:"customer_id,pk"`
+	OrderCount  int64     `mink:"order_count"`
+	TotalSpent  float64   `mink:"total_spent"`
+	LastOrderAt time.Time `mink:"last_order_at,nullable"`
+	IsVIP       bool      `mink:"is_vip"`
+	Tags        []byte    `mink:"tags"` // JSONB stored as bytes
 }
 
 // SimpleModel tests default behavior without tags.
@@ -655,6 +656,44 @@ func TestPostgresRepository_Transaction(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), count)
 	})
+
+	t.Run("transaction Exists", func(t *testing.T) {
+		// Insert an order to check
+		order := tr.newOrder("tx-exists-order", "cust-1", "pending", 1, 10.0)
+		require.NoError(t, tr.repo.Insert(tr.ctx, order))
+
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+
+		exists, err := txRepo.Exists(tr.ctx, "tx-exists-order")
+		require.NoError(t, err)
+		assert.True(t, exists)
+
+		exists, err = txRepo.Exists(tr.ctx, "non-existent")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("transaction GetAll", func(t *testing.T) {
+		// Clear and insert fresh data
+		require.NoError(t, tr.repo.Clear(tr.ctx))
+		for i := 1; i <= 3; i++ {
+			order := tr.newOrder(fmt.Sprintf("tx-getall-%d", i), "cust-1", "pending", i, float64(i)*10)
+			require.NoError(t, tr.repo.Insert(tr.ctx, order))
+		}
+
+		tx, err := tr.db.BeginTx(tr.ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		txRepo := tr.repo.WithTx(tx)
+		results, err := txRepo.GetAll(tr.ctx)
+		require.NoError(t, err)
+		assert.Len(t, results, 3)
+	})
 }
 
 func TestPostgresRepository_Migration(t *testing.T) {
@@ -964,6 +1003,15 @@ func TestValidateSQLLiteral(t *testing.T) {
 		{"drop keyword", "DROP TABLE users", "type", true},
 		{"alter keyword", "ALTER TABLE users", "type", true},
 		{"backslash", "test\\x00", "default", true},
+		// Word boundary tests - should NOT reject words that contain keywords as substrings
+		{"dropbox allowed", "dropbox", "default", false},
+		{"update_at allowed", "update_at", "default", false},
+		{"created_at allowed", "created_at", "default", false},
+		{"backdrop allowed", "backdrop", "default", false},
+		// But should reject actual keywords
+		{"drop standalone", "drop", "default", true},
+		{"update standalone", "update", "default", true},
+		{"drop with space", "drop users", "default", true},
 	}
 
 	for _, tt := range tests {
@@ -985,18 +1033,27 @@ func TestGoTypeToSQL(t *testing.T) {
 		expected string
 	}{
 		{"string", "", "TEXT"},
-		{"int", 0, "INTEGER"},
+		{"int", int(0), "INTEGER"},
+		{"int32", int32(0), "INTEGER"},
 		{"int64", int64(0), "BIGINT"},
-		{"float64", 0.0, "DOUBLE PRECISION"},
+		{"int8", int8(0), "SMALLINT"},
+		{"int16", int16(0), "SMALLINT"},
+		{"uint", uint(0), "INTEGER"},
+		{"uint32", uint32(0), "INTEGER"},
+		{"uint64", uint64(0), "BIGINT"},
+		{"float32", float32(0), "REAL"},
+		{"float64", float64(0), "DOUBLE PRECISION"},
 		{"bool", false, "BOOLEAN"},
 		{"time", time.Time{}, "TIMESTAMPTZ"},
 		{"bytes", []byte{}, "BYTEA"},
+		{"string_slice", []string{}, "JSONB"},
+		{"map", map[string]interface{}{}, "JSONB"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The function expects reflect.Type, but we can verify behavior
-			// through the repository's schema building
+			result := goTypeToSQL(reflect.TypeOf(tt.goType))
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -1049,10 +1106,13 @@ func BenchmarkPostgresRepository_Get(b *testing.B) {
 
 	ctx := context.Background()
 	now := time.Now()
-	_ = repo.Insert(ctx, &OrderSummary{
+	// Setup: insert test data (check error to ensure benchmark is measuring actual DB operations)
+	if err := repo.Insert(ctx, &OrderSummary{
 		OrderID: "bench-order-1", CustomerID: "cust-1", Status: "pending",
 		ItemCount: 1, TotalAmount: 99.99, CreatedAt: now, UpdatedAt: now,
-	})
+	}); err != nil {
+		b.Fatalf("setup failed: %v", err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

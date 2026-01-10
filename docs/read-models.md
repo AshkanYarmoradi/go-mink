@@ -380,9 +380,12 @@ orders, err := repo.Find(ctx, query.Build())
 | `bool` | `BOOLEAN` |
 | `time.Time` | `TIMESTAMPTZ` |
 | `[]byte` | `BYTEA` |
+| `[]T` (slices) | `JSONB` |
 | `map`, `struct` | `JSONB` |
 
-> **Note on unsigned integers**: Go's unsigned integer types (`uint`, `uint32`, `uint64`) are mapped to PostgreSQL's signed integer types. Values exceeding the signed integer maximum may cause overflow. Consider using explicit `type=NUMERIC` for large unsigned values.
+> **Note on JSONB types**: While Go slices (other than `[]byte`), maps, and structs are mapped to `JSONB`, the current implementation stores them using Go's native database/sql handling. For complex JSONB data, use `[]byte` with manual JSON marshaling/unmarshaling, or implement custom `sql.Scanner` and `driver.Valuer` interfaces on your types.
+
+> **Note on unsigned integers**: Go's unsigned integer types are mapped to PostgreSQL's signed integer types: `uint` and `uint32` are stored as `INTEGER` (max `2,147,483,647`), and `uint64` is stored as `BIGINT` (max `9,223,372,036,854,775,807`). Values greater than these limits will overflow or be rejected by PostgreSQL. If you need to store larger unsigned values, use an explicit tag such as `mink:"type=NUMERIC"` (or another appropriate type).
 
 #### Transaction Support
 

@@ -98,7 +98,7 @@ type PostgresRepository[T any] struct {
 }
 
 // NewPostgresRepository creates a new PostgreSQL-backed repository for read models.
-// The type T should be a struct with db tags for column mapping.
+// The type T should be a struct with mink tags for column mapping.
 //
 // Supported struct tags:
 //   - `mink:"column_name"` - Column name (default: snake_case of field name)
@@ -200,6 +200,8 @@ func (r *PostgresRepository[T]) buildTableSchema() (*TableSchema, error) {
 	}
 
 	hasPK := false
+	idFieldIdx := -1 // Track the ID field index for fallback PK
+
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 
@@ -217,9 +219,9 @@ func (r *PostgresRepository[T]) buildTableSchema() (*TableSchema, error) {
 			hasPK = true
 		}
 
-		// Check if this is the ID field (fallback if no pk tag)
-		if field.Name == r.config.idField && !hasPK {
-			col.PrimaryKey = true
+		// Track the ID field (but don't mark as PK yet - wait to see if explicit pk exists)
+		if field.Name == r.config.idField && idFieldIdx == -1 {
+			idFieldIdx = len(schema.Columns)
 		}
 
 		schema.Columns = append(schema.Columns, col)
@@ -234,9 +236,15 @@ func (r *PostgresRepository[T]) buildTableSchema() (*TableSchema, error) {
 		}
 	}
 
-	// If still no PK, use first column
-	if !hasPK && len(schema.Columns) > 0 {
-		schema.Columns[0].PrimaryKey = true
+	// Apply fallback PK logic AFTER processing all fields
+	if !hasPK {
+		if idFieldIdx >= 0 {
+			// Use the ID field as PK
+			schema.Columns[idFieldIdx].PrimaryKey = true
+		} else if len(schema.Columns) > 0 {
+			// Use first column as PK
+			schema.Columns[0].PrimaryKey = true
+		}
 	}
 
 	return schema, nil
@@ -645,6 +653,7 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 }
 
 // toInterfaceSlice converts various slice types to []interface{}.
+// Supports []interface{}, []string, []int, []int64, []float64, and other slice types via reflection.
 func toInterfaceSlice(v interface{}) []interface{} {
 	if vals, ok := v.([]interface{}); ok {
 		return vals
@@ -653,6 +662,36 @@ func toInterfaceSlice(v interface{}) []interface{} {
 		result := make([]interface{}, len(strVals))
 		for i, s := range strVals {
 			result[i] = s
+		}
+		return result
+	}
+	if intVals, ok := v.([]int); ok {
+		result := make([]interface{}, len(intVals))
+		for i, n := range intVals {
+			result[i] = n
+		}
+		return result
+	}
+	if int64Vals, ok := v.([]int64); ok {
+		result := make([]interface{}, len(int64Vals))
+		for i, n := range int64Vals {
+			result[i] = n
+		}
+		return result
+	}
+	if float64Vals, ok := v.([]float64); ok {
+		result := make([]interface{}, len(float64Vals))
+		for i, f := range float64Vals {
+			result[i] = f
+		}
+		return result
+	}
+	// Fallback: use reflection for other slice types
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice {
+		result := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			result[i] = rv.Index(i).Interface()
 		}
 		return result
 	}
@@ -950,7 +989,6 @@ func goTypeToSQL(t reflect.Type) string {
 func validateSQLLiteral(value, context string) error {
 	// Check for common SQL injection patterns
 	dangerousPatterns := []string{";", "--", "/*", "*/", "\\"}
-	lowerValue := strings.ToLower(value)
 
 	for _, pattern := range dangerousPatterns {
 		if strings.Contains(value, pattern) {
@@ -958,15 +996,48 @@ func validateSQLLiteral(value, context string) error {
 		}
 	}
 
-	// Check for SQL keywords that shouldn't appear in literals
-	dangerousKeywords := []string{"drop ", "alter ", "create ", "insert ", "update ", "delete ", "truncate ", "exec ", "execute "}
+	// Check for SQL keywords using word boundary matching to avoid false positives
+	// (e.g., "dropbox" should not be rejected)
+	lowerValue := strings.ToLower(value)
+	dangerousKeywords := []string{"drop", "alter", "create", "insert", "update", "delete", "truncate", "exec", "execute"}
 	for _, keyword := range dangerousKeywords {
-		if strings.Contains(lowerValue, keyword) {
-			return fmt.Errorf("mink/postgres/readmodel: invalid %s value %q: contains forbidden keyword", context, value)
+		if containsWord(lowerValue, keyword) {
+			return fmt.Errorf("mink/postgres/readmodel: invalid %s value %q: contains forbidden keyword %q", context, value, keyword)
 		}
 	}
 
 	return nil
+}
+
+// containsWord checks if a string contains a word as a whole word (not as a substring).
+// A word boundary is defined as the start/end of string or a non-alphanumeric character.
+func containsWord(s, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(s[idx:], word)
+		if i == -1 {
+			return false
+		}
+		pos := idx + i
+		endPos := pos + len(word)
+
+		// Check word boundaries
+		validStart := pos == 0 || !isAlphanumeric(s[pos-1])
+		validEnd := endPos >= len(s) || !isAlphanumeric(s[endPos])
+
+		if validStart && validEnd {
+			return true
+		}
+		idx = pos + 1
+		if idx >= len(s) {
+			return false
+		}
+	}
+}
+
+// isAlphanumeric returns true if the byte is a letter or digit.
+func isAlphanumeric(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // defaultForType returns a default value for a SQL type.
@@ -983,7 +1054,7 @@ func defaultForType(sqlType string) string {
 	case "JSONB", "JSON":
 		return "'{}'"
 	case "BYTEA":
-		return "''"
+		return "'\\x'::bytea"
 	default:
 		return "''"
 	}
@@ -1361,6 +1432,16 @@ func (tr *TxRepository[T]) DeleteMany(ctx context.Context, query mink.Query) (in
 // Clear removes all read models within a transaction.
 func (tr *TxRepository[T]) Clear(ctx context.Context) error {
 	return tr.repo.clearWithExecutor(ctx, tr.tx)
+}
+
+// Exists checks if a read model with the given ID exists within a transaction.
+func (tr *TxRepository[T]) Exists(ctx context.Context, id string) (bool, error) {
+	return tr.repo.existsWithExecutor(ctx, tr.tx, id)
+}
+
+// GetAll returns all read models in the repository within a transaction.
+func (tr *TxRepository[T]) GetAll(ctx context.Context) ([]*T, error) {
+	return tr.repo.findWithExecutor(ctx, tr.tx, mink.Query{})
 }
 
 // Ensure interface compliance
