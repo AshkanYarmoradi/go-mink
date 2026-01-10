@@ -363,8 +363,10 @@ orders, err := repo.Find(ctx, query.Build())
 | `mink:"col,index"` | Create index on column |
 | `mink:"col,unique"` | Unique constraint (also creates index) |
 | `mink:"col,nullable"` | Allow NULL values |
-| `mink:"col,default=value"` | Default value |
-| `mink:"col,type=VARCHAR(100)"` | Override SQL type |
+| `mink:"col,default=value"` | Default value (see security note below) |
+| `mink:"col,type=VARCHAR(100)"` | Override SQL type (see security note below) |
+
+> **Security Note**: The `default=` and `type=` values are validated against common SQL injection patterns but are interpolated into DDL statements. Only use static, hardcoded values in your source code. Never construct these tag values from user input or external sources.
 
 #### Go Type to SQL Mapping
 
@@ -379,6 +381,8 @@ orders, err := repo.Find(ctx, query.Build())
 | `time.Time` | `TIMESTAMPTZ` |
 | `[]byte` | `BYTEA` |
 | `map`, `struct` | `JSONB` |
+
+> **Note on unsigned integers**: Go's unsigned integer types (`uint`, `uint32`, `uint64`) are mapped to PostgreSQL's signed integer types. Values exceeding the signed integer maximum may cause overflow. Consider using explicit `type=NUMERIC` for large unsigned values.
 
 #### Transaction Support
 

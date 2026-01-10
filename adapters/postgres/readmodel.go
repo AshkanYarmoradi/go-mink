@@ -271,9 +271,14 @@ func (r *PostgresRepository[T]) parseFieldTag(field reflect.StructField) (Column
 			case part == "nullable":
 				col.Nullable = true
 			case strings.HasPrefix(part, "default="):
-				col.Default = strings.TrimPrefix(part, "default=")
+				defVal := strings.TrimPrefix(part, "default=")
+				// Note: Default values are validated during migration, not here,
+				// because buildTableSchema doesn't return errors for individual tags.
+				col.Default = defVal
 			case strings.HasPrefix(part, "type="):
-				col.SQLType = strings.TrimPrefix(part, "type=")
+				typeVal := strings.TrimPrefix(part, "type=")
+				// Note: Type values are validated during migration, not here.
+				col.SQLType = typeVal
 			}
 		}
 	}
@@ -296,6 +301,13 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 	var columns []string
 	var pkColumn string
 	for _, col := range r.tableSchema.Columns {
+		// Validate SQL type if custom
+		if col.SQLType != "" {
+			if err := validateSQLLiteral(col.SQLType, "type"); err != nil {
+				return err
+			}
+		}
+
 		colDef := fmt.Sprintf("%s %s", quoteIdentifier(col.Name), col.SQLType)
 
 		if col.PrimaryKey {
@@ -310,6 +322,10 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 		}
 
 		if col.Default != "" {
+			// Validate default value to prevent SQL injection in DDL
+			if err := validateSQLLiteral(col.Default, "default"); err != nil {
+				return err
+			}
 			colDef += " DEFAULT " + col.Default
 		}
 
@@ -330,6 +346,13 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 	for _, idx := range r.tableSchema.Indexes {
 		if err := validateIdentifier(idx.Name, "index"); err != nil {
 			return err
+		}
+
+		// Build full index name and validate length
+		// PostgreSQL has a 63 character limit for identifiers
+		fullIdxName := r.config.schema + "_" + idx.Name
+		if len(fullIdxName) > 63 {
+			return fmt.Errorf("mink/postgres/readmodel: index name %q exceeds PostgreSQL's 63 character limit (%d chars)", fullIdxName, len(fullIdxName))
 		}
 
 		uniqueStr := ""
@@ -403,8 +426,19 @@ func (r *PostgresRepository[T]) migrateColumns(ctx context.Context, pkColumn str
 			continue
 		}
 
+		// Validate SQL type if custom
+		if col.SQLType != "" {
+			if err := validateSQLLiteral(col.SQLType, "type"); err != nil {
+				return err
+			}
+		}
+
 		colDef := fmt.Sprintf("%s %s", quoteIdentifier(col.Name), col.SQLType)
 		if col.Default != "" {
+			// Validate default value to prevent SQL injection
+			if err := validateSQLLiteral(col.Default, "default"); err != nil {
+				return err
+			}
 			colDef += " DEFAULT " + col.Default
 		}
 		if !col.Nullable && col.Default == "" {
@@ -886,12 +920,39 @@ func (r *PostgresRepository[T]) extractValues(model *T) []interface{} {
 // Helper functions
 
 // toSnakeCase converts CamelCase to snake_case.
+// It handles acronyms like ID, HTTP, URL correctly:
+//   - "OrderID" -> "order_id"
+//   - "HTTPServer" -> "http_server"
+//   - "CustomerID" -> "customer_id"
 func toSnakeCase(s string) string {
+	if s == "" {
+		return ""
+	}
+
 	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteByte('_')
+	runes := []rune(s)
+
+	isUpper := func(r rune) bool { return r >= 'A' && r <= 'Z' }
+	isLower := func(r rune) bool { return r >= 'a' && r <= 'z' }
+	isDigit := func(r rune) bool { return r >= '0' && r <= '9' }
+
+	for i, r := range runes {
+		if i > 0 && isUpper(r) {
+			prev := runes[i-1]
+			var next rune
+			if i+1 < len(runes) {
+				next = runes[i+1]
+			}
+
+			// Insert underscore in two cases:
+			// 1) Transition from lower/digit to upper: "orderID" -> "order_id"
+			// 2) End of acronym before lower: "HTTPServer" -> "http_server"
+			if isLower(prev) || isDigit(prev) ||
+				(isUpper(prev) && next != 0 && isLower(next)) {
+				result.WriteByte('_')
+			}
 		}
+
 		result.WriteRune(r)
 	}
 	return strings.ToLower(result.String())
@@ -936,6 +997,31 @@ func goTypeToSQL(t reflect.Type) string {
 	default:
 		return "TEXT"
 	}
+}
+
+// validateSQLLiteral validates that a value is safe to use in DDL.
+// It checks for common SQL injection patterns.
+// This is used for default= and type= tag values which are interpolated into DDL.
+func validateSQLLiteral(value, context string) error {
+	// Check for common SQL injection patterns
+	dangerousPatterns := []string{";", "--", "/*", "*/", "\\"}
+	lowerValue := strings.ToLower(value)
+
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(value, pattern) {
+			return fmt.Errorf("mink/postgres/readmodel: invalid %s value %q: contains forbidden pattern %q", context, value, pattern)
+		}
+	}
+
+	// Check for SQL keywords that shouldn't appear in literals
+	dangerousKeywords := []string{"drop ", "alter ", "create ", "insert ", "update ", "delete ", "truncate ", "exec ", "execute "}
+	for _, keyword := range dangerousKeywords {
+		if strings.Contains(lowerValue, keyword) {
+			return fmt.Errorf("mink/postgres/readmodel: invalid %s value %q: contains forbidden keyword", context, value)
+		}
+	}
+
+	return nil
 }
 
 // defaultForType returns a default value for a SQL type.

@@ -693,6 +693,129 @@ func TestPostgresRepository_Migration(t *testing.T) {
 	})
 }
 
+func TestPostgresRepository_NullableFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	db := getTestDB(t)
+	defer db.Close()
+
+	schema := createReadModelTestSchema(t, db)
+
+	repo, err := NewPostgresRepository[ProductView](db,
+		WithReadModelSchema(schema),
+		WithTableName("products_nullable_test"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = repo.DropTable(context.Background()) }()
+
+	ctx := context.Background()
+
+	t.Run("insert with nullable field empty", func(t *testing.T) {
+		product := &ProductView{
+			SKU:         "SKU-001",
+			Name:        "Test Product",
+			Description: "", // Empty string for nullable field
+			Price:       29.99,
+			StockCount:  100,
+			Active:      true,
+		}
+
+		err := repo.Insert(ctx, product)
+		require.NoError(t, err)
+
+		retrieved, err := repo.Get(ctx, "SKU-001")
+		require.NoError(t, err)
+		assert.Equal(t, "", retrieved.Description)
+		assert.Equal(t, "Test Product", retrieved.Name)
+	})
+
+	t.Run("insert with nullable field set", func(t *testing.T) {
+		product := &ProductView{
+			SKU:         "SKU-002",
+			Name:        "Another Product",
+			Description: "This is a detailed description",
+			Price:       49.99,
+			StockCount:  50,
+			Active:      false,
+		}
+
+		err := repo.Insert(ctx, product)
+		require.NoError(t, err)
+
+		retrieved, err := repo.Get(ctx, "SKU-002")
+		require.NoError(t, err)
+		assert.Equal(t, "This is a detailed description", retrieved.Description)
+		assert.False(t, retrieved.Active)
+	})
+
+	t.Run("update nullable field to empty", func(t *testing.T) {
+		err := repo.Update(ctx, "SKU-002", func(p *ProductView) {
+			p.Description = ""
+		})
+		require.NoError(t, err)
+
+		retrieved, err := repo.Get(ctx, "SKU-002")
+		require.NoError(t, err)
+		assert.Equal(t, "", retrieved.Description)
+	})
+}
+
+func TestPostgresRepository_CustomerStats(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	db := getTestDB(t)
+	defer db.Close()
+
+	schema := createReadModelTestSchema(t, db)
+
+	repo, err := NewPostgresRepository[CustomerStats](db,
+		WithReadModelSchema(schema),
+		WithTableName("customer_stats_test"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = repo.DropTable(context.Background()) }()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+
+	t.Run("insert and retrieve with all types", func(t *testing.T) {
+		stats := &CustomerStats{
+			CustomerID:  "cust-001",
+			OrderCount:  42,
+			TotalSpent:  1234.56,
+			LastOrderAt: now,
+			IsVIP:       true,
+			Tags:        []byte(`{"tags":["premium","loyal"]}`),
+		}
+
+		err := repo.Insert(ctx, stats)
+		require.NoError(t, err)
+
+		retrieved, err := repo.Get(ctx, "cust-001")
+		require.NoError(t, err)
+		assert.Equal(t, int64(42), retrieved.OrderCount)
+		assert.InDelta(t, 1234.56, retrieved.TotalSpent, 0.01)
+		assert.True(t, retrieved.IsVIP)
+		assert.Equal(t, []byte(`{"tags":["premium","loyal"]}`), retrieved.Tags)
+	})
+
+	t.Run("update stats", func(t *testing.T) {
+		err := repo.Update(ctx, "cust-001", func(s *CustomerStats) {
+			s.OrderCount = 43
+			s.TotalSpent = 1334.56
+		})
+		require.NoError(t, err)
+
+		retrieved, err := repo.Get(ctx, "cust-001")
+		require.NoError(t, err)
+		assert.Equal(t, int64(43), retrieved.OrderCount)
+	})
+}
+
 func TestPostgresRepository_SimpleModel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
@@ -733,20 +856,54 @@ func TestToSnakeCase(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"OrderID", "order_i_d"},
-		{"CustomerID", "customer_i_d"},
-		{"orderID", "order_i_d"},
+		{"OrderID", "order_id"},
+		{"CustomerID", "customer_id"},
+		{"orderID", "order_id"},
 		{"Simple", "simple"},
 		{"CamelCase", "camel_case"},
-		{"HTTPServer", "h_t_t_p_server"},
-		{"ID", "i_d"},
+		{"HTTPServer", "http_server"},
+		{"ID", "id"},
 		{"id", "id"},
+		{"XMLParser", "xml_parser"},
+		{"getHTTPResponse", "get_http_response"},
+		{"", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			result := toSnakeCase(tt.input)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestValidateSQLLiteral(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		context string
+		wantErr bool
+	}{
+		{"valid string literal", "'test'", "default", false},
+		{"valid number", "0", "default", false},
+		{"valid type", "VARCHAR(100)", "type", false},
+		{"valid timestamp", "NOW()", "default", false},
+		{"semicolon injection", "'; DROP TABLE users;--", "default", true},
+		{"comment injection", "1/**/OR/**/1=1", "default", true},
+		{"double dash comment", "1--comment", "default", true},
+		{"drop keyword", "DROP TABLE users", "type", true},
+		{"alter keyword", "ALTER TABLE users", "type", true},
+		{"backslash", "test\\x00", "default", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSQLLiteral(tt.value, tt.context)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
