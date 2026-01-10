@@ -405,6 +405,201 @@ func TestEventStore_LoadAggregate(t *testing.T) {
 	})
 }
 
+// SimpleOrder is a test aggregate that does NOT call IncrementVersion in ApplyEvent.
+// This tests that LoadAggregate properly sets the version automatically.
+type SimpleOrder struct {
+	AggregateBase
+	CustomerID string
+	Status     string
+}
+
+func NewSimpleOrder(id string) *SimpleOrder {
+	return &SimpleOrder{
+		AggregateBase: NewAggregateBase(id, "SimpleOrder"),
+	}
+}
+
+func (o *SimpleOrder) Create(customerID string) {
+	o.Apply(StoreOrderCreated{OrderID: o.AggregateID(), CustomerID: customerID})
+	o.CustomerID = customerID
+	o.Status = "Created"
+}
+
+func (o *SimpleOrder) Ship() {
+	o.Apply(StoreOrderShipped{OrderID: o.AggregateID()})
+	o.Status = "Shipped"
+}
+
+// ApplyEvent does NOT call IncrementVersion - version is managed by EventStore
+func (o *SimpleOrder) ApplyEvent(event interface{}) error {
+	switch e := event.(type) {
+	case StoreOrderCreated:
+		o.CustomerID = e.CustomerID
+		o.Status = "Created"
+	case StoreOrderShipped:
+		o.Status = "Shipped"
+	}
+	// NOTE: No IncrementVersion() here - EventStore should handle version
+	return nil
+}
+
+func TestEventStore_VersionManagement(t *testing.T) {
+	t.Run("LoadAggregate sets version automatically", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		store.RegisterEvents(StoreOrderCreated{}, StoreOrderShipped{})
+
+		// Create and save initial aggregate
+		original := NewSimpleOrder("123")
+		original.Create("customer-456")
+		original.Ship()
+		err := store.SaveAggregate(context.Background(), original)
+		require.NoError(t, err)
+
+		// Load into a NEW instance (version should start at 0)
+		loaded := NewSimpleOrder("123")
+		require.Equal(t, int64(0), loaded.Version(), "New aggregate should have version 0")
+
+		err = store.LoadAggregate(context.Background(), loaded)
+		require.NoError(t, err)
+
+		// Version should be set to 2 (number of events)
+		assert.Equal(t, int64(2), loaded.Version(), "LoadAggregate should set version to number of events")
+		assert.Equal(t, "customer-456", loaded.CustomerID)
+		assert.Equal(t, "Shipped", loaded.Status)
+	})
+
+	t.Run("SaveAggregate updates version after save", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		store.RegisterEvents(StoreOrderCreated{}, StoreOrderShipped{})
+
+		order := NewSimpleOrder("123")
+		require.Equal(t, int64(0), order.Version())
+
+		order.Create("customer-456")
+		err := store.SaveAggregate(context.Background(), order)
+		require.NoError(t, err)
+
+		// Version should be updated to 1 after saving one event
+		assert.Equal(t, int64(1), order.Version(), "SaveAggregate should update version")
+
+		// Save another event
+		order.Ship()
+		err = store.SaveAggregate(context.Background(), order)
+		require.NoError(t, err)
+
+		// Version should now be 2
+		assert.Equal(t, int64(2), order.Version(), "SaveAggregate should update version correctly")
+	})
+
+	t.Run("full load-modify-save cycle works without manual version management", func(t *testing.T) {
+		// This is the bug that was reported - the exact scenario that failed before
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		store.RegisterEvents(StoreOrderCreated{}, StoreOrderShipped{})
+
+		// Step 1: Create and save initial aggregate
+		original := NewSimpleOrder("order-001")
+		original.Create("customer-001")
+		err := store.SaveAggregate(context.Background(), original)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), original.Version())
+
+		// Step 2: Load aggregate into new instance
+		loaded := NewSimpleOrder("order-001")
+		err = store.LoadAggregate(context.Background(), loaded)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), loaded.Version(), "Version should be 1 after loading 1 event")
+
+		// Step 3: Modify and save - THIS USED TO FAIL with concurrency conflict
+		loaded.Ship()
+		err = store.SaveAggregate(context.Background(), loaded)
+		require.NoError(t, err, "SaveAggregate should not fail with concurrency conflict")
+		assert.Equal(t, int64(2), loaded.Version())
+
+		// Verify final state
+		finalLoaded := NewSimpleOrder("order-001")
+		err = store.LoadAggregate(context.Background(), finalLoaded)
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), finalLoaded.Version())
+		assert.Equal(t, "Shipped", finalLoaded.Status)
+	})
+
+	t.Run("multiple load-modify-save cycles work correctly", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		store.RegisterEvents(StoreOrderCreated{}, StoreItemAdded{})
+
+		// Create order
+		order := NewStoreTestOrder("multi-cycle")
+		order.Create("customer-001")
+		err := store.SaveAggregate(context.Background(), order)
+		require.NoError(t, err)
+
+		// Simulate multiple users/sessions modifying the same aggregate
+		for i := 1; i <= 3; i++ {
+			// Load fresh
+			freshOrder := NewStoreTestOrder("multi-cycle")
+			err := store.LoadAggregate(context.Background(), freshOrder)
+			require.NoError(t, err)
+			expectedVersion := int64(i) // 1, 2, 3
+			assert.Equal(t, expectedVersion, freshOrder.Version(), "Iteration %d: version should be %d", i, expectedVersion)
+
+			// Add item
+			freshOrder.AddItem("SKU-"+string(rune('0'+i)), 1, float64(i)*10)
+
+			// Save
+			err = store.SaveAggregate(context.Background(), freshOrder)
+			require.NoError(t, err, "Iteration %d: SaveAggregate should succeed", i)
+			assert.Equal(t, expectedVersion+1, freshOrder.Version(), "Iteration %d: version should be %d after save", i, expectedVersion+1)
+		}
+
+		// Verify final state
+		final := NewStoreTestOrder("multi-cycle")
+		err = store.LoadAggregate(context.Background(), final)
+		require.NoError(t, err)
+		assert.Equal(t, int64(4), final.Version()) // 1 created + 3 items
+		assert.Len(t, final.Items, 3)
+	})
+
+	t.Run("concurrent modification detection still works", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+		store := New(adapter)
+		store.RegisterEvents(StoreOrderCreated{}, StoreOrderShipped{})
+
+		// Create initial aggregate
+		original := NewSimpleOrder("concurrent-test")
+		original.Create("customer-001")
+		err := store.SaveAggregate(context.Background(), original)
+		require.NoError(t, err)
+
+		// Load into two separate instances (simulating concurrent access)
+		user1 := NewSimpleOrder("concurrent-test")
+		err = store.LoadAggregate(context.Background(), user1)
+		require.NoError(t, err)
+
+		user2 := NewSimpleOrder("concurrent-test")
+		err = store.LoadAggregate(context.Background(), user2)
+		require.NoError(t, err)
+
+		// Both have version 1
+		assert.Equal(t, int64(1), user1.Version())
+		assert.Equal(t, int64(1), user2.Version())
+
+		// User1 saves first
+		user1.Ship()
+		err = store.SaveAggregate(context.Background(), user1)
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), user1.Version())
+
+		// User2 tries to save - should get concurrency conflict
+		user2.Ship()
+		err = store.SaveAggregate(context.Background(), user2)
+		assert.True(t, errors.Is(err, ErrConcurrencyConflict), "Should detect concurrent modification")
+	})
+}
+
 func TestEventStore_GetStreamInfo(t *testing.T) {
 	t.Run("get stream info", func(t *testing.T) {
 		adapter := memory.NewAdapter()

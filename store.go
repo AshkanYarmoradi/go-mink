@@ -190,6 +190,10 @@ func (s *EventStore) LoadRaw(ctx context.Context, streamID string, fromVersion i
 
 // SaveAggregate persists uncommitted events from an aggregate.
 // The aggregate's version is used for optimistic concurrency control.
+//
+// After a successful save, if the aggregate implements VersionSetter,
+// the version will be updated to reflect the new stream version.
+// This allows for subsequent modifications without reloading.
 func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 	if agg == nil {
 		return ErrNilAggregate
@@ -225,6 +229,12 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 		return err
 	}
 
+	// Update aggregate version after successful save if it implements VersionSetter.
+	// New version = old version + number of events saved.
+	if setter, ok := agg.(VersionSetter); ok {
+		setter.SetVersion(expectedVersion + int64(len(events)))
+	}
+
 	// Clear uncommitted events after successful save
 	agg.ClearUncommittedEvents()
 
@@ -233,6 +243,13 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 
 // LoadAggregate loads an aggregate's state by replaying its events.
 // The aggregate should be a new instance with its ID and type already set.
+//
+// If the aggregate implements VersionSetter, the version will be set to the
+// number of events loaded. This is required for proper optimistic concurrency
+// control when saving the aggregate later.
+//
+// Note: AggregateBase implements VersionSetter, so aggregates embedding
+// AggregateBase will automatically have their version set correctly.
 func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 	if agg == nil {
 		return ErrNilAggregate
@@ -257,6 +274,12 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		if err := agg.ApplyEvent(data); err != nil {
 			return fmt.Errorf("mink: failed to apply event %d: %w", i, err)
 		}
+	}
+
+	// Set the aggregate version if it implements VersionSetter.
+	// This is crucial for optimistic concurrency control in SaveAggregate.
+	if setter, ok := agg.(VersionSetter); ok {
+		setter.SetVersion(int64(len(storedEvents)))
 	}
 
 	return nil

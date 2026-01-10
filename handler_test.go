@@ -532,16 +532,8 @@ func TestAggregateHandler(t *testing.T) {
 		store := New(adapter)
 		store.RegisterEvents(testOrderCreated{}, testItemAdded{})
 
-		// The AggregateHandler has a limitation: LoadAggregate doesn't update the aggregate's
-		// version, so when saving again, there's a concurrency conflict.
-		// This test verifies the basic flow works for the first save (new aggregate)
-		// and documents this limitation.
-
-		// For proper version handling, the aggregate needs to track its version
-		// during ApplyEvent, or SaveAggregate needs to return the new version.
-		// This is a known area for improvement.
-
-		handler := NewAggregateHandler(AggregateHandlerConfig[testAggregateCreateCommand, *testOrder]{
+		// First, create an aggregate
+		createHandler := NewAggregateHandler(AggregateHandlerConfig[testAggregateCreateCommand, *testOrder]{
 			Store:   store,
 			Factory: newTestOrder,
 			Executor: func(ctx context.Context, agg *testOrder, cmd testAggregateCreateCommand) error {
@@ -552,10 +544,30 @@ func TestAggregateHandler(t *testing.T) {
 			NewIDFunc: func() string { return "order-test" },
 		})
 
-		result, err := handler.Handle(context.Background(), testAggregateCreateCommand{CustomerID: "cust-1"})
+		result, err := createHandler.Handle(context.Background(), testAggregateCreateCommand{CustomerID: "cust-1"})
 		require.NoError(t, err)
 		assert.True(t, result.IsSuccess())
 		assert.Equal(t, "order-test", result.AggregateID)
+		assert.Equal(t, int64(1), result.Version) // Version is 1 after saving one event
+
+		// Now modify the existing aggregate - this previously failed with concurrency conflict
+		// but now works because LoadAggregate sets the version correctly
+		addItemHandler := NewAggregateHandler(AggregateHandlerConfig[testAggregateAddItemCommand, *testOrder]{
+			Store:   store,
+			Factory: newTestOrder,
+			Executor: func(ctx context.Context, agg *testOrder, cmd testAggregateAddItemCommand) error {
+				agg.Apply(testItemAdded{OrderID: agg.AggregateID(), SKU: cmd.SKU})
+				return nil
+			},
+		})
+
+		result, err = addItemHandler.Handle(context.Background(), testAggregateAddItemCommand{
+			OrderID: "order-test",
+			SKU:     "SKU-001",
+		})
+		require.NoError(t, err, "Load-modify-save should work without concurrency conflict")
+		assert.True(t, result.IsSuccess())
+		assert.Equal(t, int64(2), result.Version) // Version is 2 after saving second event
 	})
 
 	t.Run("fails on LoadAggregate error", func(t *testing.T) {
