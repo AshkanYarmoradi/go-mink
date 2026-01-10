@@ -84,7 +84,7 @@ func TestNewPostgresRepository(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, repo)
 		assert.Equal(t, schema, repo.Schema())
-		defer repo.DropTable(context.Background())
+		defer func() { _ = repo.DropTable(context.Background()) }()
 	})
 
 	t.Run("creates table automatically", func(t *testing.T) {
@@ -93,7 +93,7 @@ func TestNewPostgresRepository(t *testing.T) {
 			WithTableName("products"),
 		)
 		require.NoError(t, err)
-		defer repo.DropTable(context.Background())
+		defer func() { _ = repo.DropTable(context.Background()) }()
 
 		// Verify table exists
 		var exists bool
@@ -112,7 +112,7 @@ func TestNewPostgresRepository(t *testing.T) {
 			WithReadModelSchema(schema),
 		)
 		require.NoError(t, err)
-		defer repo.DropTable(context.Background())
+		defer func() { _ = repo.DropTable(context.Background()) }()
 
 		assert.Contains(t, repo.TableName(), "customer_stats")
 	})
@@ -148,7 +148,7 @@ func TestPostgresRepository_CRUD(t *testing.T) {
 		WithTableName("order_crud_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)
@@ -291,7 +291,7 @@ func TestPostgresRepository_GetMany(t *testing.T) {
 		WithTableName("order_getmany_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -344,7 +344,7 @@ func TestPostgresRepository_Query(t *testing.T) {
 		WithTableName("order_query_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -475,7 +475,7 @@ func TestPostgresRepository_DeleteMany(t *testing.T) {
 		WithTableName("order_deletemany_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -522,7 +522,7 @@ func TestPostgresRepository_Clear(t *testing.T) {
 		WithTableName("order_clear_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -564,7 +564,7 @@ func TestPostgresRepository_Transaction(t *testing.T) {
 		WithTableName("order_tx_test"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 	now := time.Now()
@@ -670,7 +670,7 @@ func TestPostgresRepository_Migration(t *testing.T) {
 			WithTableName("migration_test"),
 		)
 		require.NoError(t, err)
-		defer repo.DropTable(context.Background())
+		defer func() { _ = repo.DropTable(context.Background()) }()
 
 		// Insert with all columns
 		ctx := context.Background()
@@ -709,7 +709,7 @@ func TestPostgresRepository_SimpleModel(t *testing.T) {
 		WithTableName("simple_models"),
 	)
 	require.NoError(t, err)
-	defer repo.DropTable(context.Background())
+	defer func() { _ = repo.DropTable(context.Background()) }()
 
 	ctx := context.Background()
 

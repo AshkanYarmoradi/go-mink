@@ -11,6 +11,14 @@ import (
 	mink "github.com/AshkanYarmoradi/go-mink"
 )
 
+// dbExecutor abstracts database operations for both *sql.DB and *sql.Tx.
+// This interface enables code reuse between PostgresRepository and TxRepository.
+type dbExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
 // ColumnType represents SQL column type information.
 type ColumnType struct {
 	Name       string
@@ -418,31 +426,7 @@ func (r *PostgresRepository[T]) migrateColumns(ctx context.Context, pkColumn str
 
 // Get retrieves a read model by ID.
 func (r *PostgresRepository[T]) Get(ctx context.Context, id string) (*T, error) {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	selectCols := make([]string, len(r.columns))
-	for i, col := range r.columns {
-		selectCols[i] = quoteIdentifier(col)
-	}
-
-	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s = $1`,
-		strings.Join(selectCols, ", "),
-		tableQ,
-		quoteIdentifier(pkCol),
-	)
-
-	row := r.db.QueryRowContext(ctx, query, id)
-
-	model, err := r.scanRow(row)
-	if err == sql.ErrNoRows {
-		return nil, mink.ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("mink/postgres/readmodel: get failed: %w", err)
-	}
-
-	return model, nil
+	return r.getWithExecutor(ctx, r.db, id)
 }
 
 // GetMany retrieves multiple read models by their IDs.
@@ -528,141 +512,22 @@ func (r *PostgresRepository[T]) Count(ctx context.Context, query mink.Query) (in
 
 // Insert creates a new read model.
 func (r *PostgresRepository[T]) Insert(ctx context.Context, model *T) error {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-
-	cols := make([]string, len(r.columns))
-	placeholders := make([]string, len(r.columns))
-	values := r.extractValues(model)
-
-	for i, col := range r.columns {
-		cols[i] = quoteIdentifier(col)
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-
-	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`,
-		tableQ,
-		strings.Join(cols, ", "),
-		strings.Join(placeholders, ", "),
-	)
-
-	_, err := r.db.ExecContext(ctx, query, values...)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") ||
-			strings.Contains(err.Error(), "unique constraint") {
-			return mink.ErrAlreadyExists
-		}
-		return fmt.Errorf("mink/postgres/readmodel: insert failed: %w", err)
-	}
-
-	return nil
+	return r.insertWithExecutor(ctx, r.db, model)
 }
 
 // Update modifies an existing read model.
 func (r *PostgresRepository[T]) Update(ctx context.Context, id string, updateFn func(*T)) error {
-	// Get current model
-	model, err := r.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-
-	// Apply update function
-	updateFn(model)
-
-	// Build UPDATE statement
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	setClauses := make([]string, 0, len(r.columns)-1)
-	values := r.extractValues(model)
-	args := make([]interface{}, 0, len(r.columns))
-
-	paramIdx := 1
-	for i, col := range r.columns {
-		if i == r.idIndex {
-			continue // skip PK in SET clause
-		}
-		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", quoteIdentifier(col), paramIdx))
-		args = append(args, values[i])
-		paramIdx++
-	}
-	args = append(args, id) // for WHERE clause
-
-	query := fmt.Sprintf(`UPDATE %s SET %s WHERE %s = $%d`,
-		tableQ,
-		strings.Join(setClauses, ", "),
-		quoteIdentifier(pkCol),
-		paramIdx,
-	)
-
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("mink/postgres/readmodel: update failed: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return mink.ErrNotFound
-	}
-
-	return nil
+	return r.updateWithExecutor(ctx, r.db, id, updateFn)
 }
 
 // Upsert creates or updates a read model.
 func (r *PostgresRepository[T]) Upsert(ctx context.Context, model *T) error {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	cols := make([]string, len(r.columns))
-	placeholders := make([]string, len(r.columns))
-	updateClauses := make([]string, 0, len(r.columns)-1)
-	values := r.extractValues(model)
-
-	for i, col := range r.columns {
-		cols[i] = quoteIdentifier(col)
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		if i != r.idIndex {
-			updateClauses = append(updateClauses,
-				fmt.Sprintf("%s = EXCLUDED.%s", quoteIdentifier(col), quoteIdentifier(col)))
-		}
-	}
-
-	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s`,
-		tableQ,
-		strings.Join(cols, ", "),
-		strings.Join(placeholders, ", "),
-		quoteIdentifier(pkCol),
-		strings.Join(updateClauses, ", "),
-	)
-
-	_, err := r.db.ExecContext(ctx, query, values...)
-	if err != nil {
-		return fmt.Errorf("mink/postgres/readmodel: upsert failed: %w", err)
-	}
-
-	return nil
+	return r.upsertWithExecutor(ctx, r.db, model)
 }
 
 // Delete removes a read model by ID.
 func (r *PostgresRepository[T]) Delete(ctx context.Context, id string) error {
-	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
-	pkCol := r.columns[r.idIndex]
-
-	query := fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`,
-		tableQ,
-		quoteIdentifier(pkCol),
-	)
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("mink/postgres/readmodel: delete failed: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return mink.ErrNotFound
-	}
-
-	return nil
+	return r.deleteWithExecutor(ctx, r.db, id)
 }
 
 // DeleteMany removes all read models matching the query.
@@ -912,18 +777,6 @@ func (r *PostgresRepository[T]) fieldToColumn(fieldName string) string {
 	return ""
 }
 
-// scanRow scans a single row into a model.
-func (r *PostgresRepository[T]) scanRow(row *sql.Row) (*T, error) {
-	model := new(T)
-	ptrs := r.getScanPointers(model)
-
-	if err := row.Scan(ptrs...); err != nil {
-		return nil, err
-	}
-
-	return model, nil
-}
-
 // scanRows scans multiple rows into models.
 func (r *PostgresRepository[T]) scanRows(rows *sql.Rows) ([]*T, error) {
 	var results []*T
@@ -1105,6 +958,177 @@ func defaultForType(sqlType string) string {
 	}
 }
 
+// Internal helper methods for database operations.
+// These methods accept a dbExecutor interface to support both *sql.DB and *sql.Tx.
+
+// getWithExecutor retrieves a read model by ID using the provided executor.
+func (r *PostgresRepository[T]) getWithExecutor(ctx context.Context, exec dbExecutor, id string) (*T, error) {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	selectCols := make([]string, len(r.columns))
+	for i, col := range r.columns {
+		selectCols[i] = quoteIdentifier(col)
+	}
+
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s = $1`,
+		strings.Join(selectCols, ", "),
+		tableQ,
+		quoteIdentifier(pkCol),
+	)
+
+	row := exec.QueryRowContext(ctx, query, id)
+	model := new(T)
+	ptrs := r.getScanPointers(model)
+
+	if err := row.Scan(ptrs...); err == sql.ErrNoRows {
+		return nil, mink.ErrNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("mink/postgres/readmodel: get failed: %w", err)
+	}
+
+	return model, nil
+}
+
+// insertWithExecutor creates a new read model using the provided executor.
+func (r *PostgresRepository[T]) insertWithExecutor(ctx context.Context, exec dbExecutor, model *T) error {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+
+	cols := make([]string, len(r.columns))
+	placeholders := make([]string, len(r.columns))
+	values := r.extractValues(model)
+
+	for i, col := range r.columns {
+		cols[i] = quoteIdentifier(col)
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+
+	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`,
+		tableQ,
+		strings.Join(cols, ", "),
+		strings.Join(placeholders, ", "),
+	)
+
+	_, err := exec.ExecContext(ctx, query, values...)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") ||
+			strings.Contains(err.Error(), "unique constraint") {
+			return mink.ErrAlreadyExists
+		}
+		return fmt.Errorf("mink/postgres/readmodel: insert failed: %w", err)
+	}
+
+	return nil
+}
+
+// updateWithExecutor modifies an existing read model using the provided executor.
+func (r *PostgresRepository[T]) updateWithExecutor(ctx context.Context, exec dbExecutor, id string, updateFn func(*T)) error {
+	// Get current model
+	model, err := r.getWithExecutor(ctx, exec, id)
+	if err != nil {
+		return err
+	}
+
+	// Apply update function
+	updateFn(model)
+
+	// Build UPDATE statement
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	setClauses := make([]string, 0, len(r.columns)-1)
+	values := r.extractValues(model)
+	args := make([]interface{}, 0, len(r.columns))
+
+	paramIdx := 1
+	for i, col := range r.columns {
+		if i == r.idIndex {
+			continue // skip PK in SET clause
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", quoteIdentifier(col), paramIdx))
+		args = append(args, values[i])
+		paramIdx++
+	}
+	args = append(args, id) // for WHERE clause
+
+	query := fmt.Sprintf(`UPDATE %s SET %s WHERE %s = $%d`,
+		tableQ,
+		strings.Join(setClauses, ", "),
+		quoteIdentifier(pkCol),
+		paramIdx,
+	)
+
+	result, err := exec.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("mink/postgres/readmodel: update failed: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return mink.ErrNotFound
+	}
+
+	return nil
+}
+
+// upsertWithExecutor creates or updates a read model using the provided executor.
+func (r *PostgresRepository[T]) upsertWithExecutor(ctx context.Context, exec dbExecutor, model *T) error {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	cols := make([]string, len(r.columns))
+	placeholders := make([]string, len(r.columns))
+	updateClauses := make([]string, 0, len(r.columns)-1)
+	values := r.extractValues(model)
+
+	for i, col := range r.columns {
+		cols[i] = quoteIdentifier(col)
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		if i != r.idIndex {
+			updateClauses = append(updateClauses,
+				fmt.Sprintf("%s = EXCLUDED.%s", quoteIdentifier(col), quoteIdentifier(col)))
+		}
+	}
+
+	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s`,
+		tableQ,
+		strings.Join(cols, ", "),
+		strings.Join(placeholders, ", "),
+		quoteIdentifier(pkCol),
+		strings.Join(updateClauses, ", "),
+	)
+
+	_, err := exec.ExecContext(ctx, query, values...)
+	if err != nil {
+		return fmt.Errorf("mink/postgres/readmodel: upsert failed: %w", err)
+	}
+
+	return nil
+}
+
+// deleteWithExecutor removes a read model by ID using the provided executor.
+func (r *PostgresRepository[T]) deleteWithExecutor(ctx context.Context, exec dbExecutor, id string) error {
+	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
+	pkCol := r.columns[r.idIndex]
+
+	query := fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`,
+		tableQ,
+		quoteIdentifier(pkCol),
+	)
+
+	result, err := exec.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("mink/postgres/readmodel: delete failed: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return mink.ErrNotFound
+	}
+
+	return nil
+}
+
 // Transaction support
 
 // WithTx creates a new repository instance that uses the provided transaction.
@@ -1123,153 +1147,27 @@ type TxRepository[T any] struct {
 
 // Get retrieves a read model by ID within a transaction.
 func (tr *TxRepository[T]) Get(ctx context.Context, id string) (*T, error) {
-	tableQ := quoteQualifiedTable(tr.repo.config.schema, tr.repo.config.tableName)
-	pkCol := tr.repo.columns[tr.repo.idIndex]
-
-	selectCols := make([]string, len(tr.repo.columns))
-	for i, col := range tr.repo.columns {
-		selectCols[i] = quoteIdentifier(col)
-	}
-
-	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s = $1`,
-		strings.Join(selectCols, ", "),
-		tableQ,
-		quoteIdentifier(pkCol),
-	)
-
-	row := tr.tx.QueryRowContext(ctx, query, id)
-	model := new(T)
-	ptrs := tr.repo.getScanPointers(model)
-
-	if err := row.Scan(ptrs...); err == sql.ErrNoRows {
-		return nil, mink.ErrNotFound
-	} else if err != nil {
-		return nil, err
-	}
-
-	return model, nil
+	return tr.repo.getWithExecutor(ctx, tr.tx, id)
 }
 
 // Insert creates a new read model within a transaction.
 func (tr *TxRepository[T]) Insert(ctx context.Context, model *T) error {
-	tableQ := quoteQualifiedTable(tr.repo.config.schema, tr.repo.config.tableName)
-
-	cols := make([]string, len(tr.repo.columns))
-	placeholders := make([]string, len(tr.repo.columns))
-	values := tr.repo.extractValues(model)
-
-	for i, col := range tr.repo.columns {
-		cols[i] = quoteIdentifier(col)
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-
-	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`,
-		tableQ,
-		strings.Join(cols, ", "),
-		strings.Join(placeholders, ", "),
-	)
-
-	_, err := tr.tx.ExecContext(ctx, query, values...)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return mink.ErrAlreadyExists
-		}
-		return err
-	}
-
-	return nil
+	return tr.repo.insertWithExecutor(ctx, tr.tx, model)
 }
 
 // Update modifies an existing read model within a transaction.
 func (tr *TxRepository[T]) Update(ctx context.Context, id string, updateFn func(*T)) error {
-	model, err := tr.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-
-	updateFn(model)
-
-	tableQ := quoteQualifiedTable(tr.repo.config.schema, tr.repo.config.tableName)
-	pkCol := tr.repo.columns[tr.repo.idIndex]
-
-	setClauses := make([]string, 0, len(tr.repo.columns)-1)
-	values := tr.repo.extractValues(model)
-	args := make([]interface{}, 0, len(tr.repo.columns))
-
-	paramIdx := 1
-	for i, col := range tr.repo.columns {
-		if i == tr.repo.idIndex {
-			continue
-		}
-		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", quoteIdentifier(col), paramIdx))
-		args = append(args, values[i])
-		paramIdx++
-	}
-	args = append(args, id)
-
-	query := fmt.Sprintf(`UPDATE %s SET %s WHERE %s = $%d`,
-		tableQ,
-		strings.Join(setClauses, ", "),
-		quoteIdentifier(pkCol),
-		paramIdx,
-	)
-
-	_, err = tr.tx.ExecContext(ctx, query, args...)
-	return err
+	return tr.repo.updateWithExecutor(ctx, tr.tx, id, updateFn)
 }
 
 // Upsert creates or updates a read model within a transaction.
 func (tr *TxRepository[T]) Upsert(ctx context.Context, model *T) error {
-	tableQ := quoteQualifiedTable(tr.repo.config.schema, tr.repo.config.tableName)
-	pkCol := tr.repo.columns[tr.repo.idIndex]
-
-	cols := make([]string, len(tr.repo.columns))
-	placeholders := make([]string, len(tr.repo.columns))
-	updateClauses := make([]string, 0, len(tr.repo.columns)-1)
-	values := tr.repo.extractValues(model)
-
-	for i, col := range tr.repo.columns {
-		cols[i] = quoteIdentifier(col)
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		if i != tr.repo.idIndex {
-			updateClauses = append(updateClauses,
-				fmt.Sprintf("%s = EXCLUDED.%s", quoteIdentifier(col), quoteIdentifier(col)))
-		}
-	}
-
-	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s`,
-		tableQ,
-		strings.Join(cols, ", "),
-		strings.Join(placeholders, ", "),
-		quoteIdentifier(pkCol),
-		strings.Join(updateClauses, ", "),
-	)
-
-	_, err := tr.tx.ExecContext(ctx, query, values...)
-	return err
+	return tr.repo.upsertWithExecutor(ctx, tr.tx, model)
 }
 
 // Delete removes a read model within a transaction.
 func (tr *TxRepository[T]) Delete(ctx context.Context, id string) error {
-	tableQ := quoteQualifiedTable(tr.repo.config.schema, tr.repo.config.tableName)
-	pkCol := tr.repo.columns[tr.repo.idIndex]
-
-	query := fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`,
-		tableQ,
-		quoteIdentifier(pkCol),
-	)
-
-	result, err := tr.tx.ExecContext(ctx, query, id)
-	if err != nil {
-		return err
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return mink.ErrNotFound
-	}
-
-	return nil
+	return tr.repo.deleteWithExecutor(ctx, tr.tx, id)
 }
 
 // Ensure interface compliance
