@@ -1058,6 +1058,123 @@ func TestGoTypeToSQL(t *testing.T) {
 	}
 }
 
+func TestDefaultForType(t *testing.T) {
+	tests := []struct {
+		sqlType  string
+		expected string
+	}{
+		{"TEXT", "''"},
+		{"VARCHAR", "''"},
+		{"INTEGER", "0"},
+		{"BIGINT", "0"},
+		{"SMALLINT", "0"},
+		{"REAL", "0"},
+		{"DOUBLE PRECISION", "0"},
+		{"BOOLEAN", "false"},
+		{"TIMESTAMPTZ", "NOW()"},
+		{"TIMESTAMP", "NOW()"},
+		{"JSONB", "'{}'"},
+		{"JSON", "'{}'"},
+		{"BYTEA", "'\\x'::bytea"},
+		{"UNKNOWN_TYPE", "''"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sqlType, func(t *testing.T) {
+			result := defaultForType(tt.sqlType)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestContainsWord(t *testing.T) {
+	tests := []struct {
+		name     string
+		s        string
+		word     string
+		expected bool
+	}{
+		{"word at start", "drop table", "drop", true},
+		{"word at end", "please drop", "drop", true},
+		{"word in middle", "please drop now", "drop", true},
+		{"word alone", "drop", "drop", true},
+		{"word as substring", "dropbox", "drop", false},
+		{"word as suffix", "backdrop", "drop", false},
+		{"word with underscore before", "update_at", "update", false},
+		{"word with underscore after", "update_field", "update", false},
+		{"word not present", "hello world", "drop", false},
+		{"empty string", "", "drop", false},
+		{"word with special char boundary", "drop;table", "drop", true},
+		{"word with space boundary", "drop table", "drop", true},
+		{"word found after non-boundary", "undrop drop", "drop", true},
+		{"multiple non-boundary occurrences then boundary", "dropdrop drop", "drop", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := containsWord(tt.s, tt.word)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestToInterfaceSlice(t *testing.T) {
+	t.Run("interface slice", func(t *testing.T) {
+		input := []interface{}{"a", "b", "c"}
+		result := toInterfaceSlice(input)
+		assert.Equal(t, input, result)
+	})
+
+	t.Run("string slice", func(t *testing.T) {
+		input := []string{"a", "b", "c"}
+		result := toInterfaceSlice(input)
+		assert.Len(t, result, 3)
+		assert.Equal(t, "a", result[0])
+		assert.Equal(t, "b", result[1])
+		assert.Equal(t, "c", result[2])
+	})
+
+	t.Run("int slice", func(t *testing.T) {
+		input := []int{1, 2, 3}
+		result := toInterfaceSlice(input)
+		assert.Len(t, result, 3)
+		assert.Equal(t, 1, result[0])
+		assert.Equal(t, 2, result[1])
+		assert.Equal(t, 3, result[2])
+	})
+
+	t.Run("int64 slice", func(t *testing.T) {
+		input := []int64{100, 200, 300}
+		result := toInterfaceSlice(input)
+		assert.Len(t, result, 3)
+		assert.Equal(t, int64(100), result[0])
+	})
+
+	t.Run("float64 slice", func(t *testing.T) {
+		input := []float64{1.1, 2.2, 3.3}
+		result := toInterfaceSlice(input)
+		assert.Len(t, result, 3)
+		assert.Equal(t, 1.1, result[0])
+	})
+
+	t.Run("other slice type via reflection", func(t *testing.T) {
+		input := []uint{1, 2, 3}
+		result := toInterfaceSlice(input)
+		assert.Len(t, result, 3)
+		assert.Equal(t, uint(1), result[0])
+	})
+
+	t.Run("non-slice returns nil", func(t *testing.T) {
+		result := toInterfaceSlice("not a slice")
+		assert.Nil(t, result)
+	})
+
+	t.Run("nil returns nil", func(t *testing.T) {
+		result := toInterfaceSlice(nil)
+		assert.Nil(t, result)
+	})
+}
+
 // Benchmark tests
 
 // setupBenchmarkRepo creates a repository for benchmark tests.
