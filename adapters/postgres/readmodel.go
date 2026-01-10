@@ -3,7 +3,9 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"strings"
@@ -342,18 +344,22 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
-	// Create indexes
+	// Handle schema evolution - add missing columns BEFORE creating indexes
+	// This ensures all indexed columns exist
+	err = r.migrateColumns(ctx, pkColumn)
+	if err != nil {
+		return fmt.Errorf("failed to migrate columns: %w", err)
+	}
+
+	// Create indexes (after all columns exist)
 	for _, idx := range r.tableSchema.Indexes {
 		if err := validateIdentifier(idx.Name, "index"); err != nil {
 			return err
 		}
 
-		// Build full index name and validate length
+		// Build full index name with truncation if needed
 		// PostgreSQL has a 63 character limit for identifiers
-		fullIdxName := r.config.schema + "_" + idx.Name
-		if len(fullIdxName) > 63 {
-			return fmt.Errorf("mink/postgres/readmodel: index name %q exceeds PostgreSQL's 63 character limit (%d chars)", fullIdxName, len(fullIdxName))
-		}
+		fullIdxName := safeIndexName(r.config.schema, idx.Name)
 
 		uniqueStr := ""
 		if idx.Unique {
@@ -365,8 +371,8 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 			quotedCols[i] = quoteIdentifier(c)
 		}
 
-		// Use schema-qualified index name
-		idxName := quoteIdentifier(r.config.schema + "_" + idx.Name)
+		// Use the safe index name
+		idxName := quoteIdentifier(fullIdxName)
 		indexSQL := fmt.Sprintf(`CREATE %sINDEX IF NOT EXISTS %s ON %s (%s)`,
 			uniqueStr,
 			idxName,
@@ -378,12 +384,6 @@ func (r *PostgresRepository[T]) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create index %s: %w", idx.Name, err)
 		}
-	}
-
-	// Handle schema evolution - add missing columns
-	err = r.migrateColumns(ctx, pkColumn)
-	if err != nil {
-		return fmt.Errorf("failed to migrate columns: %w", err)
 	}
 
 	return nil
@@ -874,6 +874,33 @@ func toSnakeCase(s string) string {
 		result.WriteRune(r)
 	}
 	return strings.ToLower(result.String())
+}
+
+// safeIndexName creates a PostgreSQL-safe index name that respects the 63-character limit.
+// If the combined schema_indexName exceeds 63 chars, it truncates and adds a hash suffix.
+func safeIndexName(schema, indexName string) string {
+	const maxLen = 63
+	const hashLen = 8 // short hash suffix for uniqueness
+
+	fullName := schema + "_" + indexName
+	if len(fullName) <= maxLen {
+		return fullName
+	}
+
+	// Generate a short hash of the full name for uniqueness
+	hash := sha256.Sum256([]byte(fullName))
+	hashSuffix := hex.EncodeToString(hash[:])[:hashLen]
+
+	// Truncate and append hash: leave room for "_" + hash
+	truncateLen := maxLen - hashLen - 1
+	truncated := fullName[:truncateLen]
+
+	// Avoid ending with underscore or partial word if possible
+	if lastUnderscore := strings.LastIndex(truncated, "_"); lastUnderscore > truncateLen-15 {
+		truncated = truncated[:lastUnderscore]
+	}
+
+	return truncated + "_" + hashSuffix
 }
 
 // goTypeToSQL maps Go types to PostgreSQL types.

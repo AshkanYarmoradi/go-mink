@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -888,6 +889,62 @@ func TestToSnakeCase(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestSafeIndexName(t *testing.T) {
+	tests := []struct {
+		name      string
+		schema    string
+		indexName string
+		wantLen   int // 0 means check exact match, >0 means check max length
+		wantExact string
+	}{
+		{
+			name:      "short name unchanged",
+			schema:    "public",
+			indexName: "idx_orders_customer_id",
+			wantExact: "public_idx_orders_customer_id",
+		},
+		{
+			name:      "exactly 63 chars unchanged",
+			schema:    "schema",
+			indexName: "idx_" + strings.Repeat("a", 52), // 6 + 1 + 4 + 52 = 63
+			wantLen:   63,
+		},
+		{
+			name:      "long name truncated with hash",
+			schema:    "test_readmodel_1768082982493819337",
+			indexName: "idx_order_crud_test_customer_id",
+			wantLen:   63,
+		},
+		{
+			name:      "very long schema",
+			schema:    strings.Repeat("a", 50),
+			indexName: "idx_table_column",
+			wantLen:   63,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := safeIndexName(tt.schema, tt.indexName)
+			if tt.wantExact != "" {
+				assert.Equal(t, tt.wantExact, result)
+			}
+			if tt.wantLen > 0 {
+				assert.LessOrEqual(t, len(result), tt.wantLen, "index name %q exceeds %d chars (%d)", result, tt.wantLen, len(result))
+			}
+			// All results should be <= 63 chars
+			assert.LessOrEqual(t, len(result), 63, "index name %q exceeds 63 chars", result)
+		})
+	}
+
+	// Test uniqueness: different long names should produce different results
+	t.Run("uniqueness", func(t *testing.T) {
+		name1 := safeIndexName("test_readmodel_1768082982493819337", "idx_order_crud_test_customer_id")
+		name2 := safeIndexName("test_readmodel_1768082982493819337", "idx_order_crud_test_order_id")
+		assert.NotEqual(t, name1, name2, "different index names should produce different results")
+	})
 }
 
 func TestValidateSQLLiteral(t *testing.T) {
