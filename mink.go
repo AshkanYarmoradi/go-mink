@@ -79,7 +79,8 @@
 //	    case ItemAdded:
 //	        o.Items = append(o.Items, OrderItem{SKU: e.SKU, Quantity: e.Quantity, Price: e.Price})
 //	    }
-//	    o.IncrementVersion()
+//	    // NOTE: Version is managed automatically by LoadAggregate and SaveAggregate.
+//	    // You do NOT need to call IncrementVersion() here.
 //	    return nil
 //	}
 //
@@ -99,6 +100,7 @@
 //	err := store.LoadAggregate(ctx, loaded)
 //	// loaded.Status == "Created"
 //	// loaded.Items contains the added item
+//	// loaded.Version() returns the number of events in the stream
 //
 // # Low-Level Event Operations
 //
