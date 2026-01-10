@@ -309,6 +309,118 @@ repo.Update(ctx, "order-1", func(s *OrderSummary) {
 repo.Delete(ctx, "order-1")
 ```
 
+### PostgreSQL Repository
+
+For production use, go-mink provides a PostgreSQL-backed repository with **automatic schema migration**:
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+
+// Define your read model with mink struct tags
+type OrderSummary struct {
+    OrderID     string    `mink:"order_id,pk"`        // Primary key
+    CustomerID  string    `mink:"customer_id,index"`  // Creates an index
+    Status      string    `mink:"status"`
+    ItemCount   int       `mink:"item_count"`
+    TotalAmount float64   `mink:"total_amount"`
+    CreatedAt   time.Time `mink:"created_at"`
+    UpdatedAt   time.Time `mink:"updated_at"`
+}
+
+// Create repository with auto-migration
+repo, err := postgres.NewPostgresRepository[OrderSummary](db,
+    postgres.WithReadModelSchema("projections"),
+    postgres.WithTableName("order_summaries"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use exactly like in-memory repository
+repo.Insert(ctx, &OrderSummary{
+    OrderID:    "order-1",
+    CustomerID: "cust-123",
+    Status:     "pending",
+})
+
+// Queries work with full SQL support
+query := mink.NewQuery().
+    Where("status", mink.FilterOpEq, "pending").
+    And("total_amount", mink.FilterOpGt, 100.0).
+    OrderByDesc("created_at").
+    WithLimit(10)
+
+orders, err := repo.Find(ctx, query.Build())
+```
+
+#### Supported Struct Tags
+
+| Tag | Description |
+|-----|-------------|
+| `mink:"column_name"` | Sets the column name (default: snake_case of field) |
+| `mink:"-"` | Skip this field |
+| `mink:"col,pk"` | Primary key |
+| `mink:"col,index"` | Create index on column |
+| `mink:"col,unique"` | Unique constraint (also creates index) |
+| `mink:"col,nullable"` | Allow NULL values |
+| `mink:"col,default=value"` | Default value |
+| `mink:"col,type=VARCHAR(100)"` | Override SQL type |
+
+#### Go Type to SQL Mapping
+
+| Go Type | PostgreSQL Type |
+|---------|-----------------|
+| `string` | `TEXT` |
+| `int`, `int32` | `INTEGER` |
+| `int64` | `BIGINT` |
+| `float32` | `REAL` |
+| `float64` | `DOUBLE PRECISION` |
+| `bool` | `BOOLEAN` |
+| `time.Time` | `TIMESTAMPTZ` |
+| `[]byte` | `BYTEA` |
+| `map`, `struct` | `JSONB` |
+
+#### Transaction Support
+
+Use transactions for consistent updates across multiple read models:
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+    return err
+}
+defer tx.Rollback()
+
+txRepo := repo.WithTx(tx)
+
+// All operations in same transaction
+txRepo.Insert(ctx, &OrderSummary{...})
+txRepo.Update(ctx, "order-2", func(o *OrderSummary) {
+    o.ItemCount++
+})
+
+return tx.Commit()
+```
+
+#### Schema Migration
+
+The repository automatically:
+- Creates the schema if it doesn't exist
+- Creates the table with proper column types
+- Adds indexes for `index` and `unique` tagged columns
+- Adds missing columns when your struct evolves (non-breaking schema changes)
+
+```go
+// Disable auto-migration if you manage schema externally
+repo, err := postgres.NewPostgresRepository[OrderSummary](db,
+    postgres.WithReadModelSchema("projections"),
+    postgres.WithAutoMigrate(false),
+)
+
+// Or run migration manually
+err = repo.Migrate(ctx)
+```
+
 ### Query Builder
 
 Fluent query construction:
