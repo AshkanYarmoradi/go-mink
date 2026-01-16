@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1420,6 +1421,236 @@ func TestSagaManager_ConcurrentEventProcessing(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, state)
 	}
+}
+
+// TestSagaManager_DuplicateEventDelivery tests that when the same event is
+// delivered multiple times (e.g., from pg_notify + polling), the saga is
+// processed exactly once. This tests the per-saga locking mechanism.
+func TestSagaManager_DuplicateEventDelivery(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore() // Use mock store for consistency with other tests
+	cmdBus := NewCommandBus()
+
+	// Track how many times HandleEvent is called across all goroutines
+	var handleCallCount int32
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	// Custom saga factory that tracks handle calls using atomic counter
+	trackingSagaFactory := func(id string) Saga {
+		s := &trackingTestSaga{
+			SagaBase:        NewSagaBase(id, "TrackingSaga"),
+			handleCallCount: &handleCallCount,
+		}
+		return s
+	}
+
+	manager.RegisterSimple("TrackingSaga", trackingSagaFactory, "OrderCreated")
+
+	ctx := context.Background()
+
+	// The same event delivered multiple times (simulating pg_notify + polling)
+	event := StoredEvent{
+		ID:             "event-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+
+	// Deliver the same event concurrently from multiple "sources"
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := manager.ProcessEvent(ctx, event)
+			assert.NoError(t, err)
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify saga was created exactly once
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	require.NoError(t, err)
+	assert.NotNil(t, state)
+
+	// Verify HandleEvent was called exactly once
+	finalCount := atomic.LoadInt32(&handleCallCount)
+	assert.Equal(t, int32(1), finalCount, "HandleEvent should be called exactly once despite multiple deliveries")
+
+	// Verify the event is recorded in _processedEvents
+	processedEvents, ok := state.Data["_processedEvents"]
+	require.True(t, ok, "Expected _processedEvents to be recorded")
+	events, ok := processedEvents.([]interface{})
+	require.True(t, ok)
+	assert.Len(t, events, 1, "Event should be recorded exactly once")
+}
+
+// trackingTestSaga is a saga that tracks HandleEvent calls using an atomic counter
+type trackingTestSaga struct {
+	SagaBase
+	data            map[string]interface{}
+	handleCallCount *int32
+	complete        bool
+}
+
+func (s *trackingTestSaga) HandledEvents() []string {
+	return []string{"OrderCreated", "OrderShipped", "OrderFailed"}
+}
+
+func (s *trackingTestSaga) HandleEvent(ctx context.Context, event StoredEvent) ([]Command, error) {
+	// Atomically increment the counter
+	atomic.AddInt32(s.handleCallCount, 1)
+	s.complete = true
+	return nil, nil
+}
+
+func (s *trackingTestSaga) Compensate(ctx context.Context, failedStep int, err error) ([]Command, error) {
+	return nil, nil
+}
+
+func (s *trackingTestSaga) IsComplete() bool {
+	return s.complete
+}
+
+func (s *trackingTestSaga) Data() map[string]interface{} {
+	if s.data == nil {
+		s.data = make(map[string]interface{})
+	}
+	return s.data
+}
+
+func (s *trackingTestSaga) SetData(data map[string]interface{}) {
+	s.data = data
+}
+
+// TestSagaManager_ConcurrentEventsForSameSaga tests that when multiple events
+// for the same saga are processed concurrently, they are serialized properly
+// and processed in order without race conditions.
+func TestSagaManager_ConcurrentEventsForSameSaga(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	// Track the order of event processing
+	var eventOrder []string
+	var orderMu sync.Mutex
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	// Saga that records which events it processes
+	orderTrackingSagaFactory := func(id string) Saga {
+		return &orderTrackingTestSaga{
+			SagaBase: NewSagaBase(id, "OrderTrackingSaga"),
+			onHandle: func(eventID string) {
+				orderMu.Lock()
+				eventOrder = append(eventOrder, eventID)
+				orderMu.Unlock()
+			},
+		}
+	}
+
+	manager.RegisterSimple("OrderTrackingSaga", orderTrackingSagaFactory, "OrderCreated")
+
+	ctx := context.Background()
+
+	// Pre-create the saga so subsequent events don't conflict on creation
+	startEvent := StoredEvent{
+		ID:             "event-start",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+	err := manager.ProcessEvent(ctx, startEvent)
+	require.NoError(t, err)
+
+	// Clear the event order for subsequent concurrent events
+	orderMu.Lock()
+	eventOrder = nil
+	orderMu.Unlock()
+
+	// Now send multiple different events for the same saga concurrently
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			event := StoredEvent{
+				ID:             fmt.Sprintf("event-%d", idx),
+				StreamID:       "order-123",
+				Type:           "OrderShipped", // All same saga, different events
+				Data:           []byte(`{}`),
+				GlobalPosition: uint64(idx + 2),
+			}
+			err := manager.ProcessEvent(ctx, event)
+			assert.NoError(t, err)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify all events were processed and are unique
+	orderMu.Lock()
+	assert.Len(t, eventOrder, 5, "All 5 events should be processed")
+	seen := make(map[string]struct{}, len(eventOrder))
+	for _, id := range eventOrder {
+		seen[id] = struct{}{}
+	}
+	assert.Equal(t, len(eventOrder), len(seen), "All processed event IDs should be unique")
+	orderMu.Unlock()
+
+	// Verify saga still exists and is in a valid state
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	require.NoError(t, err)
+	assert.NotNil(t, state)
+}
+
+// orderTrackingTestSaga tracks the order of event processing
+type orderTrackingTestSaga struct {
+	SagaBase
+	data     map[string]interface{}
+	onHandle func(eventID string)
+}
+
+func (s *orderTrackingTestSaga) HandledEvents() []string {
+	return []string{"OrderCreated", "OrderShipped", "OrderFailed"}
+}
+
+func (s *orderTrackingTestSaga) HandleEvent(ctx context.Context, event StoredEvent) ([]Command, error) {
+	if s.onHandle != nil {
+		s.onHandle(event.ID)
+	}
+	return nil, nil
+}
+
+func (s *orderTrackingTestSaga) Compensate(ctx context.Context, failedStep int, err error) ([]Command, error) {
+	return nil, nil
+}
+
+func (s *orderTrackingTestSaga) IsComplete() bool {
+	return false // Never completes to allow multiple events
+}
+
+func (s *orderTrackingTestSaga) Data() map[string]interface{} {
+	if s.data == nil {
+		s.data = make(map[string]interface{})
+	}
+	return s.data
+}
+
+func (s *orderTrackingTestSaga) SetData(data map[string]interface{}) {
+	s.data = data
 }
 
 // concurrencyConflictSagaStore simulates concurrency conflicts
