@@ -650,11 +650,11 @@ func SagaStateFromJSON(data []byte) (*SagaState, error) {
 // AsyncResult represents the result of an asynchronous operation.
 // It provides methods to wait for completion and check the result.
 type AsyncResult struct {
-	done     chan struct{}
-	err      error
-	errMu    sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
+	done      chan struct{}
+	err       error
+	errMu     sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
 	closeOnce sync.Once
 }
 
