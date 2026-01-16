@@ -454,18 +454,19 @@ const (
 
 // SagaState represents the persisted state of a saga.
 type SagaState struct {
-    ID            string                 `json:"id"`
-    Type          string                 `json:"type"`
-    CorrelationID string                 `json:"correlationId,omitempty"`
-    Status        SagaStatus             `json:"status"`
-    CurrentStep   int                    `json:"currentStep"`
-    Data          map[string]interface{} `json:"data,omitempty"`
-    Steps         []SagaStep             `json:"steps,omitempty"`
-    StartedAt     time.Time              `json:"startedAt"`
-    UpdatedAt     time.Time              `json:"updatedAt"`
-    CompletedAt   *time.Time             `json:"completedAt,omitempty"`
-    FailureReason string                 `json:"failureReason,omitempty"`
-    Version       int64                  `json:"version"`
+    ID              string                 `json:"id"`
+    Type            string                 `json:"type"`
+    CorrelationID   string                 `json:"correlationId,omitempty"`
+    Status          SagaStatus             `json:"status"`
+    CurrentStep     int                    `json:"currentStep"`
+    Data            map[string]interface{} `json:"data,omitempty"`
+    ProcessedEvents []string               `json:"processedEvents,omitempty"` // For idempotency
+    Steps           []SagaStep             `json:"steps,omitempty"`
+    StartedAt       time.Time              `json:"startedAt"`
+    UpdatedAt       time.Time              `json:"updatedAt"`
+    CompletedAt     *time.Time             `json:"completedAt,omitempty"`
+    FailureReason   string                 `json:"failureReason,omitempty"`
+    Version         int64                  `json:"version"`
 }
 
 // SagaStore defines the interface for saga persistence.
@@ -621,7 +622,11 @@ func (s *OrderFulfillmentSaga) IsComplete() bool {
 
 ### Saga Manager
 
-The SagaManager orchestrates saga lifecycle, event processing, and command dispatch.
+The SagaManager orchestrates saga lifecycle, event processing, and command dispatch. It provides:
+- **Event correlation**: Routes events to the correct saga instances
+- **Idempotency**: Automatically deduplicates events (stored in `ProcessedEvents`)
+- **Concurrency control**: Per-saga locking with retry on conflicts
+- **Compensation**: Triggers rollback commands when sagas fail
 
 ```go
 // SagaManager orchestrates saga lifecycle
@@ -714,6 +719,7 @@ CREATE TABLE mink_sagas (
     status INT NOT NULL DEFAULT 0,
     current_step INT NOT NULL DEFAULT 0,
     data JSONB NOT NULL DEFAULT '{}',
+    processed_events JSONB NOT NULL DEFAULT '[]',  -- For idempotency
     steps JSONB NOT NULL DEFAULT '[]',
     failure_reason TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

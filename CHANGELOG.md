@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithSagaWorkers()` - Configure number of worker goroutines
 - `WithSagaLogger()` - Configure logger for saga operations
 
+#### Saga Idempotency
+- `SagaState.ProcessedEvents` - Tracks processed event IDs for at-least-once delivery
+- Automatic deduplication of duplicate events (e.g., from pg_notify + polling)
+- Transparent handling by `SagaManager` - no user code changes required
+- Persisted to PostgreSQL `processed_events JSONB` column
+
 #### Saga Store Implementations
 - `memory.NewSagaStore()` - In-memory saga store for testing
 - `memory.SagaStore.Save()` - Persist saga state with optimistic concurrency

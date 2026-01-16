@@ -1484,12 +1484,9 @@ func TestSagaManager_DuplicateEventDelivery(t *testing.T) {
 	finalCount := atomic.LoadInt32(&handleCallCount)
 	assert.Equal(t, int32(1), finalCount, "HandleEvent should be called exactly once despite multiple deliveries")
 
-	// Verify the event is recorded in _processedEvents
-	processedEvents, ok := state.Data["_processedEvents"]
-	require.True(t, ok, "Expected _processedEvents to be recorded")
-	events, ok := processedEvents.([]interface{})
-	require.True(t, ok)
-	assert.Len(t, events, 1, "Event should be recorded exactly once")
+	// Verify the event is recorded in ProcessedEvents (now a dedicated field, not in Data)
+	require.NotNil(t, state.ProcessedEvents, "Expected ProcessedEvents to be recorded")
+	assert.Len(t, state.ProcessedEvents, 1, "Event should be recorded exactly once")
 }
 
 // trackingTestSaga is a saga that tracks HandleEvent calls using an atomic counter
@@ -1801,13 +1798,10 @@ func TestSagaManager_ProcessEvent_IdempotencyOnRetry(t *testing.T) {
 	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
 	require.NoError(t, err)
 
-	// Verify that the processed event was recorded
-	processedEvents, ok := state.Data["_processedEvents"]
-	require.True(t, ok, "Expected _processedEvents to be recorded")
-	events, ok := processedEvents.([]interface{})
-	require.True(t, ok)
-	assert.Len(t, events, 1)
-	assert.Equal(t, "event-1:1", events[0])
+	// Verify that the processed event was recorded (now in dedicated field)
+	require.NotNil(t, state.ProcessedEvents, "Expected ProcessedEvents to be recorded")
+	assert.Len(t, state.ProcessedEvents, 1)
+	assert.Equal(t, "event-1:1", state.ProcessedEvents[0])
 }
 
 func TestSagaManager_ProcessEvent_ConcurrencyConflictContextCancelled(t *testing.T) {
