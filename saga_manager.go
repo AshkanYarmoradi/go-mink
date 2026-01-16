@@ -279,6 +279,7 @@ func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error
 }
 
 // processSagaEvent processes an event for a specific saga type.
+// It implements optimistic concurrency control with retry on conflicts.
 func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, event StoredEvent) error {
 	m.mu.RLock()
 	correlations := m.correlations[sagaType]
@@ -289,6 +290,51 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return fmt.Errorf("mink: saga factory not found for type %q", sagaType)
 	}
 
+	// Retry loop for handling concurrency conflicts
+	var lastErr error
+	for attempt := 0; attempt <= m.retryAttempts; attempt++ {
+		if attempt > 0 {
+			m.logger.Debug("Retrying saga event processing after concurrency conflict",
+				"sagaType", sagaType,
+				"event", event.Type,
+				"attempt", attempt)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(m.retryDelay):
+			}
+		}
+
+		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory)
+		if err == nil {
+			return nil
+		}
+
+		if errors.Is(err, ErrConcurrencyConflict) || errors.Is(err, adapters.ErrConcurrencyConflict) {
+			lastErr = err
+			m.logger.Debug("Concurrency conflict detected, will retry",
+				"sagaType", sagaType,
+				"event", event.Type,
+				"attempt", attempt,
+				"maxAttempts", m.retryAttempts)
+			continue
+		}
+
+		// Non-retryable error
+		return err
+	}
+
+	return fmt.Errorf("mink: saga event processing failed after %d retries: %w", m.retryAttempts, lastErr)
+}
+
+// attemptProcessSagaEvent performs a single attempt to process an event for a saga.
+func (m *SagaManager) attemptProcessSagaEvent(
+	ctx context.Context,
+	sagaType string,
+	event StoredEvent,
+	correlations []SagaCorrelation,
+	factory SagaFactory,
+) error {
 	// Find or create saga based on correlation
 	var saga Saga
 	var state *SagaState
@@ -347,6 +393,15 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return nil
 	}
 
+	// Check if this event was already processed (idempotency check for retries)
+	if m.eventAlreadyProcessed(saga, event) {
+		m.logger.Debug("Event already processed by saga, skipping",
+			"sagaID", saga.SagaID(),
+			"eventType", event.Type,
+			"eventPosition", event.GlobalPosition)
+		return nil
+	}
+
 	// Handle the event
 	saga.SetStatus(SagaStatusRunning)
 	commands, err := saga.HandleEvent(ctx, event)
@@ -371,9 +426,66 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 			"sagaType", saga.SagaType())
 	}
 
+	// Record the processed event for idempotency
+	m.recordProcessedEvent(saga, event)
+
 	// Persist saga state
 	saga.IncrementVersion()
 	return m.saveSaga(ctx, saga)
+}
+
+// eventAlreadyProcessed checks if the saga has already processed this event.
+// This provides idempotency during retry scenarios.
+func (m *SagaManager) eventAlreadyProcessed(saga Saga, event StoredEvent) bool {
+	data := saga.Data()
+	if data == nil {
+		return false
+	}
+
+	processedEventsRaw, ok := data["_processedEvents"]
+	if !ok {
+		return false
+	}
+
+	processedEvents, ok := processedEventsRaw.([]interface{})
+	if !ok {
+		return false
+	}
+
+	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
+	for _, pe := range processedEvents {
+		if pe == eventKey {
+			return true
+		}
+	}
+
+	return false
+}
+
+// recordProcessedEvent records that an event has been processed by the saga.
+func (m *SagaManager) recordProcessedEvent(saga Saga, event StoredEvent) {
+	data := saga.Data()
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+
+	var processedEvents []interface{}
+	if existing, ok := data["_processedEvents"]; ok {
+		if events, ok := existing.([]interface{}); ok {
+			processedEvents = events
+		}
+	}
+
+	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
+	processedEvents = append(processedEvents, eventKey)
+
+	// Keep only last 100 processed events to avoid unbounded growth
+	if len(processedEvents) > 100 {
+		processedEvents = processedEvents[len(processedEvents)-100:]
+	}
+
+	data["_processedEvents"] = processedEvents
+	saga.SetData(data)
 }
 
 // handleSagaFailure handles a saga failure by triggering compensation.
@@ -538,11 +650,11 @@ func SagaStateFromJSON(data []byte) (*SagaState, error) {
 // AsyncResult represents the result of an asynchronous operation.
 // It provides methods to wait for completion and check the result.
 type AsyncResult struct {
-	done     chan struct{}
-	err      error
-	errMu    sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
+	done      chan struct{}
+	err       error
+	errMu     sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
 	closeOnce sync.Once
 }
 
