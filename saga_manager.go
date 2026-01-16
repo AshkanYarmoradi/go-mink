@@ -11,6 +11,11 @@ import (
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
+// maxProcessedEventsToTrack is the maximum number of processed events to retain
+// for idempotency tracking. This prevents unbounded growth of saga data while
+// still providing sufficient history for retry scenarios.
+const maxProcessedEventsToTrack = 100
+
 // SagaManagerOption configures a SagaManager.
 type SagaManagerOption func(*SagaManager)
 
@@ -292,16 +297,19 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 
 	// Retry loop for handling concurrency conflicts
 	var lastErr error
-	for attempt := 0; attempt <= m.retryAttempts; attempt++ {
+	for attempt := 0; attempt < m.retryAttempts; attempt++ {
 		if attempt > 0 {
+			// Use exponential backoff for retry delay, consistent with dispatchCommand
+			delay := m.retryDelay * time.Duration(1<<uint(attempt-1))
 			m.logger.Debug("Retrying saga event processing after concurrency conflict",
 				"sagaType", sagaType,
 				"event", event.Type,
-				"attempt", attempt)
+				"attempt", attempt,
+				"delay", delay)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(m.retryDelay):
+			case <-time.After(delay):
 			}
 		}
 
@@ -479,9 +487,9 @@ func (m *SagaManager) recordProcessedEvent(saga Saga, event StoredEvent) {
 	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
 	processedEvents = append(processedEvents, eventKey)
 
-	// Keep only last 100 processed events to avoid unbounded growth
-	if len(processedEvents) > 100 {
-		processedEvents = processedEvents[len(processedEvents)-100:]
+	// Keep only the most recent events to avoid unbounded growth
+	if len(processedEvents) > maxProcessedEventsToTrack {
+		processedEvents = processedEvents[len(processedEvents)-maxProcessedEventsToTrack:]
 	}
 
 	data["_processedEvents"] = processedEvents
