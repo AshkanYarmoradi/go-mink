@@ -28,7 +28,40 @@ var (
 
 	// ErrAdapterClosed is returned when operations are attempted on a closed adapter.
 	ErrAdapterClosed = errors.New("mink: adapter is closed")
+
+	// ErrSagaNotFound indicates the requested saga does not exist.
+	ErrSagaNotFound = errors.New("mink: saga not found")
+
+	// ErrSagaAlreadyExists indicates a saga with the same ID already exists.
+	ErrSagaAlreadyExists = errors.New("mink: saga already exists")
+
+	// ErrNilAggregate indicates a nil aggregate was passed.
+	ErrNilAggregate = errors.New("mink: nil aggregate")
 )
+
+// SagaNotFoundError provides detailed information about a missing saga.
+type SagaNotFoundError struct {
+	SagaID        string
+	CorrelationID string
+}
+
+// Error returns the error message.
+func (e *SagaNotFoundError) Error() string {
+	if e.SagaID != "" {
+		return "mink: saga not found: " + e.SagaID
+	}
+	return "mink: saga not found with correlation ID: " + e.CorrelationID
+}
+
+// Is reports whether this error matches the target error.
+func (e *SagaNotFoundError) Is(target error) bool {
+	return target == ErrSagaNotFound
+}
+
+// Unwrap returns the underlying error for errors.Unwrap().
+func (e *SagaNotFoundError) Unwrap() error {
+	return ErrSagaNotFound
+}
 
 // Metadata contains event context for tracing and multi-tenancy.
 // These fields are preserved across serialization and can be used
@@ -488,4 +521,199 @@ type DiagnosticAdapter interface {
 
 	// GetProjectionHealth returns projection health status.
 	GetProjectionHealth(ctx context.Context) (*ProjectionHealthResult, error)
+}
+
+// SagaStatus represents the current status of a saga.
+type SagaStatus int
+
+const (
+	// SagaStatusStarted indicates the saga has started but not completed.
+	SagaStatusStarted SagaStatus = iota
+
+	// SagaStatusRunning indicates the saga is actively processing.
+	SagaStatusRunning
+
+	// SagaStatusCompleted indicates the saga completed successfully.
+	SagaStatusCompleted
+
+	// SagaStatusFailed indicates the saga failed without compensation.
+	SagaStatusFailed
+
+	// SagaStatusCompensating indicates the saga is executing compensating actions.
+	SagaStatusCompensating
+
+	// SagaStatusCompensated indicates the saga has been compensated after failure.
+	SagaStatusCompensated
+
+	// SagaStatusCompensationFailed indicates compensation failed (partial rollback).
+	SagaStatusCompensationFailed
+)
+
+// String returns the string representation of the saga status.
+func (s SagaStatus) String() string {
+	switch s {
+	case SagaStatusStarted:
+		return "started"
+	case SagaStatusRunning:
+		return "running"
+	case SagaStatusCompleted:
+		return "completed"
+	case SagaStatusFailed:
+		return "failed"
+	case SagaStatusCompensating:
+		return "compensating"
+	case SagaStatusCompensated:
+		return "compensated"
+	case SagaStatusCompensationFailed:
+		return "compensation_failed"
+	default:
+		return "unknown"
+	}
+}
+
+// IsTerminal returns true if the saga status is a terminal state.
+func (s SagaStatus) IsTerminal() bool {
+	return s == SagaStatusCompleted || s == SagaStatusFailed || s == SagaStatusCompensated || s == SagaStatusCompensationFailed
+}
+
+// SagaStepStatus represents the status of a saga step.
+type SagaStepStatus int
+
+const (
+	// SagaStepPending indicates the step has not started.
+	SagaStepPending SagaStepStatus = iota
+
+	// SagaStepRunning indicates the step is in progress.
+	SagaStepRunning
+
+	// SagaStepCompleted indicates the step completed successfully.
+	SagaStepCompleted
+
+	// SagaStepFailed indicates the step failed.
+	SagaStepFailed
+
+	// SagaStepCompensated indicates the step was compensated.
+	SagaStepCompensated
+)
+
+// String returns the string representation of the step status.
+func (s SagaStepStatus) String() string {
+	switch s {
+	case SagaStepPending:
+		return "pending"
+	case SagaStepRunning:
+		return "running"
+	case SagaStepCompleted:
+		return "completed"
+	case SagaStepFailed:
+		return "failed"
+	case SagaStepCompensated:
+		return "compensated"
+	default:
+		return "unknown"
+	}
+}
+
+// SagaStep represents a single step in a saga.
+type SagaStep struct {
+	// Name is the human-readable name of the step.
+	Name string `json:"name"`
+
+	// Index is the step number (0-based).
+	Index int `json:"index"`
+
+	// Status is the current status of this step.
+	Status SagaStepStatus `json:"status"`
+
+	// Command is the command that was executed for this step.
+	Command string `json:"command,omitempty"`
+
+	// CompletedAt is when this step completed.
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+
+	// Error contains any error message if the step failed.
+	Error string `json:"error,omitempty"`
+}
+
+// SagaState represents the persisted state of a saga.
+// This is the data structure stored by the SagaStore.
+type SagaState struct {
+	// ID is the unique saga identifier.
+	ID string `json:"id"`
+
+	// Type is the saga type.
+	Type string `json:"type"`
+
+	// CorrelationID links this saga to related events/commands.
+	CorrelationID string `json:"correlationId,omitempty"`
+
+	// Status is the current saga status.
+	Status SagaStatus `json:"status"`
+
+	// CurrentStep is the current step number.
+	CurrentStep int `json:"currentStep"`
+
+	// Data contains the saga's internal state.
+	Data map[string]interface{} `json:"data,omitempty"`
+
+	// Steps contains the history of executed steps.
+	Steps []SagaStep `json:"steps,omitempty"`
+
+	// StartedAt is when the saga started.
+	StartedAt time.Time `json:"startedAt"`
+
+	// UpdatedAt is when the saga was last updated.
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// CompletedAt is when the saga completed (nil if not completed).
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+
+	// FailureReason contains the error message if the saga failed.
+	FailureReason string `json:"failureReason,omitempty"`
+
+	// Version for optimistic concurrency control.
+	// Version 0 indicates a new saga that has not been saved yet.
+	// After each successful save, the version is incremented by 1.
+	// When updating an existing saga, the version must match the current
+	// stored version; otherwise, ErrConcurrencyConflict is returned.
+	Version int64 `json:"version"`
+}
+
+// IsTerminal returns true if the saga is in a terminal state.
+func (s *SagaState) IsTerminal() bool {
+	return s.Status == SagaStatusCompleted || s.Status == SagaStatusFailed || s.Status == SagaStatusCompensated || s.Status == SagaStatusCompensationFailed
+}
+
+// SagaStore defines the interface for saga persistence.
+type SagaStore interface {
+	// Save persists a saga state with optimistic concurrency control.
+	//
+	// Version semantics:
+	//   - Version 0: Creates a new saga. Returns error if saga already exists
+	//     (for some implementations).
+	//   - Version > 0: Updates an existing saga. The version must match the
+	//     current stored version, otherwise ErrConcurrencyConflict is returned.
+	//
+	// After a successful save, state.Version is incremented to reflect the
+	// new version stored in the database.
+	Save(ctx context.Context, state *SagaState) error
+
+	// Load retrieves a saga state by ID.
+	// Returns ErrSagaNotFound if the saga doesn't exist.
+	Load(ctx context.Context, sagaID string) (*SagaState, error)
+
+	// FindByCorrelationID finds a saga by its correlation ID.
+	// Returns ErrSagaNotFound if no saga is found.
+	FindByCorrelationID(ctx context.Context, correlationID string) (*SagaState, error)
+
+	// FindByType finds all sagas of a given type with the specified status.
+	// If statuses is empty, returns sagas of all statuses.
+	FindByType(ctx context.Context, sagaType string, statuses ...SagaStatus) ([]*SagaState, error)
+
+	// Delete removes a saga state.
+	// Returns ErrSagaNotFound if the saga doesn't exist.
+	Delete(ctx context.Context, sagaID string) error
+
+	// Close releases any resources held by the store.
+	Close() error
 }

@@ -378,49 +378,126 @@ result, err := bus.Dispatch(ctx, cmd)
 
 ---
 
-## Saga / Process Manager (v0.5.0 - Planned)
+## Saga / Process Manager (v0.5.0) ✅
 
-Orchestrate long-running business processes across aggregates.
+Orchestrate long-running business processes across aggregates. Sagas coordinate operations that span multiple aggregates or external services, providing compensation (rollback) when things go wrong.
+
+### Core Interfaces
+
+```go
+// Saga defines the interface for saga implementations.
+// A saga coordinates long-running business processes across multiple aggregates.
 type Saga interface {
-    // Unique identifier
+    // SagaID returns the unique identifier for this saga instance.
     SagaID() string
-    
-    // Saga type for routing
+
+    // SagaType returns the type of this saga (e.g., "OrderFulfillment").
     SagaType() string
-    
-    // Events this saga reacts to
+
+    // Status returns the current status of the saga.
+    Status() SagaStatus
+
+    // SetStatus sets the saga status.
+    SetStatus(status SagaStatus)
+
+    // CurrentStep returns the current step number (0-based).
+    CurrentStep() int
+
+    // SetCurrentStep sets the current step number.
+    SetCurrentStep(step int)
+
+    // CorrelationID returns the correlation ID for this saga.
+    CorrelationID() string
+
+    // SetCorrelationID sets the correlation ID.
+    SetCorrelationID(id string)
+
+    // HandledEvents returns the list of event types this saga handles.
     HandledEvents() []string
-    
-    // Process event and return commands to execute
-    HandleEvent(ctx context.Context, event Event) ([]Command, error)
-    
-    // Compensate on failure
-    Compensate(ctx context.Context, failedStep int, err error) ([]Command, error)
-    
-    // Check if saga is complete
+
+    // HandleEvent processes an event and returns commands to dispatch.
+    HandleEvent(ctx context.Context, event StoredEvent) ([]Command, error)
+
+    // Compensate is called when the saga needs to rollback.
+    Compensate(ctx context.Context, failedStep int, failureReason error) ([]Command, error)
+
+    // IsComplete returns true if the saga has completed successfully.
     IsComplete() bool
+
+    // StartedAt returns when the saga started.
+    StartedAt() time.Time
+
+    // CompletedAt returns when the saga completed (nil if not completed).
+    CompletedAt() *time.Time
+
+    // Data returns the saga's internal state as a map.
+    Data() map[string]interface{}
+
+    // SetData restores the saga's internal state from a map.
+    SetData(data map[string]interface{})
+
+    // Version returns the saga version for optimistic concurrency.
+    Version() int64
 }
 
-// SagaState tracks progress
-type SagaState struct {
-    ID            string
-    Type          string
-    CurrentStep   int
-    Status        SagaStatus
-    Data          map[string]interface{}
-    CompletedSteps []SagaStep
-    StartedAt     time.Time
-    CompletedAt   *time.Time
-}
-
+// SagaStatus represents the current status of a saga.
 type SagaStatus int
+
 const (
-    SagaRunning SagaStatus = iota
-    SagaCompleted
-    SagaFailed
-    SagaCompensating
-    SagaCompensated
+    SagaStatusStarted      SagaStatus = iota  // Saga has started
+    SagaStatusRunning                         // Actively processing
+    SagaStatusCompleted                       // Completed successfully
+    SagaStatusFailed                          // Failed without compensation
+    SagaStatusCompensating                    // Executing compensation
+    SagaStatusCompensated                     // Compensated after failure
 )
+
+// SagaState represents the persisted state of a saga.
+type SagaState struct {
+    ID            string                 `json:"id"`
+    Type          string                 `json:"type"`
+    CorrelationID string                 `json:"correlationId,omitempty"`
+    Status        SagaStatus             `json:"status"`
+    CurrentStep   int                    `json:"currentStep"`
+    Data          map[string]interface{} `json:"data,omitempty"`
+    Steps         []SagaStep             `json:"steps,omitempty"`
+    StartedAt     time.Time              `json:"startedAt"`
+    UpdatedAt     time.Time              `json:"updatedAt"`
+    CompletedAt   *time.Time             `json:"completedAt,omitempty"`
+    FailureReason string                 `json:"failureReason,omitempty"`
+    Version       int64                  `json:"version"`
+}
+
+// SagaStore defines the interface for saga persistence.
+type SagaStore interface {
+    Save(ctx context.Context, state *SagaState) error
+    Load(ctx context.Context, sagaID string) (*SagaState, error)
+    FindByCorrelationID(ctx context.Context, correlationID string) (*SagaState, error)
+    FindByType(ctx context.Context, sagaType string, statuses ...SagaStatus) ([]*SagaState, error)
+    Delete(ctx context.Context, sagaID string) error
+    Close() error
+}
+```
+
+### SagaBase - Default Implementation
+
+```go
+// Embed SagaBase in your saga types to get default behavior
+type OrderFulfillmentSaga struct {
+    mink.SagaBase  // Provides ID, Type, Status, Version management
+    
+    // Your saga-specific state
+    OrderID        string
+    CustomerID     string
+    PaymentDone    bool
+    InventoryDone  bool
+}
+
+func NewOrderFulfillmentSaga(id string) *OrderFulfillmentSaga {
+    return &OrderFulfillmentSaga{
+        SagaBase: mink.NewSagaBase(id, "OrderFulfillment"),
+    }
+}
 ```
 
 ### Example: Order Fulfillment Saga
@@ -544,83 +621,159 @@ func (s *OrderFulfillmentSaga) IsComplete() bool {
 
 ### Saga Manager
 
+The SagaManager orchestrates saga lifecycle, event processing, and command dispatch.
+
 ```go
 // SagaManager orchestrates saga lifecycle
 type SagaManager struct {
-    store      SagaStore
-    eventStore *EventStore
-    commandBus *CommandBus
-    registry   map[string]SagaFactory
+    store      SagaStore                        // Persists saga state
+    eventSub   adapters.SubscriptionAdapter     // Event subscription
+    commandBus *CommandBus                      // Dispatches commands
+    registry   map[string]SagaFactory           // Creates saga instances
+    handlers   map[string][]string              // Event -> Saga type mappings
 }
 
-func NewSagaManager(eventStore *EventStore, commandBus *CommandBus) *SagaManager
+// SagaManagerOption configures the manager
+type SagaManagerOption func(*SagaManager)
 
-// Register saga type
-func (m *SagaManager) Register(sagaType string, factory SagaFactory)
+// Create a new SagaManager
+func NewSagaManager(store SagaStore, eventSub adapters.SubscriptionAdapter, 
+    commandBus *CommandBus, opts ...SagaManagerOption) *SagaManager
 
-// Start processes events and routes to sagas
-func (m *SagaManager) Start(ctx context.Context) error {
-    sub, _ := m.eventStore.SubscribeAll(ctx, 0)
-    
-    for event := range sub.Events() {
-        // Find or create saga for this event
-        saga, _ := m.findOrCreateSaga(ctx, event)
-        if saga == nil {
-            continue
-        }
-        
-        // Handle event
-        commands, err := saga.HandleEvent(ctx, event)
-        if err != nil {
-            // Trigger compensation
-            compensateCommands, _ := saga.Compensate(ctx, saga.CurrentStep(), err)
-            for _, cmd := range compensateCommands {
-                m.commandBus.Dispatch(ctx, cmd)
-            }
-            continue
-        }
-        
-        // Execute resulting commands
-        for _, cmd := range commands {
-            if err := m.commandBus.Dispatch(ctx, cmd); err != nil {
-                // Handle command failure
-            }
-        }
-        
-        // Persist saga state
-        m.store.Save(ctx, saga)
-    }
-    return nil
-}
+// Register a saga type with the manager
+func (m *SagaManager) Register(sagaType string, factory SagaFactory, correlations ...SagaCorrelation)
+
+// Start begins listening for events
+func (m *SagaManager) Start(ctx context.Context) error
+
+// Stop gracefully shuts down the manager
+func (m *SagaManager) Stop() error
+
+// Compensate manually triggers compensation for a saga
+func (m *SagaManager) Compensate(ctx context.Context, sagaID string, reason error) error
+
+// Resume resumes a stalled saga
+func (m *SagaManager) Resume(ctx context.Context, sagaID string) error
+```
+
+### Usage Example
+
+```go
+// Create saga manager
+manager := mink.NewSagaManager(
+    sagaStore,
+    postgresAdapter,  // SubscriptionAdapter
+    commandBus,
+    mink.WithSagaRetries(3),
+    mink.WithSagaTimeout(5 * time.Minute),
+)
+
+// Register saga types
+manager.Register("OrderFulfillment", 
+    func(id string) mink.Saga { return NewOrderFulfillmentSaga(id) },
+    mink.SagaCorrelation{
+        SagaType:       "OrderFulfillment",
+        StartingEvents: []string{"OrderCreated"},
+        CorrelationIDFunc: func(e mink.StoredEvent) string {
+            return e.StreamID  // Correlate by order stream
+        },
+    },
+)
+
+// Start processing events
+go manager.Start(ctx)
+defer manager.Stop()
 ```
 
 ### Saga Store
 
 ```go
-// SagaStore persists saga state
-type SagaStore interface {
-    Save(ctx context.Context, saga Saga) error
-    Load(ctx context.Context, sagaID string) (Saga, error)
-    FindByCorrelation(ctx context.Context, correlationKey string) (Saga, error)
+// PostgreSQL implementation
+sagaStore := postgres.NewSagaStore(db,
+    postgres.WithSagaSchema("myapp"),
+    postgres.WithSagaTable("sagas"),
+)
+
+// Initialize schema
+if err := sagaStore.Initialize(ctx); err != nil {
+    log.Fatal(err)
 }
 
-// PostgreSQL schema
-/*
+// In-memory for testing
+testStore := memory.NewSagaStore()
+```
+
+### PostgreSQL Schema
+
+```sql
+-- Saga state storage
 CREATE TABLE mink_sagas (
     id VARCHAR(255) PRIMARY KEY,
     type VARCHAR(255) NOT NULL,
-    correlation_key VARCHAR(255),
-    status INT NOT NULL,
-    current_step INT NOT NULL,
-    data JSONB NOT NULL,
-    started_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ
+    correlation_id VARCHAR(255),
+    status INT NOT NULL DEFAULT 0,
+    current_step INT NOT NULL DEFAULT 0,
+    data JSONB NOT NULL DEFAULT '{}',
+    steps JSONB NOT NULL DEFAULT '[]',
+    failure_reason TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    version BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_sagas_correlation ON mink_sagas(correlation_key);
-CREATE INDEX idx_sagas_status ON mink_sagas(status);
-*/
+-- Indexes for efficient querying
+CREATE INDEX idx_sagas_correlation ON mink_sagas(correlation_id);
+CREATE INDEX idx_sagas_type_status ON mink_sagas(type, status);
+CREATE INDEX idx_sagas_started ON mink_sagas(started_at);
+
+-- Partial indexes for active sagas
+CREATE INDEX idx_sagas_running ON mink_sagas(type) 
+    WHERE status IN (0, 1, 4);  -- Started, Running, Compensating
+```
+
+### Testing Sagas
+
+```go
+import "github.com/AshkanYarmoradi/go-mink/testing/sagas"
+
+func TestOrderFulfillmentSaga_HappyPath(t *testing.T) {
+    saga := NewOrderFulfillmentSaga("saga-123")
+    
+    // Use the testing fixture
+    adapter := sagas.NewMinkSagaAdapter(saga)
+    
+    sagas.TestSaga(t, adapter).
+        GivenEvents(
+            createOrderEvent("order-123", "customer-456"),
+            paymentReceivedEvent("order-123"),
+            inventoryReservedEvent("order-123"),
+            shipmentCreatedEvent("order-123"),
+        ).
+        ThenCompleted().
+        ThenCommands(
+            RequestPayment{OrderID: "order-123"},
+            ReserveInventory{OrderID: "order-123"},
+            CreateShipment{OrderID: "order-123"},
+            CompleteOrder{OrderID: "order-123"},
+        )
+}
+
+func TestOrderFulfillmentSaga_Compensation(t *testing.T) {
+    saga := NewOrderFulfillmentSaga("saga-123")
+    adapter := sagas.NewMinkSagaAdapter(saga)
+    
+    sagas.TestCompensation(t, adapter).
+        GivenFailureAfter(
+            createOrderEvent("order-123", "customer-456"),
+            paymentReceivedEvent("order-123"),
+            inventoryReservationFailedEvent("order-123"),
+        ).
+        ThenCompensates(
+            RefundPayment{OrderID: "order-123"},
+            FailOrder{OrderID: "order-123"},
+        )
+}
 ```
 
 ---

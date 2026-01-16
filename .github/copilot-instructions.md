@@ -67,12 +67,12 @@ type Projection interface {
 - **Phase 4 (v0.4.0)**: Developer Experience - Testing utilities, observability, MessagePack
 - **CLI Tool**: Complete with 84.9% test coverage (200+ unit tests, 67 integration tests, 4 E2E tests)
 
-### Phase 5 (Next): Security & Advanced Patterns
-1. Saga / Process Manager implementation
-2. Outbox pattern for reliable messaging
-3. Event versioning & upcasting
-4. Field-level encryption (AWS KMS, HashiCorp Vault)
-5. GDPR compliance (crypto-shredding)
+### Phase 5 (In Progress): Security & Advanced Patterns
+- ✅ Saga / Process Manager implementation
+- 🔜 Outbox pattern for reliable messaging
+- 🔜 Event versioning & upcasting
+- 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
+- 🔜 GDPR compliance (crypto-shredding)
 
 ## Coding Standards
 
