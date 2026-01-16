@@ -356,18 +356,12 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return fmt.Errorf("mink: saga factory not found for type %q", sagaType)
 	}
 
-	// First, determine the saga ID from the correlation (before acquiring the per-saga lock).
-	// NOTE: resolveSagaID may perform a store lookup to load existing saga state. Doing this
-	// before taking the per-saga lock is an intentional optimization for the common case
-	// (low contention, first attempt), because it allows us to pass the already-loaded state
-	// into attemptProcessSagaEvent and avoid an extra store query on the success path.
-	//
-	// Trade-off: under high concurrency with many duplicate or correlated events for the same
-	// saga, multiple goroutines can reach this point concurrently and perform redundant store
-	// lookups before being serialized by the per-saga lock below. If a deployment prefers to
-	// minimize redundant store access over optimizing the no-conflict path, the locking strategy
-	// here should be revisited so that the per-saga lock is acquired before calling resolveSagaID.
-	sagaID, correlationID, resolvedState, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
+	// Determine the saga ID from the correlation.
+	// NOTE: resolveSagaID performs a store lookup to find existing saga state.
+	// This lookup is done BEFORE acquiring the per-saga lock to determine which
+	// lock to acquire. The returned state is NOT used for processing - we always
+	// reload fresh state after acquiring the lock to avoid race conditions.
+	sagaID, correlationID, _, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
 	if sagaID == "" && !isStarting {
 		// No existing saga found and event doesn't start one
 		return nil
@@ -404,13 +398,18 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 			}
 		}
 
-		// On first attempt, use the state we already loaded in resolveSagaID.
-		// On retries, pass nil to force a fresh load from store.
-		var stateToUse *SagaState
-		if attempt == 0 {
-			stateToUse = resolvedState
-		}
-		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, stateToUse)
+		// IMPORTANT: For existing sagas, we must ALWAYS reload the state after acquiring
+		// the lock to ensure we have the latest version. The pre-loaded state from
+		// resolveSagaID may be stale if another goroutine modified the saga between
+		// when we loaded it and when we acquired the lock.
+		//
+		// For NEW sagas (isStarting=true), we can use nil since there's no existing
+		// state to reload - the saga will be created fresh.
+		//
+		// Previously, we used the pre-loaded resolvedState on the first attempt as an
+		// optimization, but this caused race conditions where stale ProcessedEvents
+		// were restored, leading to duplicate event processing.
+		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, nil)
 		if err == nil {
 			return nil
 		}
@@ -500,12 +499,23 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		//     saga should be created for this correlation ID.
 		if preloadedState != nil && preloadedState.CorrelationID == correlationID {
 			state = preloadedState
+			m.logger.Debug("Using preloaded state",
+				"correlationID", correlationID,
+				"version", state.Version,
+				"status", state.Status)
 		} else {
 			// Load fresh state from store - critical for retries to see latest state
 			var err error
 			state, err = m.store.FindByCorrelationID(ctx, correlationID)
 			if err != nil && !errors.Is(err, ErrSagaNotFound) {
 				return fmt.Errorf("mink: failed to find saga: %w", err)
+			}
+			if state != nil {
+				m.logger.Debug("Loaded fresh state from store",
+					"correlationID", correlationID,
+					"sagaID", state.ID,
+					"version", state.Version,
+					"status", state.Status)
 			}
 		}
 
@@ -543,17 +553,21 @@ func (m *SagaManager) attemptProcessSagaEvent(
 
 	// Skip if saga is in terminal state
 	if !isNew && saga.Status().IsTerminal() {
-		m.logger.Debug("Skipping terminal saga",
+		m.logger.Info("Skipping terminal saga - already completed",
 			"sagaID", saga.SagaID(),
-			"status", saga.Status())
+			"status", saga.Status(),
+			"version", saga.Version(),
+			"eventType", event.Type,
+			"eventID", event.ID)
 		return nil
 	}
 
 	// Check if this event was already processed (idempotency check for retries)
 	if m.eventAlreadyProcessed(saga, event) {
-		m.logger.Debug("Event already processed by saga, skipping",
+		m.logger.Info("Event already processed by saga, skipping",
 			"sagaID", saga.SagaID(),
 			"eventType", event.Type,
+			"eventID", event.ID,
 			"eventPosition", event.GlobalPosition)
 		return nil
 	}
