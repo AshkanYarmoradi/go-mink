@@ -55,7 +55,7 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 
 	cleanup := func() {
 		// Drop test table
-		db.Exec("DROP TABLE IF EXISTS " + quoteQualifiedTable("public", tableName))
+		_, _ = db.Exec("DROP TABLE IF EXISTS " + quoteQualifiedTable("public", tableName))
 		db.Close()
 	}
 
