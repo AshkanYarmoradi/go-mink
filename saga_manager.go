@@ -538,11 +538,12 @@ func SagaStateFromJSON(data []byte) (*SagaState, error) {
 // AsyncResult represents the result of an asynchronous operation.
 // It provides methods to wait for completion and check the result.
 type AsyncResult struct {
-	done   chan struct{}
-	err    error
-	errMu  sync.RWMutex
-	ctx    context.Context
-	cancel context.CancelFunc
+	done     chan struct{}
+	err      error
+	errMu    sync.RWMutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closeOnce sync.Once
 }
 
 // newAsyncResult creates a new AsyncResult.
@@ -557,10 +558,13 @@ func newAsyncResult(ctx context.Context) *AsyncResult {
 
 // complete marks the async operation as complete with an optional error.
 func (r *AsyncResult) complete(err error) {
-	r.errMu.Lock()
-	r.err = err
-	r.errMu.Unlock()
-	close(r.done)
+	r.closeOnce.Do(func() {
+		r.errMu.Lock()
+		r.err = err
+		r.errMu.Unlock()
+		close(r.done)
+		r.cancel()
+	})
 }
 
 // Done returns a channel that is closed when the operation completes.
@@ -591,10 +595,13 @@ func (r *AsyncResult) Wait() error {
 // WaitWithTimeout blocks until the operation completes or the timeout expires.
 // Returns context.DeadlineExceeded if the timeout is reached before completion.
 func (r *AsyncResult) WaitWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	select {
 	case <-r.done:
 		return r.Err()
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		return context.DeadlineExceeded
 	}
 }

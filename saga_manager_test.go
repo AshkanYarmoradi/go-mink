@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -1542,6 +1543,22 @@ func TestAsyncResult_IsComplete(t *testing.T) {
 	assert.True(t, result.IsComplete())
 }
 
+func TestAsyncResult_DoubleComplete(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Complete the result
+	result.complete(nil)
+
+	// Calling complete again should not panic
+	assert.NotPanics(t, func() {
+		result.complete(errors.New("second error"))
+	})
+
+	// Original error (nil) should be preserved
+	assert.NoError(t, result.Err())
+}
+
 func TestAsyncResult_Err_BeforeComplete(t *testing.T) {
 	ctx := context.Background()
 	result := newAsyncResult(ctx)
@@ -1821,8 +1838,8 @@ func TestSagaManager_StartAsync_MultipleSagas(t *testing.T) {
 	// Send multiple events
 	for i := 0; i < 5; i++ {
 		subAdapter.SendEvent(adapters.StoredEvent{
-			ID:             "evt-" + string(rune('1'+i)),
-			StreamID:       "order-" + string(rune('A'+i)),
+			ID:             fmt.Sprintf("evt-%d", i+1),
+			StreamID:       fmt.Sprintf("order-%d", i),
 			Type:           "OrderCreated",
 			Data:           []byte(`{}`),
 			GlobalPosition: uint64(i + 1),
@@ -1834,7 +1851,7 @@ func TestSagaManager_StartAsync_MultipleSagas(t *testing.T) {
 
 	// Verify all sagas were created
 	for i := 0; i < 5; i++ {
-		correlationID := "order-" + string(rune('A'+i))
+		correlationID := fmt.Sprintf("order-%d", i)
 		state, err := sagaStore.FindByCorrelationID(ctx, correlationID)
 		assert.NoError(t, err, "Failed to find saga for %s", correlationID)
 		assert.NotNil(t, state)
