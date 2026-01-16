@@ -159,7 +159,9 @@ func (m *mockSubscriptionAdapter) SubscribeAll(ctx context.Context, fromPosition
 	// Return existing events above position
 	go func() {
 		m.mu.Lock()
-		events := m.events
+		// Make a proper copy of the slice to avoid race with SendEvent
+		events := make([]adapters.StoredEvent, len(m.events))
+		copy(events, m.events)
 		m.mu.Unlock()
 
 		for _, e := range events {
@@ -180,6 +182,8 @@ func (m *mockSubscriptionAdapter) SendEvent(event adapters.StoredEvent) {
 	m.mu.Lock()
 	m.events = append(m.events, event)
 	m.mu.Unlock()
+	// Send to channel outside the lock to avoid blocking while holding lock
+	// The channel is buffered, so this is safe
 	m.eventCh <- event
 }
 
@@ -1125,6 +1129,44 @@ func TestSagaManager_handleSagaFailure_CompensationFails(t *testing.T) {
 	state, err := sagaStore.Load(ctx, "saga-123")
 	require.NoError(t, err)
 	assert.Equal(t, SagaStatusFailed, state.Status)
+}
+
+func TestSagaManager_handleSagaFailure_CompensationCommandFails(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+	logger := &sagaTestLogger{}
+
+	// Register failing command handler for compensation
+	cmdBus.Register(&mockCommandHandler{
+		cmdType: "CompensateOrder",
+		err:     errors.New("compensation dispatch failed"),
+	})
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+		WithSagaLogger(logger),
+		WithSagaRetryAttempts(1),
+		WithSagaRetryDelay(time.Millisecond),
+	)
+
+	// Create saga that returns compensation commands which will fail
+	saga := &testSaga{
+		SagaBase:        NewSagaBase("saga-456", "TestSaga"),
+		compensateToRet: []Command{&testCommand{commandType: "CompensateOrder", valid: true}},
+	}
+
+	ctx := context.Background()
+	err := manager.handleSagaFailure(ctx, saga, errors.New("original error"))
+	assert.NoError(t, err)
+
+	// Verify saga is in compensation_failed state
+	state, err := sagaStore.Load(ctx, "saga-456")
+	require.NoError(t, err)
+	assert.Equal(t, SagaStatusCompensationFailed, state.Status)
+	assert.NotNil(t, state.CompletedAt)
 }
 
 // ====================================================================

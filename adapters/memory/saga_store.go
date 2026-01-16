@@ -25,8 +25,16 @@ func NewSagaStore() *SagaStore {
 	}
 }
 
-// Save persists a saga state.
-// Uses optimistic concurrency control based on the Version field.
+// Save persists a saga state with optimistic concurrency control.
+//
+// Version semantics:
+//   - Version 0: Creates a new saga. If a saga with this ID already exists,
+//     it returns a ConcurrencyError.
+//   - Version > 0: Updates an existing saga. If no saga exists with this ID,
+//     it returns SagaNotFoundError. If the version doesn't match, it returns
+//     ConcurrencyError.
+//
+// After a successful save, state.Version is incremented to reflect the new version.
 func (s *SagaStore) Save(ctx context.Context, state *adapters.SagaState) error {
 	if state == nil {
 		return adapters.ErrNilAggregate
@@ -81,12 +89,9 @@ func (s *SagaStore) Save(ctx context.Context, state *adapters.SagaState) error {
 		savedState.CompletedAt = &completedAt
 	}
 
-	// Deep copy Data
+	// Deep copy Data (handles nested maps and slices)
 	if state.Data != nil {
-		savedState.Data = make(map[string]interface{}, len(state.Data))
-		for k, v := range state.Data {
-			savedState.Data[k] = v
-		}
+		savedState.Data = deepCopyMap(state.Data)
 	}
 
 	// Deep copy Steps
@@ -293,12 +298,9 @@ func (s *SagaStore) copyState(state *adapters.SagaState) *adapters.SagaState {
 		copied.CompletedAt = &completedAt
 	}
 
-	// Deep copy Data
+	// Deep copy Data (handles nested maps and slices)
 	if state.Data != nil {
-		copied.Data = make(map[string]interface{}, len(state.Data))
-		for k, v := range state.Data {
-			copied.Data[k] = v
-		}
+		copied.Data = deepCopyMap(state.Data)
 	}
 
 	// Deep copy Steps
@@ -308,4 +310,45 @@ func (s *SagaStore) copyState(state *adapters.SagaState) *adapters.SagaState {
 	}
 
 	return copied
+}
+
+// deepCopyMap creates a deep copy of a map[string]interface{}.
+func deepCopyMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		result[k] = deepCopyValue(v)
+	}
+	return result
+}
+
+// deepCopyValue creates a deep copy of a value, handling maps and slices recursively.
+func deepCopyValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return deepCopyMap(val)
+	case []interface{}:
+		return deepCopySlice(val)
+	default:
+		// Primitive types (string, int, float64, bool, etc.) are copied by value
+		return v
+	}
+}
+
+// deepCopySlice creates a deep copy of a []interface{}.
+func deepCopySlice(s []interface{}) []interface{} {
+	if s == nil {
+		return nil
+	}
+	result := make([]interface{}, len(s))
+	for i, v := range s {
+		result[i] = deepCopyValue(v)
+	}
+	return result
 }

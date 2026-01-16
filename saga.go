@@ -51,12 +51,13 @@ type (
 
 // Re-export saga status constants from adapters.
 const (
-	SagaStatusStarted      = adapters.SagaStatusStarted
-	SagaStatusRunning      = adapters.SagaStatusRunning
-	SagaStatusCompleted    = adapters.SagaStatusCompleted
-	SagaStatusFailed       = adapters.SagaStatusFailed
-	SagaStatusCompensating = adapters.SagaStatusCompensating
-	SagaStatusCompensated  = adapters.SagaStatusCompensated
+	SagaStatusStarted            = adapters.SagaStatusStarted
+	SagaStatusRunning            = adapters.SagaStatusRunning
+	SagaStatusCompleted          = adapters.SagaStatusCompleted
+	SagaStatusFailed             = adapters.SagaStatusFailed
+	SagaStatusCompensating       = adapters.SagaStatusCompensating
+	SagaStatusCompensated        = adapters.SagaStatusCompensated
+	SagaStatusCompensationFailed = adapters.SagaStatusCompensationFailed
 )
 
 // Re-export saga step status constants from adapters.
@@ -308,23 +309,8 @@ func NewSagaFailedError(sagaID, sagaType string, failedStep int, reason string, 
 }
 
 // SagaNotFoundError provides detailed information about a missing saga.
-type SagaNotFoundError struct {
-	SagaID        string
-	CorrelationID string
-}
-
-// Error returns the error message.
-func (e *SagaNotFoundError) Error() string {
-	if e.CorrelationID != "" {
-		return fmt.Sprintf("mink: saga with correlation ID %q not found", e.CorrelationID)
-	}
-	return fmt.Sprintf("mink: saga %q not found", e.SagaID)
-}
-
-// Is reports whether this error matches the target error.
-func (e *SagaNotFoundError) Is(target error) bool {
-	return target == ErrSagaNotFound
-}
+// This is a type alias to adapters.SagaNotFoundError for consistency.
+type SagaNotFoundError = adapters.SagaNotFoundError
 
 // SagaCorrelation provides strategies for correlating events to sagas.
 type SagaCorrelation struct {

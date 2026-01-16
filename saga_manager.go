@@ -395,18 +395,29 @@ func (m *SagaManager) handleSagaFailure(ctx context.Context, saga Saga, original
 		return m.saveSaga(ctx, saga)
 	}
 
-	// Execute compensation commands
+	// Execute compensation commands, tracking any failures
+	var compensationFailed bool
 	for _, cmd := range compensateCommands {
 		if err := m.dispatchCommand(ctx, saga, cmd); err != nil {
 			m.logger.Error("Compensation command failed",
 				"sagaID", saga.SagaID(),
 				"command", cmd.CommandType(),
 				"error", err)
-			// Continue with other compensation commands
+			compensationFailed = true
+			// Continue with other compensation commands to attempt full rollback
 		}
 	}
 
-	saga.SetStatus(SagaStatusCompensated)
+	// Set final status based on whether all compensations succeeded
+	if compensationFailed {
+		saga.SetStatus(SagaStatusCompensationFailed)
+		m.logger.Warn("Saga compensation partially failed",
+			"sagaID", saga.SagaID(),
+			"sagaType", saga.SagaType())
+	} else {
+		saga.SetStatus(SagaStatusCompensated)
+	}
+
 	now := time.Now()
 	saga.SetCompletedAt(&now)
 

@@ -544,6 +544,9 @@ const (
 
 	// SagaStatusCompensated indicates the saga has been compensated after failure.
 	SagaStatusCompensated
+
+	// SagaStatusCompensationFailed indicates compensation failed (partial rollback).
+	SagaStatusCompensationFailed
 )
 
 // String returns the string representation of the saga status.
@@ -561,6 +564,8 @@ func (s SagaStatus) String() string {
 		return "compensating"
 	case SagaStatusCompensated:
 		return "compensated"
+	case SagaStatusCompensationFailed:
+		return "compensation_failed"
 	default:
 		return "unknown"
 	}
@@ -568,7 +573,7 @@ func (s SagaStatus) String() string {
 
 // IsTerminal returns true if the saga status is a terminal state.
 func (s SagaStatus) IsTerminal() bool {
-	return s == SagaStatusCompleted || s == SagaStatusFailed || s == SagaStatusCompensated
+	return s == SagaStatusCompleted || s == SagaStatusFailed || s == SagaStatusCompensated || s == SagaStatusCompensationFailed
 }
 
 // SagaStepStatus represents the status of a saga step.
@@ -667,19 +672,30 @@ type SagaState struct {
 	FailureReason string `json:"failureReason,omitempty"`
 
 	// Version for optimistic concurrency control.
+	// Version 0 indicates a new saga that has not been saved yet.
+	// After each successful save, the version is incremented by 1.
+	// When updating an existing saga, the version must match the current
+	// stored version; otherwise, ErrConcurrencyConflict is returned.
 	Version int64 `json:"version"`
 }
 
 // IsTerminal returns true if the saga is in a terminal state.
 func (s *SagaState) IsTerminal() bool {
-	return s.Status == SagaStatusCompleted || s.Status == SagaStatusFailed || s.Status == SagaStatusCompensated
+	return s.Status == SagaStatusCompleted || s.Status == SagaStatusFailed || s.Status == SagaStatusCompensated || s.Status == SagaStatusCompensationFailed
 }
 
 // SagaStore defines the interface for saga persistence.
 type SagaStore interface {
-	// Save persists a saga state.
-	// If the saga exists, it updates it with optimistic concurrency.
-	// If the saga doesn't exist, it creates it.
+	// Save persists a saga state with optimistic concurrency control.
+	//
+	// Version semantics:
+	//   - Version 0: Creates a new saga. Returns error if saga already exists
+	//     (for some implementations).
+	//   - Version > 0: Updates an existing saga. The version must match the
+	//     current stored version, otherwise ErrConcurrencyConflict is returned.
+	//
+	// After a successful save, state.Version is incremented to reflect the
+	// new version stored in the database.
 	Save(ctx context.Context, state *SagaState) error
 
 	// Load retrieves a saga state by ID.

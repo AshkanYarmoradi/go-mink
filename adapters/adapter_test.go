@@ -221,6 +221,7 @@ func TestSagaStatus_String(t *testing.T) {
 		{SagaStatusFailed, "failed"},
 		{SagaStatusCompensating, "compensating"},
 		{SagaStatusCompensated, "compensated"},
+		{SagaStatusCompensationFailed, "compensation_failed"},
 		{SagaStatus(99), "unknown"},
 	}
 
@@ -242,6 +243,7 @@ func TestSagaStatus_IsTerminal(t *testing.T) {
 		{SagaStatusFailed, true},
 		{SagaStatusCompensating, false},
 		{SagaStatusCompensated, true},
+		{SagaStatusCompensationFailed, true},
 	}
 
 	for _, tt := range tests {

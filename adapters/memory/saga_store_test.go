@@ -675,3 +675,124 @@ func TestSagaStore_copyState_WithNilSteps(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, loaded.Steps)
 }
+
+func TestSagaStore_DeepCopy_NestedMaps(t *testing.T) {
+	store := NewSagaStore()
+	ctx := context.Background()
+
+	// Create saga with nested maps and slices
+	nestedMap := map[string]interface{}{
+		"nested": "value",
+	}
+	nestedSlice := []interface{}{"item1", "item2"}
+
+	original := &adapters.SagaState{
+		ID:   "saga-nested",
+		Type: "Test",
+		Data: map[string]interface{}{
+			"simple":      "value",
+			"nestedMap":   nestedMap,
+			"nestedSlice": nestedSlice,
+		},
+		StartedAt: time.Now(),
+	}
+	err := store.Save(ctx, original)
+	require.NoError(t, err)
+
+	// Load and modify nested structures
+	loaded, err := store.Load(ctx, "saga-nested")
+	require.NoError(t, err)
+
+	// Modify nested map
+	loadedNestedMap := loaded.Data["nestedMap"].(map[string]interface{})
+	loadedNestedMap["nested"] = "modified"
+
+	// Modify nested slice
+	loadedNestedSlice := loaded.Data["nestedSlice"].([]interface{})
+	loadedNestedSlice[0] = "modified"
+
+	// Load again and verify original nested structures are unchanged
+	reloaded, err := store.Load(ctx, "saga-nested")
+	require.NoError(t, err)
+
+	reloadedNestedMap := reloaded.Data["nestedMap"].(map[string]interface{})
+	assert.Equal(t, "value", reloadedNestedMap["nested"], "Nested map should not be affected by modifications")
+
+	reloadedNestedSlice := reloaded.Data["nestedSlice"].([]interface{})
+	assert.Equal(t, "item1", reloadedNestedSlice[0], "Nested slice should not be affected by modifications")
+}
+
+func TestDeepCopyMap(t *testing.T) {
+	original := map[string]interface{}{
+		"string":  "value",
+		"number":  42.0,
+		"boolean": true,
+		"nested": map[string]interface{}{
+			"inner": "innerValue",
+		},
+		"slice": []interface{}{"a", "b"},
+	}
+
+	copied := deepCopyMap(original)
+
+	// Verify values are equal
+	assert.Equal(t, original["string"], copied["string"])
+	assert.Equal(t, original["number"], copied["number"])
+	assert.Equal(t, original["boolean"], copied["boolean"])
+
+	// Modify original nested map
+	originalNested := original["nested"].(map[string]interface{})
+	originalNested["inner"] = "modified"
+
+	// Verify copied nested map is unchanged
+	copiedNested := copied["nested"].(map[string]interface{})
+	assert.Equal(t, "innerValue", copiedNested["inner"])
+
+	// Modify original slice
+	originalSlice := original["slice"].([]interface{})
+	originalSlice[0] = "modified"
+
+	// Verify copied slice is unchanged
+	copiedSlice := copied["slice"].([]interface{})
+	assert.Equal(t, "a", copiedSlice[0])
+}
+
+func TestDeepCopyMap_Nil(t *testing.T) {
+	result := deepCopyMap(nil)
+	assert.Nil(t, result)
+}
+
+func TestDeepCopyValue_Primitives(t *testing.T) {
+	assert.Equal(t, "string", deepCopyValue("string"))
+	assert.Equal(t, 42, deepCopyValue(42))
+	assert.Equal(t, 3.14, deepCopyValue(3.14))
+	assert.Equal(t, true, deepCopyValue(true))
+	assert.Nil(t, deepCopyValue(nil))
+}
+
+func TestDeepCopySlice(t *testing.T) {
+	original := []interface{}{
+		"string",
+		42,
+		map[string]interface{}{"key": "value"},
+	}
+
+	copied := deepCopySlice(original)
+
+	// Verify values are equal
+	assert.Equal(t, "string", copied[0])
+	assert.Equal(t, 42, copied[1])
+
+	// Modify original nested map in slice
+	originalNested := original[2].(map[string]interface{})
+	originalNested["key"] = "modified"
+
+	// Verify copied nested map is unchanged
+	copiedNested := copied[2].(map[string]interface{})
+	assert.Equal(t, "value", copiedNested["key"])
+}
+
+func TestDeepCopySlice_Nil(t *testing.T) {
+	result := deepCopySlice(nil)
+	assert.Nil(t, result)
+}
