@@ -146,21 +146,32 @@ type SagaManager struct {
 	sagaLocks sync.Map // map[string]*sync.Mutex
 
 	// processedEvents tracks which events have been processed by each saga.
-	// This is used for idempotency tracking and is stored in SagaState.ProcessedEvents
-	// when persisted. The key is saga ID, the value is a slice of event keys.
+	// This is used for idempotency tracking. The authoritative copy of this
+	// information is stored in the database as SagaState.ProcessedEvents when
+	// a saga is persisted; this sync.Map is an in-memory cache of that
+	// persisted state, keyed by saga ID with a value of a slice of event keys.
 	//
-	// Note on memory growth: Like sagaLocks, entries in processedEvents are stored
-	// indefinitely and are not automatically cleaned up. Each unique saga ID holds
-	// a slice of processed event keys, which can consume more memory per saga than
-	// a single mutex pointer.
+	// During saga hydration (see hydrateSaga), the cache for a given saga ID is
+	// repopulated from the corresponding SagaState.ProcessedEvents loaded from
+	// the store. This means the cache can be safely cleared (for example,
+	// by restarting the process or recreating the SagaManager); it will be
+	// rebuilt from the database on demand and idempotency guarantees are
+	// preserved.
+	//
+	// Note on memory growth: Like sagaLocks, entries in processedEvents are
+	// stored in memory for the lifetime of the SagaManager instance and are
+	// not automatically cleaned up. Each unique saga ID holds a slice of
+	// processed event keys, which can consume more memory per saga than a
+	// single mutex pointer.
 	//
 	// The maxProcessedEventsToTrack constant caps how many processed events are
-	// retained per saga instance, but the number of distinct saga IDs in this map
-	// can still grow over time in long-running processes.
+	// retained per saga instance, but the number of distinct saga IDs in this
+	// map can still grow over time in long-running processes.
 	//
-	// For applications with many unique saga IDs or long-lived workers, consider
-	// an explicit cleanup/rotation strategy at the application level (e.g.,
-	// periodically recreating the SagaManager, or sharding across instances).
+	// For applications with many unique saga IDs or long-lived workers,
+	// consider an explicit cleanup/rotation strategy at the application level
+	// (e.g., periodically recreating the SagaManager so the cache is reset, or
+	// sharding work across multiple SagaManager instances).
 	processedEvents sync.Map // map[string][]string
 }
 
@@ -416,12 +427,13 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		// resolveSagaID may be stale if another goroutine modified the saga between
 		// when we loaded it and when we acquired the lock.
 		//
-		// For NEW sagas (isStarting=true), we can use nil since there's no existing
-		// state to reload - the saga will be created fresh.
+		// This results in two store lookups for existing sagas:
+		//   1. resolveSagaID - to determine which lock to acquire (saga ID needed)
+		//   2. attemptProcessSagaEvent - to get fresh state after lock acquisition
 		//
-		// Previously, we used the pre-loaded resolvedState on the first attempt as an
-		// optimization, but this caused race conditions where stale ProcessedEvents
-		// were restored, leading to duplicate event processing.
+		// The first lookup cannot be eliminated because we need the saga ID to determine
+		// the lock key. For new sagas (isStarting=true), only one lookup occurs since
+		// the saga doesn't exist in the store yet.
 		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, nil)
 		if err == nil {
 			return nil
@@ -566,7 +578,7 @@ func (m *SagaManager) attemptProcessSagaEvent(
 
 	// Skip if saga is in terminal state
 	if !isNew && saga.Status().IsTerminal() {
-		m.logger.Info("Skipping terminal saga - already completed",
+		m.logger.Debug("Skipping terminal saga - already completed",
 			"sagaID", saga.SagaID(),
 			"status", saga.Status(),
 			"version", saga.Version(),
@@ -577,7 +589,7 @@ func (m *SagaManager) attemptProcessSagaEvent(
 
 	// Check if this event was already processed (idempotency check for retries)
 	if m.eventAlreadyProcessed(saga, event) {
-		m.logger.Info("Event already processed by saga, skipping",
+		m.logger.Debug("Event already processed by saga, skipping",
 			"sagaID", saga.SagaID(),
 			"eventType", event.Type,
 			"eventID", event.ID,
@@ -749,6 +761,8 @@ func (m *SagaManager) saveSaga(ctx context.Context, saga Saga, currentEvent *Sto
 	var processedEvents []string
 	if eventsRaw, ok := m.processedEvents.Load(sagaID); ok {
 		if events, ok := eventsRaw.([]string); ok {
+			// Pre-allocate capacity for existing events plus potential currentEvent
+			processedEvents = make([]string, 0, len(events)+1)
 			processedEvents = append(processedEvents, events...)
 		}
 	}

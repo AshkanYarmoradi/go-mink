@@ -87,7 +87,7 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 			status INT NOT NULL DEFAULT 0,
 			current_step INT NOT NULL DEFAULT 0,
 			data JSONB,
-			processed_events JSONB,
+			processed_events JSONB NOT NULL DEFAULT '[]'::jsonb,
 			steps JSONB,
 			failure_reason TEXT,
 			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
