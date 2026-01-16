@@ -170,16 +170,22 @@ github.com/AshkanYarmoradi/go-mink/
   - 200+ unit tests, 67 integration tests, 4 E2E tests
   - Full PostgreSQL integration testing
 
-### Phase 5 (v0.5.0): Security & Advanced Patterns - NEXT
+### Phase 5 (v0.5.0): Security & Advanced Patterns - IN PROGRESS
 
 **Goal**: Production-ready features for enterprise use
 
-**Tasks**:
-1. Saga / Process Manager implementation
-2. Outbox pattern for reliable messaging
-3. Event versioning & upcasting
-4. Field-level encryption (AWS KMS, HashiCorp Vault)
-5. GDPR compliance (crypto-shredding, data export)
+**Completed Tasks**:
+- ✅ Saga / Process Manager implementation
+  - `Saga` interface and `SagaBase` implementation
+  - `SagaManager` for orchestration
+  - `SagaStore` with PostgreSQL and Memory implementations
+  - `testing/sagas` package for testing
+
+**Remaining Tasks**:
+1. Outbox pattern for reliable messaging
+2. Event versioning & upcasting
+3. Field-level encryption (AWS KMS, HashiCorp Vault)
+4. GDPR compliance (crypto-shredding, data export)
 
 ### Phase 6-7: See roadmap.md for details
 

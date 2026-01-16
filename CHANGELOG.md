@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Saga / Process Manager (Phase 5)
+- `Saga` interface - Contract for saga/process manager implementations
+- `SagaBase` - Embeddable base struct with ID, Type, Status, Version management
+- `SagaStatus` enum - Started, Running, Completed, Failed, Compensating, Compensated
+- `SagaStepStatus` enum - Pending, InProgress, Completed, Failed, Compensated
+- `SagaStep` struct - Represents a step in the saga with name, status, timestamps
+- `SagaState` struct - Persisted state including steps, data, correlation ID
+- `SagaStore` interface - Abstraction for saga persistence
+- `NewSagaBase()` - Create new saga base with ID and type
+- `SetStatus()/Status()` - Manage saga status
+- `SetCurrentStep()/CurrentStep()` - Track current step
+- `SetCorrelationID()/CorrelationID()` - Correlation for distributed tracing
+- `StartedAt()/CompletedAt()` - Lifecycle timestamps
+- `Data()/SetData()` - Saga-specific state storage
+- `IsComplete()` - Check if saga completed successfully
+- `HandledEvents()` - Declare events the saga responds to
+- `HandleEvent()` - Process events and return commands
+- `Compensate()` - Generate compensation commands on failure
+
+#### Saga Manager
+- `SagaManager` - Orchestrates saga lifecycle and event processing
+- `SagaCorrelation` - Configuration for correlating events to sagas
+- `SagaFactory` - Function type for creating saga instances
+- `NewSagaManager()` - Create manager with store, subscription adapter, command bus
+- `Register()` - Register saga type with factory and correlations
+- `Start()/Stop()` - Lifecycle management for event subscription
+- `Compensate()` - Manually trigger compensation for a saga
+- `Resume()` - Resume a stalled saga
+- `WithSagaWorkers()` - Configure number of worker goroutines
+- `WithSagaLogger()` - Configure logger for saga operations
+
+#### Saga Store Implementations
+- `memory.NewSagaStore()` - In-memory saga store for testing
+- `memory.SagaStore.Save()` - Persist saga state with optimistic concurrency
+- `memory.SagaStore.Load()` - Load saga by ID
+- `memory.SagaStore.FindByCorrelationID()` - Find saga by correlation
+- `memory.SagaStore.FindByType()` - Find sagas by type and status
+- `memory.SagaStore.Delete()` - Remove saga state
+- `postgres.NewSagaStore()` - PostgreSQL saga store implementation
+- `postgres.SagaStore.Initialize()` - Create saga table and indexes
+- `postgres.WithSagaSchema()` - Configure PostgreSQL schema
+- `postgres.WithSagaTable()` - Configure table name
+
+#### Saga Testing Utilities (`testing/sagas`)
+- `MinkSagaAdapter` - Adapter to use mink sagas with test fixtures
+- `NewMinkSagaAdapter()` - Create adapter from mink.Saga
+- `TestSaga()` - Create saga test fixture
+- `TestCompensation()` - Test compensation flows
+- `GivenEvents()` - Set up triggering events
+- `ThenCommands()` - Assert commands issued by saga
+- `ThenCompleted()` - Assert saga completion
+- `ThenNotCompleted()` - Assert saga still in progress
+- `ThenState()` - Assert saga state
+- `ThenCompensates()` - Assert compensation commands
+
 ## [0.4.0] - 2026-01-03
 
 ### Added
