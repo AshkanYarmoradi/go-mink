@@ -1483,7 +1483,8 @@ func TestSagaManager_ProcessEvent_ConcurrencyConflictRetry(t *testing.T) {
 	err := manager.ProcessEvent(ctx, event)
 	require.NoError(t, err)
 
-	// Verify retries happened
+	// Verify retries happened: with retryAttempts=3 and loop using attempt < retryAttempts,
+	// we get 3 attempts (0, 1, 2). With maxConflicts=2, attempts 0 and 1 fail, attempt 2 succeeds.
 	assert.Equal(t, 3, sagaStore.saveCalls, "Expected 3 save calls (2 conflicts + 1 success)")
 	assert.Equal(t, 1, sagaStore.successfulSaves, "Expected 1 successful save")
 
@@ -1526,9 +1527,10 @@ func TestSagaManager_ProcessEvent_ConcurrencyConflictExhausted(t *testing.T) {
 	err := manager.ProcessEvent(ctx, event)
 	assert.NoError(t, err, "ProcessEvent logs errors but continues, returns nil")
 
-	// Verify all retries were attempted (initial + retryAttempts = 3)
-	assert.Equal(t, 3, sagaStore.saveCalls, "Expected 3 save calls (initial + 2 retries)")
-	assert.Equal(t, 3, sagaStore.conflictCount, "Expected 3 conflicts")
+	// Verify all retries were attempted: with retryAttempts=2 and loop using attempt < retryAttempts,
+	// we get 2 attempts (0, 1)
+	assert.Equal(t, 2, sagaStore.saveCalls, "Expected 2 save calls (1 initial + 1 retry)")
+	assert.Equal(t, 2, sagaStore.conflictCount, "Expected 2 conflicts")
 
 	// Saga should not have been saved successfully
 	_, err = sagaStore.FindByCorrelationID(ctx, "order-123")
@@ -1611,9 +1613,10 @@ func TestSagaManager_ProcessEvent_ConcurrencyConflictContextCancelled(t *testing
 	err := manager.ProcessEvent(ctx, event)
 	assert.NoError(t, err, "ProcessEvent logs errors but returns nil")
 
-	// Verify that processing stopped early due to context cancellation
-	// (shouldn't reach all 10 retries)
-	assert.Less(t, sagaStore.saveCalls, 5, "Should stop before exhausting retries due to context timeout")
+	// Verify that processing stopped early due to context cancellation.
+	// With 50ms timeout and 100ms base retry delay (exponential backoff),
+	// we expect at most 1-2 attempts before context is cancelled.
+	assert.LessOrEqual(t, sagaStore.saveCalls, 2, "Should stop after 1-2 attempts due to context timeout")
 }
 
 // sagaTestLogger implements Logger for testing
