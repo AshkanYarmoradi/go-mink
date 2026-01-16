@@ -927,7 +927,7 @@ func TestSagaStore_ConcurrentSaves(t *testing.T) {
 		err := <-results
 		if err == nil {
 			successCount++
-		} else if err != nil && err.Error() != "" {
+		} else {
 			conflictCount++
 		}
 	}

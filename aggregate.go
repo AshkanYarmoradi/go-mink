@@ -132,13 +132,3 @@ type EventApplier func(aggregate interface{}, event interface{}) error
 
 // AggregateFactory creates new aggregate instances.
 type AggregateFactory func(id string) Aggregate
-
-// VersionSetter is an optional interface that aggregates can implement
-// to allow the event store to set their version after loading events.
-// If an aggregate implements this interface, LoadAggregate will automatically
-// set the version based on the number of events loaded.
-//
-// Note: AggregateBase already implements this interface.
-type VersionSetter interface {
-	SetVersion(v int64)
-}
