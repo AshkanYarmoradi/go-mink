@@ -1645,7 +1645,7 @@ func TestSagaManager_StartAsync_AlreadyRunning(t *testing.T) {
 
 	// Cleanup
 	result1.Cancel()
-	result1.WaitWithTimeout(time.Second)
+	_ = result1.WaitWithTimeout(time.Second)
 }
 
 func TestSagaManager_StartSaga_Success(t *testing.T) {
@@ -1842,5 +1842,5 @@ func TestSagaManager_StartAsync_MultipleSagas(t *testing.T) {
 
 	// Cleanup
 	result.Cancel()
-	result.WaitWithTimeout(time.Second)
+	_ = result.WaitWithTimeout(time.Second)
 }
