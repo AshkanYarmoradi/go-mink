@@ -511,11 +511,12 @@ func (m *SagaManager) attemptProcessSagaEvent(
 				return fmt.Errorf("mink: failed to find saga: %w", err)
 			}
 			if state != nil {
-				m.logger.Debug("Loaded fresh state from store",
+				m.logger.Debug("[SAGA-DEBUG] Loaded fresh state from store",
 					"correlationID", correlationID,
 					"sagaID", state.ID,
 					"version", state.Version,
-					"status", state.Status)
+					"status", state.Status,
+					"processedEventsCount", len(state.ProcessedEvents))
 			}
 		}
 
@@ -600,8 +601,10 @@ func (m *SagaManager) attemptProcessSagaEvent(
 	// Note: We record the processed event first so it's included in the state,
 	// but if save fails with concurrency conflict, the in-memory map will be
 	// refreshed from the reloaded state on retry.
+	// IMPORTANT: Do NOT call saga.IncrementVersion() here - the PostgreSQL store
+	// handles version increment atomically in the SQL (version = version + 1).
+	// The saga's version is used for the WHERE clause to ensure optimistic locking.
 	m.recordProcessedEvent(saga, event)
-	saga.IncrementVersion()
 	if err := m.saveSaga(ctx, saga); err != nil {
 		// On save failure, clear the in-memory processed events cache
 		// so that on retry we don't incorrectly skip processing
@@ -773,7 +776,29 @@ func (m *SagaManager) saveSaga(ctx context.Context, saga Saga) error {
 		Version:         saga.Version(),
 	}
 
-	return m.store.Save(ctx, state)
+	m.logger.Debug("[SAGA-DEBUG] Saving saga state",
+		"sagaID", sagaID,
+		"status", state.Status,
+		"versionBeforeSave", state.Version,
+		"processedEventsCount", len(processedEvents))
+
+	err := m.store.Save(ctx, state)
+	if err != nil {
+		m.logger.Error("Save failed",
+			"sagaID", sagaID,
+			"error", err)
+		return err
+	}
+
+	// Update saga's version with the new version from the database
+	// This is important for any subsequent operations on the same saga instance
+	saga.SetVersion(state.Version)
+
+	m.logger.Info("[SAGA-DEBUG] Save succeeded",
+		"sagaID", sagaID,
+		"versionAfterSave", state.Version)
+
+	return nil
 }
 
 // hydrateSaga restores a saga's state from persisted data.
