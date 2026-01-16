@@ -26,16 +26,16 @@
 
 ---
 
-## 🚀 Current Status: v0.4.0 (Phase 4 Complete)
+## 🚀 Current Status: v0.5.0 (Phase 5 In Progress)
 
-Phase 4 (Developer Experience) is complete with:
-- ✅ BDD-style testing fixtures (Given/When/Then)
-- ✅ Event assertions and diffing utilities
-- ✅ Projection and saga test helpers
-- ✅ PostgreSQL test containers
-- ✅ Prometheus metrics middleware
-- ✅ OpenTelemetry tracing middleware
-- ✅ MessagePack serializer
+Phase 5 (Security & Advanced Patterns) progress:
+- ✅ Saga / Process Manager with compensation handling
+- ✅ Saga Store (PostgreSQL & Memory implementations)
+- ✅ Saga testing utilities
+- ✅ CLI tool with code generation & diagnostics (84.9% coverage)
+- 🔜 Outbox pattern for reliable messaging
+- 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
+- 🔜 GDPR compliance (crypto-shredding)
 
 **Previous phases included:**
 - ✅ Event Store with optimistic concurrency (v0.1.0)
@@ -44,6 +44,8 @@ Phase 4 (Developer Experience) is complete with:
 - ✅ Idempotency, Validation, Correlation tracking (v0.2.0)
 - ✅ Projection Engine & Read Models (v0.3.0)
 - ✅ Event subscriptions & checkpoint management (v0.3.0)
+- ✅ BDD testing fixtures, assertions, test containers (v0.4.0)
+- ✅ Prometheus metrics & OpenTelemetry tracing (v0.4.0)
 
 ---
 
@@ -77,8 +79,8 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 📊 **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
 | 📦 **MessagePack** | ✅ v0.4.0 | Alternative serializer for performance |
 | 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
+| � **Sagas** | ✅ v0.5.0 | Process manager for long-running workflows |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
-| 🔄 **Sagas** | 🔜 v0.5.0 | Process manager for long-running workflows |
 | 📤 **Outbox Pattern** | 🔜 v0.5.0 | Reliable event publishing to external systems |
 
 ## Quick Example

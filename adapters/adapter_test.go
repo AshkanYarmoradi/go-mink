@@ -183,3 +183,183 @@ func TestErrorMessages(t *testing.T) {
 		assert.Equal(t, "mink: adapter is closed", ErrAdapterClosed.Error())
 	})
 }
+
+// ====================================================================
+// Saga Type Tests
+// ====================================================================
+
+func TestSagaNotFoundError(t *testing.T) {
+	t.Run("Error with SagaID", func(t *testing.T) {
+		err := &SagaNotFoundError{SagaID: "saga-123"}
+		assert.Equal(t, "mink: saga not found: saga-123", err.Error())
+	})
+
+	t.Run("Error with CorrelationID", func(t *testing.T) {
+		err := &SagaNotFoundError{CorrelationID: "corr-456"}
+		assert.Equal(t, "mink: saga not found with correlation ID: corr-456", err.Error())
+	})
+
+	t.Run("Is ErrSagaNotFound", func(t *testing.T) {
+		err := &SagaNotFoundError{SagaID: "saga-123"}
+		assert.True(t, errors.Is(err, ErrSagaNotFound))
+	})
+
+	t.Run("Unwrap returns ErrSagaNotFound", func(t *testing.T) {
+		err := &SagaNotFoundError{SagaID: "saga-123"}
+		assert.Equal(t, ErrSagaNotFound, errors.Unwrap(err))
+	})
+}
+
+func TestSagaStatus_String(t *testing.T) {
+	tests := []struct {
+		status   SagaStatus
+		expected string
+	}{
+		{SagaStatusStarted, "started"},
+		{SagaStatusRunning, "running"},
+		{SagaStatusCompleted, "completed"},
+		{SagaStatusFailed, "failed"},
+		{SagaStatusCompensating, "compensating"},
+		{SagaStatusCompensated, "compensated"},
+		{SagaStatusCompensationFailed, "compensation_failed"},
+		{SagaStatus(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.status.String())
+		})
+	}
+}
+
+func TestSagaStatus_IsTerminal(t *testing.T) {
+	tests := []struct {
+		status   SagaStatus
+		terminal bool
+	}{
+		{SagaStatusStarted, false},
+		{SagaStatusRunning, false},
+		{SagaStatusCompleted, true},
+		{SagaStatusFailed, true},
+		{SagaStatusCompensating, false},
+		{SagaStatusCompensated, true},
+		{SagaStatusCompensationFailed, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status.String(), func(t *testing.T) {
+			assert.Equal(t, tt.terminal, tt.status.IsTerminal())
+		})
+	}
+}
+
+func TestSagaStepStatus_String(t *testing.T) {
+	tests := []struct {
+		status   SagaStepStatus
+		expected string
+	}{
+		{SagaStepPending, "pending"},
+		{SagaStepRunning, "running"},
+		{SagaStepCompleted, "completed"},
+		{SagaStepFailed, "failed"},
+		{SagaStepCompensated, "compensated"},
+		{SagaStepStatus(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.status.String())
+		})
+	}
+}
+
+func TestSagaStep(t *testing.T) {
+	now := time.Now()
+	step := SagaStep{
+		Name:        "ProcessPayment",
+		Index:       1,
+		Status:      SagaStepCompleted,
+		Command:     "ProcessPaymentCommand",
+		CompletedAt: &now,
+		Error:       "",
+	}
+
+	assert.Equal(t, "ProcessPayment", step.Name)
+	assert.Equal(t, 1, step.Index)
+	assert.Equal(t, SagaStepCompleted, step.Status)
+	assert.Equal(t, "ProcessPaymentCommand", step.Command)
+	assert.NotNil(t, step.CompletedAt)
+	assert.Empty(t, step.Error)
+}
+
+func TestSagaState(t *testing.T) {
+	now := time.Now()
+	completed := now.Add(time.Hour)
+
+	state := &SagaState{
+		ID:            "saga-123",
+		Type:          "OrderFulfillment",
+		CorrelationID: "order-456",
+		Status:        SagaStatusCompleted,
+		CurrentStep:   3,
+		Data: map[string]interface{}{
+			"orderId":    "order-456",
+			"customerId": "cust-789",
+		},
+		Steps: []SagaStep{
+			{Name: "Step1", Status: SagaStepCompleted},
+			{Name: "Step2", Status: SagaStepCompleted},
+			{Name: "Step3", Status: SagaStepCompleted},
+		},
+		StartedAt:     now,
+		UpdatedAt:     now.Add(30 * time.Minute),
+		CompletedAt:   &completed,
+		FailureReason: "",
+		Version:       3,
+	}
+
+	assert.Equal(t, "saga-123", state.ID)
+	assert.Equal(t, "OrderFulfillment", state.Type)
+	assert.Equal(t, "order-456", state.CorrelationID)
+	assert.Equal(t, SagaStatusCompleted, state.Status)
+	assert.Equal(t, 3, state.CurrentStep)
+	assert.Equal(t, "order-456", state.Data["orderId"])
+	assert.Len(t, state.Steps, 3)
+	assert.NotNil(t, state.CompletedAt)
+	assert.Equal(t, int64(3), state.Version)
+}
+
+func TestSagaState_IsTerminal(t *testing.T) {
+	tests := []struct {
+		status   SagaStatus
+		terminal bool
+	}{
+		{SagaStatusStarted, false},
+		{SagaStatusRunning, false},
+		{SagaStatusCompleted, true},
+		{SagaStatusFailed, true},
+		{SagaStatusCompensating, false},
+		{SagaStatusCompensated, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status.String(), func(t *testing.T) {
+			state := &SagaState{Status: tt.status}
+			assert.Equal(t, tt.terminal, state.IsTerminal())
+		})
+	}
+}
+
+func TestSagaSentinelErrors(t *testing.T) {
+	t.Run("ErrSagaNotFound has mink prefix", func(t *testing.T) {
+		assert.Contains(t, ErrSagaNotFound.Error(), "mink:")
+	})
+
+	t.Run("ErrSagaAlreadyExists has mink prefix", func(t *testing.T) {
+		assert.Contains(t, ErrSagaAlreadyExists.Error(), "mink:")
+	})
+
+	t.Run("ErrNilAggregate has mink prefix", func(t *testing.T) {
+		assert.Contains(t, ErrNilAggregate.Error(), "mink:")
+	})
+}

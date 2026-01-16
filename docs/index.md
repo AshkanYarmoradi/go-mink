@@ -56,8 +56,8 @@ Building event-sourced applications in Go means wrestling with **boilerplate cod
 | 🧪 | **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
 | 📊 | **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
 | 🛠️ | **CLI** | ✅ v0.5.0 | Generate code, run migrations, diagnose (84.9% coverage) |
+| � | **Sagas** | ✅ v0.5.0 | Coordinate long-running business processes |
 | 🔐 | **Security** | 🔜 v0.5.0 | Field-level encryption & GDPR compliance |
-| 🔄 | **Sagas** | 🔜 v0.5.0 | Coordinate long-running business processes |
 | 📤 | **Outbox** | 🔜 v0.5.0 | Reliable event publishing |
 
 </div>
