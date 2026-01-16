@@ -1597,9 +1597,14 @@ func TestSagaManager_ConcurrentEventsForSameSaga(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify all events were processed
+	// Verify all events were processed and are unique
 	orderMu.Lock()
 	assert.Len(t, eventOrder, 5, "All 5 events should be processed")
+	seen := make(map[string]struct{}, len(eventOrder))
+	for _, id := range eventOrder {
+		seen[id] = struct{}{}
+	}
+	assert.Equal(t, len(eventOrder), len(seen), "All processed event IDs should be unique")
 	orderMu.Unlock()
 
 	// Verify saga still exists and is in a valid state

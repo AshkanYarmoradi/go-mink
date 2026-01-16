@@ -125,9 +125,21 @@ type SagaManager struct {
 	//
 	// Note on memory growth: Locks are stored indefinitely and not cleaned up.
 	// Each unique saga ID consumes ~80 bytes (map entry + sync.Mutex). For most
-	// applications with bounded saga lifecycles, this is negligible. If your
-	// application creates millions of unique sagas, consider implementing
-	// periodic cleanup or using a time-based eviction strategy.
+	// applications with bounded saga lifecycles, this is negligible.
+	//
+	// For applications that may create millions of unique saga IDs, you should
+	// plan an explicit cleanup/rotation strategy at the application level. Two
+	// common patterns are:
+	//   - Periodically recreating the SagaManager in long-running workers so
+	//     that the internal lock map is reset on a controlled schedule.
+	//   - Sharding work across multiple SagaManager instances (for different
+	//     saga types or tenants) so that the number of distinct saga IDs per
+	//     process remains bounded.
+	//
+	// In addition, consider exporting and monitoring metrics (for example via
+	// the middleware/metrics package) such as memory usage and the number of
+	// active saga instances per process. Sudden or unbounded growth in these
+	// metrics is a signal to tighten your rotation policy or sharding model.
 	sagaLocks sync.Map // map[string]*sync.Mutex
 }
 
@@ -337,7 +349,9 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 	}
 
 	// First, determine the saga ID from the correlation (before acquiring per-saga lock)
-	sagaID, correlationID, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
+	// This also loads the state from store, which we pass to attemptProcessSagaEvent
+	// to avoid duplicate store queries.
+	sagaID, correlationID, resolvedState, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
 	if sagaID == "" && !isStarting {
 		// No existing saga found and event doesn't start one
 		return nil
@@ -374,10 +388,13 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 			}
 		}
 
-		// Always load fresh state on each attempt (including first attempt)
-		// This ensures we see the latest state, especially important when
-		// multiple event sources (e.g., pg_notify + polling) deliver the same event
-		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory)
+		// On first attempt, use the state we already loaded in resolveSagaID.
+		// On retries, pass nil to force a fresh load from store.
+		var stateToUse *SagaState
+		if attempt == 0 {
+			stateToUse = resolvedState
+		}
+		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, stateToUse)
 		if err == nil {
 			return nil
 		}
@@ -400,9 +417,10 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 }
 
 // resolveSagaID determines the saga ID for an event based on correlations.
-// It returns the saga ID if an existing saga is found, or empty string if not.
+// It returns the saga ID and loaded state if an existing saga is found, or empty values if not.
 // It also returns whether this event could start a new saga.
-func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event StoredEvent, correlations []SagaCorrelation) (sagaID, correlationID string, isStarting bool) {
+// The returned state can be passed to attemptProcessSagaEvent to avoid duplicate store queries.
+func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event StoredEvent, correlations []SagaCorrelation) (sagaID, correlationID string, state *SagaState, isStarting bool) {
 	for _, correlation := range correlations {
 		corrID := correlation.CorrelationIDFunc(event)
 		if corrID == "" {
@@ -410,34 +428,36 @@ func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event 
 		}
 
 		// Try to find existing saga
-		state, err := m.store.FindByCorrelationID(ctx, corrID)
+		loadedState, err := m.store.FindByCorrelationID(ctx, corrID)
 		if err == nil {
-			return state.ID, corrID, false
+			return loadedState.ID, corrID, loadedState, false
 		}
 
 		// Check if this event can start a new saga
 		if isStartingEvent(correlation.StartingEvents, event.Type) {
-			return "", corrID, true
+			return "", corrID, nil, true
 		}
 	}
 
-	return "", "", false
+	return "", "", nil, false
 }
 
 // attemptProcessSagaEvent performs a single attempt to process an event for a saga.
 // This method is called under a per-saga lock, so we are guaranteed to have exclusive
-// access to this saga instance. The state is always loaded fresh from the store to
-// ensure we see the latest state, especially important when multiple event sources
-// (e.g., pg_notify + polling) may have delivered the same event.
+// access to this saga instance.
+//
+// The preloadedState parameter allows passing a state that was already loaded by
+// resolveSagaID to avoid duplicate store queries on the first attempt. Pass nil
+// to force a fresh load from the store (used on retry attempts).
 func (m *SagaManager) attemptProcessSagaEvent(
 	ctx context.Context,
 	sagaType string,
 	event StoredEvent,
 	correlations []SagaCorrelation,
 	factory SagaFactory,
+	preloadedState *SagaState,
 ) error {
 	// Find or create saga based on correlation
-	// Note: We reload state from store here (not cache) to ensure freshness
 	var saga Saga
 	var state *SagaState
 	var isNew bool
@@ -448,21 +468,25 @@ func (m *SagaManager) attemptProcessSagaEvent(
 			continue
 		}
 
-		// Load fresh state from store - this is critical for detecting
-		// terminal status and already-processed events
-		var err error
-		state, err = m.store.FindByCorrelationID(ctx, correlationID)
-		if err == nil {
-			// Found existing saga - hydrate it with fresh state
+		// Use preloaded state if available (first attempt), otherwise load fresh
+		if preloadedState != nil && preloadedState.CorrelationID == correlationID {
+			state = preloadedState
+		} else {
+			// Load fresh state from store - critical for retries to see latest state
+			var err error
+			state, err = m.store.FindByCorrelationID(ctx, correlationID)
+			if err != nil && !errors.Is(err, ErrSagaNotFound) {
+				return fmt.Errorf("mink: failed to find saga: %w", err)
+			}
+		}
+
+		if state != nil {
+			// Found existing saga - hydrate it with state
 			saga = factory(state.ID)
 			if err := m.hydrateSaga(saga, state); err != nil {
 				return fmt.Errorf("mink: failed to hydrate saga: %w", err)
 			}
 			break
-		}
-
-		if !errors.Is(err, ErrSagaNotFound) {
-			return fmt.Errorf("mink: failed to find saga: %w", err)
 		}
 
 		// Check if this event can start a new saga
