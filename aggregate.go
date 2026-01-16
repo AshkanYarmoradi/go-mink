@@ -120,6 +120,13 @@ type VersionedAggregate interface {
 	OriginalVersion() int64
 }
 
+// VersionSetter is an optional interface that aggregates can implement to allow
+// the EventStore to set their version during loading. This is used for optimistic
+// concurrency control in SaveAggregate. AggregateBase implements this interface.
+type VersionSetter interface {
+	SetVersion(v int64)
+}
+
 // EventApplier is a function type for applying events to aggregates.
 type EventApplier func(aggregate interface{}, event interface{}) error
 

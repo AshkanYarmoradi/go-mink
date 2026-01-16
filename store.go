@@ -282,9 +282,11 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		lastVersion = stored.Version
 	}
 
-	// Set the aggregate's version to the last loaded event version
-	// This is needed for optimistic concurrency in SaveAggregate
-	if setter, ok := agg.(interface{ SetVersion(int64) }); ok && len(storedEvents) > 0 {
+	// Set the aggregate's version to the last loaded event version.
+	// Aggregates that implement VersionSetter (such as those embedding AggregateBase)
+	// will have their version automatically set during load, which is used for
+	// optimistic concurrency control in SaveAggregate.
+	if setter, ok := agg.(VersionSetter); ok && len(storedEvents) > 0 {
 		setter.SetVersion(lastVersion)
 	}
 

@@ -424,16 +424,18 @@ func (m *SagaManager) handleSagaFailure(ctx context.Context, saga Saga, original
 	return m.saveSaga(ctx, saga)
 }
 
-// dispatchCommand dispatches a command with retry logic.
+// dispatchCommand dispatches a command with retry logic using exponential backoff.
 func (m *SagaManager) dispatchCommand(ctx context.Context, saga Saga, cmd Command) error {
 	var lastErr error
 
 	for attempt := 0; attempt < m.retryAttempts; attempt++ {
 		if attempt > 0 {
+			// Exponential backoff: retryDelay, 2*retryDelay, 4*retryDelay, ...
+			delay := m.retryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(m.retryDelay * time.Duration(attempt)):
+			case <-time.After(delay):
 			}
 		}
 

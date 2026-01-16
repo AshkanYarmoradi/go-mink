@@ -92,6 +92,8 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			completed_at TIMESTAMPTZ,
+			-- Version starts at 1 for saved sagas (0 = unsaved/new saga in application code)
+			-- The INSERT explicitly sets version=1, this DEFAULT is for direct DB inserts
 			version BIGINT NOT NULL DEFAULT 1
 		);
 
