@@ -115,11 +115,13 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 // Save persists a saga state with optimistic concurrency control.
 //
 // Version semantics:
-//   - Version 0: Creates a new saga. Uses INSERT.
+//   - Version 0: Creates a new saga. Uses INSERT with version=1.
 //   - Version > 0: Updates an existing saga. Uses UPDATE with version check.
 //     If the version doesn't match, returns ErrConcurrencyConflict.
 //
-// After a successful save, state.Version is incremented to reflect the new version.
+// The version is incremented atomically by the database (version = version + 1)
+// and returned via RETURNING clause. After a successful save, state.Version is
+// updated with the new version from the database.
 func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 	if state == nil {
 		return errors.New("mink/postgres/saga: state is nil")

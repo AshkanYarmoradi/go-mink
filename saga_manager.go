@@ -148,6 +148,19 @@ type SagaManager struct {
 	// processedEvents tracks which events have been processed by each saga.
 	// This is used for idempotency tracking and is stored in SagaState.ProcessedEvents
 	// when persisted. The key is saga ID, the value is a slice of event keys.
+	//
+	// Note on memory growth: Like sagaLocks, entries in processedEvents are stored
+	// indefinitely and are not automatically cleaned up. Each unique saga ID holds
+	// a slice of processed event keys, which can consume more memory per saga than
+	// a single mutex pointer.
+	//
+	// The maxProcessedEventsToTrack constant caps how many processed events are
+	// retained per saga instance, but the number of distinct saga IDs in this map
+	// can still grow over time in long-running processes.
+	//
+	// For applications with many unique saga IDs or long-lived workers, consider
+	// an explicit cleanup/rotation strategy at the application level (e.g.,
+	// periodically recreating the SagaManager, or sharding across instances).
 	processedEvents sync.Map // map[string][]string
 }
 
@@ -600,14 +613,15 @@ func (m *SagaManager) attemptProcessSagaEvent(
 	// Note: We record the processed event first so it's included in the state,
 	// but if save fails with concurrency conflict, the in-memory map will be
 	// refreshed from the reloaded state on retry.
-	// IMPORTANT: Do NOT call saga.IncrementVersion() here - the PostgreSQL store
-	// handles version increment atomically in the SQL (version = version + 1).
-	// The saga's version is used for the WHERE clause to ensure optimistic locking.
+	// IMPORTANT: Do NOT call saga.IncrementVersion() here - the saga store
+	// implementation is responsible for atomically incrementing and validating
+	// the version using optimistic concurrency control.
 	m.recordProcessedEvent(saga, event)
 	if err := m.saveSaga(ctx, saga); err != nil {
-		// On save failure, clear the in-memory processed events cache
-		// so that on retry we don't incorrectly skip processing
-		m.processedEvents.Delete(saga.SagaID())
+		// On save failure, we do NOT delete the in-memory processed events cache.
+		// Deleting could cause a race condition if another goroutine successfully
+		// saved the saga. Instead, we let the retry logic reload fresh state
+		// from the store, which will restore the correct ProcessedEvents.
 		return err
 	}
 	return nil
