@@ -1574,8 +1574,8 @@ func TestSagaManager_ConcurrentEventsForSameSaga(t *testing.T) {
 
 	// Clear the event order for subsequent concurrent events
 	orderMu.Lock()
-	defer orderMu.Unlock()
 	eventOrder = nil
+	orderMu.Unlock()
 
 	// Now send multiple different events for the same saga concurrently
 	var wg sync.WaitGroup
