@@ -3,9 +3,11 @@ package commands
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/AshkanYarmoradi/go-mink/cli/config"
 	"github.com/AshkanYarmoradi/go-mink/cli/ui"
 	tea "github.com/charmbracelet/bubbletea"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3720,10 +3723,49 @@ func getTestDatabaseURL() string {
 }
 
 // skipIfNoPostgres skips the test if PostgreSQL is not available
+// and ensures the mink schema exists for tests that need it
 func skipIfNoPostgres(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("Skipping PostgreSQL integration test in short mode")
+	}
+
+	db, err := sql.Open("pgx", getTestDatabaseURL())
+	if err != nil {
+		t.Skipf("Skipping PostgreSQL test: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		t.Skipf("Skipping PostgreSQL test: database not available: %v", err)
+	}
+
+	// Ensure mink schema exists (only once per test run)
+	ensureMinkSchema(t, db)
+}
+
+var (
+	schemaOnce sync.Once
+	schemaErr  error
+)
+
+// ensureMinkSchema creates the mink schema if it doesn't exist
+func ensureMinkSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	schemaOnce.Do(func() {
+		_, schemaErr = db.Exec(`
+			CREATE SCHEMA IF NOT EXISTS mink;
+			CREATE TABLE IF NOT EXISTS mink.migrations (
+				name VARCHAR(255) PRIMARY KEY,
+				applied_at TIMESTAMPTZ DEFAULT NOW()
+			);
+		`)
+	})
+	if schemaErr != nil {
+		t.Fatalf("Failed to create mink schema: %v", schemaErr)
 	}
 }
 

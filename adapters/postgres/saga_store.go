@@ -87,6 +87,7 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 			status INT NOT NULL DEFAULT 0,
 			current_step INT NOT NULL DEFAULT 0,
 			data JSONB,
+			processed_events JSONB NOT NULL DEFAULT '[]'::jsonb,
 			steps JSONB,
 			failure_reason TEXT,
 			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -114,11 +115,13 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 // Save persists a saga state with optimistic concurrency control.
 //
 // Version semantics:
-//   - Version 0: Creates a new saga. Uses INSERT.
+//   - Version 0: Creates a new saga. Uses INSERT with version=1.
 //   - Version > 0: Updates an existing saga. Uses UPDATE with version check.
 //     If the version doesn't match, returns ErrConcurrencyConflict.
 //
-// After a successful save, state.Version is incremented to reflect the new version.
+// The version is incremented atomically by the database (version = version + 1)
+// and returned via RETURNING clause. After a successful save, state.Version is
+// updated with the new version from the database.
 func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 	if state == nil {
 		return errors.New("mink/postgres/saga: state is nil")
@@ -134,6 +137,11 @@ func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 		return fmt.Errorf("mink/postgres/saga: failed to marshal data: %w", err)
 	}
 
+	processedEventsJSON, err := json.Marshal(state.ProcessedEvents)
+	if err != nil {
+		return fmt.Errorf("mink/postgres/saga: failed to marshal processed events: %w", err)
+	}
+
 	stepsJSON, err := json.Marshal(state.Steps)
 	if err != nil {
 		return fmt.Errorf("mink/postgres/saga: failed to marshal steps: %w", err)
@@ -143,12 +151,12 @@ func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 	query := `
 		INSERT INTO ` + tableQ + ` (
 			id, type, correlation_id, status, current_step,
-			data, steps, failure_reason, started_at, updated_at,
+			data, processed_events, steps, failure_reason, started_at, updated_at,
 			completed_at, version
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10,
-			$11, 1
+			$6, $7, $8, $9, $10, $11,
+			$12, 1
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			type = EXCLUDED.type,
@@ -156,12 +164,13 @@ func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 			status = EXCLUDED.status,
 			current_step = EXCLUDED.current_step,
 			data = EXCLUDED.data,
+			processed_events = EXCLUDED.processed_events,
 			steps = EXCLUDED.steps,
 			failure_reason = EXCLUDED.failure_reason,
 			updated_at = EXCLUDED.updated_at,
 			completed_at = EXCLUDED.completed_at,
 			version = ` + tableQ + `.version + 1
-		WHERE ` + tableQ + `.version = $12
+		WHERE ` + tableQ + `.version = $13
 		RETURNING version
 	`
 
@@ -173,6 +182,7 @@ func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 		int(state.Status),
 		state.CurrentStep,
 		dataJSON,
+		processedEventsJSON,
 		stepsJSON,
 		nullString(state.FailureReason),
 		state.StartedAt,
@@ -203,37 +213,14 @@ func (s *SagaStore) Load(ctx context.Context, sagaID string) (*mink.SagaState, e
 	tableQ := s.fullTableName()
 	query := `
 		SELECT id, type, correlation_id, status, current_step,
-			data, steps, failure_reason, started_at, updated_at,
+			data, processed_events, steps, failure_reason, started_at, updated_at,
 			completed_at, version
 		FROM ` + tableQ + `
 		WHERE id = $1
 	`
 
-	var (
-		state         mink.SagaState
-		correlationID sql.NullString
-		dataJSON      []byte
-		stepsJSON     []byte
-		failureReason sql.NullString
-		completedAt   sql.NullTime
-		status        int
-	)
-
-	err := s.db.QueryRowContext(ctx, query, sagaID).Scan(
-		&state.ID,
-		&state.Type,
-		&correlationID,
-		&status,
-		&state.CurrentStep,
-		&dataJSON,
-		&stepsJSON,
-		&failureReason,
-		&state.StartedAt,
-		&state.UpdatedAt,
-		&completedAt,
-		&state.Version,
-	)
-
+	var scanner sagaRowScanner
+	err := s.db.QueryRowContext(ctx, query, sagaID).Scan(scanner.scanTargets()...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &mink.SagaNotFoundError{SagaID: sagaID}
@@ -241,27 +228,7 @@ func (s *SagaStore) Load(ctx context.Context, sagaID string) (*mink.SagaState, e
 		return nil, fmt.Errorf("mink/postgres/saga: failed to load saga: %w", err)
 	}
 
-	state.Status = mink.SagaStatus(status)
-	state.CorrelationID = correlationID.String
-	state.FailureReason = failureReason.String
-
-	if completedAt.Valid {
-		state.CompletedAt = &completedAt.Time
-	}
-
-	if len(dataJSON) > 0 && string(dataJSON) != "null" {
-		if err := json.Unmarshal(dataJSON, &state.Data); err != nil {
-			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal data: %w", err)
-		}
-	}
-
-	if len(stepsJSON) > 0 && string(stepsJSON) != "null" {
-		if err := json.Unmarshal(stepsJSON, &state.Steps); err != nil {
-			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal steps: %w", err)
-		}
-	}
-
-	return &state, nil
+	return scanner.toSagaState()
 }
 
 // FindByCorrelationID finds a saga by its correlation ID.
@@ -273,7 +240,7 @@ func (s *SagaStore) FindByCorrelationID(ctx context.Context, correlationID strin
 	tableQ := s.fullTableName()
 	query := `
 		SELECT id, type, correlation_id, status, current_step,
-			data, steps, failure_reason, started_at, updated_at,
+			data, processed_events, steps, failure_reason, started_at, updated_at,
 			completed_at, version
 		FROM ` + tableQ + `
 		WHERE correlation_id = $1
@@ -281,31 +248,8 @@ func (s *SagaStore) FindByCorrelationID(ctx context.Context, correlationID strin
 		LIMIT 1
 	`
 
-	var (
-		state            mink.SagaState
-		correlationIDCol sql.NullString
-		dataJSON         []byte
-		stepsJSON        []byte
-		failureReason    sql.NullString
-		completedAt      sql.NullTime
-		status           int
-	)
-
-	err := s.db.QueryRowContext(ctx, query, correlationID).Scan(
-		&state.ID,
-		&state.Type,
-		&correlationIDCol,
-		&status,
-		&state.CurrentStep,
-		&dataJSON,
-		&stepsJSON,
-		&failureReason,
-		&state.StartedAt,
-		&state.UpdatedAt,
-		&completedAt,
-		&state.Version,
-	)
-
+	var scanner sagaRowScanner
+	err := s.db.QueryRowContext(ctx, query, correlationID).Scan(scanner.scanTargets()...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &mink.SagaNotFoundError{CorrelationID: correlationID}
@@ -313,27 +257,7 @@ func (s *SagaStore) FindByCorrelationID(ctx context.Context, correlationID strin
 		return nil, fmt.Errorf("mink/postgres/saga: failed to find saga: %w", err)
 	}
 
-	state.Status = mink.SagaStatus(status)
-	state.CorrelationID = correlationIDCol.String
-	state.FailureReason = failureReason.String
-
-	if completedAt.Valid {
-		state.CompletedAt = &completedAt.Time
-	}
-
-	if len(dataJSON) > 0 && string(dataJSON) != "null" {
-		if err := json.Unmarshal(dataJSON, &state.Data); err != nil {
-			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal data: %w", err)
-		}
-	}
-
-	if len(stepsJSON) > 0 && string(stepsJSON) != "null" {
-		if err := json.Unmarshal(stepsJSON, &state.Steps); err != nil {
-			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal steps: %w", err)
-		}
-	}
-
-	return &state, nil
+	return scanner.toSagaState()
 }
 
 // FindByType finds all sagas of a given type with the specified statuses.
@@ -349,7 +273,7 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 	if len(statuses) == 0 {
 		query = `
 			SELECT id, type, correlation_id, status, current_step,
-				data, steps, failure_reason, started_at, updated_at,
+				data, processed_events, steps, failure_reason, started_at, updated_at,
 				completed_at, version
 			FROM ` + tableQ + `
 			WHERE type = $1
@@ -367,7 +291,7 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 
 		query = `
 			SELECT id, type, correlation_id, status, current_step,
-				data, steps, failure_reason, started_at, updated_at,
+				data, processed_events, steps, failure_reason, started_at, updated_at,
 				completed_at, version
 			FROM ` + tableQ + `
 			WHERE type = $1 AND status IN (` + joinStrings(placeholders, ", ") + `)
@@ -384,54 +308,16 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 
 	var sagas []*mink.SagaState
 	for rows.Next() {
-		var (
-			state         mink.SagaState
-			correlationID sql.NullString
-			dataJSON      []byte
-			stepsJSON     []byte
-			failureReason sql.NullString
-			completedAt   sql.NullTime
-			status        int
-		)
-
-		if err := rows.Scan(
-			&state.ID,
-			&state.Type,
-			&correlationID,
-			&status,
-			&state.CurrentStep,
-			&dataJSON,
-			&stepsJSON,
-			&failureReason,
-			&state.StartedAt,
-			&state.UpdatedAt,
-			&completedAt,
-			&state.Version,
-		); err != nil {
+		var scanner sagaRowScanner
+		if err := rows.Scan(scanner.scanTargets()...); err != nil {
 			return nil, fmt.Errorf("mink/postgres/saga: failed to scan row: %w", err)
 		}
 
-		state.Status = mink.SagaStatus(status)
-		state.CorrelationID = correlationID.String
-		state.FailureReason = failureReason.String
-
-		if completedAt.Valid {
-			state.CompletedAt = &completedAt.Time
+		state, err := scanner.toSagaState()
+		if err != nil {
+			return nil, err
 		}
-
-		if len(dataJSON) > 0 && string(dataJSON) != "null" {
-			if err := json.Unmarshal(dataJSON, &state.Data); err != nil {
-				return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal data: %w", err)
-			}
-		}
-
-		if len(stepsJSON) > 0 && string(stepsJSON) != "null" {
-			if err := json.Unmarshal(stepsJSON, &state.Steps); err != nil {
-				return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal steps: %w", err)
-			}
-		}
-
-		sagas = append(sagas, &state)
+		sagas = append(sagas, state)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -547,4 +433,66 @@ func joinStrings(strs []string, sep string) string {
 		result += sep + strs[i]
 	}
 	return result
+}
+
+// sagaRowScanner holds the intermediate scan results for a saga row.
+type sagaRowScanner struct {
+	state               mink.SagaState
+	correlationID       sql.NullString
+	dataJSON            []byte
+	processedEventsJSON []byte
+	stepsJSON           []byte
+	failureReason       sql.NullString
+	completedAt         sql.NullTime
+	status              int
+}
+
+// scanTargets returns pointers for sql.Scan to populate the scanner.
+func (r *sagaRowScanner) scanTargets() []interface{} {
+	return []interface{}{
+		&r.state.ID,
+		&r.state.Type,
+		&r.correlationID,
+		&r.status,
+		&r.state.CurrentStep,
+		&r.dataJSON,
+		&r.processedEventsJSON,
+		&r.stepsJSON,
+		&r.failureReason,
+		&r.state.StartedAt,
+		&r.state.UpdatedAt,
+		&r.completedAt,
+		&r.state.Version,
+	}
+}
+
+// toSagaState converts the scanned row data into a SagaState.
+func (r *sagaRowScanner) toSagaState() (*mink.SagaState, error) {
+	r.state.Status = mink.SagaStatus(r.status)
+	r.state.CorrelationID = r.correlationID.String
+	r.state.FailureReason = r.failureReason.String
+
+	if r.completedAt.Valid {
+		r.state.CompletedAt = &r.completedAt.Time
+	}
+
+	if len(r.dataJSON) > 0 && string(r.dataJSON) != "null" {
+		if err := json.Unmarshal(r.dataJSON, &r.state.Data); err != nil {
+			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal data: %w", err)
+		}
+	}
+
+	if len(r.processedEventsJSON) > 0 && string(r.processedEventsJSON) != "null" {
+		if err := json.Unmarshal(r.processedEventsJSON, &r.state.ProcessedEvents); err != nil {
+			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal processed events: %w", err)
+		}
+	}
+
+	if len(r.stepsJSON) > 0 && string(r.stepsJSON) != "null" {
+		if err := json.Unmarshal(r.stepsJSON, &r.state.Steps); err != nil {
+			return nil, fmt.Errorf("mink/postgres/saga: failed to unmarshal steps: %w", err)
+		}
+	}
+
+	return &r.state, nil
 }

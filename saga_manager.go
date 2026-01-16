@@ -86,8 +86,10 @@ func WithSagaRetryDelay(d time.Duration) SagaManagerOption {
 //     loaded fresh from the store. This ensures terminal status checks and
 //     idempotency checks see the latest state.
 //
-//  3. Event Idempotency: Processed events are tracked in the saga's data
-//     (_processedEvents field) to prevent duplicate processing on retries.
+//  3. Event Idempotency: Processed events are tracked in the SagaState.ProcessedEvents
+//     field (not in the saga's Data map) to prevent duplicate processing on retries.
+//     This is handled transparently by the SagaManager - saga implementations don't
+//     need to preserve these internal tracking fields.
 //
 //  4. Optimistic Concurrency: The saga store uses version-based optimistic
 //     concurrency control. On conflict, the event is retried with fresh state.
@@ -142,6 +144,35 @@ type SagaManager struct {
 	// active saga instances per process. Sudden or unbounded growth in these
 	// metrics is a signal to tighten your rotation policy or sharding model.
 	sagaLocks sync.Map // map[string]*sync.Mutex
+
+	// processedEvents tracks which events have been processed by each saga.
+	// This is used for idempotency tracking. The authoritative copy of this
+	// information is stored in the database as SagaState.ProcessedEvents when
+	// a saga is persisted; this sync.Map is an in-memory cache of that
+	// persisted state, keyed by saga ID with a value of a slice of event keys.
+	//
+	// During saga hydration (see hydrateSaga), the cache for a given saga ID is
+	// repopulated from the corresponding SagaState.ProcessedEvents loaded from
+	// the store. This means the cache can be safely cleared (for example,
+	// by restarting the process or recreating the SagaManager); it will be
+	// rebuilt from the database on demand and idempotency guarantees are
+	// preserved.
+	//
+	// Note on memory growth: Like sagaLocks, entries in processedEvents are
+	// stored in memory for the lifetime of the SagaManager instance and are
+	// not automatically cleaned up. Each unique saga ID holds a slice of
+	// processed event keys, which can consume more memory per saga than a
+	// single mutex pointer.
+	//
+	// The maxProcessedEventsToTrack constant caps how many processed events are
+	// retained per saga instance, but the number of distinct saga IDs in this
+	// map can still grow over time in long-running processes.
+	//
+	// For applications with many unique saga IDs or long-lived workers,
+	// consider an explicit cleanup/rotation strategy at the application level
+	// (e.g., periodically recreating the SagaManager so the cache is reset, or
+	// sharding work across multiple SagaManager instances).
+	processedEvents sync.Map // map[string][]string
 }
 
 // NewSagaManager creates a new SagaManager.
@@ -349,18 +380,12 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return fmt.Errorf("mink: saga factory not found for type %q", sagaType)
 	}
 
-	// First, determine the saga ID from the correlation (before acquiring the per-saga lock).
-	// NOTE: resolveSagaID may perform a store lookup to load existing saga state. Doing this
-	// before taking the per-saga lock is an intentional optimization for the common case
-	// (low contention, first attempt), because it allows us to pass the already-loaded state
-	// into attemptProcessSagaEvent and avoid an extra store query on the success path.
-	//
-	// Trade-off: under high concurrency with many duplicate or correlated events for the same
-	// saga, multiple goroutines can reach this point concurrently and perform redundant store
-	// lookups before being serialized by the per-saga lock below. If a deployment prefers to
-	// minimize redundant store access over optimizing the no-conflict path, the locking strategy
-	// here should be revisited so that the per-saga lock is acquired before calling resolveSagaID.
-	sagaID, correlationID, resolvedState, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
+	// Determine the saga ID from the correlation.
+	// NOTE: resolveSagaID performs a store lookup to find existing saga state.
+	// This lookup is done BEFORE acquiring the per-saga lock to determine which
+	// lock to acquire. The returned state is NOT used for processing - we always
+	// reload fresh state after acquiring the lock to avoid race conditions.
+	sagaID, correlationID, _, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
 	if sagaID == "" && !isStarting {
 		// No existing saga found and event doesn't start one
 		return nil
@@ -397,13 +422,19 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 			}
 		}
 
-		// On first attempt, use the state we already loaded in resolveSagaID.
-		// On retries, pass nil to force a fresh load from store.
-		var stateToUse *SagaState
-		if attempt == 0 {
-			stateToUse = resolvedState
-		}
-		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, stateToUse)
+		// IMPORTANT: For existing sagas, we must ALWAYS reload the state after acquiring
+		// the lock to ensure we have the latest version. The pre-loaded state from
+		// resolveSagaID may be stale if another goroutine modified the saga between
+		// when we loaded it and when we acquired the lock.
+		//
+		// This results in two store lookups for existing sagas:
+		//   1. resolveSagaID - to determine which lock to acquire (saga ID needed)
+		//   2. attemptProcessSagaEvent - to get fresh state after lock acquisition
+		//
+		// The first lookup cannot be eliminated because we need the saga ID to determine
+		// the lock key. For new sagas (isStarting=true), only one lookup occurs since
+		// the saga doesn't exist in the store yet.
+		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, nil)
 		if err == nil {
 			return nil
 		}
@@ -493,12 +524,23 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		//     saga should be created for this correlation ID.
 		if preloadedState != nil && preloadedState.CorrelationID == correlationID {
 			state = preloadedState
+			m.logger.Debug("Using preloaded state",
+				"correlationID", correlationID,
+				"version", state.Version,
+				"status", state.Status)
 		} else {
 			// Load fresh state from store - critical for retries to see latest state
 			var err error
 			state, err = m.store.FindByCorrelationID(ctx, correlationID)
 			if err != nil && !errors.Is(err, ErrSagaNotFound) {
 				return fmt.Errorf("mink: failed to find saga: %w", err)
+			}
+			if state != nil {
+				m.logger.Debug("Loaded saga state from store",
+					"correlationID", correlationID,
+					"sagaID", state.ID,
+					"version", state.Version,
+					"status", state.Status)
 			}
 		}
 
@@ -536,9 +578,12 @@ func (m *SagaManager) attemptProcessSagaEvent(
 
 	// Skip if saga is in terminal state
 	if !isNew && saga.Status().IsTerminal() {
-		m.logger.Debug("Skipping terminal saga",
+		m.logger.Debug("Skipping terminal saga - already completed",
 			"sagaID", saga.SagaID(),
-			"status", saga.Status())
+			"status", saga.Status(),
+			"version", saga.Version(),
+			"eventType", event.Type,
+			"eventID", event.ID)
 		return nil
 	}
 
@@ -547,6 +592,7 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		m.logger.Debug("Event already processed by saga, skipping",
 			"sagaID", saga.SagaID(),
 			"eventType", event.Type,
+			"eventID", event.ID,
 			"eventPosition", event.GlobalPosition)
 		return nil
 	}
@@ -575,66 +621,43 @@ func (m *SagaManager) attemptProcessSagaEvent(
 			"sagaType", saga.SagaType())
 	}
 
-	// Record the processed event for idempotency
-	m.recordProcessedEvent(saga, event)
-
-	// Persist saga state
-	saga.IncrementVersion()
-	return m.saveSaga(ctx, saga)
+	// Persist saga state (includes ProcessedEvents)
+	// IMPORTANT: Do NOT call saga.IncrementVersion() here - the saga store
+	// implementation is responsible for atomically incrementing and validating
+	// the version using optimistic concurrency control.
+	//
+	// We pass the current event to saveSaga so it can be included in the
+	// ProcessedEvents that are persisted. The in-memory cache is only updated
+	// AFTER the save succeeds to avoid false-positive idempotency checks on retry.
+	if err := m.saveSaga(ctx, saga, &event); err != nil {
+		return err
+	}
+	return nil
 }
 
 // eventAlreadyProcessed checks if the saga has already processed this event.
 // This provides idempotency during retry scenarios.
 func (m *SagaManager) eventAlreadyProcessed(saga Saga, event StoredEvent) bool {
-	data := saga.Data()
-	if data == nil {
-		return false
-	}
-
-	processedEventsRaw, ok := data["_processedEvents"]
-	if !ok {
-		return false
-	}
-
-	processedEvents, ok := processedEventsRaw.([]interface{})
-	if !ok {
-		return false
-	}
-
+	sagaID := saga.SagaID()
 	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
-	for _, pe := range processedEvents {
+
+	eventsRaw, ok := m.processedEvents.Load(sagaID)
+	if !ok {
+		return false
+	}
+
+	events, ok := eventsRaw.([]string)
+	if !ok {
+		return false
+	}
+
+	for _, pe := range events {
 		if pe == eventKey {
 			return true
 		}
 	}
 
 	return false
-}
-
-// recordProcessedEvent records that an event has been processed by the saga.
-func (m *SagaManager) recordProcessedEvent(saga Saga, event StoredEvent) {
-	data := saga.Data()
-	if data == nil {
-		data = make(map[string]interface{})
-	}
-
-	var processedEvents []interface{}
-	if existing, ok := data["_processedEvents"]; ok {
-		if events, ok := existing.([]interface{}); ok {
-			processedEvents = events
-		}
-	}
-
-	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
-	processedEvents = append(processedEvents, eventKey)
-
-	// Keep only the most recent events to avoid unbounded growth
-	if len(processedEvents) > maxProcessedEventsToTrack {
-		processedEvents = processedEvents[len(processedEvents)-maxProcessedEventsToTrack:]
-	}
-
-	data["_processedEvents"] = processedEvents
-	saga.SetData(data)
 }
 
 // handleSagaFailure handles a saga failure by triggering compensation.
@@ -653,7 +676,7 @@ func (m *SagaManager) handleSagaFailure(ctx context.Context, saga Saga, original
 			"sagaID", saga.SagaID(),
 			"error", err)
 		saga.SetStatus(SagaStatusFailed)
-		return m.saveSaga(ctx, saga)
+		return m.saveSaga(ctx, saga, nil)
 	}
 
 	// Execute compensation commands, tracking any failures
@@ -682,7 +705,7 @@ func (m *SagaManager) handleSagaFailure(ctx context.Context, saga Saga, original
 	now := time.Now()
 	saga.SetCompletedAt(&now)
 
-	return m.saveSaga(ctx, saga)
+	return m.saveSaga(ctx, saga, nil)
 }
 
 // dispatchCommand dispatches a command with retry logic using exponential backoff.
@@ -727,21 +750,62 @@ func (m *SagaManager) dispatchCommand(ctx context.Context, saga Saga, cmd Comman
 }
 
 // saveSaga persists the saga state.
-func (m *SagaManager) saveSaga(ctx context.Context, saga Saga) error {
-	state := &SagaState{
-		ID:            saga.SagaID(),
-		Type:          saga.SagaType(),
-		CorrelationID: saga.CorrelationID(),
-		Status:        saga.Status(),
-		CurrentStep:   saga.CurrentStep(),
-		Data:          saga.Data(),
-		StartedAt:     saga.StartedAt(),
-		UpdatedAt:     time.Now(),
-		CompletedAt:   saga.CompletedAt(),
-		Version:       saga.Version(),
+// The currentEvent parameter is optional - if non-nil, the event will be added to
+// ProcessedEvents when saving, and the in-memory cache will be updated only after
+// a successful save to avoid false-positive idempotency checks on retry.
+// Pass nil when saving saga state without processing a new event (e.g., compensation).
+func (m *SagaManager) saveSaga(ctx context.Context, saga Saga, currentEvent *StoredEvent) error {
+	sagaID := saga.SagaID()
+
+	// Get existing processed events for this saga
+	var processedEvents []string
+	if eventsRaw, ok := m.processedEvents.Load(sagaID); ok {
+		if events, ok := eventsRaw.([]string); ok {
+			// Pre-allocate capacity for existing events plus potential currentEvent
+			processedEvents = make([]string, 0, len(events)+1)
+			processedEvents = append(processedEvents, events...)
+		}
 	}
 
-	return m.store.Save(ctx, state)
+	// Add the current event to the list if provided (for persistence)
+	if currentEvent != nil {
+		eventKey := fmt.Sprintf("%s:%d", currentEvent.ID, currentEvent.GlobalPosition)
+		processedEvents = append(processedEvents, eventKey)
+	}
+
+	// Keep only the most recent events to avoid unbounded growth
+	if len(processedEvents) > maxProcessedEventsToTrack {
+		processedEvents = processedEvents[len(processedEvents)-maxProcessedEventsToTrack:]
+	}
+
+	state := &SagaState{
+		ID:              saga.SagaID(),
+		Type:            saga.SagaType(),
+		CorrelationID:   saga.CorrelationID(),
+		Status:          saga.Status(),
+		CurrentStep:     saga.CurrentStep(),
+		Data:            saga.Data(),
+		ProcessedEvents: processedEvents,
+		StartedAt:       saga.StartedAt(),
+		UpdatedAt:       time.Now(),
+		CompletedAt:     saga.CompletedAt(),
+		Version:         saga.Version(),
+	}
+
+	err := m.store.Save(ctx, state)
+	if err != nil {
+		return err
+	}
+
+	// Update saga's version with the new version from the database
+	// This is important for any subsequent operations on the same saga instance
+	saga.SetVersion(state.Version)
+
+	// Only update the in-memory cache AFTER successful save
+	// This ensures retry attempts won't incorrectly skip the event
+	m.processedEvents.Store(sagaID, processedEvents)
+
+	return nil
 }
 
 // hydrateSaga restores a saga's state from persisted data.
@@ -753,6 +817,11 @@ func (m *SagaManager) hydrateSaga(saga Saga, state *SagaState) error {
 	saga.SetCompletedAt(state.CompletedAt)
 	saga.SetVersion(state.Version)
 	saga.SetData(state.Data)
+
+	// Restore processed events for idempotency tracking
+	if len(state.ProcessedEvents) > 0 {
+		m.processedEvents.Store(saga.SagaID(), state.ProcessedEvents)
+	}
 
 	return nil
 }

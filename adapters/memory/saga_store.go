@@ -94,6 +94,12 @@ func (s *SagaStore) Save(ctx context.Context, state *adapters.SagaState) error {
 		savedState.Data = deepCopyMap(state.Data)
 	}
 
+	// Deep copy ProcessedEvents
+	if state.ProcessedEvents != nil {
+		savedState.ProcessedEvents = make([]string, len(state.ProcessedEvents))
+		copy(savedState.ProcessedEvents, state.ProcessedEvents)
+	}
+
 	// Deep copy Steps
 	if state.Steps != nil {
 		savedState.Steps = make([]adapters.SagaStep, len(state.Steps))
@@ -301,6 +307,12 @@ func (s *SagaStore) copyState(state *adapters.SagaState) *adapters.SagaState {
 	// Deep copy Data (handles nested maps and slices)
 	if state.Data != nil {
 		copied.Data = deepCopyMap(state.Data)
+	}
+
+	// Deep copy ProcessedEvents
+	if state.ProcessedEvents != nil {
+		copied.ProcessedEvents = make([]string, len(state.ProcessedEvents))
+		copy(copied.ProcessedEvents, state.ProcessedEvents)
 	}
 
 	// Deep copy Steps

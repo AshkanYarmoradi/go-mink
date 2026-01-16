@@ -656,6 +656,12 @@ type SagaState struct {
 	// Data contains the saga's internal state.
 	Data map[string]interface{} `json:"data,omitempty"`
 
+	// ProcessedEvents contains event keys that have been processed by this saga.
+	// This is used internally by the SagaManager for idempotency tracking and
+	// should not be modified directly by saga implementations.
+	// Each entry is formatted as "eventID:globalPosition".
+	ProcessedEvents []string `json:"processedEvents,omitempty"`
+
 	// Steps contains the history of executed steps.
 	Steps []SagaStep `json:"steps,omitempty"`
 
