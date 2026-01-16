@@ -262,6 +262,9 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		return err
 	}
 
+	// Track the version from loaded events
+	var lastVersion int64
+
 	// Apply each event to rebuild state
 	for i, stored := range storedEvents {
 		// Deserialize event data
@@ -274,6 +277,15 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		if err := agg.ApplyEvent(data); err != nil {
 			return fmt.Errorf("mink: failed to apply event %d: %w", i, err)
 		}
+
+		// Track version from stored event
+		lastVersion = stored.Version
+	}
+
+	// Set the aggregate's version to the last loaded event version
+	// This is needed for optimistic concurrency in SaveAggregate
+	if setter, ok := agg.(interface{ SetVersion(int64) }); ok && len(storedEvents) > 0 {
+		setter.SetVersion(lastVersion)
 	}
 
 	// Set the aggregate version if it implements VersionSetter.

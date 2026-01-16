@@ -17,6 +17,7 @@ type TB = testing.TB
 // Saga represents a saga or process manager interface.
 // Sagas coordinate long-running processes by listening to events and
 // dispatching commands.
+// This interface is compatible with mink.Saga.
 type Saga interface {
 	// Name returns the saga's unique identifier.
 	Name() string
@@ -29,6 +30,46 @@ type Saga interface {
 
 	// State returns the current saga state.
 	State() interface{}
+}
+
+// MinkSagaAdapter adapts a mink.Saga to the testing Saga interface.
+type MinkSagaAdapter struct {
+	saga mink.Saga
+}
+
+// NewMinkSagaAdapter creates an adapter for a mink.Saga.
+func NewMinkSagaAdapter(saga mink.Saga) *MinkSagaAdapter {
+	return &MinkSagaAdapter{saga: saga}
+}
+
+// Name returns the saga's unique identifier.
+func (a *MinkSagaAdapter) Name() string {
+	return a.saga.SagaID()
+}
+
+// HandleEvent processes an event and returns commands to dispatch.
+func (a *MinkSagaAdapter) HandleEvent(ctx context.Context, event mink.StoredEvent) ([]mink.Command, error) {
+	return a.saga.HandleEvent(ctx, event)
+}
+
+// IsComplete returns true if the saga has completed.
+func (a *MinkSagaAdapter) IsComplete() bool {
+	return a.saga.IsComplete()
+}
+
+// State returns the current saga state as a map.
+func (a *MinkSagaAdapter) State() interface{} {
+	return a.saga.Data()
+}
+
+// Status returns the saga status.
+func (a *MinkSagaAdapter) Status() mink.SagaStatus {
+	return a.saga.Status()
+}
+
+// MinkSaga returns the underlying mink.Saga.
+func (a *MinkSagaAdapter) MinkSaga() mink.Saga {
+	return a.saga
 }
 
 // SagaTestFixture provides BDD-style testing for sagas.
