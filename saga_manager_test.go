@@ -1422,6 +1422,200 @@ func TestSagaManager_ConcurrentEventProcessing(t *testing.T) {
 	}
 }
 
+// concurrencyConflictSagaStore simulates concurrency conflicts
+type concurrencyConflictSagaStore struct {
+	*mockSagaStore
+	mu              sync.Mutex
+	conflictCount   int
+	maxConflicts    int
+	saveCalls       int
+	successfulSaves int
+}
+
+func newConcurrencyConflictSagaStore(maxConflicts int) *concurrencyConflictSagaStore {
+	return &concurrencyConflictSagaStore{
+		mockSagaStore: newMockSagaStore(),
+		maxConflicts:  maxConflicts,
+	}
+}
+
+func (c *concurrencyConflictSagaStore) Save(ctx context.Context, state *SagaState) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saveCalls++
+
+	if c.conflictCount < c.maxConflicts {
+		c.conflictCount++
+		return adapters.ErrConcurrencyConflict
+	}
+
+	c.successfulSaves++
+	return c.mockSagaStore.Save(ctx, state)
+}
+
+func TestSagaManager_ProcessEvent_ConcurrencyConflictRetry(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+
+	// Create store that fails with concurrency conflict twice, then succeeds
+	sagaStore := newConcurrencyConflictSagaStore(2)
+
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+		WithSagaRetryAttempts(3),
+		WithSagaRetryDelay(10*time.Millisecond),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	event := StoredEvent{
+		ID:             "event-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+
+	err := manager.ProcessEvent(ctx, event)
+	require.NoError(t, err)
+
+	// Verify retries happened
+	assert.Equal(t, 3, sagaStore.saveCalls, "Expected 3 save calls (2 conflicts + 1 success)")
+	assert.Equal(t, 1, sagaStore.successfulSaves, "Expected 1 successful save")
+
+	// Verify saga was created
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	require.NoError(t, err)
+	assert.NotNil(t, state)
+}
+
+func TestSagaManager_ProcessEvent_ConcurrencyConflictExhausted(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+
+	// Create store that always fails with concurrency conflict
+	sagaStore := newConcurrencyConflictSagaStore(100) // More conflicts than retries
+
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+		WithSagaRetryAttempts(2),
+		WithSagaRetryDelay(10*time.Millisecond),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	event := StoredEvent{
+		ID:             "event-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+
+	// Note: ProcessEvent (public API) logs errors but continues processing other saga types,
+	// so it returns nil even when a specific saga fails. This is by design to allow
+	// processing multiple saga types for the same event.
+	err := manager.ProcessEvent(ctx, event)
+	assert.NoError(t, err, "ProcessEvent logs errors but continues, returns nil")
+
+	// Verify all retries were attempted (initial + retryAttempts = 3)
+	assert.Equal(t, 3, sagaStore.saveCalls, "Expected 3 save calls (initial + 2 retries)")
+	assert.Equal(t, 3, sagaStore.conflictCount, "Expected 3 conflicts")
+
+	// Saga should not have been saved successfully
+	_, err = sagaStore.FindByCorrelationID(ctx, "order-123")
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrSagaNotFound)
+}
+
+func TestSagaManager_ProcessEvent_IdempotencyOnRetry(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+
+	// Use a regular mock store for this test
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	event := StoredEvent{
+		ID:             "event-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+
+	// Process event first time
+	err := manager.ProcessEvent(ctx, event)
+	require.NoError(t, err)
+
+	// Get the saga state
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	require.NoError(t, err)
+
+	// Verify that the processed event was recorded
+	processedEvents, ok := state.Data["_processedEvents"]
+	require.True(t, ok, "Expected _processedEvents to be recorded")
+	events, ok := processedEvents.([]interface{})
+	require.True(t, ok)
+	assert.Len(t, events, 1)
+	assert.Equal(t, "event-1:1", events[0])
+}
+
+func TestSagaManager_ProcessEvent_ConcurrencyConflictContextCancelled(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+
+	// Create store that always fails with concurrency conflict
+	sagaStore := newConcurrencyConflictSagaStore(100)
+
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+		WithSagaRetryAttempts(10),
+		WithSagaRetryDelay(100*time.Millisecond),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	event := StoredEvent{
+		ID:             "event-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	}
+
+	// Note: ProcessEvent (public API) logs errors but continues processing,
+	// returning nil. The context cancellation is handled during retry delays.
+	err := manager.ProcessEvent(ctx, event)
+	assert.NoError(t, err, "ProcessEvent logs errors but returns nil")
+
+	// Verify that processing stopped early due to context cancellation
+	// (shouldn't reach all 10 retries)
+	assert.Less(t, sagaStore.saveCalls, 5, "Should stop before exhausting retries due to context timeout")
+}
+
 // sagaTestLogger implements Logger for testing
 type sagaTestLogger struct {
 	mu       sync.Mutex
