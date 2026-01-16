@@ -1520,6 +1520,9 @@ func (s *trackingTestSaga) IsComplete() bool {
 }
 
 func (s *trackingTestSaga) Data() map[string]interface{} {
+	if s.data == nil {
+		s.data = make(map[string]interface{})
+	}
 	return s.data
 }
 
@@ -1640,6 +1643,9 @@ func (s *orderTrackingTestSaga) IsComplete() bool {
 }
 
 func (s *orderTrackingTestSaga) Data() map[string]interface{} {
+	if s.data == nil {
+		s.data = make(map[string]interface{})
+	}
 	return s.data
 }
 

@@ -124,8 +124,9 @@ type SagaManager struct {
 	// one goroutine processes it at a time for a given saga.
 	//
 	// Note on memory growth: Locks are stored indefinitely and not cleaned up.
-	// Each unique saga ID consumes ~80 bytes (map entry + sync.Mutex). For most
-	// applications with bounded saga lifecycles, this is negligible.
+	// Each unique saga ID consumes a small per-saga overhead (sync.Mutex plus
+	// map entry). For most applications with bounded saga lifecycles, this is
+	// negligible.
 	//
 	// For applications that may create millions of unique saga IDs, you should
 	// plan an explicit cleanup/rotation strategy at the application level. Two
@@ -348,9 +349,17 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return fmt.Errorf("mink: saga factory not found for type %q", sagaType)
 	}
 
-	// First, determine the saga ID from the correlation (before acquiring per-saga lock)
-	// This also loads the state from store, which we pass to attemptProcessSagaEvent
-	// to avoid duplicate store queries.
+	// First, determine the saga ID from the correlation (before acquiring the per-saga lock).
+	// NOTE: resolveSagaID may perform a store lookup to load existing saga state. Doing this
+	// before taking the per-saga lock is an intentional optimization for the common case
+	// (low contention, first attempt), because it allows us to pass the already-loaded state
+	// into attemptProcessSagaEvent and avoid an extra store query on the success path.
+	//
+	// Trade-off: under high concurrency with many duplicate or correlated events for the same
+	// saga, multiple goroutines can reach this point concurrently and perform redundant store
+	// lookups before being serialized by the per-saga lock below. If a deployment prefers to
+	// minimize redundant store access over optimizing the no-conflict path, the locking strategy
+	// here should be revisited so that the per-saga lock is acquired before calling resolveSagaID.
 	sagaID, correlationID, resolvedState, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
 	if sagaID == "" && !isStarting {
 		// No existing saga found and event doesn't start one
@@ -468,7 +477,20 @@ func (m *SagaManager) attemptProcessSagaEvent(
 			continue
 		}
 
-		// Use preloaded state if available (first attempt), otherwise load fresh
+		// Use preloaded state if available (first attempt), otherwise load fresh.
+		//
+		// Notes on behavior:
+		//   - First attempt: preloadedState is provided for a specific correlation ID.
+		//     We only reuse it when its CorrelationID matches the current correlation.
+		//     For other correlations in this loop, we intentionally fall back to
+		//     loading state from the store.
+		//   - Retries: preloadedState is set to nil before calling this function, so
+		//     this branch is skipped and we always load the latest state from the
+		//     store. This ensures we do not rely on potentially stale preloaded
+		//     state when re-processing an event.
+		//   - If FindByCorrelationID returns ErrSagaNotFound, state remains nil and
+		//     we rely on the isStartingEvent check below to decide whether a new
+		//     saga should be created for this correlation ID.
 		if preloadedState != nil && preloadedState.CorrelationID == correlationID {
 			state = preloadedState
 		} else {
