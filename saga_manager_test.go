@@ -1481,7 +1481,7 @@ func TestSagaManager_DuplicateEventDelivery(t *testing.T) {
 	assert.NotNil(t, state)
 
 	// Verify HandleEvent was called exactly once
-	finalCount := handleCallCount
+	finalCount := atomic.LoadInt32(&handleCallCount)
 	assert.Equal(t, int32(1), finalCount, "HandleEvent should be called exactly once despite multiple deliveries")
 
 	// Verify the event is recorded in _processedEvents
@@ -1574,8 +1574,8 @@ func TestSagaManager_ConcurrentEventsForSameSaga(t *testing.T) {
 
 	// Clear the event order for subsequent concurrent events
 	orderMu.Lock()
+	defer orderMu.Unlock()
 	eventOrder = nil
-	orderMu.Unlock()
 
 	// Now send multiple different events for the same saga concurrently
 	var wg sync.WaitGroup

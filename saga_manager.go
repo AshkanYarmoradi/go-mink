@@ -122,6 +122,12 @@ type SagaManager struct {
 	// modification of the same saga instance. This ensures that when multiple
 	// event sources (e.g., pg_notify + polling) deliver the same event, only
 	// one goroutine processes it at a time for a given saga.
+	//
+	// Note on memory growth: Locks are stored indefinitely and not cleaned up.
+	// Each unique saga ID consumes ~80 bytes (map entry + sync.Mutex). For most
+	// applications with bounded saga lifecycles, this is negligible. If your
+	// application creates millions of unique sagas, consider implementing
+	// periodic cleanup or using a time-based eviction strategy.
 	sagaLocks sync.Map // map[string]*sync.Mutex
 }
 
@@ -330,8 +336,8 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		return fmt.Errorf("mink: saga factory not found for type %q", sagaType)
 	}
 
-	// First, determine the saga ID from the correlation (without locking)
-	sagaID, correlationID, isStarting := m.resolveSagaID(sagaType, event, correlations)
+	// First, determine the saga ID from the correlation (before acquiring per-saga lock)
+	sagaID, correlationID, isStarting := m.resolveSagaID(ctx, sagaType, event, correlations)
 	if sagaID == "" && !isStarting {
 		// No existing saga found and event doesn't start one
 		return nil
@@ -396,7 +402,7 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 // resolveSagaID determines the saga ID for an event based on correlations.
 // It returns the saga ID if an existing saga is found, or empty string if not.
 // It also returns whether this event could start a new saga.
-func (m *SagaManager) resolveSagaID(sagaType string, event StoredEvent, correlations []SagaCorrelation) (sagaID, correlationID string, isStarting bool) {
+func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event StoredEvent, correlations []SagaCorrelation) (sagaID, correlationID string, isStarting bool) {
 	for _, correlation := range correlations {
 		corrID := correlation.CorrelationIDFunc(event)
 		if corrID == "" {
@@ -404,7 +410,7 @@ func (m *SagaManager) resolveSagaID(sagaType string, event StoredEvent, correlat
 		}
 
 		// Try to find existing saga
-		state, err := m.store.FindByCorrelationID(context.Background(), corrID)
+		state, err := m.store.FindByCorrelationID(ctx, corrID)
 		if err == nil {
 			return state.ID, corrID, false
 		}
