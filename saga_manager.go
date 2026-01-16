@@ -511,12 +511,11 @@ func (m *SagaManager) attemptProcessSagaEvent(
 				return fmt.Errorf("mink: failed to find saga: %w", err)
 			}
 			if state != nil {
-				m.logger.Debug("[SAGA-DEBUG] Loaded fresh state from store",
+				m.logger.Debug("Loaded saga state from store",
 					"correlationID", correlationID,
 					"sagaID", state.ID,
 					"version", state.Version,
-					"status", state.Status,
-					"processedEventsCount", len(state.ProcessedEvents))
+					"status", state.Status)
 			}
 		}
 
@@ -776,27 +775,14 @@ func (m *SagaManager) saveSaga(ctx context.Context, saga Saga) error {
 		Version:         saga.Version(),
 	}
 
-	m.logger.Debug("[SAGA-DEBUG] Saving saga state",
-		"sagaID", sagaID,
-		"status", state.Status,
-		"versionBeforeSave", state.Version,
-		"processedEventsCount", len(processedEvents))
-
 	err := m.store.Save(ctx, state)
 	if err != nil {
-		m.logger.Error("Save failed",
-			"sagaID", sagaID,
-			"error", err)
 		return err
 	}
 
 	// Update saga's version with the new version from the database
 	// This is important for any subsequent operations on the same saga instance
 	saga.SetVersion(state.Version)
-
-	m.logger.Info("[SAGA-DEBUG] Save succeeded",
-		"sagaID", sagaID,
-		"versionAfterSave", state.Version)
 
 	return nil
 }
