@@ -1548,7 +1548,7 @@ func TestSagaManager_ConcurrentEventsForSameSaga(t *testing.T) {
 	// Saga that records which events it processes
 	orderTrackingSagaFactory := func(id string) Saga {
 		return &orderTrackingTestSaga{
-			SagaBase:   NewSagaBase(id, "OrderTrackingSaga"),
+			SagaBase: NewSagaBase(id, "OrderTrackingSaga"),
 			onHandle: func(eventID string) {
 				orderMu.Lock()
 				eventOrder = append(eventOrder, eventID)
