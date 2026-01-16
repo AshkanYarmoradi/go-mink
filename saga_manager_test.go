@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -1444,4 +1445,419 @@ func (l *sagaTestLogger) log(level, msg string, keyvals ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.messages = append(l.messages, level+": "+msg)
+}
+
+// ====================================================================
+// AsyncResult Tests
+// ====================================================================
+
+func TestAsyncResult_Done(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Should not be complete initially
+	assert.False(t, result.IsComplete())
+
+	// Complete the result
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		result.complete(nil)
+	}()
+
+	// Wait for done
+	select {
+	case <-result.Done():
+		assert.True(t, result.IsComplete())
+		assert.NoError(t, result.Err())
+	case <-time.After(time.Second):
+		t.Fatal("Timed out waiting for result")
+	}
+}
+
+func TestAsyncResult_Wait(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	expectedErr := errors.New("test error")
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		result.complete(expectedErr)
+	}()
+
+	err := result.Wait()
+	assert.ErrorIs(t, err, expectedErr)
+	assert.True(t, result.IsComplete())
+}
+
+func TestAsyncResult_WaitWithTimeout_Success(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		result.complete(nil)
+	}()
+
+	err := result.WaitWithTimeout(time.Second)
+	assert.NoError(t, err)
+	assert.True(t, result.IsComplete())
+}
+
+func TestAsyncResult_WaitWithTimeout_Timeout(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Don't complete the result
+
+	err := result.WaitWithTimeout(50 * time.Millisecond)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.False(t, result.IsComplete())
+}
+
+func TestAsyncResult_Cancel(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Verify context is initially active
+	assert.NoError(t, result.Context().Err())
+
+	// Cancel the result
+	result.Cancel()
+
+	// Verify context is cancelled
+	assert.ErrorIs(t, result.Context().Err(), context.Canceled)
+}
+
+func TestAsyncResult_IsComplete(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Initially not complete
+	assert.False(t, result.IsComplete())
+
+	// Complete it
+	result.complete(nil)
+
+	// Now complete
+	assert.True(t, result.IsComplete())
+}
+
+func TestAsyncResult_DoubleComplete(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Complete the result
+	result.complete(nil)
+
+	// Calling complete again should not panic
+	assert.NotPanics(t, func() {
+		result.complete(errors.New("second error"))
+	})
+
+	// Original error (nil) should be preserved
+	assert.NoError(t, result.Err())
+}
+
+func TestAsyncResult_Err_BeforeComplete(t *testing.T) {
+	ctx := context.Background()
+	result := newAsyncResult(ctx)
+
+	// Error should be nil before completion
+	assert.Nil(t, result.Err())
+}
+
+// ====================================================================
+// SagaManager Async Tests
+// ====================================================================
+
+func TestSagaManager_StartAsync(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	subAdapter := newMockSubscriptionAdapter()
+	eventStoreWithSub := &mockEventStoreWithSubscription{
+		MemoryAdapter: memAdapter,
+		subAdapter:    subAdapter,
+	}
+	eventStore := New(eventStoreWithSub)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	result := manager.StartAsync(ctx)
+
+	// Wait a moment for manager to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify it's running asynchronously
+	assert.False(t, result.IsComplete())
+	assert.True(t, manager.IsRunning())
+
+	// Send an event
+	subAdapter.SendEvent(adapters.StoredEvent{
+		ID:             "evt-1",
+		StreamID:       "order-123",
+		Type:           "OrderCreated",
+		Data:           []byte(`{}`),
+		GlobalPosition: 1,
+	})
+
+	// Wait for event to be processed
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify saga was created
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	assert.NoError(t, err)
+	assert.NotNil(t, state)
+
+	// Cancel and wait for shutdown
+	result.Cancel()
+	err = result.WaitWithTimeout(time.Second)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.True(t, result.IsComplete())
+
+	// Give the manager time to stop
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, manager.IsRunning())
+}
+
+func TestSagaManager_StartAsync_AlreadyRunning(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	subAdapter := newMockSubscriptionAdapter()
+	eventStoreWithSub := &mockEventStoreWithSubscription{
+		MemoryAdapter: memAdapter,
+		subAdapter:    subAdapter,
+	}
+	eventStore := New(eventStoreWithSub)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	result1 := manager.StartAsync(ctx)
+
+	// Wait for it to start
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, manager.IsRunning())
+
+	// Try to start again
+	result2 := manager.StartAsync(ctx)
+
+	// Second start should fail immediately
+	err := result2.WaitWithTimeout(time.Second)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already running")
+
+	// Cleanup
+	result1.Cancel()
+	_ = result1.WaitWithTimeout(time.Second)
+}
+
+func TestSagaManager_StartSaga_Success(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	triggerEvent := StoredEvent{
+		ID:       "evt-1",
+		StreamID: "order-123",
+		Type:     "OrderCreated",
+		Data:     []byte(`{}`),
+	}
+
+	err := manager.StartSaga(ctx, "TestSaga", triggerEvent)
+	assert.NoError(t, err)
+
+	// Verify saga was created
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-123")
+	assert.NoError(t, err)
+	assert.NotNil(t, state)
+	assert.Equal(t, "TestSaga", state.Type)
+}
+
+func TestSagaManager_StartSaga_UnregisteredType(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	ctx := context.Background()
+	triggerEvent := StoredEvent{
+		ID:       "evt-1",
+		StreamID: "order-123",
+		Type:     "OrderCreated",
+		Data:     []byte(`{}`),
+	}
+
+	err := manager.StartSaga(ctx, "UnknownSaga", triggerEvent)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not registered")
+}
+
+func TestSagaManager_StartSaga_InvalidStartingEvent(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	// Only OrderCreated can start the saga
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	triggerEvent := StoredEvent{
+		ID:       "evt-1",
+		StreamID: "order-123",
+		Type:     "ItemAdded", // Not a starting event
+		Data:     []byte(`{}`),
+	}
+
+	err := manager.StartSaga(ctx, "TestSaga", triggerEvent)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not a starting event")
+}
+
+func TestSagaManager_StartSagaAsync_Success(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	triggerEvent := StoredEvent{
+		ID:       "evt-1",
+		StreamID: "order-456",
+		Type:     "OrderCreated",
+		Data:     []byte(`{}`),
+	}
+
+	result := manager.StartSagaAsync(ctx, "TestSaga", triggerEvent)
+
+	// Wait for completion
+	err := result.WaitWithTimeout(time.Second)
+	assert.NoError(t, err)
+	assert.True(t, result.IsComplete())
+
+	// Verify saga was created
+	state, err := sagaStore.FindByCorrelationID(ctx, "order-456")
+	assert.NoError(t, err)
+	assert.NotNil(t, state)
+}
+
+func TestSagaManager_StartSagaAsync_Error(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	eventStore := New(memAdapter)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	// Don't register the saga type
+
+	ctx := context.Background()
+	triggerEvent := StoredEvent{
+		ID:       "evt-1",
+		StreamID: "order-123",
+		Type:     "OrderCreated",
+		Data:     []byte(`{}`),
+	}
+
+	result := manager.StartSagaAsync(ctx, "UnknownSaga", triggerEvent)
+
+	// Wait for completion
+	err := result.WaitWithTimeout(time.Second)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not registered")
+	assert.True(t, result.IsComplete())
+}
+
+func TestSagaManager_StartAsync_MultipleSagas(t *testing.T) {
+	memAdapter := memory.NewAdapter()
+	subAdapter := newMockSubscriptionAdapter()
+	eventStoreWithSub := &mockEventStoreWithSubscription{
+		MemoryAdapter: memAdapter,
+		subAdapter:    subAdapter,
+	}
+	eventStore := New(eventStoreWithSub)
+	sagaStore := newMockSagaStore()
+	cmdBus := NewCommandBus()
+
+	manager := NewSagaManager(eventStore,
+		WithSagaStore(sagaStore),
+		WithCommandBus(cmdBus),
+	)
+
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	result := manager.StartAsync(ctx)
+
+	// Wait a moment for manager to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Send multiple events
+	for i := 0; i < 5; i++ {
+		subAdapter.SendEvent(adapters.StoredEvent{
+			ID:             fmt.Sprintf("evt-%d", i+1),
+			StreamID:       fmt.Sprintf("order-%d", i),
+			Type:           "OrderCreated",
+			Data:           []byte(`{}`),
+			GlobalPosition: uint64(i + 1),
+		})
+	}
+
+	// Wait for processing
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify all sagas were created
+	for i := 0; i < 5; i++ {
+		correlationID := fmt.Sprintf("order-%d", i)
+		state, err := sagaStore.FindByCorrelationID(ctx, correlationID)
+		assert.NoError(t, err, "Failed to find saga for %s", correlationID)
+		assert.NotNil(t, state)
+	}
+
+	// Cleanup
+	result.Cancel()
+	_ = result.WaitWithTimeout(time.Second)
 }

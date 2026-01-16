@@ -534,3 +534,197 @@ func SagaStateFromJSON(data []byte) (*SagaState, error) {
 	}
 	return state, nil
 }
+
+// AsyncResult represents the result of an asynchronous operation.
+// It provides methods to wait for completion and check the result.
+type AsyncResult struct {
+	done     chan struct{}
+	err      error
+	errMu    sync.RWMutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closeOnce sync.Once
+}
+
+// newAsyncResult creates a new AsyncResult.
+func newAsyncResult(ctx context.Context) *AsyncResult {
+	asyncCtx, cancel := context.WithCancel(ctx)
+	return &AsyncResult{
+		done:   make(chan struct{}),
+		ctx:    asyncCtx,
+		cancel: cancel,
+	}
+}
+
+// complete marks the async operation as complete with an optional error.
+func (r *AsyncResult) complete(err error) {
+	r.closeOnce.Do(func() {
+		r.errMu.Lock()
+		r.err = err
+		r.errMu.Unlock()
+		close(r.done)
+		r.cancel()
+	})
+}
+
+// Done returns a channel that is closed when the operation completes.
+// Use this in select statements for non-blocking wait patterns.
+//
+// Example:
+//
+//	select {
+//	case <-result.Done():
+//	    if err := result.Err(); err != nil {
+//	        log.Printf("Failed: %v", err)
+//	    }
+//	case <-time.After(5 * time.Second):
+//	    result.Cancel()
+//	    log.Println("Timed out")
+//	}
+func (r *AsyncResult) Done() <-chan struct{} {
+	return r.done
+}
+
+// Wait blocks until the operation completes and returns any error.
+// This is a convenience method equivalent to <-result.Done(); return result.Err()
+func (r *AsyncResult) Wait() error {
+	<-r.done
+	return r.Err()
+}
+
+// WaitWithTimeout blocks until the operation completes or the timeout expires.
+// Returns context.DeadlineExceeded if the timeout is reached before completion.
+func (r *AsyncResult) WaitWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	select {
+	case <-r.done:
+		return r.Err()
+	case <-ctx.Done():
+		return context.DeadlineExceeded
+	}
+}
+
+// Err returns the error from the completed operation, or nil if not yet complete or successful.
+func (r *AsyncResult) Err() error {
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
+	return r.err
+}
+
+// IsComplete returns true if the operation has completed (successfully or with an error).
+func (r *AsyncResult) IsComplete() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Cancel cancels the async operation's context.
+// This can be used to stop a long-running operation early.
+func (r *AsyncResult) Cancel() {
+	r.cancel()
+}
+
+// Context returns the context for this async operation.
+func (r *AsyncResult) Context() context.Context {
+	return r.ctx
+}
+
+// StartAsync begins processing events and routing them to sagas in a background goroutine.
+// It returns immediately with an AsyncResult that can be used to:
+//   - Wait for the saga manager to stop: result.Wait()
+//   - Wait with timeout: result.WaitWithTimeout(5 * time.Second)
+//   - Check if stopped: result.IsComplete()
+//   - Cancel the manager: result.Cancel()
+//   - Get the error: result.Err()
+//
+// The saga manager will continue processing until:
+//   - The provided context is cancelled
+//   - result.Cancel() is called
+//   - An unrecoverable error occurs
+//
+// Example:
+//
+//	result := manager.StartAsync(ctx)
+//
+//	// Do other work while saga manager runs in background...
+//
+//	// Later, when shutting down:
+//	result.Cancel()
+//	if err := result.WaitWithTimeout(10 * time.Second); err != nil {
+//	    log.Printf("Saga manager shutdown: %v", err)
+//	}
+func (m *SagaManager) StartAsync(ctx context.Context) *AsyncResult {
+	result := newAsyncResult(ctx)
+
+	go func() {
+		err := m.Start(result.ctx)
+		result.complete(err)
+	}()
+
+	return result
+}
+
+// StartSagaAsync manually triggers a new saga instance asynchronously.
+// The saga will be started and the first event will be processed in a background goroutine.
+// Returns an AsyncResult that can be used to wait for the initial processing to complete.
+//
+// This is useful when you want to start a saga based on an external trigger
+// rather than waiting for an event to flow through the event store subscription.
+//
+// Example:
+//
+//	result := manager.StartSagaAsync(ctx, "OrderFulfillment", initialEvent)
+//	if err := result.WaitWithTimeout(5 * time.Second); err != nil {
+//	    log.Printf("Failed to start saga: %v", err)
+//	}
+func (m *SagaManager) StartSagaAsync(ctx context.Context, sagaType string, triggerEvent StoredEvent) *AsyncResult {
+	result := newAsyncResult(ctx)
+
+	go func() {
+		err := m.StartSaga(ctx, sagaType, triggerEvent)
+		result.complete(err)
+	}()
+
+	return result
+}
+
+// StartSaga manually triggers a new saga instance synchronously.
+// The saga will be created and the trigger event will be processed immediately.
+//
+// This is useful when you want to start a saga based on an external trigger
+// rather than waiting for an event to flow through the event store subscription.
+func (m *SagaManager) StartSaga(ctx context.Context, sagaType string, triggerEvent StoredEvent) error {
+	m.mu.RLock()
+	factory := m.registry[sagaType]
+	correlations := m.correlations[sagaType]
+	m.mu.RUnlock()
+
+	if factory == nil {
+		return fmt.Errorf("mink: saga type %q not registered", sagaType)
+	}
+
+	if len(correlations) == 0 {
+		return fmt.Errorf("mink: no correlations defined for saga type %q", sagaType)
+	}
+
+	// Check if this is a valid starting event for this saga type
+	var validCorrelation *SagaCorrelation
+	for i := range correlations {
+		if isStartingEvent(correlations[i].StartingEvents, triggerEvent.Type) {
+			validCorrelation = &correlations[i]
+			break
+		}
+	}
+
+	if validCorrelation == nil {
+		return fmt.Errorf("mink: event type %q is not a starting event for saga %q", triggerEvent.Type, sagaType)
+	}
+
+	// Process the event through the saga
+	return m.processSagaEvent(ctx, sagaType, triggerEvent)
+}
