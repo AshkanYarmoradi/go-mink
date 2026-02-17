@@ -603,6 +603,13 @@ func (w *asyncProjectionWorker) setError(err error) {
 	w.stateMu.Unlock()
 }
 
+func (w *asyncProjectionWorker) clearError() {
+	w.stateMu.Lock()
+	w.lastError = nil
+	w.state = ProjectionStateRunning
+	w.stateMu.Unlock()
+}
+
 // runAsyncWorker runs the background worker for an async projection.
 func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProjectionWorker) {
 	defer e.wg.Done()
@@ -626,6 +633,9 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 	ticker := time.NewTicker(worker.options.PollInterval)
 	defer ticker.Stop()
 
+	var consecutiveErrors int
+	var firstErrorAt time.Time
+
 	for {
 		select {
 		case <-e.stopCh:
@@ -643,16 +653,95 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 					worker.setState(ProjectionStateStopped)
 					return
 				}
-				e.logger.Error("Async projection error", "projection", worker.projection.Name(), "error", err)
+
+				consecutiveErrors++
+				if consecutiveErrors == 1 {
+					firstErrorAt = time.Now()
+				}
+
+				// Log only at power-of-2 counts (1, 2, 4, 8, 16...) to reduce noise
+				if consecutiveErrors&(consecutiveErrors-1) == 0 {
+					e.logger.Error("Async projection error",
+						"projection", worker.projection.Name(),
+						"error", err,
+						"consecutive_errors", consecutiveErrors,
+					)
+				}
+
 				worker.setError(err)
 				e.metrics.RecordError(worker.projection.Name(), err)
+
+				// Compute backoff delay
+				var delay time.Duration
+				if worker.options.RetryPolicy != nil {
+					delay = worker.options.RetryPolicy.Delay(consecutiveErrors - 1)
+				} else {
+					// Built-in fallback: exponential backoff, 100ms base, 30s cap
+					shift := consecutiveErrors - 1
+					if shift > 18 {
+						shift = 18
+					}
+					delay = 100 * time.Millisecond * time.Duration(1<<uint(shift))
+					if delay > 30*time.Second {
+						delay = 30 * time.Second
+					}
+				}
+
+				// Wait with backoff, still responding to stop/cancel signals
+				select {
+				case <-e.stopCh:
+					worker.setState(ProjectionStateStopped)
+					return
+				case <-worker.stopCh:
+					worker.setState(ProjectionStateStopped)
+					return
+				case <-ctx.Done():
+					worker.setState(ProjectionStateStopped)
+					return
+				case <-time.After(delay):
+				}
+			} else if consecutiveErrors > 0 {
+				// Recovered from errors
+				outageDuration := time.Since(firstErrorAt)
+				e.logger.Info("Async projection recovered",
+					"projection", worker.projection.Name(),
+					"consecutive_errors", consecutiveErrors,
+					"outage_duration", outageDuration,
+				)
+				consecutiveErrors = 0
+				worker.clearError()
 			}
 		}
 	}
 }
 
 // processAsyncBatch processes a batch of events for an async projection.
-func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncProjectionWorker) error {
+func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncProjectionWorker) (retErr error) {
+	// Recover from panics in projection Apply/ApplyBatch handlers to prevent
+	// a panicking projection from killing the async worker goroutine.
+	var currentEvent *StoredEvent
+	defer func() {
+		if r := recover(); r != nil {
+			if currentEvent != nil {
+				e.logger.Error("Async projection panicked",
+					"projection", worker.projection.Name(),
+					"event_type", currentEvent.Type,
+					"stream_id", currentEvent.StreamID,
+					"global_position", currentEvent.GlobalPosition,
+					"panic", r,
+				)
+				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %v",
+					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, r)
+			} else {
+				e.logger.Error("Async projection panicked",
+					"projection", worker.projection.Name(),
+					"panic", r,
+				)
+				retErr = fmt.Errorf("panic in projection %s: %v", worker.projection.Name(), r)
+			}
+		}
+	}()
+
 	// Load events from current position
 	// Note: This is a simplified implementation. In production, you'd want
 	// to use the SubscriptionAdapter for better performance.
@@ -699,10 +788,15 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 
 	// Try batch processing first
 	start := time.Now()
+	if len(filteredEvents) > 0 {
+		currentEvent = &filteredEvents[0]
+	}
 	err = worker.projection.ApplyBatch(ctx, filteredEvents)
 	if errors.Is(err, ErrNotImplemented) {
 		// Fall back to sequential processing
-		for _, event := range filteredEvents {
+		for i := range filteredEvents {
+			event := filteredEvents[i]
+			currentEvent = &filteredEvents[i]
 			eventStart := time.Now()
 			if err := worker.projection.Apply(ctx, event); err != nil {
 				e.metrics.RecordEventProcessed(worker.projection.Name(), event.Type, time.Since(eventStart), false)
