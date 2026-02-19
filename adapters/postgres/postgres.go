@@ -104,6 +104,7 @@ var (
 	_ adapters.HealthChecker       = (*PostgresAdapter)(nil)
 	_ adapters.Migrator            = (*PostgresAdapter)(nil)
 	_ mink.CheckpointStore         = (*PostgresAdapter)(nil)
+	_ adapters.OutboxAppender      = (*PostgresAdapter)(nil)
 )
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
@@ -362,14 +363,68 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	storedEvents, err := a.appendInTx(ctx, tx, streamID, events, expectedVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to commit transaction: %w", err)
+	}
+
+	return storedEvents, nil
+}
+
+// AppendWithOutbox atomically appends events and schedules outbox messages in a single transaction.
+func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+
+	if streamID == "" {
+		return nil, ErrEmptyStreamID
+	}
+
+	if len(events) == 0 {
+		return nil, ErrNoEvents
+	}
+
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	storedEvents, err := a.appendInTx(ctx, tx, streamID, events, expectedVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	// Insert outbox messages in the same transaction
+	if len(outboxMessages) > 0 {
+		outboxStore := NewOutboxStoreFromAdapter(a)
+		if err := outboxStore.ScheduleInTx(ctx, tx, outboxMessages); err != nil {
+			return nil, fmt.Errorf("mink/postgres: failed to schedule outbox messages: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to commit transaction: %w", err)
+	}
+
+	return storedEvents, nil
+}
+
+// appendInTx appends events within an existing transaction.
+func (a *PostgresAdapter) appendInTx(ctx context.Context, tx *sql.Tx, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
 	// Get current stream version with lock
 	var currentVersion int64
 	var streamExists bool
 	schemaQ := a.schemaQ
 
-	err = tx.QueryRowContext(ctx, `
-		SELECT version FROM `+schemaQ+`.streams 
-		WHERE stream_id = $1 
+	err := tx.QueryRowContext(ctx, `
+		SELECT version FROM `+schemaQ+`.streams
+		WHERE stream_id = $1
 		FOR UPDATE`, streamID).Scan(&currentVersion)
 
 	if err == sql.ErrNoRows {
@@ -436,15 +491,11 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 
 	// Update stream version
 	_, err = tx.ExecContext(ctx, `
-		UPDATE `+schemaQ+`.streams 
+		UPDATE `+schemaQ+`.streams
 		SET version = $1, updated_at = NOW()
 		WHERE stream_id = $2`, currentVersion, streamID)
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to update stream version: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("mink/postgres: failed to commit transaction: %w", err)
 	}
 
 	return storedEvents, nil
@@ -1120,18 +1171,28 @@ CREATE TABLE IF NOT EXISTS mink_checkpoints (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Outbox table
+-- Outbox table (transactional outbox for reliable messaging)
 CREATE TABLE IF NOT EXISTS %s (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_id VARCHAR(255) NOT NULL,
     event_type VARCHAR(255) NOT NULL,
+    destination VARCHAR(255) NOT NULL,
     payload JSONB NOT NULL,
-    destination VARCHAR(255),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    headers JSONB DEFAULT '{}',
+    status INT NOT NULL DEFAULT 0,
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    last_error TEXT,
+    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_attempt_at TIMESTAMPTZ,
     processed_at TIMESTAMPTZ,
-    error TEXT
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_%s_unprocessed ON %s(created_at) WHERE processed_at IS NULL;
+-- Partial index for efficient polling of pending messages
+CREATE INDEX IF NOT EXISTS idx_%s_pending ON %s(scheduled_at) WHERE status = 0;
+-- Index for dead letter queries
+CREATE INDEX IF NOT EXISTS idx_%s_dead_letter ON %s(created_at) WHERE status = 4;
 
 -- Migrations tracking
 CREATE TABLE IF NOT EXISTS mink_migrations (
@@ -1174,25 +1235,25 @@ BEGIN
     FROM %s e
     WHERE e.stream_id = p_stream_id
     FOR UPDATE;
-    
+
     -- Check expected version
     -- -1 = AnyVersion, 0 = NoStream, -2 = StreamExists
     IF p_expected_version >= 0 AND v_current_version != p_expected_version THEN
-        RAISE EXCEPTION 'mink: concurrency conflict on stream %% expected %% got %%', 
+        RAISE EXCEPTION 'mink: concurrency conflict on stream %% expected %% got %%',
             p_stream_id, p_expected_version, v_current_version;
     ELSIF p_expected_version = 0 AND v_current_version > 0 THEN
         RAISE EXCEPTION 'mink: stream %% already exists', p_stream_id;
     ELSIF p_expected_version = -2 AND v_current_version = 0 THEN
         RAISE EXCEPTION 'mink: stream %% does not exist', p_stream_id;
     END IF;
-    
+
     v_version := v_current_version;
-    
+
     -- Insert events
     FOR v_event IN SELECT * FROM jsonb_array_elements(p_events)
     LOOP
         v_version := v_version + 1;
-        
+
         INSERT INTO %s (stream_id, version, type, data, metadata)
         VALUES (
             p_stream_id,
@@ -1201,7 +1262,7 @@ BEGIN
             v_event->'data',
             COALESCE(v_event->'metadata', '{}'::jsonb)
         )
-        RETURNING 
+        RETURNING
             %s.id,
             %s.stream_id,
             %s.version,
@@ -1211,7 +1272,7 @@ BEGIN
             %s.global_position,
             %s.timestamp
         INTO id, stream_id, version, type, data, metadata, global_position, timestamp;
-        
+
         RETURN NEXT;
     END LOOP;
 END;
@@ -1231,6 +1292,7 @@ COMMENT ON TABLE %s IS 'Transactional outbox for reliable messaging';
 		snapshotTableName,
 		snapshotTableName, snapshotTableName,
 		outboxTableName,
+		outboxTableName, outboxTableName,
 		outboxTableName, outboxTableName,
 		tableName,
 		tableName,

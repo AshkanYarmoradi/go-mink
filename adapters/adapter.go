@@ -37,6 +37,9 @@ var (
 
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
+
+	// ErrOutboxMessageNotFound indicates the requested outbox message does not exist.
+	ErrOutboxMessageNotFound = errors.New("mink: outbox message not found")
 )
 
 // SagaNotFoundError provides detailed information about a missing saga.
@@ -722,4 +725,132 @@ type SagaStore interface {
 
 	// Close releases any resources held by the store.
 	Close() error
+}
+
+// OutboxStatus represents the current status of an outbox message.
+type OutboxStatus int
+
+const (
+	// OutboxPending indicates the message is waiting to be processed.
+	OutboxPending OutboxStatus = iota
+
+	// OutboxProcessing indicates the message is currently being processed.
+	OutboxProcessing
+
+	// OutboxCompleted indicates the message was successfully published.
+	OutboxCompleted
+
+	// OutboxFailed indicates the message failed to publish.
+	OutboxFailed
+
+	// OutboxDeadLetter indicates the message exceeded max retry attempts.
+	OutboxDeadLetter
+)
+
+// String returns the string representation of the outbox status.
+func (s OutboxStatus) String() string {
+	switch s {
+	case OutboxPending:
+		return "pending"
+	case OutboxProcessing:
+		return "processing"
+	case OutboxCompleted:
+		return "completed"
+	case OutboxFailed:
+		return "failed"
+	case OutboxDeadLetter:
+		return "dead_letter"
+	default:
+		return "unknown"
+	}
+}
+
+// OutboxMessage represents a message in the transactional outbox.
+type OutboxMessage struct {
+	// ID is the unique message identifier.
+	ID string `json:"id"`
+
+	// AggregateID identifies the aggregate that produced this message.
+	AggregateID string `json:"aggregateId"`
+
+	// EventType is the type of event this message carries.
+	EventType string `json:"eventType"`
+
+	// Destination specifies where to publish (e.g., "webhook:https://...", "kafka:topic").
+	Destination string `json:"destination"`
+
+	// Payload is the serialized message content.
+	Payload []byte `json:"payload"`
+
+	// Headers contains additional key-value metadata for the message.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Status is the current processing status.
+	Status OutboxStatus `json:"status"`
+
+	// Attempts is the number of delivery attempts made.
+	Attempts int `json:"attempts"`
+
+	// MaxAttempts is the maximum number of delivery attempts allowed.
+	MaxAttempts int `json:"maxAttempts"`
+
+	// LastError contains the error from the most recent failed attempt.
+	LastError string `json:"lastError,omitempty"`
+
+	// ScheduledAt is when the message was scheduled for delivery.
+	ScheduledAt time.Time `json:"scheduledAt"`
+
+	// LastAttemptAt is when the last delivery attempt was made.
+	LastAttemptAt *time.Time `json:"lastAttemptAt,omitempty"`
+
+	// ProcessedAt is when the message was successfully delivered.
+	ProcessedAt *time.Time `json:"processedAt,omitempty"`
+
+	// CreatedAt is when the message was created.
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// OutboxStore defines the interface for outbox message persistence.
+type OutboxStore interface {
+	// Schedule stores outbox messages for later processing.
+	Schedule(ctx context.Context, messages []*OutboxMessage) error
+
+	// ScheduleInTx stores outbox messages within an existing database transaction.
+	// The tx parameter is adapter-specific (e.g., *sql.Tx for PostgreSQL).
+	// This enables atomic event+outbox writes.
+	ScheduleInTx(ctx context.Context, tx interface{}, messages []*OutboxMessage) error
+
+	// FetchPending atomically claims up to limit pending messages for processing.
+	// Claimed messages are transitioned to OutboxProcessing status.
+	FetchPending(ctx context.Context, limit int) ([]*OutboxMessage, error)
+
+	// MarkCompleted marks messages as successfully delivered.
+	MarkCompleted(ctx context.Context, ids []string) error
+
+	// MarkFailed marks a message as failed with an error description.
+	MarkFailed(ctx context.Context, id string, lastErr error) error
+
+	// RetryFailed resets eligible failed messages (below maxAttempts) to pending.
+	RetryFailed(ctx context.Context, maxAttempts int) (int64, error)
+
+	// MoveToDeadLetter transitions messages that exceeded maxAttempts to dead letter.
+	MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error)
+
+	// GetDeadLetterMessages retrieves dead-lettered messages.
+	GetDeadLetterMessages(ctx context.Context, limit int) ([]*OutboxMessage, error)
+
+	// Cleanup removes old completed messages.
+	Cleanup(ctx context.Context, olderThan time.Duration) (int64, error)
+
+	// Initialize sets up the required storage schema.
+	Initialize(ctx context.Context) error
+
+	// Close releases any resources held by the store.
+	Close() error
+}
+
+// OutboxAppender is an optional interface for adapters that support
+// atomic event append + outbox schedule in a single transaction.
+type OutboxAppender interface {
+	AppendWithOutbox(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64, outboxMessages []*OutboxMessage) ([]StoredEvent, error)
 }

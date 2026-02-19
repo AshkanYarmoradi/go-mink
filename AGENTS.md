@@ -180,12 +180,18 @@ github.com/AshkanYarmoradi/go-mink/
   - `SagaManager` for orchestration
   - `SagaStore` with PostgreSQL and Memory implementations
   - `testing/sagas` package for testing
+- ✅ Outbox Pattern for reliable messaging
+  - `OutboxStore` interface with PostgreSQL and Memory implementations
+  - `OutboxAppender` for atomic event+outbox writes (PostgreSQL)
+  - `EventStoreWithOutbox` wrapper with automatic routing
+  - `OutboxProcessor` background worker with polling, retry, dead-letter
+  - Built-in publishers: Webhook (`outbox/webhook`), Kafka (`outbox/kafka`), SNS (`outbox/sns`)
+  - Prometheus metrics integration (`OutboxMetrics` in `middleware/metrics`)
 
 **Remaining Tasks**:
-1. Outbox pattern for reliable messaging
-2. Event versioning & upcasting
-3. Field-level encryption (AWS KMS, HashiCorp Vault)
-4. GDPR compliance (crypto-shredding, data export)
+1. Event versioning & upcasting
+2. Field-level encryption (AWS KMS, HashiCorp Vault)
+3. GDPR compliance (crypto-shredding, data export)
 
 ### Phase 6-7: See roadmap.md for details
 

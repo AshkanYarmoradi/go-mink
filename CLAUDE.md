@@ -41,9 +41,13 @@ Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Eve
                                                                           |
                                                                      Saga Manager
                                                                     (compensation)
+                                                                          |
+                                                                   Outbox Processor
+                                                                          |
+                                                              External Systems (Kafka, Webhooks, SNS)
 ```
 
-**Data flow**: Commands are dispatched through the bus with middleware (validation, idempotency, correlation, recovery). Handlers load aggregates from the event store, execute domain logic, and persist uncommitted events. The projection engine subscribes to stored events and updates read models. Sagas orchestrate long-running workflows with compensation.
+**Data flow**: Commands are dispatched through the bus with middleware (validation, idempotency, correlation, recovery). Handlers load aggregates from the event store, execute domain logic, and persist uncommitted events. The projection engine subscribes to stored events and updates read models. Sagas orchestrate long-running workflows with compensation. The outbox processor reliably publishes events to external systems (Kafka, webhooks, SNS) with retry and dead-letter support.
 
 ## Key File Locations
 
@@ -62,17 +66,22 @@ Root package (all core types are in the root `mink` package):
 - `subscription.go` - Event subscription management
 - `saga.go` - Saga interface, SagaBase, SagaCorrelation
 - `saga_manager.go` - SagaManager orchestration with compensation and retry
+- `outbox.go` - OutboxRoute, Publisher interface, EventStoreWithOutbox wrapper, OutboxMetrics
+- `outbox_processor.go` - OutboxProcessor background worker with polling, retry, dead-letter
 - `repository.go` - Repository pattern for aggregates
 - `serializer.go` - Serializer interface and JSON implementation
 - `errors.go` - All sentinel errors and typed errors
 
 Adapters:
-- `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, etc.)
-- `adapters/postgres/` - PostgreSQL adapter (postgres.go, subscription.go, idempotency.go, saga_store.go, readmodel.go)
-- `adapters/memory/` - In-memory adapter for testing (memory.go, checkpoint.go, idempotency.go, saga_store.go)
+- `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, etc.)
+- `adapters/postgres/` - PostgreSQL adapter (postgres.go, subscription.go, idempotency.go, saga_store.go, outbox_store.go, readmodel.go)
+- `adapters/memory/` - In-memory adapter for testing (memory.go, checkpoint.go, idempotency.go, saga_store.go, outbox_store.go)
 
 Other packages:
-- `middleware/metrics/` - Prometheus metrics middleware
+- `outbox/webhook/` - HTTP webhook publisher for outbox
+- `outbox/kafka/` - Apache Kafka publisher for outbox
+- `outbox/sns/` - AWS SNS publisher for outbox
+- `middleware/metrics/` - Prometheus metrics middleware (includes outbox metrics)
 - `middleware/tracing/` - OpenTelemetry tracing middleware
 - `serializer/msgpack/` - MessagePack serializer
 - `serializer/protobuf/` - Protocol Buffers serializer
@@ -104,6 +113,8 @@ type EventStoreAdapter interface {
 // - CheckpointAdapter: projection checkpoint management
 // - IdempotencyStore: command deduplication
 // - SagaStore: saga persistence (Save, Load, FindByCorrelationID, FindByType, Delete)
+// - OutboxStore: outbox message persistence (Schedule, FetchPending, MarkCompleted, etc.)
+// - OutboxAppender: atomic event+outbox writes (AppendWithOutbox)
 // - StreamQueryAdapter, DiagnosticAdapter, SchemaProvider: CLI tool support
 
 // Domain models embed AggregateBase and implement ApplyEvent
@@ -182,8 +193,8 @@ db := container.MustDB(ctx)
 ## Current Development Phase
 
 **Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
-- Completed: Saga / Process Manager, CLI tool
-- Remaining: Outbox pattern, event versioning & upcasting, field-level encryption, GDPR compliance
+- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics)
+- Remaining: Event versioning & upcasting, field-level encryption, GDPR compliance
 
 ## Don't Do
 

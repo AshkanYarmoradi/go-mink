@@ -784,191 +784,293 @@ func TestOrderFulfillmentSaga_Compensation(t *testing.T) {
 
 ---
 
-## Outbox Pattern
+## Outbox Pattern (v0.5.0) ✅
 
-Reliable event publishing to external systems.
+Reliable event publishing to external systems. The outbox pattern ensures messages are published atomically with events by writing them in the same database transaction, then delivering them asynchronously via a background processor.
 
-### Outbox Design
+### Core Types
 
 ```go
 // OutboxMessage represents a message to be published
 type OutboxMessage struct {
-    ID           string
-    AggregateID  string
-    EventType    string
-    Destination  string            // "kafka:orders-topic", "webhook:partner"
-    Payload      []byte
-    Headers      map[string]string
-    ScheduledAt  time.Time
-    Attempts     int
-    LastError    string
-    Status       OutboxStatus
+    ID            string
+    AggregateID   string
+    EventType     string
+    Destination   string            // "webhook:https://example.com", "kafka:orders", "sns:arn:..."
+    Payload       []byte
+    Headers       map[string]string
+    Status        OutboxStatus
+    Attempts      int
+    MaxAttempts   int
+    LastError     string
+    ScheduledAt   time.Time
+    LastAttemptAt *time.Time
+    ProcessedAt   *time.Time
+    CreatedAt     time.Time
 }
 
 type OutboxStatus int
 const (
-    OutboxPending OutboxStatus = iota
-    OutboxProcessing
-    OutboxCompleted
-    OutboxFailed
+    OutboxPending    OutboxStatus = iota // Waiting to be processed
+    OutboxProcessing                     // Currently being delivered
+    OutboxCompleted                      // Successfully delivered
+    OutboxFailed                         // Delivery failed
+    OutboxDeadLetter                     // Exceeded max retries
+)
+```
+
+### OutboxStore Interface
+
+```go
+// OutboxStore defines the interface for outbox message persistence
+type OutboxStore interface {
+    Schedule(ctx context.Context, messages []*OutboxMessage) error
+    ScheduleInTx(ctx context.Context, tx interface{}, messages []*OutboxMessage) error
+    FetchPending(ctx context.Context, limit int) ([]*OutboxMessage, error)
+    MarkCompleted(ctx context.Context, ids []string) error
+    MarkFailed(ctx context.Context, id string, lastErr error) error
+    RetryFailed(ctx context.Context, maxAttempts int) (int64, error)
+    MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error)
+    GetDeadLetterMessages(ctx context.Context, limit int) ([]*OutboxMessage, error)
+    Cleanup(ctx context.Context, olderThan time.Duration) (int64, error)
+    Initialize(ctx context.Context) error
+    Close() error
+}
+```
+
+### EventStoreWithOutbox
+
+Wraps an `EventStore` to automatically schedule outbox messages when events are appended. If the underlying adapter implements `OutboxAppender`, events and outbox messages are written atomically in the same transaction.
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
 )
 
-// Outbox interface
-type Outbox interface {
-    // Schedule message in same transaction as events
-    Schedule(ctx context.Context, tx Transaction, messages []OutboxMessage) error
-    
-    // Fetch pending messages for processing
-    FetchPending(ctx context.Context, limit int) ([]OutboxMessage, error)
-    
-    // Mark messages as processed
-    MarkCompleted(ctx context.Context, ids []string) error
-    
-    // Mark as failed with error
-    MarkFailed(ctx context.Context, id string, err error) error
-    
-    // Retry failed messages
-    RetryFailed(ctx context.Context, maxAttempts int) error
+// Create stores
+adapter := memory.NewAdapter()
+store := mink.New(adapter)
+outboxStore := memory.NewOutboxStore()
+
+// Define routes: which events go where
+routes := []mink.OutboxRoute{
+    {
+        EventTypes:  []string{"OrderCreated", "OrderShipped"},
+        Destination: "kafka:orders",
+    },
+    {
+        EventTypes:  []string{"OrderShipped"},
+        Destination: "webhook:https://partner.example.com/events",
+    },
+    {
+        Destination: "sns:arn:aws:sns:us-east-1:123456:all-events", // All events
+    },
+}
+
+// Create event store with outbox
+esWithOutbox := mink.NewEventStoreWithOutbox(store, outboxStore, routes,
+    mink.WithOutboxMaxAttempts(10),
+)
+
+// Append events - outbox messages are scheduled automatically
+err := esWithOutbox.Append(ctx, "Order-123", []interface{}{
+    OrderCreated{OrderID: "123", CustomerID: "cust-456"},
+})
+
+// Or save aggregates - same automatic outbox scheduling
+err = esWithOutbox.SaveAggregate(ctx, order)
+```
+
+### OutboxRoute Configuration
+
+```go
+// Routes define which events get published where
+type OutboxRoute struct {
+    EventTypes  []string                           // Empty = all events
+    Destination string                             // "prefix:target"
+    Transform   func(StoredEvent) ([]byte, error)  // Optional payload transform
+    Filter      func(StoredEvent) bool             // Optional filter
 }
 ```
 
 ### Outbox Processor
 
+Background worker that polls for pending messages and delivers them via registered publishers.
+
 ```go
-// OutboxProcessor publishes messages to external systems
-type OutboxProcessor struct {
-    outbox     Outbox
-    publishers map[string]Publisher
-    options    ProcessorOptions
-}
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
+    "github.com/AshkanYarmoradi/go-mink/outbox/kafka"
+)
 
-type ProcessorOptions struct {
-    BatchSize     int
-    PollInterval  time.Duration
-    MaxRetries    int
-    RetryBackoff  time.Duration
-}
+// Create publishers
+webhookPub := webhook.NewPublisher(
+    webhook.WithTimeout(10 * time.Second),
+    webhook.WithDefaultHeaders(map[string]string{
+        "Authorization": "Bearer token123",
+    }),
+)
 
-// Publisher sends messages to specific destination
-type Publisher interface {
-    Publish(ctx context.Context, messages []OutboxMessage) error
-    Destination() string // "kafka", "webhook", "sns"
-}
+kafkaPub := kafka.NewPublisher(
+    kafka.WithBrokers([]string{"localhost:9092"}),
+)
 
-// Built-in publishers
-func NewKafkaPublisher(brokers []string, opts ...KafkaOption) Publisher
-func NewWebhookPublisher(httpClient *http.Client) Publisher
-func NewSNSPublisher(snsClient *sns.Client) Publisher
+// Create and configure processor
+processor := mink.NewOutboxProcessor(outboxStore,
+    mink.WithPublisher(webhookPub),
+    mink.WithPublisher(kafkaPub),
+    mink.WithBatchSize(100),
+    mink.WithPollInterval(1 * time.Second),
+    mink.WithMaxRetries(5),
+    mink.WithRetryBackoff(5 * time.Second),
+    mink.WithCleanupInterval(1 * time.Hour),
+    mink.WithCleanupAge(7 * 24 * time.Hour),
+)
 
-// Processor loop
-func (p *OutboxProcessor) Start(ctx context.Context) error {
-    ticker := time.NewTicker(p.options.PollInterval)
-    defer ticker.Stop()
-    
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        case <-ticker.C:
-            p.processBatch(ctx)
-        }
-    }
-}
+// Start processing
+err := processor.Start(ctx)
 
-func (p *OutboxProcessor) processBatch(ctx context.Context) error {
-    messages, _ := p.outbox.FetchPending(ctx, p.options.BatchSize)
-    
-    // Group by destination
-    byDest := make(map[string][]OutboxMessage)
-    for _, msg := range messages {
-        dest := strings.Split(msg.Destination, ":")[0]
-        byDest[dest] = append(byDest[dest], msg)
-    }
-    
-    // Publish to each destination
-    for dest, msgs := range byDest {
-        publisher := p.publishers[dest]
-        if err := publisher.Publish(ctx, msgs); err != nil {
-            for _, msg := range msgs {
-                p.outbox.MarkFailed(ctx, msg.ID, err)
-            }
-            continue
-        }
-        
-        ids := make([]string, len(msgs))
-        for i, msg := range msgs {
-            ids[i] = msg.ID
-        }
-        p.outbox.MarkCompleted(ctx, ids)
-    }
-    
-    return nil
+// Graceful shutdown
+stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+processor.Stop(stopCtx)
+```
+
+### Built-in Publishers
+
+**Webhook Publisher** - HTTP POST delivery:
+```go
+import "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
+
+pub := webhook.NewPublisher(
+    webhook.WithTimeout(10 * time.Second),
+    webhook.WithDefaultHeaders(map[string]string{
+        "X-API-Key": "secret",
+    }),
+)
+// Destination format: "webhook:https://example.com/events"
+```
+
+**Kafka Publisher** - Apache Kafka delivery:
+```go
+import "github.com/AshkanYarmoradi/go-mink/outbox/kafka"
+
+pub := kafka.NewPublisher(
+    kafka.WithBrokers([]string{"broker1:9092", "broker2:9092"}),
+    kafka.WithBatchTimeout(100 * time.Millisecond),
+)
+// Destination format: "kafka:topic-name"
+```
+
+**SNS Publisher** - AWS SNS delivery:
+```go
+import "github.com/AshkanYarmoradi/go-mink/outbox/sns"
+
+pub := sns.NewPublisher(
+    sns.WithSNSClient(snsClient),
+    sns.WithMessageGroupID("orders"),
+)
+// Destination format: "sns:arn:aws:sns:us-east-1:123456:topic"
+```
+
+### Outbox Stores
+
+**PostgreSQL** (production):
+```go
+import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+
+outboxStore := postgres.NewOutboxStore(db,
+    postgres.WithOutboxSchema("myapp"),
+    postgres.WithOutboxTableName("outbox_messages"),
+)
+if err := outboxStore.Initialize(ctx); err != nil {
+    log.Fatal(err)
 }
 ```
 
-### Integration with Event Store
+The PostgreSQL implementation uses `SELECT ... FOR UPDATE SKIP LOCKED` for concurrent-safe message claiming.
+
+**In-Memory** (testing):
+```go
+import "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+
+outboxStore := memory.NewOutboxStore()
+```
+
+### Atomic Append with Outbox (PostgreSQL)
+
+The PostgreSQL adapter implements `OutboxAppender` for atomic event+outbox writes:
 
 ```go
-// Event store with outbox support
-type EventStoreWithOutbox struct {
-    *EventStore
-    outbox Outbox
-    routes []OutboxRoute
-}
+// When using PostgreSQL, events and outbox messages are written
+// in the same database transaction automatically.
+// No messages are published if the event append fails, and vice versa.
 
-type OutboxRoute struct {
-    EventTypes  []string
-    Destination string
-    Transform   func(Event) ([]byte, error)
-}
+// The EventStoreWithOutbox detects this automatically:
+// - PostgreSQL adapter: atomic (same transaction)
+// - Memory adapter: non-atomic fallback (separate calls, logged warning)
+```
 
-// Append with automatic outbox scheduling
-func (s *EventStoreWithOutbox) Append(ctx context.Context, streamID string, 
-    events []interface{}, opts ...AppendOption) error {
-    
-    return s.adapter.WithTransaction(ctx, func(tx Transaction) error {
-        // Store events
-        stored, err := s.appendInTx(ctx, tx, streamID, events, opts...)
-        if err != nil {
-            return err
-        }
-        
-        // Schedule outbox messages
-        var messages []OutboxMessage
-        for _, event := range stored {
-            for _, route := range s.routes {
-                if !contains(route.EventTypes, event.Type) {
-                    continue
-                }
-                payload, _ := route.Transform(event)
-                messages = append(messages, OutboxMessage{
-                    ID:          uuid.NewString(),
-                    AggregateID: streamID,
-                    EventType:   event.Type,
-                    Destination: route.Destination,
-                    Payload:     payload,
-                    ScheduledAt: time.Now(),
-                })
-            }
-        }
-        
-        return s.outbox.Schedule(ctx, tx, messages)
-    })
-}
+### Metrics Integration
 
-// Configuration
-store := mink.NewEventStoreWithOutbox(adapter, outbox,
-    mink.OutboxRoute{
-        EventTypes:  []string{"OrderCreated", "OrderShipped"},
-        Destination: "kafka:orders",
-        Transform:   mink.JSONTransform,
-    },
-    mink.OutboxRoute{
-        EventTypes:  []string{"OrderShipped"},
-        Destination: "webhook:shipping-partner",
-        Transform:   shippingWebhookTransform,
-    },
+```go
+import "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+
+m := metrics.New(metrics.WithMetricsServiceName("order-service"))
+
+processor := mink.NewOutboxProcessor(outboxStore,
+    mink.WithOutboxMetrics(m),
+    // ...
 )
+
+// Available metrics:
+// - outbox_messages_processed_total (labels: destination, status)
+// - outbox_messages_failed_total (labels: destination)
+// - outbox_messages_dead_lettered_total
+// - outbox_batch_duration_seconds
+// - outbox_pending_messages (gauge)
+```
+
+### Dead Letter Handling
+
+Messages that exceed `MaxRetries` are moved to the dead letter queue during the processor's maintenance cycle.
+
+```go
+// Retrieve dead-lettered messages for manual inspection
+deadLetters, err := outboxStore.GetDeadLetterMessages(ctx, 100)
+for _, msg := range deadLetters {
+    log.Printf("Dead letter: %s (destination: %s, error: %s)",
+        msg.ID, msg.Destination, msg.LastError)
+}
+```
+
+### PostgreSQL Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS mink_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_id VARCHAR(255) NOT NULL,
+    event_type VARCHAR(255) NOT NULL,
+    destination VARCHAR(255) NOT NULL,
+    payload JSONB NOT NULL,
+    headers JSONB DEFAULT '{}',
+    status INT NOT NULL DEFAULT 0,
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    last_error TEXT,
+    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_attempt_at TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Partial index for efficient pending message polling
+CREATE INDEX idx_mink_outbox_pending ON mink_outbox (scheduled_at) WHERE status = 0;
+
+-- Partial index for dead letter inspection
+CREATE INDEX idx_mink_outbox_dead_letter ON mink_outbox (created_at) WHERE status = 4;
 ```
 
 ---

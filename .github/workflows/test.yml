@@ -9,6 +9,7 @@ on:
 # Environment variables shared across all jobs
 env:
   TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
+  TEST_KAFKA_BROKERS: localhost:9092
   # Future adapters:
   # TEST_MONGODB_URL: mongodb://localhost:27017/mink_test
   # TEST_REDIS_URL: redis://localhost:6379
