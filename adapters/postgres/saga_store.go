@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink"
@@ -294,7 +295,7 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 				data, processed_events, steps, failure_reason, started_at, updated_at,
 				completed_at, version
 			FROM ` + tableQ + `
-			WHERE type = $1 AND status IN (` + joinStrings(placeholders, ", ") + `)
+			WHERE type = $1 AND status IN (` + strings.Join(placeholders, ", ") + `)
 			ORDER BY started_at DESC
 		`
 		args = append([]interface{}{sagaType}, statusInts...)
@@ -422,17 +423,6 @@ func nullTime(t *time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: *t, Valid: true}
-}
-
-func joinStrings(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for i := 1; i < len(strs); i++ {
-		result += sep + strs[i]
-	}
-	return result
 }
 
 // sagaRowScanner holds the intermediate scan results for a saga row.

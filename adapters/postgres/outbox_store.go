@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
@@ -250,7 +251,7 @@ func (s *OutboxStore) MarkCompleted(ctx context.Context, ids []string) error {
 		UPDATE ` + tableQ + ` SET
 			status = $1,
 			processed_at = NOW()
-		WHERE id IN (` + joinStrings(placeholders, ", ") + `)
+		WHERE id IN (` + strings.Join(placeholders, ", ") + `)
 	`
 
 	_, err := s.db.ExecContext(ctx, query, args...)

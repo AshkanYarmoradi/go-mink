@@ -74,41 +74,45 @@ func (p *Publisher) Destination() string {
 // The URL is extracted from the destination by removing the "webhook:" prefix.
 func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMessage) error {
 	for _, msg := range messages {
-		url := extractURL(msg.Destination)
-		if url == "" {
-			return fmt.Errorf("webhook: invalid destination %q: missing URL", msg.Destination)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(msg.Payload))
-		if err != nil {
-			return fmt.Errorf("webhook: failed to create request: %w", err)
-		}
-
-		// Set default headers
-		for k, v := range p.defaultHeaders {
-			req.Header.Set(k, v)
-		}
-
-		// Set message headers (override defaults)
-		for k, v := range msg.Headers {
-			req.Header.Set("X-Outbox-"+k, v)
-		}
-
-		resp, err := p.client.Do(req)
-		if err != nil {
-			return fmt.Errorf("webhook: request failed for %s: %w", url, err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode >= 500 {
-			return fmt.Errorf("webhook: server error %d from %s", resp.StatusCode, url)
-		}
-		if resp.StatusCode >= 400 {
-			return fmt.Errorf("webhook: client error %d from %s", resp.StatusCode, url)
+		if err := p.sendMessage(ctx, msg); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
+// sendMessage sends a single outbox message via HTTP POST.
+func (p *Publisher) sendMessage(ctx context.Context, msg *adapters.OutboxMessage) error {
+	url := extractURL(msg.Destination)
+	if url == "" {
+		return fmt.Errorf("webhook: invalid destination %q: missing URL", msg.Destination)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(msg.Payload))
+	if err != nil {
+		return fmt.Errorf("webhook: failed to create request: %w", err)
+	}
+
+	for k, v := range p.defaultHeaders {
+		req.Header.Set(k, v)
+	}
+	for k, v := range msg.Headers {
+		req.Header.Set("X-Outbox-"+k, v)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("webhook: request failed for %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("webhook: server error %d from %s", resp.StatusCode, url)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("webhook: client error %d from %s", resp.StatusCode, url)
+	}
 	return nil
 }
 

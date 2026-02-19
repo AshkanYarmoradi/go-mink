@@ -244,14 +244,14 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 	}
 
 	// Group messages by destination prefix
-	grouped := make(map[string][]*OutboxMessage)
+	messagesByPrefix := make(map[string][]*OutboxMessage)
 	for _, msg := range messages {
 		prefix := destinationPrefix(msg.Destination)
-		grouped[prefix] = append(grouped[prefix], msg)
+		messagesByPrefix[prefix] = append(messagesByPrefix[prefix], msg)
 	}
 
 	// Publish each group
-	for prefix, msgs := range grouped {
+	for prefix, msgs := range messagesByPrefix {
 		publisher, ok := p.publishers[prefix]
 		if !ok {
 			// No publisher for this destination prefix; mark as failed

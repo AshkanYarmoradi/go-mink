@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AshkanYarmoradi/go-mink/adapters"
@@ -19,6 +20,7 @@ type Publisher struct {
 	balancer     kafkago.Balancer
 	batchTimeout time.Duration
 	transport    kafkago.RoundTripper
+	mu           sync.RWMutex
 	writers      map[string]*kafkago.Writer
 }
 
@@ -106,16 +108,31 @@ func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMess
 
 // Close closes all Kafka writers.
 func (p *Publisher) Close() error {
-	for _, w := range p.writers {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for topic, w := range p.writers {
 		if err := w.Close(); err != nil {
 			return err
 		}
+		delete(p.writers, topic)
 	}
 	return nil
 }
 
 // getWriter returns or creates a Kafka writer for the given topic.
 func (p *Publisher) getWriter(topic string) *kafkago.Writer {
+	p.mu.RLock()
+	if w, ok := p.writers[topic]; ok {
+		p.mu.RUnlock()
+		return w
+	}
+	p.mu.RUnlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock
 	if w, ok := p.writers[topic]; ok {
 		return w
 	}

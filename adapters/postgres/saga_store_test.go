@@ -866,24 +866,6 @@ func TestNullTime(t *testing.T) {
 	assert.Equal(t, now, result.Time)
 }
 
-func TestJoinStrings(t *testing.T) {
-	tests := []struct {
-		input    []string
-		sep      string
-		expected string
-	}{
-		{[]string{}, ", ", ""},
-		{[]string{"a"}, ", ", "a"},
-		{[]string{"a", "b", "c"}, ", ", "a, b, c"},
-		{[]string{"$1", "$2"}, " OR ", "$1 OR $2"},
-	}
-
-	for _, tt := range tests {
-		result := joinStrings(tt.input, tt.sep)
-		assert.Equal(t, tt.expected, result)
-	}
-}
-
 // ====================================================================
 // Concurrent Access Tests
 // ====================================================================
