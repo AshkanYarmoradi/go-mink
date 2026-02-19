@@ -79,10 +79,19 @@ func TestPublisher_Publish_EmptyTopic(t *testing.T) {
 }
 
 // =============================================================================
-// Integration tests (require Kafka)
+// Integration test helpers
 // =============================================================================
 
-func kafkaBrokers(t *testing.T) string {
+// integrationSetup prepares a Kafka integration test by checking prerequisites,
+// creating a unique topic, and returning a Publisher with a dedicated transport.
+type integrationEnv struct {
+	brokers   string
+	topic     string
+	publisher *Publisher
+	ctx       context.Context
+}
+
+func setupIntegration(t *testing.T) *integrationEnv {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("Skipping integration test (short mode)")
@@ -91,12 +100,48 @@ func kafkaBrokers(t *testing.T) string {
 	if brokers == "" {
 		t.Skip("TEST_KAFKA_BROKERS not set")
 	}
-	return brokers
+
+	topic := fmt.Sprintf("test-%s-%d", t.Name(), time.Now().UnixNano())
+	createTopic(t, brokers, topic)
+
+	p := New(WithBrokers(brokers), WithBatchTimeout(10*time.Millisecond))
+	p.transport = &kafkago.Transport{}
+
+	return &integrationEnv{
+		brokers:   brokers,
+		topic:     topic,
+		publisher: p,
+		ctx:       context.Background(),
+	}
 }
 
-func uniqueTopic(t *testing.T) string {
+// publish sends a single outbox message to the env's topic.
+func (e *integrationEnv) publish(t *testing.T, msg *adapters.OutboxMessage) {
 	t.Helper()
-	return fmt.Sprintf("test-%s-%d", t.Name(), time.Now().UnixNano())
+	msg.Destination = "kafka:" + e.topic
+	err := e.publisher.Publish(e.ctx, []*adapters.OutboxMessage{msg})
+	require.NoError(t, err)
+}
+
+// readMessage reads one message from the env's topic.
+func (e *integrationEnv) readMessage(t *testing.T) kafkago.Message {
+	t.Helper()
+	reader := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers:   []string{e.brokers},
+		Topic:     e.topic,
+		Partition: 0,
+		MinBytes:  1,
+		MaxBytes:  10e6,
+		MaxWait:   5 * time.Second,
+	})
+	defer reader.Close()
+
+	readCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	defer cancel()
+
+	msg, err := reader.ReadMessage(readCtx)
+	require.NoError(t, err)
+	return msg
 }
 
 // createTopic pre-creates a Kafka topic and waits until it's available.
@@ -132,98 +177,36 @@ func createTopic(t *testing.T, brokers string, topic string) {
 	t.Fatalf("topic %s not available after 10s", topic)
 }
 
-// newTestPublisher creates a Publisher with a dedicated Transport to avoid
-// shared metadata cache issues between tests.
-func newTestPublisher(t *testing.T, brokers string) *Publisher {
-	t.Helper()
-	p := New(WithBrokers(brokers), WithBatchTimeout(10*time.Millisecond))
-	p.transport = &kafkago.Transport{}
-	return p
-}
+// =============================================================================
+// Integration tests
+// =============================================================================
 
 func TestKafkaPublisher_Publish_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
-	topic := uniqueTopic(t)
-	createTopic(t, brokers, topic)
-
-	p := newTestPublisher(t, brokers)
-	ctx := context.Background()
-
-	messages := []*adapters.OutboxMessage{
-		{
-			ID:          "msg-1",
-			AggregateID: "order-123",
-			EventType:   "OrderCreated",
-			Destination: "kafka:" + topic,
-			Payload:     []byte(`{"id":"123"}`),
-		},
-	}
-
-	err := p.Publish(ctx, messages)
-	require.NoError(t, err)
-
-	// Read back the message
-	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:   []string{brokers},
-		Topic:     topic,
-		Partition: 0,
-		MinBytes:  1,
-		MaxBytes:  10e6,
-		MaxWait:   5 * time.Second,
+	env := setupIntegration(t)
+	env.publish(t, &adapters.OutboxMessage{
+		ID: "msg-1", AggregateID: "order-123", EventType: "OrderCreated",
+		Payload: []byte(`{"id":"123"}`),
 	})
-	defer reader.Close()
 
-	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	msg, err := reader.ReadMessage(readCtx)
-	require.NoError(t, err)
+	msg := env.readMessage(t)
 	assert.Equal(t, []byte("order-123"), msg.Key)
 	assert.Equal(t, []byte(`{"id":"123"}`), msg.Value)
 
-	require.NoError(t, p.Close())
+	require.NoError(t, env.publisher.Close())
 }
 
 func TestKafkaPublisher_Publish_WithHeaders_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
-	topic := uniqueTopic(t)
-	createTopic(t, brokers, topic)
-
-	p := newTestPublisher(t, brokers)
-	ctx := context.Background()
-
-	messages := []*adapters.OutboxMessage{
-		{
-			ID:          "msg-1",
-			AggregateID: "order-456",
-			Destination: "kafka:" + topic,
-			Payload:     []byte(`{"id":"456"}`),
-			Headers: map[string]string{
-				"correlation-id": "corr-abc",
-				"event-type":     "OrderShipped",
-			},
+	env := setupIntegration(t)
+	env.publish(t, &adapters.OutboxMessage{
+		ID: "msg-1", AggregateID: "order-456",
+		Payload: []byte(`{"id":"456"}`),
+		Headers: map[string]string{
+			"correlation-id": "corr-abc",
+			"event-type":     "OrderShipped",
 		},
-	}
-
-	err := p.Publish(ctx, messages)
-	require.NoError(t, err)
-
-	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:   []string{brokers},
-		Topic:     topic,
-		Partition: 0,
-		MinBytes:  1,
-		MaxBytes:  10e6,
-		MaxWait:   5 * time.Second,
 	})
-	defer reader.Close()
 
-	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	msg, err := reader.ReadMessage(readCtx)
-	require.NoError(t, err)
-
+	msg := env.readMessage(t)
 	headerMap := make(map[string]string)
 	for _, h := range msg.Headers {
 		headerMap[h.Key] = string(h.Value)
@@ -231,133 +214,88 @@ func TestKafkaPublisher_Publish_WithHeaders_Integration(t *testing.T) {
 	assert.Equal(t, "corr-abc", headerMap["correlation-id"])
 	assert.Equal(t, "OrderShipped", headerMap["event-type"])
 
-	require.NoError(t, p.Close())
+	require.NoError(t, env.publisher.Close())
 }
 
 func TestKafkaPublisher_Publish_MultipleTopics_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
-	topic1 := uniqueTopic(t) + "-a"
-	topic2 := uniqueTopic(t) + "-b"
+	if testing.Short() {
+		t.Skip("Skipping integration test (short mode)")
+	}
+	brokers := os.Getenv("TEST_KAFKA_BROKERS")
+	if brokers == "" {
+		t.Skip("TEST_KAFKA_BROKERS not set")
+	}
+
+	topic1 := fmt.Sprintf("test-%s-%d-a", t.Name(), time.Now().UnixNano())
+	topic2 := fmt.Sprintf("test-%s-%d-b", t.Name(), time.Now().UnixNano())
 	createTopic(t, brokers, topic1)
 	createTopic(t, brokers, topic2)
 
-	p := newTestPublisher(t, brokers)
+	p := New(WithBrokers(brokers), WithBatchTimeout(10*time.Millisecond))
+	p.transport = &kafkago.Transport{}
 	ctx := context.Background()
 
-	messages := []*adapters.OutboxMessage{
-		{
-			ID:          "msg-1",
-			AggregateID: "order-1",
-			Destination: "kafka:" + topic1,
-			Payload:     []byte(`{"topic":"1"}`),
-		},
-		{
-			ID:          "msg-2",
-			AggregateID: "order-2",
-			Destination: "kafka:" + topic2,
-			Payload:     []byte(`{"topic":"2"}`),
-		},
+	err := p.Publish(ctx, []*adapters.OutboxMessage{
+		{ID: "msg-1", AggregateID: "order-1", Destination: "kafka:" + topic1, Payload: []byte(`{"topic":"1"}`)},
+		{ID: "msg-2", AggregateID: "order-2", Destination: "kafka:" + topic2, Payload: []byte(`{"topic":"2"}`)},
+	})
+	require.NoError(t, err)
+
+	readFromTopic := func(topic string) kafkago.Message {
+		reader := kafkago.NewReader(kafkago.ReaderConfig{
+			Brokers: []string{brokers}, Topic: topic, Partition: 0,
+			MinBytes: 1, MaxBytes: 10e6, MaxWait: 5 * time.Second,
+		})
+		defer reader.Close()
+		readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		msg, err := reader.ReadMessage(readCtx)
+		require.NoError(t, err)
+		return msg
 	}
 
-	err := p.Publish(ctx, messages)
-	require.NoError(t, err)
-
-	// Verify topic 1
-	reader1 := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: []string{brokers}, Topic: topic1, Partition: 0,
-		MinBytes: 1, MaxBytes: 10e6, MaxWait: 5 * time.Second,
-	})
-	defer reader1.Close()
-
-	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	msg1, err := reader1.ReadMessage(readCtx)
-	require.NoError(t, err)
-	assert.Equal(t, []byte(`{"topic":"1"}`), msg1.Value)
-
-	// Verify topic 2
-	reader2 := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: []string{brokers}, Topic: topic2, Partition: 0,
-		MinBytes: 1, MaxBytes: 10e6, MaxWait: 5 * time.Second,
-	})
-	defer reader2.Close()
-
-	msg2, err := reader2.ReadMessage(readCtx)
-	require.NoError(t, err)
-	assert.Equal(t, []byte(`{"topic":"2"}`), msg2.Value)
+	assert.Equal(t, []byte(`{"topic":"1"}`), readFromTopic(topic1).Value)
+	assert.Equal(t, []byte(`{"topic":"2"}`), readFromTopic(topic2).Value)
 
 	require.NoError(t, p.Close())
 }
 
 func TestKafkaPublisher_Close_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
-	topic := uniqueTopic(t)
-	createTopic(t, brokers, topic)
-
-	p := newTestPublisher(t, brokers)
-	ctx := context.Background()
-
-	// Publish a message to force writer creation
-	err := p.Publish(ctx, []*adapters.OutboxMessage{
-		{
-			ID:          "msg-1",
-			AggregateID: "order-1",
-			Destination: "kafka:" + topic,
-			Payload:     []byte(`{}`),
-		},
+	env := setupIntegration(t)
+	env.publish(t, &adapters.OutboxMessage{
+		ID: "msg-1", AggregateID: "order-1", Payload: []byte(`{}`),
 	})
-	require.NoError(t, err)
 
-	// Close should succeed
-	err = p.Close()
-	assert.NoError(t, err)
+	assert.NoError(t, env.publisher.Close())
 }
 
 func TestKafkaPublisher_Close_Idempotent_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
-	topic := uniqueTopic(t)
-	createTopic(t, brokers, topic)
-
-	p := newTestPublisher(t, brokers)
-	ctx := context.Background()
-
-	// Create a writer by publishing
-	err := p.Publish(ctx, []*adapters.OutboxMessage{
-		{
-			ID:          "msg-1",
-			AggregateID: "order-1",
-			Destination: "kafka:" + topic,
-			Payload:     []byte(`{}`),
-		},
+	env := setupIntegration(t)
+	env.publish(t, &adapters.OutboxMessage{
+		ID: "msg-1", AggregateID: "order-1", Payload: []byte(`{}`),
 	})
-	require.NoError(t, err)
 
-	// First close
-	err = p.Close()
-	assert.NoError(t, err)
-
-	// Second close — no writers left, should succeed
-	err = p.Close()
-	assert.NoError(t, err)
+	assert.NoError(t, env.publisher.Close())
+	assert.NoError(t, env.publisher.Close())
 }
 
 func TestKafkaPublisher_GetWriter_Caching_Integration(t *testing.T) {
-	brokers := kafkaBrokers(t)
+	if testing.Short() {
+		t.Skip("Skipping integration test (short mode)")
+	}
+	brokers := os.Getenv("TEST_KAFKA_BROKERS")
+	if brokers == "" {
+		t.Skip("TEST_KAFKA_BROKERS not set")
+	}
 
 	p := New(WithBrokers(brokers))
 
-	topic := "cache-test-topic"
-	writer1 := p.getWriter(topic)
-	writer2 := p.getWriter(topic)
-
-	// Same pointer should be returned
+	writer1 := p.getWriter("cache-test-topic")
+	writer2 := p.getWriter("cache-test-topic")
 	assert.Same(t, writer1, writer2)
 
-	// Different topic should return different writer
 	writer3 := p.getWriter("other-topic")
 	assert.NotSame(t, writer1, writer3)
 
-	// Clean up
 	_ = p.Close()
 }

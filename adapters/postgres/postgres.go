@@ -171,26 +171,11 @@ func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
 		return nil, fmt.Errorf("mink/postgres: failed to open database: %w", err)
 	}
 
-	adapter := &PostgresAdapter{
-		db:     db,
-		schema: "mink",
-	}
-
-	for _, opt := range opts {
-		opt(adapter)
-	}
-
-	// Validate and cache quoted schema name to prevent SQL injection
-	schemaQ, err := safeSchemaIdentifier(adapter.schema)
+	adapter, err := initAdapter(db, opts)
 	if err != nil {
-		// Cancel health check goroutine if it was started
-		if adapter.healthCheckCancel != nil {
-			adapter.healthCheckCancel()
-		}
 		_ = db.Close()
 		return nil, err
 	}
-	adapter.schemaQ = schemaQ
 
 	return adapter, nil
 }
@@ -202,6 +187,11 @@ func NewAdapterWithDB(db *sql.DB, opts ...Option) (*PostgresAdapter, error) {
 		return nil, fmt.Errorf("mink/postgres: database connection is nil")
 	}
 
+	return initAdapter(db, opts)
+}
+
+// initAdapter applies options and validates the schema for a new PostgresAdapter.
+func initAdapter(db *sql.DB, opts []Option) (*PostgresAdapter, error) {
 	adapter := &PostgresAdapter{
 		db:     db,
 		schema: "mink",
@@ -211,10 +201,8 @@ func NewAdapterWithDB(db *sql.DB, opts ...Option) (*PostgresAdapter, error) {
 		opt(adapter)
 	}
 
-	// Validate and cache quoted schema name to prevent SQL injection
 	schemaQ, err := safeSchemaIdentifier(adapter.schema)
 	if err != nil {
-		// Cancel health check goroutine if it was started
 		if adapter.healthCheckCancel != nil {
 			adapter.healthCheckCancel()
 		}

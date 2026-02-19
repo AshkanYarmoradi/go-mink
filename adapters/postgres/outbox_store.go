@@ -380,54 +380,56 @@ func (s *OutboxStore) Close() error {
 	return nil
 }
 
+// messageScanTargets holds the temporary scan targets for reading an OutboxMessage row.
+type messageScanTargets struct {
+	headersJSON   []byte
+	status        int
+	lastError     sql.NullString
+	lastAttemptAt sql.NullTime
+	processedAt   sql.NullTime
+}
+
+// scanDest returns the ordered list of scan destinations matching the SELECT column order.
+func (t *messageScanTargets) scanDest(msg *adapters.OutboxMessage) []interface{} {
+	return []interface{}{
+		&msg.ID, &msg.AggregateID, &msg.EventType, &msg.Destination,
+		&msg.Payload, &t.headersJSON, &t.status, &msg.Attempts,
+		&msg.MaxAttempts, &t.lastError, &msg.ScheduledAt,
+		&t.lastAttemptAt, &t.processedAt, &msg.CreatedAt,
+	}
+}
+
+// populate applies the scanned nullable fields onto the message.
+func (t *messageScanTargets) populate(msg *adapters.OutboxMessage) error {
+	msg.Status = adapters.OutboxStatus(t.status)
+	msg.LastError = t.lastError.String
+	if t.lastAttemptAt.Valid {
+		msg.LastAttemptAt = &t.lastAttemptAt.Time
+	}
+	if t.processedAt.Valid {
+		msg.ProcessedAt = &t.processedAt.Time
+	}
+	if len(t.headersJSON) > 0 && string(t.headersJSON) != "null" {
+		if err := json.Unmarshal(t.headersJSON, &msg.Headers); err != nil {
+			return fmt.Errorf("mink/postgres/outbox: failed to unmarshal headers: %w", err)
+		}
+	}
+	return nil
+}
+
 // scanMessages scans rows into OutboxMessage slice.
 func (s *OutboxStore) scanMessages(rows *sql.Rows) ([]*adapters.OutboxMessage, error) {
 	var messages []*adapters.OutboxMessage
 
 	for rows.Next() {
 		msg := &adapters.OutboxMessage{}
-		var (
-			headersJSON   []byte
-			status        int
-			lastError     sql.NullString
-			lastAttemptAt sql.NullTime
-			processedAt   sql.NullTime
-		)
+		var targets messageScanTargets
 
-		err := rows.Scan(
-			&msg.ID,
-			&msg.AggregateID,
-			&msg.EventType,
-			&msg.Destination,
-			&msg.Payload,
-			&headersJSON,
-			&status,
-			&msg.Attempts,
-			&msg.MaxAttempts,
-			&lastError,
-			&msg.ScheduledAt,
-			&lastAttemptAt,
-			&processedAt,
-			&msg.CreatedAt,
-		)
-		if err != nil {
+		if err := rows.Scan(targets.scanDest(msg)...); err != nil {
 			return nil, fmt.Errorf("mink/postgres/outbox: failed to scan message: %w", err)
 		}
-
-		msg.Status = adapters.OutboxStatus(status)
-		msg.LastError = lastError.String
-
-		if lastAttemptAt.Valid {
-			msg.LastAttemptAt = &lastAttemptAt.Time
-		}
-		if processedAt.Valid {
-			msg.ProcessedAt = &processedAt.Time
-		}
-
-		if len(headersJSON) > 0 && string(headersJSON) != "null" {
-			if err := json.Unmarshal(headersJSON, &msg.Headers); err != nil {
-				return nil, fmt.Errorf("mink/postgres/outbox: failed to unmarshal headers: %w", err)
-			}
+		if err := targets.populate(msg); err != nil {
+			return nil, err
 		}
 
 		messages = append(messages, msg)
@@ -445,7 +447,7 @@ func (s *OutboxStore) DB() *sql.DB {
 	return s.db
 }
 
-// scanSingleMessage scans a single message by ID (not currently used externally but useful).
+// get retrieves a single outbox message by ID.
 func (s *OutboxStore) get(ctx context.Context, id string) (*adapters.OutboxMessage, error) {
 	tableQ := s.fullTableName()
 	query := `
@@ -457,30 +459,9 @@ func (s *OutboxStore) get(ctx context.Context, id string) (*adapters.OutboxMessa
 	`
 
 	msg := &adapters.OutboxMessage{}
-	var (
-		headersJSON   []byte
-		status        int
-		lastError     sql.NullString
-		lastAttemptAt sql.NullTime
-		processedAt   sql.NullTime
-	)
+	var targets messageScanTargets
 
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
-		&msg.ID,
-		&msg.AggregateID,
-		&msg.EventType,
-		&msg.Destination,
-		&msg.Payload,
-		&headersJSON,
-		&status,
-		&msg.Attempts,
-		&msg.MaxAttempts,
-		&lastError,
-		&msg.ScheduledAt,
-		&lastAttemptAt,
-		&processedAt,
-		&msg.CreatedAt,
-	)
+	err := s.db.QueryRowContext(ctx, query, id).Scan(targets.scanDest(msg)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, adapters.ErrOutboxMessageNotFound
@@ -488,20 +469,8 @@ func (s *OutboxStore) get(ctx context.Context, id string) (*adapters.OutboxMessa
 		return nil, fmt.Errorf("mink/postgres/outbox: failed to get message: %w", err)
 	}
 
-	msg.Status = adapters.OutboxStatus(status)
-	msg.LastError = lastError.String
-
-	if lastAttemptAt.Valid {
-		msg.LastAttemptAt = &lastAttemptAt.Time
-	}
-	if processedAt.Valid {
-		msg.ProcessedAt = &processedAt.Time
-	}
-
-	if len(headersJSON) > 0 && string(headersJSON) != "null" {
-		if err := json.Unmarshal(headersJSON, &msg.Headers); err != nil {
-			return nil, fmt.Errorf("mink/postgres/outbox: failed to unmarshal headers: %w", err)
-		}
+	if err := targets.populate(msg); err != nil {
+		return nil, err
 	}
 
 	return msg, nil
