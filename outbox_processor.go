@@ -239,6 +239,8 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 		return fmt.Errorf("failed to fetch pending messages: %w", err)
 	}
 
+	p.metrics.RecordPendingMessages(int64(len(messages)))
+
 	if len(messages) == 0 {
 		return nil
 	}

@@ -4,6 +4,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -70,13 +71,16 @@ func (p *Publisher) Destination() string {
 }
 
 // Publish writes outbox messages to the Kafka topic specified in the destination.
+// All topics are attempted even if some fail; errors are collected and returned as a joined error.
 func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMessage) error {
 	// Group by topic
 	grouped := make(map[string][]kafkago.Message)
+	var errs []error
 	for _, msg := range messages {
 		topic := extractTopic(msg.Destination)
 		if topic == "" {
-			return fmt.Errorf("kafka: invalid destination %q: missing topic", msg.Destination)
+			errs = append(errs, fmt.Errorf("kafka: invalid destination %q: missing topic", msg.Destination))
+			continue
 		}
 
 		kafkaMsg := kafkago.Message{
@@ -99,11 +103,11 @@ func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMess
 	for topic, msgs := range grouped {
 		writer := p.getWriter(topic)
 		if err := writer.WriteMessages(ctx, msgs...); err != nil {
-			return fmt.Errorf("kafka: failed to write to topic %s: %w", topic, err)
+			errs = append(errs, fmt.Errorf("kafka: failed to write to topic %s: %w", topic, err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // Close closes all Kafka writers.

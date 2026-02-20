@@ -5,6 +5,7 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,13 +73,15 @@ func (p *Publisher) Destination() string {
 
 // Publish sends each outbox message as an HTTP POST to the URL specified in the destination.
 // The URL is extracted from the destination by removing the "webhook:" prefix.
+// All messages are attempted even if some fail; errors are collected and returned as a joined error.
 func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMessage) error {
+	var errs []error
 	for _, msg := range messages {
 		if err := p.sendMessage(ctx, msg); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // sendMessage sends a single outbox message via HTTP POST.

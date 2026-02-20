@@ -4,6 +4,7 @@ package sns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -58,15 +59,18 @@ func (p *Publisher) Destination() string {
 }
 
 // Publish sends outbox messages to the SNS topic specified in the destination.
+// All messages are attempted even if some fail; errors are collected and returned as a joined error.
 func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMessage) error {
 	if p.client == nil {
 		return fmt.Errorf("sns: client not configured")
 	}
 
+	var errs []error
 	for _, msg := range messages {
 		topicARN := extractTopicARN(msg.Destination)
 		if topicARN == "" {
-			return fmt.Errorf("sns: invalid destination %q: missing topic ARN", msg.Destination)
+			errs = append(errs, fmt.Errorf("sns: invalid destination %q: missing topic ARN", msg.Destination))
+			continue
 		}
 
 		input := &sns.PublishInput{
@@ -91,11 +95,11 @@ func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMess
 		}
 
 		if _, err := p.client.Publish(ctx, input); err != nil {
-			return fmt.Errorf("sns: failed to publish to %s: %w", topicARN, err)
+			errs = append(errs, fmt.Errorf("sns: failed to publish to %s: %w", topicARN, err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // extractTopicARN removes the "sns:" prefix from a destination.

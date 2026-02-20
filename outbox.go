@@ -44,9 +44,13 @@ type OutboxRoute struct {
 	Destination string
 
 	// Transform optionally transforms the event payload before outbox scheduling.
+	// Note: the event parameter is always nil because the outbox operates on raw serialized data.
+	// Use the stored parameter to access stream ID, event type, raw data, and metadata.
 	Transform func(event interface{}, stored StoredEvent) ([]byte, error)
 
 	// Filter optionally filters events. Return true to include the event.
+	// Note: the event parameter is always nil because the outbox operates on raw serialized data.
+	// Use the stored parameter to access stream ID, event type, raw data, and metadata.
 	Filter func(event interface{}, stored StoredEvent) bool
 }
 
