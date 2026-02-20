@@ -294,13 +294,13 @@ func (s *OutboxStore) MarkFailed(ctx context.Context, id string, lastErr error) 
 	return nil
 }
 
-// RetryFailed resets eligible failed messages (below maxAttempts) to pending.
+// RetryFailed resets eligible failed messages (below per-message max_attempts or global maxAttempts) to pending.
 func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, error) {
 	tableQ := s.fullTableName()
 	query := `
 		UPDATE ` + tableQ + ` SET
 			status = $1
-		WHERE status = $2 AND attempts < $3
+		WHERE status = $2 AND attempts < LEAST($3, max_attempts)
 	`
 
 	result, err := s.db.ExecContext(ctx, query,
@@ -315,13 +315,13 @@ func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, 
 	return result.RowsAffected()
 }
 
-// MoveToDeadLetter transitions messages that exceeded maxAttempts to dead letter.
+// MoveToDeadLetter transitions messages that exceeded per-message max_attempts or global maxAttempts to dead letter.
 func (s *OutboxStore) MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error) {
 	tableQ := s.fullTableName()
 	query := `
 		UPDATE ` + tableQ + ` SET
 			status = $1
-		WHERE status = $2 AND attempts >= $3
+		WHERE status = $2 AND attempts >= LEAST($3, max_attempts)
 	`
 
 	result, err := s.db.ExecContext(ctx, query,

@@ -307,7 +307,7 @@ esWithOutbox.Append(ctx, "Order-123", []interface{}{OrderCreated{OrderID: "123"}
 
 // Start background processor with publishers
 processor := mink.NewOutboxProcessor(outboxStore,
-    mink.WithPublisher(webhook.NewPublisher()),
+    mink.WithPublisher(webhook.New()),
     mink.WithPollInterval(time.Second),
 )
 processor.Start(ctx)

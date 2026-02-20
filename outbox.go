@@ -109,7 +109,9 @@ func WithOutboxLogger(l Logger) OutboxOption {
 // WithOutboxMaxAttempts sets the default max attempts for outbox messages.
 func WithOutboxMaxAttempts(n int) OutboxOption {
 	return func(es *EventStoreWithOutbox) {
-		es.maxAttempts = n
+		if n > 0 {
+			es.maxAttempts = n
+		}
 	}
 }
 

@@ -151,12 +151,14 @@ func (s *OutboxStore) MarkFailed(ctx context.Context, id string, lastErr error) 
 	msg.Status = adapters.OutboxFailed
 	if lastErr != nil {
 		msg.LastError = lastErr.Error()
+	} else {
+		msg.LastError = ""
 	}
 
 	return nil
 }
 
-// RetryFailed resets eligible failed messages (below maxAttempts) to pending.
+// RetryFailed resets eligible failed messages (below per-message max_attempts or global maxAttempts) to pending.
 func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, error) {
 	select {
 	case <-ctx.Done():
@@ -169,7 +171,8 @@ func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, 
 
 	var count int64
 	for _, msg := range s.messages {
-		if msg.Status == adapters.OutboxFailed && msg.Attempts < maxAttempts {
+		limit := min(maxAttempts, msg.MaxAttempts)
+		if msg.Status == adapters.OutboxFailed && msg.Attempts < limit {
 			msg.Status = adapters.OutboxPending
 			count++
 		}
@@ -178,7 +181,7 @@ func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, 
 	return count, nil
 }
 
-// MoveToDeadLetter transitions messages that exceeded maxAttempts to dead letter.
+// MoveToDeadLetter transitions messages that exceeded per-message max_attempts or global maxAttempts to dead letter.
 func (s *OutboxStore) MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error) {
 	select {
 	case <-ctx.Done():
@@ -191,7 +194,8 @@ func (s *OutboxStore) MoveToDeadLetter(ctx context.Context, maxAttempts int) (in
 
 	var count int64
 	for _, msg := range s.messages {
-		if msg.Status == adapters.OutboxFailed && msg.Attempts >= maxAttempts {
+		limit := min(maxAttempts, msg.MaxAttempts)
+		if msg.Status == adapters.OutboxFailed && msg.Attempts >= limit {
 			msg.Status = adapters.OutboxDeadLetter
 			count++
 		}

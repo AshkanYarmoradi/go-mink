@@ -889,8 +889,8 @@ err = esWithOutbox.SaveAggregate(ctx, order)
 type OutboxRoute struct {
     EventTypes  []string                           // Empty = all events
     Destination string                             // "prefix:target"
-    Transform   func(StoredEvent) ([]byte, error)  // Optional payload transform
-    Filter      func(StoredEvent) bool             // Optional filter
+    Transform   func(event interface{}, stored StoredEvent) ([]byte, error)  // Optional payload transform
+    Filter      func(event interface{}, stored StoredEvent) bool             // Optional filter
 }
 ```
 
@@ -906,15 +906,15 @@ import (
 )
 
 // Create publishers
-webhookPub := webhook.NewPublisher(
+webhookPub := webhook.New(
     webhook.WithTimeout(10 * time.Second),
     webhook.WithDefaultHeaders(map[string]string{
         "Authorization": "Bearer token123",
     }),
 )
 
-kafkaPub := kafka.NewPublisher(
-    kafka.WithBrokers([]string{"localhost:9092"}),
+kafkaPub := kafka.New(
+    kafka.WithBrokers("localhost:9092"),
 )
 
 // Create and configure processor
@@ -944,7 +944,7 @@ processor.Stop(stopCtx)
 ```go
 import "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
 
-pub := webhook.NewPublisher(
+pub := webhook.New(
     webhook.WithTimeout(10 * time.Second),
     webhook.WithDefaultHeaders(map[string]string{
         "X-API-Key": "secret",
@@ -957,8 +957,8 @@ pub := webhook.NewPublisher(
 ```go
 import "github.com/AshkanYarmoradi/go-mink/outbox/kafka"
 
-pub := kafka.NewPublisher(
-    kafka.WithBrokers([]string{"broker1:9092", "broker2:9092"}),
+pub := kafka.New(
+    kafka.WithBrokers("broker1:9092", "broker2:9092"),
     kafka.WithBatchTimeout(100 * time.Millisecond),
 )
 // Destination format: "kafka:topic-name"
@@ -968,7 +968,7 @@ pub := kafka.NewPublisher(
 ```go
 import "github.com/AshkanYarmoradi/go-mink/outbox/sns"
 
-pub := sns.NewPublisher(
+pub := sns.New(
     sns.WithSNSClient(snsClient),
     sns.WithMessageGroupID("orders"),
 )

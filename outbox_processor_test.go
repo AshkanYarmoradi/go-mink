@@ -645,9 +645,10 @@ func TestOutboxProcessor_ProcessBatch_MarkCompletedError(t *testing.T) {
 		WithProcessorLogger(logger),
 	)
 
-	// Call processBatch directly
+	// Call processBatch directly - MarkCompleted errors are now propagated
 	err = processor.processBatch(ctx)
-	require.NoError(t, err) // processBatch doesn't return MarkCompleted errors
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mark completed failed")
 
 	assert.NotEmpty(t, logger.errors)
 	assert.Contains(t, logger.errors[0], "Failed to mark messages as completed")

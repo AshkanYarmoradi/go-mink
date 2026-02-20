@@ -133,11 +133,10 @@ func NewOutboxProcessor(store OutboxStore, opts ...ProcessorOption) *OutboxProce
 
 // Start begins the background processing loop.
 func (p *OutboxProcessor) Start(ctx context.Context) error {
-	if p.running.Load() {
+	if !p.running.CompareAndSwap(false, true) {
 		return ErrOutboxProcessorRunning
 	}
 
-	p.running.Store(true)
 	p.stopping.Store(false)
 	p.stopCh = make(chan struct{})
 
@@ -157,7 +156,9 @@ func (p *OutboxProcessor) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	p.stopping.Store(true)
+	if !p.stopping.CompareAndSwap(false, true) {
+		return nil
+	}
 	close(p.stopCh)
 
 	done := make(chan struct{})
@@ -285,6 +286,7 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 			}
 			if err := p.store.MarkCompleted(ctx, ids); err != nil {
 				p.logger.Error("Failed to mark messages as completed", "error", err)
+				return fmt.Errorf("failed to mark messages as completed: %w", err)
 			}
 		}
 	}
