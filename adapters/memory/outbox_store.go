@@ -238,7 +238,7 @@ func (s *OutboxStore) Cleanup(ctx context.Context, olderThan time.Duration) (int
 	cutoff := time.Now().Add(-olderThan)
 	var count int64
 	for id, msg := range s.messages {
-		if msg.Status == adapters.OutboxCompleted && msg.ProcessedAt != nil && msg.ProcessedAt.Before(cutoff) {
+		if msg.Status == adapters.OutboxCompleted && msg.ProcessedAt != nil && !msg.ProcessedAt.After(cutoff) {
 			delete(s.messages, id)
 			count++
 		}
