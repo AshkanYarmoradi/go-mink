@@ -140,47 +140,87 @@ func (es *EventStoreWithOutbox) buildOutboxMessages(storedEvents []adapters.Stor
 	now := time.Now()
 
 	for _, se := range storedEvents {
+		partial := convertStoredEventFromAdapter(se)
 		for _, route := range es.routes {
-			if !route.matchesEvent(se.Type) {
-				continue
+			msg := es.buildMessageForRoute(route, se.StreamID, se.Type, se.Data, partial, now)
+			if msg != nil {
+				msg.Headers["event-id"] = se.ID
+				messages = append(messages, msg)
 			}
-
-			payload := se.Data
-			if route.Transform != nil {
-				transformed, err := route.Transform(nil, convertStoredEventFromAdapter(se))
-				if err != nil {
-					es.logger.Error("Failed to transform outbox payload",
-						"eventType", se.Type, "destination", route.Destination, "error", err)
-					continue
-				}
-				payload = transformed
-			}
-
-			if route.Filter != nil && !route.Filter(nil, convertStoredEventFromAdapter(se)) {
-				continue
-			}
-
-			messages = append(messages, &OutboxMessage{
-				AggregateID: se.StreamID,
-				EventType:   se.Type,
-				Destination: route.Destination,
-				Payload:     payload,
-				Headers: map[string]string{
-					"event-id":       se.ID,
-					"stream-id":      se.StreamID,
-					"event-type":     se.Type,
-					"correlation-id": se.Metadata.CorrelationID,
-					"causation-id":   se.Metadata.CausationID,
-				},
-				Status:      OutboxPending,
-				MaxAttempts: es.maxAttempts,
-				ScheduledAt: now,
-				CreatedAt:   now,
-			})
 		}
 	}
 
 	return messages
+}
+
+// buildOutboxMessagesFromRecords creates outbox messages from event records based on configured routes.
+// This applies Transform and Filter consistently, using a partial StoredEvent for the callbacks.
+func (es *EventStoreWithOutbox) buildOutboxMessagesFromRecords(streamID string, records []adapters.EventRecord) []*OutboxMessage {
+	var messages []*OutboxMessage
+	now := time.Now()
+
+	for _, rec := range records {
+		partial := StoredEvent{
+			StreamID: streamID,
+			Type:     rec.Type,
+			Data:     rec.Data,
+			Metadata: Metadata{
+				CorrelationID: rec.Metadata.CorrelationID,
+				CausationID:   rec.Metadata.CausationID,
+				UserID:        rec.Metadata.UserID,
+				TenantID:      rec.Metadata.TenantID,
+				Custom:        rec.Metadata.Custom,
+			},
+		}
+		for _, route := range es.routes {
+			msg := es.buildMessageForRoute(route, streamID, rec.Type, rec.Data, partial, now)
+			if msg != nil {
+				messages = append(messages, msg)
+			}
+		}
+	}
+
+	return messages
+}
+
+// buildMessageForRoute creates an outbox message for a single route if the event matches,
+// applying Transform and Filter. Returns nil if the event doesn't match or is filtered out.
+func (es *EventStoreWithOutbox) buildMessageForRoute(route OutboxRoute, streamID, eventType string, data []byte, partial StoredEvent, now time.Time) *OutboxMessage {
+	if !route.matchesEvent(eventType) {
+		return nil
+	}
+
+	payload := data
+	if route.Transform != nil {
+		transformed, err := route.Transform(nil, partial)
+		if err != nil {
+			es.logger.Error("Failed to transform outbox payload",
+				"eventType", eventType, "destination", route.Destination, "error", err)
+			return nil
+		}
+		payload = transformed
+	}
+
+	if route.Filter != nil && !route.Filter(nil, partial) {
+		return nil
+	}
+
+	return &OutboxMessage{
+		AggregateID: streamID,
+		EventType:   eventType,
+		Destination: route.Destination,
+		Payload:     payload,
+		Headers: map[string]string{
+			"stream-id":      streamID,
+			"event-type":     eventType,
+			"correlation-id": partial.Metadata.CorrelationID,
+			"causation-id":   partial.Metadata.CausationID,
+		},
+		Status:      OutboxPending,
+		MaxAttempts: es.maxAttempts,
+		ScheduledAt: now,
+		CreatedAt:   now,
+	}
 }
 
 // Append stores events and schedules outbox messages.
@@ -213,33 +253,8 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 		}
 	}
 
-	// Build preliminary outbox messages (payload comes from serialized records)
-	var prelimMessages []*OutboxMessage
-	now := time.Now()
-	for _, rec := range records {
-		for _, route := range es.routes {
-			if !route.matchesEvent(rec.Type) {
-				continue
-			}
-			payload := rec.Data
-			prelimMessages = append(prelimMessages, &OutboxMessage{
-				AggregateID: streamID,
-				EventType:   rec.Type,
-				Destination: route.Destination,
-				Payload:     payload,
-				Headers: map[string]string{
-					"stream-id":      streamID,
-					"event-type":     rec.Type,
-					"correlation-id": rec.Metadata.CorrelationID,
-					"causation-id":   rec.Metadata.CausationID,
-				},
-				Status:      OutboxPending,
-				MaxAttempts: es.maxAttempts,
-				ScheduledAt: now,
-				CreatedAt:   now,
-			})
-		}
-	}
+	// Build outbox messages with Transform/Filter applied
+	prelimMessages := es.buildOutboxMessagesFromRecords(streamID, records)
 
 	// Try atomic append+outbox if adapter supports it
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(prelimMessages) > 0 {
@@ -292,33 +307,8 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 
 	expectedVersion := agg.Version()
 
-	// Build outbox messages
-	var outboxMessages []*OutboxMessage
-	now := time.Now()
-	for _, rec := range records {
-		for _, route := range es.routes {
-			if !route.matchesEvent(rec.Type) {
-				continue
-			}
-			payload := rec.Data
-			outboxMessages = append(outboxMessages, &OutboxMessage{
-				AggregateID: streamID,
-				EventType:   rec.Type,
-				Destination: route.Destination,
-				Payload:     payload,
-				Headers: map[string]string{
-					"stream-id":      streamID,
-					"event-type":     rec.Type,
-					"correlation-id": rec.Metadata.CorrelationID,
-					"causation-id":   rec.Metadata.CausationID,
-				},
-				Status:      OutboxPending,
-				MaxAttempts: es.maxAttempts,
-				ScheduledAt: now,
-				CreatedAt:   now,
-			})
-		}
-	}
+	// Build outbox messages with Transform/Filter applied
+	outboxMessages := es.buildOutboxMessagesFromRecords(streamID, records)
 
 	// Try atomic append+outbox
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(outboxMessages) > 0 {
@@ -336,6 +326,7 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 			es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
 			if err := es.outbox.Schedule(ctx, outboxMessages); err != nil {
 				es.logger.Error("Failed to schedule outbox messages", "error", err)
+				return fmt.Errorf("mink: events appended but outbox scheduling failed: %w", err)
 			}
 		}
 	}

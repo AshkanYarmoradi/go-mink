@@ -390,8 +390,8 @@ func TestSaveAggregate_FallbackScheduleError(t *testing.T) {
 	agg.CreateOrder("err-1")
 
 	err := esWithOutbox.SaveAggregate(env.ctx, agg)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, logger.errors)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outbox scheduling failed")
 }
 
 // =============================================================================
