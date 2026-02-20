@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -52,8 +53,8 @@ func TestMetrics_Collectors(t *testing.T) {
 		m := New()
 		collectors := m.Collectors()
 
-		// Should have 12 collectors
-		assert.Len(t, collectors, 12)
+		// Should have 17 collectors (12 core + 5 outbox)
+		assert.Len(t, collectors, 17)
 	})
 }
 
@@ -790,4 +791,95 @@ func TestEventStoreMiddleware_GetLastPosition_Error(t *testing.T) {
 		errorCount := testutil.ToFloat64(m.eventStoreOperationsTotal.WithLabelValues("test", "get_last_position", StatusError))
 		assert.Equal(t, float64(1), errorCount)
 	})
+}
+
+// =============================================================================
+// Outbox Metrics Tests
+// =============================================================================
+
+func TestMetrics_RecordMessageProcessed(t *testing.T) {
+	m := New(WithNamespace("outbox_processed_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	m.RecordMessageProcessed("webhook:https://example.com", true)
+	m.RecordMessageProcessed("webhook:https://example.com", false)
+	m.RecordMessageProcessed("kafka:orders", true)
+
+	successCount := testutil.ToFloat64(m.outboxProcessedTotal.WithLabelValues("webhook:https://example.com", StatusSuccess))
+	assert.Equal(t, float64(1), successCount)
+
+	errorCount := testutil.ToFloat64(m.outboxProcessedTotal.WithLabelValues("webhook:https://example.com", StatusError))
+	assert.Equal(t, float64(1), errorCount)
+
+	kafkaCount := testutil.ToFloat64(m.outboxProcessedTotal.WithLabelValues("kafka:orders", StatusSuccess))
+	assert.Equal(t, float64(1), kafkaCount)
+}
+
+func TestMetrics_RecordMessageFailed(t *testing.T) {
+	m := New(WithNamespace("outbox_failed_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	m.RecordMessageFailed("webhook:https://example.com")
+	m.RecordMessageFailed("webhook:https://example.com")
+	m.RecordMessageFailed("kafka:orders")
+
+	webhookFailed := testutil.ToFloat64(m.outboxFailedTotal.WithLabelValues("webhook:https://example.com"))
+	assert.Equal(t, float64(2), webhookFailed)
+
+	kafkaFailed := testutil.ToFloat64(m.outboxFailedTotal.WithLabelValues("kafka:orders"))
+	assert.Equal(t, float64(1), kafkaFailed)
+}
+
+func TestMetrics_RecordMessageDeadLettered(t *testing.T) {
+	m := New(WithNamespace("outbox_dl_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	m.RecordMessageDeadLettered()
+	m.RecordMessageDeadLettered()
+	m.RecordMessageDeadLettered()
+
+	dlCount := testutil.ToFloat64(m.outboxDeadLetteredTotal)
+	assert.Equal(t, float64(3), dlCount)
+}
+
+func TestMetrics_RecordBatchDuration(t *testing.T) {
+	m := New(WithNamespace("outbox_batch_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	m.RecordBatchDuration(100 * time.Millisecond)
+	m.RecordBatchDuration(200 * time.Millisecond)
+
+	// Verify the histogram was observed by collecting metrics
+	count := testutil.CollectAndCount(m.outboxBatchDuration)
+	assert.Equal(t, 1, count) // 1 metric family from the histogram
+}
+
+func TestMetrics_RecordPendingMessages(t *testing.T) {
+	m := New(WithNamespace("outbox_pending_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	m.RecordPendingMessages(42)
+
+	pending := testutil.ToFloat64(m.outboxPendingMessages)
+	assert.Equal(t, float64(42), pending)
+
+	m.RecordPendingMessages(0)
+
+	pending = testutil.ToFloat64(m.outboxPendingMessages)
+	assert.Equal(t, float64(0), pending)
+}
+
+func TestMetrics_OutboxGetters(t *testing.T) {
+	m := New()
+
+	assert.NotNil(t, m.OutboxProcessedTotal())
+	assert.NotNil(t, m.OutboxFailedTotal())
+	assert.NotNil(t, m.OutboxDeadLetteredTotal())
+	assert.NotNil(t, m.OutboxBatchDuration())
+	assert.NotNil(t, m.OutboxPendingMessages())
 }

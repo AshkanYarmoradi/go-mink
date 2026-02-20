@@ -33,7 +33,7 @@ Phase 5 (Security & Advanced Patterns) progress:
 - ✅ Saga Store (PostgreSQL & Memory implementations)
 - ✅ Saga testing utilities
 - ✅ CLI tool with code generation & diagnostics (84.9% coverage)
-- 🔜 Outbox pattern for reliable messaging
+- ✅ Outbox pattern for reliable messaging (Webhook, Kafka, SNS publishers)
 - 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
 - 🔜 GDPR compliance (crypto-shredding)
 
@@ -81,7 +81,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
 | � **Sagas** | ✅ v0.5.0 | Process manager for long-running workflows |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
-| 📤 **Outbox Pattern** | 🔜 v0.5.0 | Reliable event publishing to external systems |
+| 📤 **Outbox Pattern** | ✅ v0.5.0 | Reliable event publishing to external systems |
 
 ## Quick Example
 
@@ -284,6 +284,34 @@ bus.Use(m.CommandMiddleware())
 // OpenTelemetry tracing
 tracer := tracing.NewTracer(tracing.WithServiceName("order-service"))
 bus.Use(tracer.CommandMiddleware())
+```
+
+## Outbox Pattern (v0.5.0)
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
+)
+
+// Wrap event store with outbox for reliable publishing
+outboxStore := memory.NewOutboxStore()
+esWithOutbox := mink.NewEventStoreWithOutbox(store, outboxStore, []mink.OutboxRoute{
+    {EventTypes: []string{"OrderCreated"}, Destination: "webhook:https://partner.example.com/events"},
+    {Destination: "kafka:all-events"}, // All events
+})
+
+// Append events - outbox messages scheduled automatically
+esWithOutbox.Append(ctx, "Order-123", []interface{}{OrderCreated{OrderID: "123"}})
+
+// Start background processor with publishers
+processor := mink.NewOutboxProcessor(outboxStore,
+    mink.WithPublisher(webhook.New()),
+    mink.WithPollInterval(time.Second),
+)
+processor.Start(ctx)
+defer processor.Stop(ctx)
 ```
 
 ## Installation

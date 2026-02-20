@@ -69,6 +69,20 @@ var (
 
 	// ErrCommandBusClosed indicates the command bus has been closed.
 	ErrCommandBusClosed = errors.New("mink: command bus closed")
+
+	// Outbox-related errors
+
+	// ErrOutboxMessageNotFound indicates the requested outbox message does not exist.
+	ErrOutboxMessageNotFound = adapters.ErrOutboxMessageNotFound
+
+	// ErrOutboxStoreClosed indicates the outbox store has been closed.
+	ErrOutboxStoreClosed = errors.New("mink: outbox store closed")
+
+	// ErrPublisherNotFound indicates no publisher is registered for a destination.
+	ErrPublisherNotFound = errors.New("mink: publisher not found for destination")
+
+	// ErrOutboxProcessorRunning indicates the outbox processor is already running.
+	ErrOutboxProcessorRunning = errors.New("mink: outbox processor already running")
 )
 
 // ConcurrencyError provides detailed information about a concurrency conflict.

@@ -350,6 +350,26 @@ func TestSagaState_IsTerminal(t *testing.T) {
 	}
 }
 
+func TestOutboxStatus_String(t *testing.T) {
+	tests := []struct {
+		status   OutboxStatus
+		expected string
+	}{
+		{OutboxPending, "pending"},
+		{OutboxProcessing, "processing"},
+		{OutboxCompleted, "completed"},
+		{OutboxFailed, "failed"},
+		{OutboxDeadLetter, "dead_letter"},
+		{OutboxStatus(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.status.String())
+		})
+	}
+}
+
 func TestSagaSentinelErrors(t *testing.T) {
 	t.Run("ErrSagaNotFound has mink prefix", func(t *testing.T) {
 		assert.Contains(t, ErrSagaNotFound.Error(), "mink:")

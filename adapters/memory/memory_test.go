@@ -1517,6 +1517,203 @@ func TestMemoryAdapter_GetTotalEventCount(t *testing.T) {
 // Statistics Tests
 // ============================================================================
 
+func TestMemoryAdapter_ListStreams(t *testing.T) {
+	t.Run("returns all streams when no prefix", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		_, _ = adapter.Append(ctx, "Order-2", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		_, _ = adapter.Append(ctx, "User-1", []adapters.EventRecord{
+			{Type: "UserCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		summaries, err := adapter.ListStreams(ctx, "", 0)
+
+		require.NoError(t, err)
+		assert.Len(t, summaries, 3)
+	})
+
+	t.Run("filters by prefix", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		_, _ = adapter.Append(ctx, "Order-2", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		_, _ = adapter.Append(ctx, "User-1", []adapters.EventRecord{
+			{Type: "UserCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		summaries, err := adapter.ListStreams(ctx, "Order", 0)
+
+		require.NoError(t, err)
+		assert.Len(t, summaries, 2)
+		for _, s := range summaries {
+			assert.Contains(t, s.StreamID, "Order")
+		}
+	})
+
+	t.Run("respects limit", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		for i := 0; i < 5; i++ {
+			_, _ = adapter.Append(ctx, "Stream-"+string(rune('A'+i)), []adapters.EventRecord{
+				{Type: "Created", Data: []byte(`{}`)},
+			}, mink.NoStream)
+		}
+
+		summaries, err := adapter.ListStreams(ctx, "", 2)
+
+		require.NoError(t, err)
+		assert.Len(t, summaries, 2)
+	})
+
+	t.Run("sorted by last updated descending", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Stream-A", []adapters.EventRecord{
+			{Type: "Created", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		time.Sleep(time.Millisecond)
+		_, _ = adapter.Append(ctx, "Stream-B", []adapters.EventRecord{
+			{Type: "Created", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		summaries, err := adapter.ListStreams(ctx, "", 0)
+
+		require.NoError(t, err)
+		require.Len(t, summaries, 2)
+		// Most recently updated first
+		assert.Equal(t, "Stream-B", summaries[0].StreamID)
+		assert.Equal(t, "Stream-A", summaries[1].StreamID)
+	})
+
+	t.Run("includes last event type", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		summaries, err := adapter.ListStreams(ctx, "", 0)
+
+		require.NoError(t, err)
+		require.Len(t, summaries, 1)
+		assert.Equal(t, "ItemAdded", summaries[0].LastEventType)
+		assert.Equal(t, int64(2), summaries[0].EventCount)
+	})
+
+	t.Run("returns error when closed", func(t *testing.T) {
+		adapter := NewAdapter()
+		_ = adapter.Close()
+
+		_, err := adapter.ListStreams(context.Background(), "", 0)
+
+		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+	})
+
+	t.Run("returns error on cancelled context", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := adapter.ListStreams(ctx, "", 0)
+
+		assert.Error(t, err)
+	})
+}
+
+func TestMemoryAdapter_GetStreamEvents(t *testing.T) {
+	t.Run("returns all events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+			{Type: "OrderConfirmed", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		events, err := adapter.GetStreamEvents(ctx, "Order-1", 0, 0)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 3)
+	})
+
+	t.Run("from version filters events", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+			{Type: "OrderConfirmed", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		events, err := adapter.GetStreamEvents(ctx, "Order-1", 1, 0)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 2)
+		assert.Equal(t, "ItemAdded", events[0].Type)
+	})
+
+	t.Run("respects limit", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+			{Type: "OrderConfirmed", Data: []byte(`{}`)},
+		}, mink.NoStream)
+
+		events, err := adapter.GetStreamEvents(ctx, "Order-1", 0, 2)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 2)
+	})
+
+	t.Run("nonexistent stream returns nil", func(t *testing.T) {
+		adapter := NewAdapter()
+
+		events, err := adapter.GetStreamEvents(context.Background(), "NonExistent", 0, 0)
+
+		require.NoError(t, err)
+		assert.Nil(t, events)
+	})
+
+	t.Run("returns error when closed", func(t *testing.T) {
+		adapter := NewAdapter()
+		_ = adapter.Close()
+
+		_, err := adapter.GetStreamEvents(context.Background(), "Order-1", 0, 0)
+
+		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+	})
+
+	t.Run("returns error on cancelled context", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := adapter.GetStreamEvents(ctx, "Order-1", 0, 0)
+
+		assert.Error(t, err)
+	})
+}
+
 func TestMemoryAdapter_GetEventStoreStats(t *testing.T) {
 	t.Run("returns empty stats for new adapter", func(t *testing.T) {
 		adapter := NewAdapter()

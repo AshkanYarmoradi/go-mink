@@ -4,49 +4,96 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Summary
 
-go-mink is an Event Sourcing and CQRS library for Go (like MartenDB for .NET).
+go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .NET). Instead of storing current state, it stores all changes as immutable events and rebuilds state by replaying them.
 
 ## Key Commands
 
 ```bash
-# Run tests
-go test -short ./...                    # Unit tests only
-go test ./...                           # All tests (needs PostgreSQL)
-go test -v -run TestName ./pkg/...      # Run a single test
+# Preferred: use Makefile targets (infrastructure managed via docker-compose.test.yml)
+make test-unit                          # Unit tests only (no infra needed, uses -short -race)
+make test                               # All tests (auto-starts PostgreSQL via docker-compose)
+make lint                               # golangci-lint run ./...
+make fmt                                # go fmt ./...
+make test-coverage                      # Coverage report (excludes examples/ and testing/)
 
-# Format and lint
-go fmt ./...
-golangci-lint run
+# Infrastructure management
+make infra-up                           # Start test PostgreSQL (docker-compose.test.yml)
+make infra-down                         # Stop test infrastructure
+make clean                              # Stop infra + remove coverage artifacts + clear caches
 
-# Start test database
-docker run -d --name mink-pg -e POSTGRES_PASSWORD=mink -p 5432:5432 postgres:16
-export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmode=disable"
+# Running a single test (infra must be up for integration tests)
+TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
+  go test -v -run TestName ./path/to/pkg/...
+
+# Integration tests skip themselves when:
+#   - testing.Short() is true (via -short flag)
+#   - TEST_DATABASE_URL env var is not set
 ```
 
 ## Architecture
 
 ```
-Commands → Command Bus → Aggregate → Events → Event Store
-                                                    ↓
-                                           Projection Engine
-                                                    ↓
-                                             Read Models → Queries
+Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Events --> Event Store
+                                                                                          |
+                                                                              Projection Engine
+                                                                                          |
+                                                                                    Read Models
+                                                                          |
+                                                                     Saga Manager
+                                                                    (compensation)
+                                                                          |
+                                                                   Outbox Processor
+                                                                          |
+                                                              External Systems (Kafka, Webhooks, SNS)
 ```
+
+**Data flow**: Commands are dispatched through the bus with middleware (validation, idempotency, correlation, recovery). Handlers load aggregates from the event store, execute domain logic, and persist uncommitted events. The projection engine subscribes to stored events and updates read models. Sagas orchestrate long-running workflows with compensation. The outbox processor reliably publishes events to external systems (Kafka, webhooks, SNS) with retry and dead-letter support.
 
 ## Key File Locations
 
-- Core types: `event.go`, `aggregate.go`, `command.go`, `projection.go`
-- Event store: `store.go`
-- Command bus: `bus.go`, `handler.go`, `middleware.go`
-- Adapters: `adapters/postgres/postgres.go`, `adapters/memory/memory.go`
-- Idempotency: `idempotency.go`, `adapters/*/idempotency.go`
-- Subscriptions: `subscription.go`, `adapters/postgres/subscription.go`
-- Errors: `errors.go`, `adapters/adapter.go` (sentinel errors)
-- Testing utilities: `testing/bdd/`, `testing/assertions/`, `testing/projections/`, `testing/sagas/`, `testing/containers/`
-- Observability: `middleware/metrics/`, `middleware/tracing/`
-- Serializers: `serializer/msgpack/`
+Root package (all core types are in the root `mink` package):
+- `event.go` - Event types, StreamID, Metadata
+- `aggregate.go` - Aggregate interface and AggregateBase
+- `store.go` - EventStore (main entry point: Append, Load, SaveAggregate, LoadAggregate)
+- `command.go` - Command interface, CommandBase, AggregateCommand, IdempotentCommand
+- `bus.go` - CommandBus with middleware pipeline
+- `handler.go` - CommandHandler and handler registry
+- `middleware.go` - Middleware implementations (Validation, Recovery, Idempotency, Correlation, Causation, Tenant)
+- `idempotency.go` - IdempotencyConfig and middleware setup
+- `projection.go` - Projection interfaces (Inline, Async, Live), ProjectionBase helpers
+- `projection_engine.go` - ProjectionEngine with worker pool, checkpoints, resilience
+- `rebuilder.go` - ProjectionRebuilder for rebuilding from scratch
+- `subscription.go` - Event subscription management
+- `saga.go` - Saga interface, SagaBase, SagaCorrelation
+- `saga_manager.go` - SagaManager orchestration with compensation and retry
+- `outbox.go` - OutboxRoute, Publisher interface, EventStoreWithOutbox wrapper, OutboxMetrics
+- `outbox_processor.go` - OutboxProcessor background worker with polling, retry, dead-letter
+- `repository.go` - Repository pattern for aggregates
+- `serializer.go` - Serializer interface and JSON implementation
+- `errors.go` - All sentinel errors and typed errors
 
-## Core Interfaces to Know
+Adapters:
+- `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, etc.)
+- `adapters/postgres/` - PostgreSQL adapter (postgres.go, subscription.go, idempotency.go, saga_store.go, outbox_store.go, readmodel.go)
+- `adapters/memory/` - In-memory adapter for testing (memory.go, checkpoint.go, idempotency.go, saga_store.go, outbox_store.go)
+
+Other packages:
+- `outbox/webhook/` - HTTP webhook publisher for outbox
+- `outbox/kafka/` - Apache Kafka publisher for outbox
+- `outbox/sns/` - AWS SNS publisher for outbox
+- `middleware/metrics/` - Prometheus metrics middleware (includes outbox metrics)
+- `middleware/tracing/` - OpenTelemetry tracing middleware
+- `serializer/msgpack/` - MessagePack serializer
+- `serializer/protobuf/` - Protocol Buffers serializer
+- `testing/bdd/` - BDD-style aggregate testing (Given/When/Then)
+- `testing/assertions/` - Event assertion helpers
+- `testing/projections/` - Projection testing utilities
+- `testing/sagas/` - Saga testing utilities
+- `testing/containers/` - PostgreSQL Docker test containers
+- `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
+- `examples/` - 13 example projects
+
+## Core Interfaces
 
 ```go
 // Adapters implement this (adapters/adapter.go)
@@ -59,15 +106,18 @@ type EventStoreAdapter interface {
     Close() error
 }
 
-// Optional subscription support (adapters/adapter.go)
-type SubscriptionAdapter interface {
-    LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error)
-    SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
-    SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
-    SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
-}
+// Optional interfaces adapters can implement:
+// - SubscriptionAdapter: real-time event streaming (SubscribeAll, SubscribeStream, SubscribeCategory)
+// - SnapshotAdapter: aggregate snapshots
+// - TransactionalAdapter: atomic operations via BeginTx
+// - CheckpointAdapter: projection checkpoint management
+// - IdempotencyStore: command deduplication
+// - SagaStore: saga persistence (Save, Load, FindByCorrelationID, FindByType, Delete)
+// - OutboxStore: outbox message persistence (Schedule, FetchPending, MarkCompleted, etc.)
+// - OutboxAppender: atomic event+outbox writes (AppendWithOutbox)
+// - StreamQueryAdapter, DiagnosticAdapter, SchemaProvider: CLI tool support
 
-// Domain models implement this
+// Domain models embed AggregateBase and implement ApplyEvent
 type Aggregate interface {
     AggregateID() string
     AggregateType() string
@@ -76,6 +126,19 @@ type Aggregate interface {
     UncommittedEvents() []interface{}
     ClearUncommittedEvents()
 }
+```
+
+## Error Handling Pattern
+
+Sentinel errors are defined in two places with aliasing:
+- `adapters/adapter.go` defines storage-level errors (ErrConcurrencyConflict, ErrStreamNotFound, ErrEmptyStreamID, etc.)
+- `errors.go` aliases adapter errors and adds domain-level errors (ErrHandlerNotFound, ErrValidationFailed, ErrProjectionFailed, etc.)
+
+Typed errors implement `Is()` for `errors.Is()` compatibility:
+```go
+// Sentinel: errors.Is(err, mink.ErrConcurrencyConflict)
+// Typed: err.(*mink.ConcurrencyError).StreamID for details
+// Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError, ProjectionError
 ```
 
 ## Version Constants
@@ -88,11 +151,12 @@ StreamExists = -2  // Stream must exist
 
 ## Code Style Rules
 
-1. **Context first**: `func Foo(ctx context.Context, ...)` 
+1. **Context first**: `func Foo(ctx context.Context, ...)`
 2. **Error last**: `func Foo(...) (Result, error)`
-3. **Options pattern**: `func New(opts ...Option)`
-4. **Sentinel errors**: `var ErrNotFound = errors.New("mink: not found")`
-5. **Typed errors**: Implement `Is()` for `errors.Is()` compatibility
+3. **Options pattern**: `func New(opts ...Option)` with `type Option func(*T)`
+4. **Sentinel errors**: `var ErrXxx = errors.New("mink: ...")` prefixed with "mink:"
+5. **Typed errors**: Implement `Is()` and `Unwrap()` for `errors.Is()` compatibility
+6. **Compile-time interface checks**: `var _ mink.EventStoreAdapter = (*MyAdapter)(nil)`
 
 ## Testing Patterns
 
@@ -105,7 +169,6 @@ func TestFoo(t *testing.T) {
         want    Output
         wantErr error
     }{...}
-
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {...})
     }
@@ -115,30 +178,23 @@ func TestFoo(t *testing.T) {
 bdd.Given(t, aggregate, previousEvents...).
     When(func() error { return aggregate.DoSomething() }).
     Then(expectedEvents...)
+// or: .ThenError(expectedErr)
 
-// Event assertions (testing/assertions package)
-assertions.AssertEventTypes(t, events, "OrderCreated", "ItemAdded")
-assertions.AssertEventsEqual(t, expected, actual)
+// Integration tests skip pattern
+if testing.Short() { t.Skip("Skipping integration test") }
+connStr := os.Getenv("TEST_DATABASE_URL")
+if connStr == "" { t.Skip("TEST_DATABASE_URL not set") }
 
-// Test containers (testing/containers package)
+// Test containers
 container := containers.StartPostgres(t)
 db := container.MustDB(ctx)
 ```
 
 ## Current Development Phase
 
-**Phase 5 (v0.5.0)**: Security & Advanced Patterns - NEXT
-- Saga / Process Manager implementation
-- Outbox pattern
-- Event versioning & upcasting
-- Field-level encryption
-- GDPR compliance (crypto-shredding)
-
-**Completed phases**:
-- Phase 1 (v0.1.0): Event types, Aggregate, EventStore, PostgreSQL/Memory adapters
-- Phase 2 (v0.2.0): Command Bus, handlers, middleware (Validation, Recovery, Idempotency, Correlation)
-- Phase 3 (v0.3.0): Projections (`InlineProjection`, `AsyncProjection`, `LiveProjection`), `ProjectionEngine`, subscriptions
-- Phase 4 (v0.4.0): Testing utilities (`testing/bdd`, `testing/assertions`, `testing/projections`, `testing/sagas`, `testing/containers`), observability (`middleware/metrics`, `middleware/tracing`), MessagePack serializer
+**Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
+- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics)
+- Remaining: Event versioning & upcasting, field-level encryption, GDPR compliance
 
 ## Don't Do
 
@@ -147,7 +203,3 @@ db := container.MustDB(ctx)
 - Don't skip context propagation
 - Don't use global state
 - Don't break public API without version bump
-
-## Documentation
-
-See `docs/` folder and `AGENTS.md` for comprehensive details.

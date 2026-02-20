@@ -54,6 +54,14 @@ permalink: /docs/architecture
 │  │  └───────────┘  └───────────┘  └───────────┘  └───────────┘    │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                     Outbox System ✅                               │   │
+│  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐    │   │
+│  │  │  Outbox   │  │  Outbox   │  │ Publishers│  │Dead Letter│    │   │
+│  │  │  Store    │  │ Processor │  │(WH/K/SNS) │  │  Queue    │    │   │
+│  │  └───────────┘  └───────────┘  └───────────┘  └───────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                        ADAPTER LAYER                                    │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
@@ -211,6 +219,11 @@ github.com/AshkanYarmoradi/go-mink/
 │   ├── inline.go           # Same-transaction projections
 │   ├── async.go            # Background projections
 │   └── rebuild.go          # Projection rebuilder
+│
+├── outbox/                 # Outbox publishers
+│   ├── webhook/            # HTTP webhook publisher
+│   ├── kafka/              # Apache Kafka publisher
+│   └── sns/                # AWS SNS publisher
 │
 ├── middleware/             # Cross-cutting concerns
 │   ├── logging.go

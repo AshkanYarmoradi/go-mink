@@ -315,12 +315,14 @@ data, _ := pbSerializer.Serialize(event)
 - [x] Compensation handling
 - [x] Saga testing utilities (testing/sagas integration)
 
-### Outbox Pattern
-- [ ] Outbox message interface
-- [ ] Outbox store (PostgreSQL)
-- [ ] Outbox processor
-- [ ] Built-in publishers (Kafka, Webhooks, SNS)
-- [ ] Retry and dead-letter handling
+### Outbox Pattern ✅
+- [x] Outbox message interface
+- [x] Outbox store (PostgreSQL and Memory)
+- [x] Outbox processor with background polling
+- [x] Built-in publishers (Kafka, Webhooks, SNS)
+- [x] Retry and dead-letter handling
+- [x] Atomic append with outbox (PostgreSQL)
+- [x] Prometheus metrics integration
 
 ### Event Versioning & Upcasting
 - [ ] Schema version tracking

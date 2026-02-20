@@ -86,6 +86,13 @@ type Metrics struct {
 
 	// Error metrics
 	errorsTotal *prometheus.CounterVec
+
+	// Outbox metrics
+	outboxProcessedTotal    *prometheus.CounterVec
+	outboxFailedTotal       *prometheus.CounterVec
+	outboxDeadLetteredTotal prometheus.Counter
+	outboxBatchDuration     prometheus.Histogram
+	outboxPendingMessages   prometheus.Gauge
 }
 
 // MetricsOption configures Metrics.
@@ -256,6 +263,55 @@ func (m *Metrics) initMetrics() {
 		},
 		[]string{LabelService, LabelErrorType},
 	)
+
+	// Outbox metrics
+	m.outboxProcessedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: m.namespace,
+			Subsystem: m.subsystem,
+			Name:      "outbox_messages_processed_total",
+			Help:      "Total number of outbox messages processed.",
+		},
+		[]string{"destination", LabelStatus},
+	)
+
+	m.outboxFailedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: m.namespace,
+			Subsystem: m.subsystem,
+			Name:      "outbox_messages_failed_total",
+			Help:      "Total number of outbox messages that failed delivery.",
+		},
+		[]string{"destination"},
+	)
+
+	m.outboxDeadLetteredTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: m.namespace,
+			Subsystem: m.subsystem,
+			Name:      "outbox_messages_dead_lettered_total",
+			Help:      "Total number of outbox messages moved to dead letter.",
+		},
+	)
+
+	m.outboxBatchDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: m.namespace,
+			Subsystem: m.subsystem,
+			Name:      "outbox_batch_duration_seconds",
+			Help:      "Duration of outbox batch processing in seconds.",
+			Buckets:   prometheus.DefBuckets,
+		},
+	)
+
+	m.outboxPendingMessages = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: m.namespace,
+			Subsystem: m.subsystem,
+			Name:      "outbox_pending_messages",
+			Help:      "Current number of pending outbox messages.",
+		},
+	)
 }
 
 // Collectors returns all Prometheus collectors for registration.
@@ -273,6 +329,11 @@ func (m *Metrics) Collectors() []prometheus.Collector {
 		m.projectionLag,
 		m.projectionCheckpoint,
 		m.errorsTotal,
+		m.outboxProcessedTotal,
+		m.outboxFailedTotal,
+		m.outboxDeadLetteredTotal,
+		m.outboxBatchDuration,
+		m.outboxPendingMessages,
 	}
 }
 
@@ -699,4 +760,65 @@ func (m *Metrics) ProjectionCheckpoint() *prometheus.GaugeVec {
 // ErrorsTotal returns the errors counter.
 func (m *Metrics) ErrorsTotal() *prometheus.CounterVec {
 	return m.errorsTotal
+}
+
+// OutboxProcessedTotal returns the outbox processed counter.
+func (m *Metrics) OutboxProcessedTotal() *prometheus.CounterVec {
+	return m.outboxProcessedTotal
+}
+
+// OutboxFailedTotal returns the outbox failed counter.
+func (m *Metrics) OutboxFailedTotal() *prometheus.CounterVec {
+	return m.outboxFailedTotal
+}
+
+// OutboxDeadLetteredTotal returns the outbox dead-lettered counter.
+func (m *Metrics) OutboxDeadLetteredTotal() prometheus.Counter {
+	return m.outboxDeadLetteredTotal
+}
+
+// OutboxBatchDuration returns the outbox batch duration histogram.
+func (m *Metrics) OutboxBatchDuration() prometheus.Histogram {
+	return m.outboxBatchDuration
+}
+
+// OutboxPendingMessages returns the outbox pending messages gauge.
+func (m *Metrics) OutboxPendingMessages() prometheus.Gauge {
+	return m.outboxPendingMessages
+}
+
+// =============================================================================
+// OutboxMetrics Implementation
+// =============================================================================
+
+// Compile-time check that Metrics implements mink.OutboxMetrics.
+var _ mink.OutboxMetrics = (*Metrics)(nil)
+
+// RecordMessageProcessed records an outbox message processing result.
+func (m *Metrics) RecordMessageProcessed(destination string, success bool) {
+	status := StatusSuccess
+	if !success {
+		status = StatusError
+	}
+	m.outboxProcessedTotal.WithLabelValues(destination, status).Inc()
+}
+
+// RecordMessageFailed records an outbox message delivery failure.
+func (m *Metrics) RecordMessageFailed(destination string) {
+	m.outboxFailedTotal.WithLabelValues(destination).Inc()
+}
+
+// RecordMessageDeadLettered records an outbox message moved to dead letter.
+func (m *Metrics) RecordMessageDeadLettered() {
+	m.outboxDeadLetteredTotal.Inc()
+}
+
+// RecordBatchDuration records the duration of an outbox batch processing cycle.
+func (m *Metrics) RecordBatchDuration(duration time.Duration) {
+	m.outboxBatchDuration.Observe(duration.Seconds())
+}
+
+// RecordPendingMessages records the current count of pending outbox messages.
+func (m *Metrics) RecordPendingMessages(count int64) {
+	m.outboxPendingMessages.Set(float64(count))
 }
