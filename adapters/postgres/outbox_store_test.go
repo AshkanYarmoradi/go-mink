@@ -38,7 +38,7 @@ func setupOutboxStore(t *testing.T) (*OutboxStore, context.Context) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		adapter.Close()
+		_ = adapter.Close()
 	})
 
 	return store, ctx

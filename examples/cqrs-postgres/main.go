@@ -338,7 +338,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create event store adapter: %v", err)
 	}
-	defer eventAdapter.Close()
+	defer func() { _ = eventAdapter.Close() }()
 
 	// Initialize event store schema
 	if err := eventAdapter.Initialize(ctx); err != nil {
@@ -351,7 +351,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Create PostgreSQL idempotency store
 	idempotencyStore := postgres.NewIdempotencyStore(db,

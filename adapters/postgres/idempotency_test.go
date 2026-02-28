@@ -65,7 +65,7 @@ func TestIdempotencyStore_WithOptions(t *testing.T) {
 	t.Run("WithIdempotencyTable option", func(t *testing.T) {
 		adapter, err := NewAdapter(connStr)
 		require.NoError(t, err)
-		defer adapter.Close()
+		defer func() { _ = adapter.Close() }()
 
 		store := NewIdempotencyStore(adapter.db,
 			WithIdempotencySchema("mink"),

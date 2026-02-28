@@ -73,7 +73,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.LoadFromPosition(ctx, 0, 100)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -125,7 +125,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeAll(context.Background(), 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)

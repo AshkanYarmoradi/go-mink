@@ -406,7 +406,7 @@ func TestBankAccount_CompleteLifecycle(t *testing.T) {
 
 		// Clear uncommitted and deposit
 		account.ClearUncommittedEvents()
-		account.Deposit(1000.00, "initial-deposit")
+		_ = account.Deposit(1000.00, "initial-deposit")
 
 		if account.Balance != 1000.00 {
 			t.Errorf("Expected balance 1000.00, got %.2f", account.Balance)
@@ -414,7 +414,7 @@ func TestBankAccount_CompleteLifecycle(t *testing.T) {
 
 		// Withdraw
 		account.ClearUncommittedEvents()
-		account.Withdraw(250.00, "withdrawal-1")
+		_ = account.Withdraw(250.00, "withdrawal-1")
 
 		if account.Balance != 750.00 {
 			t.Errorf("Expected balance 750.00, got %.2f", account.Balance)
@@ -422,7 +422,7 @@ func TestBankAccount_CompleteLifecycle(t *testing.T) {
 
 		// Close
 		account.ClearUncommittedEvents()
-		account.Close("test complete")
+		_ = account.Close("test complete")
 
 		if !account.IsClosed {
 			t.Error("Account should be closed")

@@ -132,7 +132,7 @@ func TestCommandBus_Dispatch(t *testing.T) {
 			return NewSuccessResult("", 0), nil
 		})
 
-		bus.Close()
+		_ = bus.Close()
 
 		result, err := bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "cust-1"})
 

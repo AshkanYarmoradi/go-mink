@@ -403,7 +403,7 @@ func TestSplash(t *testing.T) {
 
 	Splash()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer
@@ -3734,7 +3734,7 @@ func skipIfNoPostgres(t *testing.T) {
 	if err != nil {
 		t.Skipf("Skipping PostgreSQL test: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

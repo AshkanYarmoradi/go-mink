@@ -16,15 +16,15 @@ import (
 
 func TestGetEnvOrDefault(t *testing.T) {
 	t.Run("returns env value when set", func(t *testing.T) {
-		os.Setenv("TEST_CONTAINERS_KEY", "test-value")
-		defer os.Unsetenv("TEST_CONTAINERS_KEY")
+		_ = os.Setenv("TEST_CONTAINERS_KEY", "test-value")
+		defer func() { _ = os.Unsetenv("TEST_CONTAINERS_KEY") }()
 
 		result := getEnvOrDefault("TEST_CONTAINERS_KEY", "default")
 		assert.Equal(t, "test-value", result)
 	})
 
 	t.Run("returns default when not set", func(t *testing.T) {
-		os.Unsetenv("TEST_CONTAINERS_MISSING_KEY")
+		_ = os.Unsetenv("TEST_CONTAINERS_MISSING_KEY")
 
 		result := getEnvOrDefault("TEST_CONTAINERS_MISSING_KEY", "default")
 		assert.Equal(t, "default", result)
@@ -40,12 +40,12 @@ func TestDefaultPostgresConfig(t *testing.T) {
 		originalValues := make(map[string]string)
 		for _, key := range envVars {
 			originalValues[key] = os.Getenv(key)
-			os.Unsetenv(key)
+			_ = os.Unsetenv(key)
 		}
 		defer func() {
 			for key, value := range originalValues {
 				if value != "" {
-					os.Setenv(key, value)
+					_ = os.Setenv(key, value)
 				}
 			}
 		}()
@@ -60,17 +60,17 @@ func TestDefaultPostgresConfig(t *testing.T) {
 	})
 
 	t.Run("reads from environment variables", func(t *testing.T) {
-		os.Setenv("POSTGRES_IMAGE", "postgres:16")
-		os.Setenv("POSTGRES_DB", "custom_db")
-		os.Setenv("POSTGRES_USER", "custom_user")
-		os.Setenv("POSTGRES_PASSWORD", "custom_pass")
-		os.Setenv("POSTGRES_PORT", "5433")
+		_ = os.Setenv("POSTGRES_IMAGE", "postgres:16")
+		_ = os.Setenv("POSTGRES_DB", "custom_db")
+		_ = os.Setenv("POSTGRES_USER", "custom_user")
+		_ = os.Setenv("POSTGRES_PASSWORD", "custom_pass")
+		_ = os.Setenv("POSTGRES_PORT", "5433")
 		defer func() {
-			os.Unsetenv("POSTGRES_IMAGE")
-			os.Unsetenv("POSTGRES_DB")
-			os.Unsetenv("POSTGRES_USER")
-			os.Unsetenv("POSTGRES_PASSWORD")
-			os.Unsetenv("POSTGRES_PORT")
+			_ = os.Unsetenv("POSTGRES_IMAGE")
+			_ = os.Unsetenv("POSTGRES_DB")
+			_ = os.Unsetenv("POSTGRES_USER")
+			_ = os.Unsetenv("POSTGRES_PASSWORD")
+			_ = os.Unsetenv("POSTGRES_PORT")
 		}()
 
 		cfg := defaultPostgresConfig()
@@ -416,7 +416,7 @@ func TestIntegrationTest_Query_Integration(t *testing.T) {
 		it := NewIntegrationTest(t)
 
 		rows := it.Query("SELECT 1 as num")
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		require.True(t, rows.Next())
 

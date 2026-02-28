@@ -216,16 +216,16 @@ func FormatDiffs(diffs []EventDiff) string {
 
 func formatDiff(diff EventDiff) string {
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("  Event %d (%s):\n", diff.Index, diff.Type))
+	fmt.Fprintf(&buf, "  Event %d (%s):\n", diff.Index, diff.Type)
 
 	switch diff.Type {
 	case DiffExtra:
-		buf.WriteString(fmt.Sprintf("    + %T %+v (unexpected)\n", diff.Actual, diff.Actual))
+		fmt.Fprintf(&buf, "    + %T %+v (unexpected)\n", diff.Actual, diff.Actual)
 	case DiffMissing:
-		buf.WriteString(fmt.Sprintf("    - %T %+v (missing)\n", diff.Expected, diff.Expected))
+		fmt.Fprintf(&buf, "    - %T %+v (missing)\n", diff.Expected, diff.Expected)
 	case DiffMismatch:
-		buf.WriteString(fmt.Sprintf("    - %T %+v\n", diff.Expected, diff.Expected))
-		buf.WriteString(fmt.Sprintf("    + %T %+v\n", diff.Actual, diff.Actual))
+		fmt.Fprintf(&buf, "    - %T %+v\n", diff.Expected, diff.Expected)
+		fmt.Fprintf(&buf, "    + %T %+v\n", diff.Actual, diff.Actual)
 	}
 
 	return buf.String()

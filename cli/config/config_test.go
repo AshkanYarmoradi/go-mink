@@ -76,7 +76,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create and save config
 	cfg := DefaultConfig()
@@ -105,7 +105,7 @@ func TestExists(t *testing.T) {
 	// Test directory without config
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	assert.False(t, Exists(tmpDir))
 
@@ -121,7 +121,7 @@ func TestFindConfig(t *testing.T) {
 	// Create nested directory structure
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create config at root
 	cfg := DefaultConfig()

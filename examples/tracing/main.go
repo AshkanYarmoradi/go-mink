@@ -8,7 +8,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -279,8 +278,3 @@ func submitOrder(ctx context.Context, store *mink.EventStore, tracer trace.Trace
 	return nil
 }
 
-// Helper to marshal events to JSON
-func toJSON(v interface{}) []byte {
-	data, _ := json.Marshal(v)
-	return data
-}

@@ -215,7 +215,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Memory adapter implements SubscriptionAdapter, so we should receive events
 		// If no events received, check if adapter works as SubscriptionAdapter
@@ -250,7 +250,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 		// Wait for polling to pick up new event
 		time.Sleep(100 * time.Millisecond)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("with event filter", func(t *testing.T) {
@@ -283,7 +283,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 			received = append(received, event)
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Should only have Order events (filtered), or none if subscription errors
 		for _, e := range received {

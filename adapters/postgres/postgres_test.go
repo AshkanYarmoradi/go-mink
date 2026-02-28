@@ -327,7 +327,7 @@ func TestNewAdapter(t *testing.T) {
 		adapter, err := NewAdapter(connStr)
 		require.NoError(t, err)
 		require.NotNil(t, adapter)
-		defer adapter.Close()
+		defer func() { _ = adapter.Close() }()
 
 		assert.Equal(t, "mink", adapter.Schema())
 		assert.NotNil(t, adapter.DB())
@@ -1831,7 +1831,7 @@ func TestPostgresAdapter_ClosedAdapterErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create and immediately close adapter
 			closedAdapter, _ := NewAdapter(connStr)
-			closedAdapter.Close()
+			_ = closedAdapter.Close()
 
 			err := tt.fn(closedAdapter)
 			assert.ErrorIs(t, err, ErrAdapterClosed)

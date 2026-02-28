@@ -163,7 +163,7 @@ func main() {
 	if err := store.Initialize(ctx); err != nil {
 		log.Fatalf("Failed to initialize store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create read model repository
 	orderRepo := mink.NewInMemoryRepository(func(o *OrderSummary) string {
@@ -194,7 +194,7 @@ func main() {
 	if err := engine.Start(ctx); err != nil {
 		log.Fatalf("Failed to start projection engine: %v", err)
 	}
-	defer engine.Stop(ctx)
+	defer func() { _ = engine.Stop(ctx) }()
 
 	// Start a goroutine to print dashboard updates
 	go func() {
@@ -226,7 +226,7 @@ func main() {
 
 	// Load the events back to process projections
 	events1, _ := store.LoadRaw(ctx, "Order-001", 0)
-	engine.ProcessInlineProjections(ctx, events1)
+	_ = engine.ProcessInlineProjections(ctx, events1)
 	engine.NotifyLiveProjections(ctx, events1)
 
 	// Add items to Order 1
@@ -240,7 +240,7 @@ func main() {
 	}
 
 	events2, _ := store.LoadRaw(ctx, "Order-001", 1)
-	engine.ProcessInlineProjections(ctx, events2)
+	_ = engine.ProcessInlineProjections(ctx, events2)
 
 	// Create Order 2
 	fmt.Println("Creating Order 2...")
@@ -257,7 +257,7 @@ func main() {
 	}
 
 	events3, _ := store.LoadRaw(ctx, "Order-002", 0)
-	engine.ProcessInlineProjections(ctx, events3)
+	_ = engine.ProcessInlineProjections(ctx, events3)
 	engine.NotifyLiveProjections(ctx, events3)
 
 	// Ship Order 1
