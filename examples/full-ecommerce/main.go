@@ -823,7 +823,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize PostgreSQL adapter
 	fmt.Println("🔧 Initializing PostgreSQL adapters...")
@@ -831,7 +831,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create event adapter: %v", err)
 	}
-	defer eventAdapter.Close()
+	defer func() { _ = eventAdapter.Close() }()
 
 	if err := eventAdapter.Initialize(ctx); err != nil {
 		log.Fatalf("Failed to initialize event store: %v", err)
@@ -1005,7 +1005,7 @@ func main() {
 		log.Printf("Failed to load events: %v", err)
 	} else {
 		for _, event := range rawEvents {
-			projection.Apply(ctx, event)
+			_ = projection.Apply(ctx, event)
 		}
 		if summary := projection.GetOrder(orderID); summary != nil {
 			fmt.Printf("   Order: %s | Customer: %s | Items: %d | Total: $%.2f | Status: %s\n",
@@ -1212,15 +1212,15 @@ func main() {
 	// Load order twice (simulating two concurrent processes)
 	order1 := NewOrder(concurrentOrderID)
 	order2 := NewOrder(concurrentOrderID)
-	eventStore.LoadAggregate(ctx, order1)
-	eventStore.LoadAggregate(ctx, order2)
+	_ = eventStore.LoadAggregate(ctx, order1)
+	_ = eventStore.LoadAggregate(ctx, order2)
 
 	fmt.Printf("   Order1 loaded at version: %d\n", order1.Version())
 	fmt.Printf("   Order2 loaded at version: %d\n", order2.Version())
 
 	// First modification succeeds
 	fmt.Println("3️⃣  First concurrent modification...")
-	order1.AddItem("ITEM-1", "First Item", 1, 10.00)
+	_ = order1.AddItem("ITEM-1", "First Item", 1, 10.00)
 	if err := eventStore.SaveAggregate(ctx, order1); err != nil {
 		fmt.Printf("   ❌ Order1 failed: %v\n", err)
 	} else {
@@ -1229,7 +1229,7 @@ func main() {
 
 	// Second modification fails (version conflict)
 	fmt.Println("4️⃣  Second concurrent modification (should fail)...")
-	order2.AddItem("ITEM-2", "Second Item", 1, 20.00)
+	_ = order2.AddItem("ITEM-2", "Second Item", 1, 20.00)
 	if err := eventStore.SaveAggregate(ctx, order2); err != nil {
 		if errors.Is(err, mink.ErrConcurrencyConflict) {
 			fmt.Printf("   ⚠️  Expected conflict: %v\n", err)
@@ -1243,8 +1243,8 @@ func main() {
 	// Retry with fresh load
 	fmt.Println("5️⃣  Retrying with fresh load...")
 	order2Retry := NewOrder(concurrentOrderID)
-	eventStore.LoadAggregate(ctx, order2Retry)
-	order2Retry.AddItem("ITEM-2", "Second Item", 1, 20.00)
+	_ = eventStore.LoadAggregate(ctx, order2Retry)
+	_ = order2Retry.AddItem("ITEM-2", "Second Item", 1, 20.00)
 	if err := eventStore.SaveAggregate(ctx, order2Retry); err != nil {
 		fmt.Printf("   ❌ Retry failed: %v\n", err)
 	} else {

@@ -409,7 +409,7 @@ func (r *PostgresRepository[T]) migrateColumns(ctx context.Context, pkColumn str
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var colName string
@@ -1264,7 +1264,7 @@ func (r *PostgresRepository[T]) getManyWithExecutor(ctx context.Context, exec db
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/readmodel: getMany failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return r.scanRows(rows)
 }
@@ -1280,7 +1280,7 @@ func (r *PostgresRepository[T]) findWithExecutor(ctx context.Context, exec dbExe
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/readmodel: find failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return r.scanRows(rows)
 }

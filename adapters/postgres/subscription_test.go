@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -11,22 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+// setupSubscriptionAdapter creates an initialized adapter with the given schema for subscription tests.
+// It returns the adapter, a context, and the connection string (for creating additional adapters in subtests).
+func setupSubscriptionAdapter(t *testing.T, schema string) (adapter *PostgresAdapter, ctx context.Context, connStr string) {
+	t.Helper()
+	connStr = requireIntegration(t)
 
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_test"))
+	adapter, err := NewAdapter(connStr, WithSchema(schema))
 	require.NoError(t, err)
-	defer adapter.Close()
+	t.Cleanup(func() { _ = adapter.Close() })
 
-	ctx := context.Background()
+	ctx = context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
+	return adapter, ctx, connStr
+}
+
+func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
+	adapter, ctx, connStr := setupSubscriptionAdapter(t, "mink_sub_test")
 
 	// Clean up both tables
 	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_test.events, mink_sub_test.streams CASCADE")
@@ -37,7 +37,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 		{Type: "TestEvent2", Data: []byte(`{"seq": 2}`)},
 		{Type: "TestEvent3", Data: []byte(`{"seq": 3}`)},
 	}
-	_, err = adapter.Append(ctx, "Test-001", events, NoStream)
+	_, err := adapter.Append(ctx, "Test-001", events, NoStream)
 	require.NoError(t, err)
 
 	// Get all events first to know actual positions
@@ -73,7 +73,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.LoadFromPosition(ctx, 0, 100)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -81,21 +81,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 }
 
 func TestPostgresSubscription_SubscribeAll(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_all_test"))
-	require.NoError(t, err)
-	defer adapter.Close()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx, connStr := setupSubscriptionAdapter(t, "mink_sub_all_test")
 
 	// Clean up both tables
 	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_all_test.events, mink_sub_all_test.streams CASCADE")
@@ -105,7 +91,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 		{Type: "TestEvent1", Data: []byte(`{}`)},
 		{Type: "TestEvent2", Data: []byte(`{}`)},
 	}
-	_, err = adapter.Append(ctx, "Test-001", events, NoStream)
+	_, err := adapter.Append(ctx, "Test-001", events, NoStream)
 	require.NoError(t, err)
 
 	t.Run("subscribes and receives historical events", func(t *testing.T) {
@@ -125,7 +111,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeAll(context.Background(), 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -133,21 +119,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 }
 
 func TestPostgresSubscription_SubscribeStream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_stream_test"))
-	require.NoError(t, err)
-	defer adapter.Close()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx, connStr := setupSubscriptionAdapter(t, "mink_sub_stream_test")
 
 	// Clean up both tables
 	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_stream_test.events, mink_sub_stream_test.streams CASCADE")
@@ -176,7 +148,7 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeStream(context.Background(), "Stream-001", 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -184,21 +156,7 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 }
 
 func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_cat_test"))
-	require.NoError(t, err)
-	defer adapter.Close()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx, connStr := setupSubscriptionAdapter(t, "mink_sub_cat_test")
 
 	// Clean up both tables
 	_, _ = adapter.db.ExecContext(ctx, "TRUNCATE TABLE mink_sub_cat_test.events, mink_sub_cat_test.streams CASCADE")
@@ -225,7 +183,7 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeCategory(context.Background(), "Order", 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)

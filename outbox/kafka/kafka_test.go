@@ -134,7 +134,7 @@ func (e *integrationEnv) readMessage(t *testing.T) kafkago.Message {
 		MaxBytes:  10e6,
 		MaxWait:   5 * time.Second,
 	})
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	readCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
@@ -149,14 +149,14 @@ func createTopic(t *testing.T, brokers string, topic string) {
 	t.Helper()
 	conn, err := kafkago.Dial("tcp", brokers)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	controller, err := conn.Controller()
 	require.NoError(t, err)
 
 	controllerConn, err := kafkago.Dial("tcp", net.JoinHostPort(controller.Host, fmt.Sprintf("%d", controller.Port)))
 	require.NoError(t, err)
-	defer controllerConn.Close()
+	defer func() { _ = controllerConn.Close() }()
 
 	err = controllerConn.CreateTopics(kafkago.TopicConfig{
 		Topic:             topic,
@@ -246,7 +246,7 @@ func TestKafkaPublisher_Publish_MultipleTopics_Integration(t *testing.T) {
 			Brokers: []string{brokers}, Topic: topic, Partition: 0,
 			MinBytes: 1, MaxBytes: 10e6, MaxWait: 5 * time.Second,
 		})
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		msg, err := reader.ReadMessage(readCtx)

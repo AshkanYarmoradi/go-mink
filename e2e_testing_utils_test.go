@@ -618,7 +618,7 @@ func TestE2E_Tracing_CompleteWorkflow(t *testing.T) {
 	assert.True(t, result.Success)
 
 	// Force flush to ensure spans are exported
-	tp.ForceFlush(ctx)
+	_ = tp.ForceFlush(ctx)
 
 	// Verify spans were created
 	spans := exporter.GetSpans()
@@ -713,7 +713,7 @@ func TestE2E_FullStack_AllComponentsTogether(t *testing.T) {
 	}).Then(&FullStackOrderCreated{OrderID: "new-order", CustomerID: "test-customer"})
 
 	// 10. Verify tracing spans
-	tp.ForceFlush(ctx)
+	_ = tp.ForceFlush(ctx)
 	spans := exporter.GetSpans()
 	assert.NotEmpty(t, spans, "Should have tracing spans")
 

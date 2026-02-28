@@ -250,7 +250,7 @@ func (m *mockOutboxAppenderAdapter) AppendWithOutbox(ctx context.Context, stream
 	if m.appendWithOutboxErr != nil {
 		return nil, m.appendWithOutboxErr
 	}
-	return m.MemoryAdapter.Append(ctx, streamID, events, expectedVersion)
+	return m.Append(ctx, streamID, events, expectedVersion)
 }
 
 var _ adapters.OutboxAppender = (*mockOutboxAppenderAdapter)(nil)

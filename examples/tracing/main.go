@@ -8,7 +8,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -61,7 +60,7 @@ func main() {
 		fmt.Printf("Failed to initialize tracer: %v\n", err)
 		return
 	}
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	// Create memory adapter and event store
 	adapter := memory.NewAdapter()
@@ -277,10 +276,4 @@ func submitOrder(ctx context.Context, store *mink.EventStore, tracer trace.Trace
 	)
 
 	return nil
-}
-
-// Helper to marshal events to JSON
-func toJSON(v interface{}) []byte {
-	data, _ := json.Marshal(v)
-	return data
 }

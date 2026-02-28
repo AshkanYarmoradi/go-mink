@@ -110,7 +110,7 @@ func (p *Publisher) sendMessage(ctx context.Context, msg *adapters.OutboxMessage
 	if err != nil {
 		return fmt.Errorf("webhook: request failed for %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 500 {

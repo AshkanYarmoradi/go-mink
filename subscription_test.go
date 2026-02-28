@@ -215,7 +215,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Memory adapter implements SubscriptionAdapter, so we should receive events
 		// If no events received, check if adapter works as SubscriptionAdapter
@@ -250,7 +250,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 		// Wait for polling to pick up new event
 		time.Sleep(100 * time.Millisecond)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("with event filter", func(t *testing.T) {
@@ -283,7 +283,7 @@ func TestCatchupSubscription_WithMemoryAdapter(t *testing.T) {
 			received = append(received, event)
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Should only have Order events (filtered), or none if subscription errors
 		for _, e := range received {
@@ -354,12 +354,12 @@ func TestCatchupSubscription(t *testing.T) {
 		err = sub.Start(ctx, 10*time.Millisecond)
 		assert.NoError(t, err)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("Start returns error when closed", func(t *testing.T) {
 		sub, _ := NewCatchupSubscription(store, 0)
-		sub.Close()
+		_ = sub.Close()
 
 		err := sub.Start(context.Background(), 10*time.Millisecond)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -406,7 +406,7 @@ func TestCatchupSubscription(t *testing.T) {
 		require.NoError(t, err)
 
 		// Close should stop the run
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for run to stop
 		time.Sleep(50 * time.Millisecond)
@@ -474,7 +474,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Should have received at least historical + potentially new event
 		assert.GreaterOrEqual(t, len(received), 3)
@@ -499,7 +499,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 		require.NoError(t, err)
 
 		// Immediately close
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for goroutine to finish
 		time.Sleep(50 * time.Millisecond)
@@ -534,7 +534,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 		// Should have context error
 		assert.ErrorIs(t, sub.Err(), context.Canceled)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 }
 
@@ -576,7 +576,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Polling subscription tested - timing-dependent so we just verify no errors
 	})
@@ -602,7 +602,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 		// Should have context error
 		assert.ErrorIs(t, sub.Err(), context.Canceled)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("stops on Close", func(t *testing.T) {
@@ -618,7 +618,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Close
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for poll to stop
 		time.Sleep(50 * time.Millisecond)
@@ -667,7 +667,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// All received events should be from Order category
 		for _, e := range received {

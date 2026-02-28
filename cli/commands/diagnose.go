@@ -59,12 +59,13 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 		result := check.Check()
 		results = append(results, result)
 
-		if result.Status == StatusOK {
+		switch result.Status {
+		case StatusOK:
 			fmt.Println(styles.SuccessStyle.Render("OK"))
-		} else if result.Status == StatusWarning {
+		case StatusWarning:
 			fmt.Println(styles.WarningStyle.Render("WARNING"))
 			allPassed = false
-		} else {
+		default:
 			fmt.Println(styles.ErrorStyle.Render("FAILED"))
 			allPassed = false
 		}

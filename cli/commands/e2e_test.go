@@ -38,7 +38,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 
 	tmpDir, err := os.MkdirTemp("", "mink-e2e-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Change to temp directory for the entire test
 	origWd, _ := os.Getwd()
@@ -383,7 +383,7 @@ func TestE2E_MultiAggregateWorkflow(t *testing.T) {
 
 	tmpDir, err := os.MkdirTemp("", "mink-e2e-multi-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	origWd, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -483,7 +483,7 @@ func TestE2E_MigrationLifecycle(t *testing.T) {
 
 	tmpDir, err := os.MkdirTemp("", "mink-e2e-migration-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	origWd, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -592,7 +592,7 @@ func TestE2E_ProjectionManagement(t *testing.T) {
 
 	tmpDir, err := os.MkdirTemp("", "mink-e2e-projection-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	origWd, _ := os.Getwd()
 	os.Chdir(tmpDir)

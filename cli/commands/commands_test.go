@@ -54,7 +54,7 @@ func setupTestEnv(t *testing.T, prefix string) *testEnv {
 // cleanup restores the original working directory and removes temp dir
 func (e *testEnv) cleanup() {
 	_ = os.Chdir(e.origWd)
-	os.RemoveAll(e.tmpDir)
+	_ = os.RemoveAll(e.tmpDir)
 }
 
 // createConfig creates a mink.yaml config file in the test directory
@@ -403,7 +403,7 @@ func TestSplash(t *testing.T) {
 
 	Splash()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer
@@ -3376,7 +3376,7 @@ func TestInitCommand_WithDrivers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			initDir, err := os.MkdirTemp("", "mink-init-"+tt.driver+"-*")
 			require.NoError(t, err)
-			defer os.RemoveAll(initDir)
+			defer func() { _ = os.RemoveAll(initDir) }()
 
 			cmd := NewInitCommand()
 			cmd.SetArgs([]string{
@@ -3734,7 +3734,7 @@ func skipIfNoPostgres(t *testing.T) {
 	if err != nil {
 		t.Skipf("Skipping PostgreSQL test: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3984,7 +3984,7 @@ func TestInitCommand_PostgresDriver_Integration(t *testing.T) {
 
 	initDir, err := os.MkdirTemp("", "mink-init-pg-integ-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(initDir)
+	defer func() { _ = os.RemoveAll(initDir) }()
 
 	cmd := NewInitCommand()
 	cmd.SetArgs([]string{
@@ -4320,7 +4320,7 @@ func TestStreamExportCommand_PostgreSQL_WithEvents(t *testing.T) {
 	}
 
 	outDir, _ := os.MkdirTemp("", "mink-export-out-*")
-	defer os.RemoveAll(outDir)
+	defer func() { _ = os.RemoveAll(outDir) }()
 	outFile := filepath.Join(outDir, "export.json")
 
 	cmd := NewStreamCommand()
@@ -6953,7 +6953,7 @@ func TestCheckGoVersion_DirectCall(t *testing.T) {
 func TestCheckConfiguration_NoConfig_Direct(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-check-config-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
@@ -7058,7 +7058,7 @@ func TestAnimatedVersionModel_FullAnimation(t *testing.T) {
 func TestLoadConfig_NotExists_Direct(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-load-config-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))
@@ -7073,7 +7073,7 @@ func TestLoadConfig_NotExists_Direct(t *testing.T) {
 func TestLoadConfigOrDefault_NoConfig_Direct(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-load-default-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	oldWd, _ := os.Getwd()
 	require.NoError(t, os.Chdir(tmpDir))

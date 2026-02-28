@@ -39,7 +39,7 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 	}
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Skipf("PostgreSQL not available: %v", err)
 	}
 
@@ -49,14 +49,14 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 
 	ctx := context.Background()
 	if err := store.Initialize(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("Failed to initialize saga store: %v", err)
 	}
 
 	cleanup := func() {
 		// Drop test table
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + quoteQualifiedTable("public", tableName))
-		db.Close()
+		_ = db.Close()
 	}
 
 	return store, cleanup
@@ -115,7 +115,7 @@ func TestNewSagaStoreFromAdapter(t *testing.T) {
 	if err != nil {
 		t.Skipf("Failed to connect to PostgreSQL: %v", err)
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	store := NewSagaStoreFromAdapter(adapter, WithSagaTable("test_sagas"))
 
@@ -146,7 +146,7 @@ func TestSagaStore_Initialize_InvalidSchema(t *testing.T) {
 	url := getTestDatabaseURL(t)
 	db, err := sql.Open("pgx", url)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store := NewSagaStore(db, WithSagaSchema("invalid;schema"))
 
@@ -163,7 +163,7 @@ func TestSagaStore_Initialize_InvalidTable(t *testing.T) {
 	url := getTestDatabaseURL(t)
 	db, err := sql.Open("pgx", url)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store := NewSagaStore(db, WithSagaTable("invalid;table"))
 
@@ -1232,7 +1232,7 @@ func TestSagaStore_Initialize_ContextCanceled(t *testing.T) {
 	url := getTestDatabaseURL(t)
 	db, err := sql.Open("pgx", url)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store := NewSagaStore(db, WithSagaTable("test_init_ctx"))
 

@@ -14,21 +14,68 @@ import (
 )
 
 // =============================================================================
+// Test Helpers
+// =============================================================================
+
+// setTestEnv sets an environment variable and restores the original value when the test completes.
+func setTestEnv(t *testing.T, key, value string) {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Setenv(key, value)
+	t.Cleanup(func() {
+		if original != "" {
+			_ = os.Setenv(key, original)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+}
+
+// unsetTestEnv unsets an environment variable and restores the original value when the test completes.
+func unsetTestEnv(t *testing.T, key string) {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Unsetenv(key)
+	t.Cleanup(func() {
+		if original != "" {
+			_ = os.Setenv(key, original)
+		}
+	})
+}
+
+// requirePostgresIntegration skips the test if in short mode and returns the connection string.
+func requirePostgresIntegration(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		connStr = "postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable"
+	}
+	return connStr
+}
+
+// newOrderReadModelWithOrder creates an OrderReadModel with a pre-existing order.
+func newOrderReadModelWithOrder(t *testing.T) *OrderReadModel {
+	t.Helper()
+	rm := NewOrderReadModel()
+	err := rm.Apply(mink.StoredEvent{
+		StreamID: "Order-order-123",
+		Type:     "OrderCreated",
+		Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
+	})
+	require.NoError(t, err)
+	return rm
+}
+
+// =============================================================================
 // TestConfig Tests
 // =============================================================================
 
 func TestDefaultConfig(t *testing.T) {
 	t.Run("returns config from environment", func(t *testing.T) {
-		// Set environment variable
-		originalURL := os.Getenv("TEST_DATABASE_URL")
-		os.Setenv("TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
-		defer func() {
-			if originalURL != "" {
-				os.Setenv("TEST_DATABASE_URL", originalURL)
-			} else {
-				os.Unsetenv("TEST_DATABASE_URL")
-			}
-		}()
+		setTestEnv(t, "TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
 
 		config := DefaultConfig()
 
@@ -36,14 +83,7 @@ func TestDefaultConfig(t *testing.T) {
 	})
 
 	t.Run("returns default when env not set", func(t *testing.T) {
-		// Clear environment variable
-		originalURL := os.Getenv("TEST_DATABASE_URL")
-		os.Unsetenv("TEST_DATABASE_URL")
-		defer func() {
-			if originalURL != "" {
-				os.Setenv("TEST_DATABASE_URL", originalURL)
-			}
-		}()
+		unsetTestEnv(t, "TEST_DATABASE_URL")
 
 		config := DefaultConfig()
 
@@ -53,8 +93,8 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestGetEnvOrDefault(t *testing.T) {
 	t.Run("returns env value when set", func(t *testing.T) {
-		os.Setenv("TEST_UTIL_TEST_KEY", "test-value")
-		defer os.Unsetenv("TEST_UTIL_TEST_KEY")
+		_ = os.Setenv("TEST_UTIL_TEST_KEY", "test-value")
+		defer func() { _ = os.Unsetenv("TEST_UTIL_TEST_KEY") }()
 
 		result := getEnvOrDefault("TEST_UTIL_TEST_KEY", "default")
 
@@ -62,7 +102,7 @@ func TestGetEnvOrDefault(t *testing.T) {
 	})
 
 	t.Run("returns default when not set", func(t *testing.T) {
-		os.Unsetenv("TEST_UTIL_MISSING_KEY")
+		_ = os.Unsetenv("TEST_UTIL_MISSING_KEY")
 
 		result := getEnvOrDefault("TEST_UTIL_MISSING_KEY", "default")
 
@@ -373,12 +413,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	})
 
 	t.Run("applies ItemAdded", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 
 		err := rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
@@ -392,12 +427,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	})
 
 	t.Run("applies OrderShipped", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 
 		err := rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
@@ -412,12 +442,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	})
 
 	t.Run("applies OrderCancelled", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 
 		err := rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
@@ -458,13 +483,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	})
 
 	t.Run("returns error for invalid OrderShipped JSON", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		// First create the order so it exists
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 
 		event := mink.StoredEvent{
 			StreamID: "Order-order-123",
@@ -478,55 +497,32 @@ func TestOrderReadModel_Apply(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to unmarshal OrderShipped")
 	})
 
-	t.Run("skips ItemAdded when order does not exist", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		event := mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "ItemAdded",
-			Data:     []byte(`{"orderId":"order-123","sku":"SKU-001"}`),
+	t.Run("skips event when order does not exist", func(t *testing.T) {
+		skipTests := []struct {
+			name      string
+			eventType string
+			data      string
+		}{
+			{"ItemAdded", "ItemAdded", `{"orderId":"order-123","sku":"SKU-001"}`},
+			{"OrderShipped", "OrderShipped", `{"orderId":"order-123","trackingNumber":"TRACK-123"}`},
+			{"OrderCancelled", "OrderCancelled", `{"orderId":"order-123","reason":"Customer request"}`},
 		}
-
-		err := rm.Apply(event)
-
-		require.NoError(t, err)
-		assert.Nil(t, rm.Get("order-123"))
-	})
-
-	t.Run("skips OrderShipped when order does not exist", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		event := mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderShipped",
-			Data:     []byte(`{"orderId":"order-123","trackingNumber":"TRACK-123"}`),
+		for _, tt := range skipTests {
+			t.Run(tt.name, func(t *testing.T) {
+				rm := NewOrderReadModel()
+				err := rm.Apply(mink.StoredEvent{
+					StreamID: "Order-order-123",
+					Type:     tt.eventType,
+					Data:     []byte(tt.data),
+				})
+				require.NoError(t, err)
+				assert.Nil(t, rm.Get("order-123"))
+			})
 		}
-
-		err := rm.Apply(event)
-
-		require.NoError(t, err)
-		assert.Nil(t, rm.Get("order-123"))
-	})
-
-	t.Run("skips OrderCancelled when order does not exist", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		event := mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCancelled",
-			Data:     []byte(`{"orderId":"order-123","reason":"Customer request"}`),
-		}
-
-		err := rm.Apply(event)
-
-		require.NoError(t, err)
-		assert.Nil(t, rm.Get("order-123"))
 	})
 
 	t.Run("handles unknown event type gracefully", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 
 		event := mink.StoredEvent{
 			StreamID: "Order-order-123",
@@ -542,12 +538,7 @@ func TestOrderReadModel_Apply(t *testing.T) {
 	})
 
 	t.Run("increments update count", func(t *testing.T) {
-		rm := NewOrderReadModel()
-		_ = rm.Apply(mink.StoredEvent{
-			StreamID: "Order-order-123",
-			Type:     "OrderCreated",
-			Data:     []byte(`{"orderId":"order-123","customerId":"customer-456"}`),
-		})
+		rm := newOrderReadModelWithOrder(t)
 		_ = rm.Apply(mink.StoredEvent{
 			StreamID: "Order-order-123",
 			Type:     "ItemAdded",
@@ -609,20 +600,13 @@ func TestRegisterTestEvents(t *testing.T) {
 // =============================================================================
 
 func TestPostgresDB_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		connStr = "postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable"
-	}
+	connStr := requirePostgresIntegration(t)
 
 	t.Run("connects to PostgreSQL successfully", func(t *testing.T) {
 		ctx := context.Background()
 		db, err := PostgresDB(ctx, connStr)
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// Verify connection works
 		var result int
@@ -641,38 +625,24 @@ func TestPostgresDB_Integration(t *testing.T) {
 }
 
 func TestMustPostgresDB_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		connStr = "postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable"
-	}
+	connStr := requirePostgresIntegration(t)
 
 	t.Run("returns database connection", func(t *testing.T) {
 		ctx := context.Background()
 		db := MustPostgresDB(ctx, connStr)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		assert.NotNil(t, db)
 	})
 }
 
 func TestCleanupSchema_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		connStr = "postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable"
-	}
+	connStr := requirePostgresIntegration(t)
 
 	ctx := context.Background()
 	db, err := PostgresDB(ctx, connStr)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("drops existing schema", func(t *testing.T) {
 		// Create a unique schema

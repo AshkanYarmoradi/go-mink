@@ -225,7 +225,7 @@ func (s *OutboxStore) FetchPending(ctx context.Context, limit int) ([]*adapters.
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/outbox: failed to fetch pending messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanMessages(rows)
 }
@@ -353,7 +353,7 @@ func (s *OutboxStore) GetDeadLetterMessages(ctx context.Context, limit int) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/outbox: failed to get dead letter messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanMessages(rows)
 }

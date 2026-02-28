@@ -628,7 +628,7 @@ func TestOutboxProcessor_ProcessBatch_MarkCompletedError(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	err := store.OutboxStore.Schedule(ctx, []*adapters.OutboxMessage{
+	err := store.Schedule(ctx, []*adapters.OutboxMessage{
 		{
 			AggregateID: "order-1",
 			EventType:   "OrderCreated",
@@ -683,7 +683,7 @@ func TestOutboxProcessor_ProcessBatch_MarkFailedError(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	err := store.OutboxStore.Schedule(ctx, []*adapters.OutboxMessage{
+	err := store.Schedule(ctx, []*adapters.OutboxMessage{
 		{
 			AggregateID: "order-1",
 			EventType:   "OrderCreated",

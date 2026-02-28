@@ -153,7 +153,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return a.scanEvents(rows)
 }
@@ -257,7 +257,7 @@ func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category strin
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load category events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return a.scanEvents(rows)
 }

@@ -158,14 +158,14 @@ func main() {
 	// JSON benchmark
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
-		jsonSerializer.Serialize(productEvent)
+		_, _ = jsonSerializer.Serialize(productEvent)
 	}
 	jsonDuration := time.Since(start)
 
 	// MsgPack benchmark
 	start = time.Now()
 	for i := 0; i < iterations; i++ {
-		msgpackSerializer.Serialize(productEvent)
+		_, _ = msgpackSerializer.Serialize(productEvent)
 	}
 	msgpackDuration := time.Since(start)
 

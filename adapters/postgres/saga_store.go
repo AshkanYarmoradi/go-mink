@@ -305,7 +305,7 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/saga: failed to find sagas: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sagas []*mink.SagaState
 	for rows.Next() {
@@ -397,7 +397,7 @@ func (s *SagaStore) CountByStatus(ctx context.Context) (map[mink.SagaStatus]int6
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres/saga: failed to count sagas: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	counts := make(map[mink.SagaStatus]int64)
 	for rows.Next() {
