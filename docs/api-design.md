@@ -425,6 +425,80 @@ orders, _ := repo.Find(ctx,
 )
 ```
 
+### Event Versioning & Upcasting (v0.5.0)
+
+```go
+// Upcaster transforms event data from one schema version to the next
+type Upcaster interface {
+    EventType() string
+    FromVersion() int
+    ToVersion() int   // Must equal FromVersion() + 1
+    Upcast(data []byte, metadata Metadata) ([]byte, error)
+}
+
+// UpcasterChain manages and applies upcasters in sequence
+func NewUpcasterChain() *UpcasterChain
+func (c *UpcasterChain) Register(u Upcaster) error
+func (c *UpcasterChain) Validate() error
+func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, metadata Metadata) ([]byte, int, error)
+func (c *UpcasterChain) HasUpcasters(eventType string) bool
+func (c *UpcasterChain) LatestVersion(eventType string) int
+func (c *UpcasterChain) RegisteredEventTypes() []string
+
+// EventStore integration
+func WithUpcasters(chain *UpcasterChain) Option
+func (s *EventStore) RegisterUpcasters(upcasters ...Upcaster) error
+
+// Schema version helpers
+func GetSchemaVersion(m Metadata) int
+func SetSchemaVersion(m Metadata, version int) Metadata
+func SerializeEventWithVersion(serializer Serializer, event interface{}, metadata Metadata, schemaVersion int) (EventData, error)
+
+// UpcastingSerializer wraps any Serializer with upcasting on deserialize
+func NewUpcastingSerializer(inner Serializer, chain *UpcasterChain) *UpcastingSerializer
+func (s *UpcastingSerializer) Serialize(event interface{}) ([]byte, error)
+func (s *UpcastingSerializer) Deserialize(data []byte, eventType string) (interface{}, error)
+func (s *UpcastingSerializer) DeserializeWithVersion(data []byte, eventType string, schemaVersion int, metadata Metadata) (interface{}, error)
+func (s *UpcastingSerializer) Inner() Serializer
+func (s *UpcastingSerializer) Chain() *UpcasterChain
+
+// SchemaRegistry tracks event schemas and checks compatibility
+func NewSchemaRegistry() *SchemaRegistry
+func (r *SchemaRegistry) Register(eventType string, schema SchemaDefinition) error
+func (r *SchemaRegistry) GetSchema(eventType string, version int) (*SchemaDefinition, error)
+func (r *SchemaRegistry) GetLatestVersion(eventType string) (int, error)
+func (r *SchemaRegistry) CheckCompatibility(eventType string, oldVersion, newVersion int) (SchemaCompatibility, error)
+func (r *SchemaRegistry) RegisteredEventTypes() []string
+
+// Schema types
+type SchemaCompatibility int
+const (
+    SchemaFullyCompatible    SchemaCompatibility = iota
+    SchemaBackwardCompatible
+    SchemaForwardCompatible
+    SchemaBreaking
+)
+
+type SchemaDefinition struct {
+    Version      int
+    Fields       []FieldDefinition
+    JSONSchema   json.RawMessage
+    RegisteredAt time.Time
+}
+
+type FieldDefinition struct {
+    Name     string
+    Type     string
+    Required bool
+}
+
+// Versioning errors
+var ErrUpcastFailed       = errors.New("mink: upcast failed")
+var ErrSchemaVersionGap   = errors.New("mink: schema version gap")
+var ErrIncompatibleSchema = errors.New("mink: incompatible schema")
+var ErrSchemaNotFound     = errors.New("mink: schema not found")
+```
+
 ### Middleware
 
 ```go

@@ -324,12 +324,14 @@ data, _ := pbSerializer.Serialize(event)
 - [x] Atomic append with outbox (PostgreSQL)
 - [x] Prometheus metrics integration
 
-### Event Versioning & Upcasting
-- [ ] Schema version tracking
-- [ ] Upcaster interface
-- [ ] Upcaster chain
-- [ ] Schema registry
-- [ ] Compatibility checking
+### Event Versioning & Upcasting ✅
+- [x] Schema version tracking (in `Metadata.Custom["$schema_version"]`)
+- [x] Upcaster interface (raw `[]byte` transformation, serializer-agnostic)
+- [x] Upcaster chain (thread-safe registry with gap validation)
+- [x] UpcastingSerializer decorator
+- [x] Schema registry with compatibility checking
+- [x] EventStore integration (transparent upcast on load, stamp on save)
+- [x] Full example (`examples/versioning/main.go`)
 
 ### Security & Encryption
 - [ ] Field-level encryption
@@ -355,7 +357,18 @@ sagaManager := mink.NewSagaManager(store, bus)
 sagaManager.Register("OrderFulfillment", NewOrderFulfillmentSaga)
 sagaManager.Start(ctx)
 
-// Encryption
+// Event versioning — zero-cost upcasting
+chain := mink.NewUpcasterChain()
+chain.Register(orderCreatedV1ToV2{})
+chain.Register(orderCreatedV2ToV3{})
+store := mink.New(adapter, mink.WithUpcasters(chain))
+// Old events are upcasted transparently on load
+
+// Schema compatibility checking
+registry := mink.NewSchemaRegistry()
+compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
+
+// Encryption (planned)
 store := mink.New(adapter, mink.WithEncryption(EncryptionConfig{
     Provider: kms.NewProvider(awsConfig),
     EncryptedFields: map[string][]string{
@@ -363,7 +376,7 @@ store := mink.New(adapter, mink.WithEncryption(EncryptionConfig{
     },
 }))
 
-// GDPR
+// GDPR (planned)
 gdpr := mink.NewGDPRManager(store, keyStore)
 gdpr.ForgetDataSubject(ctx, "customer-123")
 ```
@@ -497,7 +510,7 @@ store := mink.New(adapter,
 | Performance benchmarks | Medium | Medium |
 | Saga implementation | Hard | High |
 | Outbox pattern | Hard | High |
-| Event upcasting | Hard | High |
+| Field-level encryption | Hard | High |
 | DynamoDB adapter | Hard | Medium |
 
 ### Code Style
