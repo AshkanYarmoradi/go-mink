@@ -49,14 +49,14 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 
 	ctx := context.Background()
 	if err := store.Initialize(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("Failed to initialize saga store: %v", err)
 	}
 
 	cleanup := func() {
 		// Drop test table
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + quoteQualifiedTable("public", tableName))
-		db.Close()
+		_ = db.Close()
 	}
 
 	return store, cleanup
