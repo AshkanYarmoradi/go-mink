@@ -460,3 +460,151 @@ func TestE2E_Versioning_SchemaRegistry(t *testing.T) {
 	types := registry.RegisteredEventTypes()
 	assert.Equal(t, []string{productAddedEventType}, types)
 }
+
+// =============================================================================
+// Test: Upcast error during Load propagates correctly
+// =============================================================================
+
+// failingUpcaster always returns an error.
+type failingUpcaster struct{}
+
+func (u *failingUpcaster) EventType() string { return productAddedEventType }
+func (u *failingUpcaster) FromVersion() int  { return 1 }
+func (u *failingUpcaster) ToVersion() int    { return 2 }
+func (u *failingUpcaster) Upcast(data []byte, metadata mink.Metadata) ([]byte, error) {
+	return nil, fmt.Errorf("upcast deliberately failed")
+}
+
+func TestE2E_Versioning_UpcastError_Load(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	// Store a v1 event
+	storeV1Events(ctx, t, adapter, "ProductCatalog-err-1",
+		[]map[string]interface{}{{"product_id": "p1", "name": "Widget", "price": 9.99}},
+		mink.Metadata{}, mink.NoStream)
+
+	// Create store with a failing upcaster
+	chain := mink.NewUpcasterChain()
+	require.NoError(t, chain.Register(&failingUpcaster{}))
+	store := mink.New(adapter, mink.WithUpcasters(chain))
+	store.RegisterEvents(ProductAdded{})
+
+	// Load should propagate the upcast error
+	_, err := store.Load(ctx, "ProductCatalog-err-1")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "upcast deliberately failed")
+}
+
+func TestE2E_Versioning_UpcastError_LoadAggregate(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	// Store a v1 event
+	storeV1Events(ctx, t, adapter, "ProductCatalog-err-agg-1",
+		[]map[string]interface{}{{"product_id": "p1", "name": "Widget", "price": 9.99}},
+		mink.Metadata{}, mink.NoStream)
+
+	// Create store with a failing upcaster
+	chain := mink.NewUpcasterChain()
+	require.NoError(t, chain.Register(&failingUpcaster{}))
+	store := mink.New(adapter, mink.WithUpcasters(chain))
+	store.RegisterEvents(ProductAdded{})
+
+	// LoadAggregate should propagate the upcast error
+	catalog := newProductCatalog("err-agg-1")
+	err := store.LoadAggregate(ctx, catalog)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "upcast deliberately failed")
+}
+
+// =============================================================================
+// Test: RegisterUpcasters error path
+// =============================================================================
+
+func TestE2E_Versioning_RegisterUpcasters_Error(t *testing.T) {
+	store := mink.New(memory.NewAdapter())
+
+	// Register valid upcaster, then attempt a duplicate
+	err := store.RegisterUpcasters(&paV1ToV2{})
+	require.NoError(t, err)
+
+	// Second registration with same version range should fail
+	err = store.RegisterUpcasters(&paV1ToV2{})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "duplicate")
+}
+
+// =============================================================================
+// Test: SaveAggregate stamps schema version
+// =============================================================================
+
+func TestE2E_Versioning_SaveAggregate_StampsVersion(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	chain := mink.NewUpcasterChain()
+	require.NoError(t, chain.Register(&paV1ToV2{}))
+	require.NoError(t, chain.Register(&paV2ToV3{}))
+
+	store := mink.New(adapter, mink.WithUpcasters(chain))
+	store.RegisterEvents(ProductAdded{})
+
+	// Create and save aggregate
+	catalog := newProductCatalog("save-stamp-1")
+	catalog.Apply(ProductAdded{ProductID: "p1", Name: "Test", Price: 5.0, Currency: "USD", Tax: 0})
+	catalog.Products = append(catalog.Products, catalogProduct{ProductID: "p1", Name: "Test", Price: 5.0, Currency: "USD"})
+
+	err := store.SaveAggregate(ctx, catalog)
+	require.NoError(t, err)
+
+	// Verify schema version was stamped
+	raw, err := store.LoadRaw(ctx, "ProductCatalog-save-stamp-1", 0)
+	require.NoError(t, err)
+	require.Len(t, raw, 1)
+	assert.Equal(t, 3, mink.GetSchemaVersion(raw[0].Metadata))
+}
+
+// =============================================================================
+// Test: CheckCompatibility error for unknown event type
+// =============================================================================
+
+func TestE2E_Versioning_SchemaRegistry_CheckCompatibility_Error(t *testing.T) {
+	registry := mink.NewSchemaRegistry()
+
+	// Unknown event type
+	_, err := registry.CheckCompatibility("Unknown", 1, 2)
+	require.Error(t, err)
+}
+
+// =============================================================================
+// Test: Deserialization error after successful upcast
+// =============================================================================
+
+// corruptingUpcaster produces invalid JSON so deserialization fails.
+type corruptingUpcaster struct{}
+
+func (u *corruptingUpcaster) EventType() string { return productAddedEventType }
+func (u *corruptingUpcaster) FromVersion() int  { return 1 }
+func (u *corruptingUpcaster) ToVersion() int    { return 2 }
+func (u *corruptingUpcaster) Upcast(_ []byte, _ mink.Metadata) ([]byte, error) {
+	return []byte(`{invalid json`), nil // Upcast succeeds but produces bad data
+}
+
+func TestE2E_Versioning_DeserializeError_AfterUpcast(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	storeV1Events(ctx, t, adapter, "ProductCatalog-deserr-1",
+		[]map[string]interface{}{{"product_id": "p1", "name": "Widget", "price": 9.99}},
+		mink.Metadata{}, mink.NoStream)
+
+	chain := mink.NewUpcasterChain()
+	require.NoError(t, chain.Register(&corruptingUpcaster{}))
+	store := mink.New(adapter, mink.WithUpcasters(chain))
+	store.RegisterEvents(ProductAdded{})
+
+	_, err := store.Load(ctx, "ProductCatalog-deserr-1")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "deserialize")
+}

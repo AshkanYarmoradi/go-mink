@@ -519,9 +519,19 @@ func TestSetSchemaVersion(t *testing.T) {
 
 func TestVersioningErrors(t *testing.T) {
 	t.Run("UpcastError matches ErrUpcastFailed", func(t *testing.T) {
-		err := NewUpcastError("OrderCreated", 1, 2, fmt.Errorf("bad data"))
+		cause := fmt.Errorf("bad data")
+		err := NewUpcastError("OrderCreated", 1, 2, cause)
 		if !errors.Is(err, ErrUpcastFailed) {
 			t.Error("expected UpcastError to match ErrUpcastFailed")
+		}
+		if err.Error() == "" {
+			t.Error("expected non-empty error message")
+		}
+		if !contains(err.Error(), "OrderCreated") {
+			t.Error("error message should contain event type")
+		}
+		if err.Unwrap() != cause {
+			t.Error("Unwrap should return the cause")
 		}
 	})
 
@@ -530,6 +540,15 @@ func TestVersioningErrors(t *testing.T) {
 		if !errors.Is(err, ErrSchemaVersionGap) {
 			t.Error("expected SchemaVersionGapError to match ErrSchemaVersionGap")
 		}
+		if err.Error() == "" {
+			t.Error("expected non-empty error message")
+		}
+		if !contains(err.Error(), "OrderCreated") {
+			t.Error("error message should contain event type")
+		}
+		if err.Unwrap() != ErrSchemaVersionGap {
+			t.Error("Unwrap should return ErrSchemaVersionGap")
+		}
 	})
 
 	t.Run("IncompatibleSchemaError matches ErrIncompatibleSchema", func(t *testing.T) {
@@ -537,7 +556,96 @@ func TestVersioningErrors(t *testing.T) {
 		if !errors.Is(err, ErrIncompatibleSchema) {
 			t.Error("expected IncompatibleSchemaError to match ErrIncompatibleSchema")
 		}
+		if err.Error() == "" {
+			t.Error("expected non-empty error message")
+		}
+		if !contains(err.Error(), "OrderCreated") {
+			t.Error("error message should contain event type")
+		}
+		if err.Unwrap() != ErrIncompatibleSchema {
+			t.Error("Unwrap should return ErrIncompatibleSchema")
+		}
 	})
+}
+
+func TestSerializeEventWithVersion(t *testing.T) {
+	serializer := NewJSONSerializer()
+
+	t.Run("stamps schema version in metadata", func(t *testing.T) {
+		type TestEvent struct {
+			Name string `json:"name"`
+		}
+		eventData, err := SerializeEventWithVersion(serializer, TestEvent{Name: "hello"}, Metadata{}, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if eventData.Type != "TestEvent" {
+			t.Errorf("expected type TestEvent, got %s", eventData.Type)
+		}
+		if v := GetSchemaVersion(eventData.Metadata); v != 3 {
+			t.Errorf("expected schema version 3, got %d", v)
+		}
+	})
+
+	t.Run("preserves existing metadata", func(t *testing.T) {
+		type TestEvent struct {
+			Name string `json:"name"`
+		}
+		m := Metadata{CorrelationID: "corr-1"}
+		eventData, err := SerializeEventWithVersion(serializer, TestEvent{Name: "test"}, m, 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if eventData.Metadata.CorrelationID != "corr-1" {
+			t.Error("expected correlation ID preserved")
+		}
+		if v := GetSchemaVersion(eventData.Metadata); v != 2 {
+			t.Errorf("expected schema version 2, got %d", v)
+		}
+	})
+
+	t.Run("error on nil event", func(t *testing.T) {
+		_, err := SerializeEventWithVersion(serializer, nil, Metadata{}, 1)
+		if err == nil {
+			t.Error("expected error for nil event")
+		}
+	})
+}
+
+func TestUpcasterChain_Validate_EmptyUpcasters(t *testing.T) {
+	// Register an upcaster, then ensure Validate doesn't fail on
+	// event types that happen to be registered with a single entry.
+	chain := NewUpcasterChain()
+	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
+	_ = chain.Register(newTestUpcaster("SingleEvent", 1, 2, noopFn))
+	if err := chain.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpcasterChain_Upcast_GapBreaks(t *testing.T) {
+	// When the event is at a version between registered upcasters (gap),
+	// upcast should stop and return the data as-is at the current version.
+	chain := NewUpcasterChain()
+	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
+	_ = chain.Register(newTestUpcaster("GapEvent", 1, 2, noopFn))
+	// Skip v2→v3, register v3→v4
+	_ = chain.Register(newTestUpcaster("GapEvent", 3, 4, noopFn))
+
+	data := []byte(`{"value":1}`)
+
+	// Upcast from v2 — the v1→v2 upcaster is skipped (fromVersion < currentVersion),
+	// but v3→v4 has fromVersion > currentVersion, so we hit the gap break.
+	result, version, err := chain.Upcast("GapEvent", 2, data, Metadata{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("expected version 2 (stopped at gap), got %d", version)
+	}
+	if string(result) != string(data) {
+		t.Errorf("expected data unchanged at gap, got %s", result)
+	}
 }
 
 // contains is a test helper to check if a string contains a substring.
