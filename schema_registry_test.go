@@ -3,6 +3,7 @@ package mink
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -78,7 +79,7 @@ func TestSchemaRegistry_Register(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tt.errMsg != "" && !contains(err.Error(), tt.errMsg) {
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("error %q should contain %q", err.Error(), tt.errMsg)
 				}
 			} else if err != nil {

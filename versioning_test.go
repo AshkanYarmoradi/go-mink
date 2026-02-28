@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,26 @@ func newTestUpcaster(eventType string, from, to int, fn func([]byte, Metadata) (
 	}
 }
 
+// noopUpcastFn is a reusable no-op upcast function for tests that only need registration.
+var noopUpcastFn = func(data []byte, _ Metadata) ([]byte, error) { return data, nil }
+
+// newNoopUpcaster creates a test upcaster that passes data through unchanged.
+func newNoopUpcaster(eventType string, from, to int) *testUpcaster {
+	return newTestUpcaster(eventType, from, to, noopUpcastFn)
+}
+
+// addJSONFieldUpcastFn returns an upcast function that adds a field with a static value.
+func addJSONFieldUpcastFn(field string, value interface{}) func([]byte, Metadata) ([]byte, error) {
+	return func(data []byte, _ Metadata) ([]byte, error) {
+		var obj map[string]interface{}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, err
+		}
+		obj[field] = value
+		return json.Marshal(obj)
+	}
+}
+
 func TestUpcasterChain_Register(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -41,43 +62,31 @@ func TestUpcasterChain_Register(t *testing.T) {
 		{
 			name: "register valid upcaster",
 			setup: func(c *UpcasterChain) error {
-				return c.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderCreated", 1, 2))
 			},
 		},
 		{
 			name: "register multiple upcasters for same event type",
 			setup: func(c *UpcasterChain) error {
-				if err := c.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				})); err != nil {
+				if err := c.Register(newNoopUpcaster("OrderCreated", 1, 2)); err != nil {
 					return err
 				}
-				return c.Register(newTestUpcaster("OrderCreated", 2, 3, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderCreated", 2, 3))
 			},
 		},
 		{
 			name: "register upcasters for different event types",
 			setup: func(c *UpcasterChain) error {
-				if err := c.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				})); err != nil {
+				if err := c.Register(newNoopUpcaster("OrderCreated", 1, 2)); err != nil {
 					return err
 				}
-				return c.Register(newTestUpcaster("OrderShipped", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderShipped", 1, 2))
 			},
 		},
 		{
 			name: "reject invalid version transition",
 			setup: func(c *UpcasterChain) error {
-				return c.Register(newTestUpcaster("OrderCreated", 1, 3, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderCreated", 1, 3))
 			},
 			wantErr: true,
 			errMsg:  "ToVersion (3) == FromVersion (1) + 1",
@@ -85,14 +94,10 @@ func TestUpcasterChain_Register(t *testing.T) {
 		{
 			name: "reject duplicate registration",
 			setup: func(c *UpcasterChain) error {
-				if err := c.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				})); err != nil {
+				if err := c.Register(newNoopUpcaster("OrderCreated", 1, 2)); err != nil {
 					return err
 				}
-				return c.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderCreated", 1, 2))
 			},
 			wantErr: true,
 			errMsg:  "duplicate upcaster",
@@ -100,9 +105,7 @@ func TestUpcasterChain_Register(t *testing.T) {
 		{
 			name: "reject FromVersion less than 1",
 			setup: func(c *UpcasterChain) error {
-				return c.Register(newTestUpcaster("OrderCreated", 0, 1, func(data []byte, m Metadata) ([]byte, error) {
-					return data, nil
-				}))
+				return c.Register(newNoopUpcaster("OrderCreated", 0, 1))
 			},
 			wantErr: true,
 			errMsg:  "FromVersion >= 1",
@@ -117,13 +120,11 @@ func TestUpcasterChain_Register(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tt.errMsg != "" && !contains(err.Error(), tt.errMsg) {
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("error %q should contain %q", err.Error(), tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -142,19 +143,17 @@ func TestUpcasterChain_Validate(t *testing.T) {
 		{
 			name: "contiguous chain is valid",
 			setup: func(c *UpcasterChain) {
-				noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-				_ = c.Register(newTestUpcaster("OrderCreated", 1, 2, noopFn))
-				_ = c.Register(newTestUpcaster("OrderCreated", 2, 3, noopFn))
-				_ = c.Register(newTestUpcaster("OrderCreated", 3, 4, noopFn))
+				_ = c.Register(newNoopUpcaster("OrderCreated", 1, 2))
+				_ = c.Register(newNoopUpcaster("OrderCreated", 2, 3))
+				_ = c.Register(newNoopUpcaster("OrderCreated", 3, 4))
 			},
 		},
 		{
 			name: "gap in chain is invalid",
 			setup: func(c *UpcasterChain) {
-				noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-				_ = c.Register(newTestUpcaster("OrderCreated", 1, 2, noopFn))
+				_ = c.Register(newNoopUpcaster("OrderCreated", 1, 2))
 				// Skip v2→v3
-				_ = c.Register(newTestUpcaster("OrderCreated", 3, 4, noopFn))
+				_ = c.Register(newNoopUpcaster("OrderCreated", 3, 4))
 			},
 			wantErr: ErrSchemaVersionGap,
 		},
@@ -194,93 +193,44 @@ func TestUpcasterChain_Upcast(t *testing.T) {
 
 	t.Run("single upcaster v1 to v2", func(t *testing.T) {
 		chain := NewUpcasterChain()
-		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return nil, err
-			}
-			obj["currency"] = "USD"
-			return json.Marshal(obj)
-		}))
+		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, addJSONFieldUpcastFn("currency", "USD")))
 
-		data := []byte(`{"amount":100}`)
-		result, version, err := chain.Upcast("OrderCreated", 1, data, Metadata{})
+		result, version, err := chain.Upcast("OrderCreated", 1, []byte(`{"amount":100}`), Metadata{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if version != 2 {
 			t.Errorf("expected version 2, got %d", version)
 		}
-
-		var obj map[string]interface{}
-		if err := json.Unmarshal(result, &obj); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-		if obj["currency"] != "USD" {
-			t.Errorf("expected currency USD, got %v", obj["currency"])
-		}
+		assertJSONField(t, result, "currency", "USD")
 	})
 
 	t.Run("chain v1 to v2 to v3", func(t *testing.T) {
 		chain := NewUpcasterChain()
-		// v1→v2: add currency
-		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return nil, err
-			}
-			obj["currency"] = "USD"
-			return json.Marshal(obj)
-		}))
-		// v2→v3: add tax
-		_ = chain.Register(newTestUpcaster("OrderCreated", 2, 3, func(data []byte, m Metadata) ([]byte, error) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return nil, err
-			}
-			obj["tax"] = 0.0
-			return json.Marshal(obj)
-		}))
+		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, addJSONFieldUpcastFn("currency", "USD")))
+		_ = chain.Register(newTestUpcaster("OrderCreated", 2, 3, addJSONFieldUpcastFn("tax", 0.0)))
 
-		data := []byte(`{"amount":100}`)
-		result, version, err := chain.Upcast("OrderCreated", 1, data, Metadata{})
+		result, version, err := chain.Upcast("OrderCreated", 1, []byte(`{"amount":100}`), Metadata{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if version != 3 {
 			t.Errorf("expected version 3, got %d", version)
 		}
-
-		var obj map[string]interface{}
-		if err := json.Unmarshal(result, &obj); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-		if obj["currency"] != "USD" {
-			t.Errorf("expected currency USD, got %v", obj["currency"])
-		}
-		if obj["tax"] != 0.0 {
-			t.Errorf("expected tax 0.0, got %v", obj["tax"])
-		}
+		assertJSONField(t, result, "currency", "USD")
+		assertJSONField(t, result, "tax", 0.0)
 	})
 
 	t.Run("upcast from v2 skips v1 upcaster", func(t *testing.T) {
 		chain := NewUpcasterChain()
 		v1Called := false
-		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
+		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, _ Metadata) ([]byte, error) {
 			v1Called = true
 			return data, nil
 		}))
-		_ = chain.Register(newTestUpcaster("OrderCreated", 2, 3, func(data []byte, m Metadata) ([]byte, error) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return nil, err
-			}
-			obj["tax"] = 0.0
-			return json.Marshal(obj)
-		}))
+		_ = chain.Register(newTestUpcaster("OrderCreated", 2, 3, addJSONFieldUpcastFn("tax", 0.0)))
 
-		data := []byte(`{"amount":100,"currency":"EUR"}`)
-		result, version, err := chain.Upcast("OrderCreated", 2, data, Metadata{})
+		result, version, err := chain.Upcast("OrderCreated", 2, []byte(`{"amount":100,"currency":"EUR"}`), Metadata{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -290,58 +240,32 @@ func TestUpcasterChain_Upcast(t *testing.T) {
 		if version != 3 {
 			t.Errorf("expected version 3, got %d", version)
 		}
-
-		var obj map[string]interface{}
-		if err := json.Unmarshal(result, &obj); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-		if obj["currency"] != "EUR" {
-			t.Errorf("expected currency EUR (unchanged), got %v", obj["currency"])
-		}
+		assertJSONField(t, result, "currency", "EUR")
 	})
 
 	t.Run("metadata context passed to upcaster", func(t *testing.T) {
 		chain := NewUpcasterChain()
 		_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return nil, err
-			}
-			// Use tenant ID from metadata to set default currency
+			currency := "USD"
 			if m.TenantID == "eu-tenant" {
-				obj["currency"] = "EUR"
-			} else {
-				obj["currency"] = "USD"
+				currency = "EUR"
 			}
-			return json.Marshal(obj)
+			return addJSONFieldUpcastFn("currency", currency)(data, m)
 		}))
 
 		data := []byte(`{"amount":100}`)
 
-		// Test with EU tenant
 		result, _, err := chain.Upcast("OrderCreated", 1, data, Metadata{TenantID: "eu-tenant"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		var obj map[string]interface{}
-		if err := json.Unmarshal(result, &obj); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-		if obj["currency"] != "EUR" {
-			t.Errorf("expected EUR for eu-tenant, got %v", obj["currency"])
-		}
+		assertJSONField(t, result, "currency", "EUR")
 
-		// Test with default tenant
 		result, _, err = chain.Upcast("OrderCreated", 1, data, Metadata{TenantID: "us-tenant"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := json.Unmarshal(result, &obj); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-		if obj["currency"] != "USD" {
-			t.Errorf("expected USD for us-tenant, got %v", obj["currency"])
-		}
+		assertJSONField(t, result, "currency", "USD")
 	})
 
 	t.Run("upcaster error propagation", func(t *testing.T) {
@@ -381,9 +305,7 @@ func TestUpcasterChain_HasUpcasters(t *testing.T) {
 		t.Error("expected no upcasters for OrderCreated")
 	}
 
-	_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, func(data []byte, m Metadata) ([]byte, error) {
-		return data, nil
-	}))
+	_ = chain.Register(newNoopUpcaster("OrderCreated", 1, 2))
 
 	if !chain.HasUpcasters("OrderCreated") {
 		t.Error("expected upcasters for OrderCreated")
@@ -396,18 +318,16 @@ func TestUpcasterChain_HasUpcasters(t *testing.T) {
 func TestUpcasterChain_LatestVersion(t *testing.T) {
 	chain := NewUpcasterChain()
 
-	// No upcasters → default version
 	if v := chain.LatestVersion("OrderCreated"); v != DefaultSchemaVersion {
 		t.Errorf("expected DefaultSchemaVersion, got %d", v)
 	}
 
-	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-	_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, noopFn))
+	_ = chain.Register(newNoopUpcaster("OrderCreated", 1, 2))
 	if v := chain.LatestVersion("OrderCreated"); v != 2 {
 		t.Errorf("expected 2, got %d", v)
 	}
 
-	_ = chain.Register(newTestUpcaster("OrderCreated", 2, 3, noopFn))
+	_ = chain.Register(newNoopUpcaster("OrderCreated", 2, 3))
 	if v := chain.LatestVersion("OrderCreated"); v != 3 {
 		t.Errorf("expected 3, got %d", v)
 	}
@@ -416,20 +336,17 @@ func TestUpcasterChain_LatestVersion(t *testing.T) {
 func TestUpcasterChain_RegisteredEventTypes(t *testing.T) {
 	chain := NewUpcasterChain()
 
-	types := chain.RegisteredEventTypes()
-	if len(types) != 0 {
+	if types := chain.RegisteredEventTypes(); len(types) != 0 {
 		t.Errorf("expected empty, got %v", types)
 	}
 
-	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-	_ = chain.Register(newTestUpcaster("OrderCreated", 1, 2, noopFn))
-	_ = chain.Register(newTestUpcaster("OrderShipped", 1, 2, noopFn))
+	_ = chain.Register(newNoopUpcaster("OrderCreated", 1, 2))
+	_ = chain.Register(newNoopUpcaster("OrderShipped", 1, 2))
 
-	types = chain.RegisteredEventTypes()
+	types := chain.RegisteredEventTypes()
 	if len(types) != 2 {
 		t.Fatalf("expected 2 types, got %d", len(types))
 	}
-	// Should be sorted
 	if types[0] != "OrderCreated" || types[1] != "OrderShipped" {
 		t.Errorf("expected [OrderCreated, OrderShipped], got %v", types)
 	}
@@ -527,7 +444,7 @@ func TestVersioningErrors(t *testing.T) {
 		if err.Error() == "" {
 			t.Error("expected non-empty error message")
 		}
-		if !contains(err.Error(), "OrderCreated") {
+		if !strings.Contains(err.Error(), "OrderCreated") {
 			t.Error("error message should contain event type")
 		}
 		if err.Unwrap() != cause {
@@ -543,7 +460,7 @@ func TestVersioningErrors(t *testing.T) {
 		if err.Error() == "" {
 			t.Error("expected non-empty error message")
 		}
-		if !contains(err.Error(), "OrderCreated") {
+		if !strings.Contains(err.Error(), "OrderCreated") {
 			t.Error("error message should contain event type")
 		}
 		if err.Unwrap() != ErrSchemaVersionGap {
@@ -559,7 +476,7 @@ func TestVersioningErrors(t *testing.T) {
 		if err.Error() == "" {
 			t.Error("expected non-empty error message")
 		}
-		if !contains(err.Error(), "OrderCreated") {
+		if !strings.Contains(err.Error(), "OrderCreated") {
 			t.Error("error message should contain event type")
 		}
 		if err.Unwrap() != ErrIncompatibleSchema {
@@ -613,29 +530,19 @@ func TestSerializeEventWithVersion(t *testing.T) {
 }
 
 func TestUpcasterChain_Validate_EmptyUpcasters(t *testing.T) {
-	// Register an upcaster, then ensure Validate doesn't fail on
-	// event types that happen to be registered with a single entry.
 	chain := NewUpcasterChain()
-	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-	_ = chain.Register(newTestUpcaster("SingleEvent", 1, 2, noopFn))
+	_ = chain.Register(newNoopUpcaster("SingleEvent", 1, 2))
 	if err := chain.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestUpcasterChain_Upcast_GapBreaks(t *testing.T) {
-	// When the event is at a version between registered upcasters (gap),
-	// upcast should stop and return the data as-is at the current version.
 	chain := NewUpcasterChain()
-	noopFn := func(data []byte, m Metadata) ([]byte, error) { return data, nil }
-	_ = chain.Register(newTestUpcaster("GapEvent", 1, 2, noopFn))
-	// Skip v2→v3, register v3→v4
-	_ = chain.Register(newTestUpcaster("GapEvent", 3, 4, noopFn))
+	_ = chain.Register(newNoopUpcaster("GapEvent", 1, 2))
+	_ = chain.Register(newNoopUpcaster("GapEvent", 3, 4)) // skip v2→v3
 
 	data := []byte(`{"value":1}`)
-
-	// Upcast from v2 — the v1→v2 upcaster is skipped (fromVersion < currentVersion),
-	// but v3→v4 has fromVersion > currentVersion, so we hit the gap break.
 	result, version, err := chain.Upcast("GapEvent", 2, data, Metadata{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -648,16 +555,14 @@ func TestUpcasterChain_Upcast_GapBreaks(t *testing.T) {
 	}
 }
 
-// contains is a test helper to check if a string contains a substring.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// assertJSONField unmarshals JSON data and checks that the given field has the expected value.
+func assertJSONField(t *testing.T, data []byte, field string, expected interface{}) {
+	t.Helper()
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
 	}
-	return false
+	if obj[field] != expected {
+		t.Errorf("expected %s=%v, got %v", field, expected, obj[field])
+	}
 }
