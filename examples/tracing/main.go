@@ -60,7 +60,7 @@ func main() {
 		fmt.Printf("Failed to initialize tracer: %v\n", err)
 		return
 	}
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	// Create memory adapter and event store
 	adapter := memory.NewAdapter()

@@ -146,7 +146,7 @@ func TestFindConfig_NotFound(t *testing.T) {
 	// Create temp directory without config
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Try to find config - should fail
 	_, _, err = FindConfig(tmpDir)
@@ -177,7 +177,7 @@ func TestLoadFile_InvalidYAML(t *testing.T) {
 	// Create temp file with invalid YAML
 	tmpDir, err := os.MkdirTemp("", "mink-config-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	invalidPath := filepath.Join(tmpDir, "invalid.yaml")
 	err = os.WriteFile(invalidPath, []byte("invalid: yaml: content: ["), 0644)

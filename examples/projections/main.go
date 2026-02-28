@@ -273,7 +273,7 @@ func main() {
 	}
 
 	events4, _ := store.LoadRaw(ctx, "Order-001", 3)
-	engine.ProcessInlineProjections(ctx, events4)
+	_ = engine.ProcessInlineProjections(ctx, events4)
 	engine.NotifyLiveProjections(ctx, events4)
 
 	// Give live projection time to process

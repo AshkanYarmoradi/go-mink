@@ -354,12 +354,12 @@ func TestCatchupSubscription(t *testing.T) {
 		err = sub.Start(ctx, 10*time.Millisecond)
 		assert.NoError(t, err)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("Start returns error when closed", func(t *testing.T) {
 		sub, _ := NewCatchupSubscription(store, 0)
-		sub.Close()
+		_ = sub.Close()
 
 		err := sub.Start(context.Background(), 10*time.Millisecond)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -406,7 +406,7 @@ func TestCatchupSubscription(t *testing.T) {
 		require.NoError(t, err)
 
 		// Close should stop the run
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for run to stop
 		time.Sleep(50 * time.Millisecond)

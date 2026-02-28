@@ -13,7 +13,7 @@ import (
 func TestNewIdempotencyStore(t *testing.T) {
 	t.Run("creates store with defaults", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		assert.NotNil(t, store)
 		assert.Equal(t, 0, store.Len())
@@ -23,7 +23,7 @@ func TestNewIdempotencyStore(t *testing.T) {
 		store := NewIdempotencyStore(
 			WithMaxAge(48 * time.Hour),
 		)
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		assert.Equal(t, 48*time.Hour, store.maxAge)
 	})
@@ -35,7 +35,7 @@ func TestNewIdempotencyStore(t *testing.T) {
 			WithCleanupInterval(50*time.Millisecond),
 			WithMaxAge(10*time.Millisecond),
 		)
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Store an already-expired record
 		record := &adapters.IdempotencyRecord{
@@ -62,7 +62,7 @@ func TestIdempotencyStore_Store(t *testing.T) {
 
 	t.Run("stores record successfully", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:         "test-key",
@@ -81,7 +81,7 @@ func TestIdempotencyStore_Store(t *testing.T) {
 
 	t.Run("stores with response", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:         "test-key",
@@ -103,7 +103,7 @@ func TestIdempotencyStore_Exists(t *testing.T) {
 
 	t.Run("returns false for non-existent key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		exists, err := store.Exists(ctx, "non-existent")
 		require.NoError(t, err)
@@ -112,7 +112,7 @@ func TestIdempotencyStore_Exists(t *testing.T) {
 
 	t.Run("returns true for existing key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:       "test-key",
@@ -127,7 +127,7 @@ func TestIdempotencyStore_Exists(t *testing.T) {
 
 	t.Run("returns false for expired key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:       "test-key",
@@ -146,7 +146,7 @@ func TestIdempotencyStore_Get(t *testing.T) {
 
 	t.Run("returns nil for non-existent key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record, err := store.Get(ctx, "non-existent")
 		require.NoError(t, err)
@@ -155,7 +155,7 @@ func TestIdempotencyStore_Get(t *testing.T) {
 
 	t.Run("returns record for existing key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		original := &adapters.IdempotencyRecord{
 			Key:         "test-key",
@@ -180,7 +180,7 @@ func TestIdempotencyStore_Get(t *testing.T) {
 
 	t.Run("returns nil for expired key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:       "test-key",
@@ -195,7 +195,7 @@ func TestIdempotencyStore_Get(t *testing.T) {
 
 	t.Run("returns copy not reference", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		original := &adapters.IdempotencyRecord{
 			Key:       "test-key",
@@ -216,7 +216,7 @@ func TestIdempotencyStore_Delete(t *testing.T) {
 
 	t.Run("deletes existing key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		record := &adapters.IdempotencyRecord{
 			Key:       "test-key",
@@ -233,7 +233,7 @@ func TestIdempotencyStore_Delete(t *testing.T) {
 
 	t.Run("does not error for non-existent key", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		err := store.Delete(ctx, "non-existent")
 		require.NoError(t, err)
@@ -245,7 +245,7 @@ func TestIdempotencyStore_Cleanup(t *testing.T) {
 
 	t.Run("removes old records", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Add old record
 		oldRecord := &adapters.IdempotencyRecord{
@@ -274,7 +274,7 @@ func TestIdempotencyStore_Cleanup(t *testing.T) {
 
 	t.Run("removes expired records", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Add expired record
 		expiredRecord := &adapters.IdempotencyRecord{
@@ -295,7 +295,7 @@ func TestIdempotencyStore_Clear(t *testing.T) {
 
 	t.Run("removes all records", func(t *testing.T) {
 		store := NewIdempotencyStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		for i := 0; i < 5; i++ {
 			record := &adapters.IdempotencyRecord{

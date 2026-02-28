@@ -54,7 +54,7 @@ func setupTestEnv(t *testing.T, prefix string) *testEnv {
 // cleanup restores the original working directory and removes temp dir
 func (e *testEnv) cleanup() {
 	_ = os.Chdir(e.origWd)
-	os.RemoveAll(e.tmpDir)
+	_ = os.RemoveAll(e.tmpDir)
 }
 
 // createConfig creates a mink.yaml config file in the test directory

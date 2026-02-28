@@ -232,7 +232,7 @@ func TestMemoryAdapter_Append(t *testing.T) {
 
 	t.Run("closed adapter", func(t *testing.T) {
 		adapter := NewAdapter()
-		adapter.Close()
+		_ = adapter.Close()
 
 		events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
 
@@ -388,7 +388,7 @@ func TestMemoryAdapter_Close(t *testing.T) {
 
 	t.Run("operations fail after close", func(t *testing.T) {
 		adapter := NewAdapter()
-		adapter.Close()
+		_ = adapter.Close()
 		ctx := context.Background()
 
 		events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
@@ -488,7 +488,7 @@ func TestMemoryAdapter_Ping(t *testing.T) {
 
 	t.Run("ping closed adapter", func(t *testing.T) {
 		adapter := NewAdapter()
-		adapter.Close()
+		_ = adapter.Close()
 
 		err := adapter.Ping(context.Background())
 

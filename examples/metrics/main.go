@@ -73,7 +73,7 @@ func main() {
 	// Start Prometheus HTTP server in background
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		http.ListenAndServe(":9090", nil)
+		_ = http.ListenAndServe(":9090", nil)
 	}()
 
 	// Simulate various event store operations

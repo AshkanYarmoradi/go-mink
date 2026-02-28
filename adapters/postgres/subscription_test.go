@@ -176,7 +176,7 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeStream(context.Background(), "Stream-001", 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)
@@ -225,7 +225,7 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 
 	t.Run("fails when closed", func(t *testing.T) {
 		closedAdapter, _ := NewAdapter(connStr)
-		closedAdapter.Close()
+		_ = closedAdapter.Close()
 
 		_, err := closedAdapter.SubscribeCategory(context.Background(), "Order", 0)
 		assert.ErrorIs(t, err, ErrAdapterClosed)

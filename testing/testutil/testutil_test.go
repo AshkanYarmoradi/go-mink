@@ -21,12 +21,12 @@ func TestDefaultConfig(t *testing.T) {
 	t.Run("returns config from environment", func(t *testing.T) {
 		// Set environment variable
 		originalURL := os.Getenv("TEST_DATABASE_URL")
-		os.Setenv("TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
+		_ = os.Setenv("TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
 		defer func() {
 			if originalURL != "" {
-				os.Setenv("TEST_DATABASE_URL", originalURL)
+				_ = os.Setenv("TEST_DATABASE_URL", originalURL)
 			} else {
-				os.Unsetenv("TEST_DATABASE_URL")
+				_ = os.Unsetenv("TEST_DATABASE_URL")
 			}
 		}()
 
@@ -38,10 +38,10 @@ func TestDefaultConfig(t *testing.T) {
 	t.Run("returns default when env not set", func(t *testing.T) {
 		// Clear environment variable
 		originalURL := os.Getenv("TEST_DATABASE_URL")
-		os.Unsetenv("TEST_DATABASE_URL")
+		_ = os.Unsetenv("TEST_DATABASE_URL")
 		defer func() {
 			if originalURL != "" {
-				os.Setenv("TEST_DATABASE_URL", originalURL)
+				_ = os.Setenv("TEST_DATABASE_URL", originalURL)
 			}
 		}()
 
@@ -53,8 +53,8 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestGetEnvOrDefault(t *testing.T) {
 	t.Run("returns env value when set", func(t *testing.T) {
-		os.Setenv("TEST_UTIL_TEST_KEY", "test-value")
-		defer os.Unsetenv("TEST_UTIL_TEST_KEY")
+		_ = os.Setenv("TEST_UTIL_TEST_KEY", "test-value")
+		defer func() { _ = os.Unsetenv("TEST_UTIL_TEST_KEY") }()
 
 		result := getEnvOrDefault("TEST_UTIL_TEST_KEY", "default")
 
@@ -62,7 +62,7 @@ func TestGetEnvOrDefault(t *testing.T) {
 	})
 
 	t.Run("returns default when not set", func(t *testing.T) {
-		os.Unsetenv("TEST_UTIL_MISSING_KEY")
+		_ = os.Unsetenv("TEST_UTIL_MISSING_KEY")
 
 		result := getEnvOrDefault("TEST_UTIL_MISSING_KEY", "default")
 
@@ -622,7 +622,7 @@ func TestPostgresDB_Integration(t *testing.T) {
 		ctx := context.Background()
 		db, err := PostgresDB(ctx, connStr)
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// Verify connection works
 		var result int
@@ -653,7 +653,7 @@ func TestMustPostgresDB_Integration(t *testing.T) {
 	t.Run("returns database connection", func(t *testing.T) {
 		ctx := context.Background()
 		db := MustPostgresDB(ctx, connStr)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		assert.NotNil(t, db)
 	})
@@ -672,7 +672,7 @@ func TestCleanupSchema_Integration(t *testing.T) {
 	ctx := context.Background()
 	db, err := PostgresDB(ctx, connStr)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("drops existing schema", func(t *testing.T) {
 		// Create a unique schema

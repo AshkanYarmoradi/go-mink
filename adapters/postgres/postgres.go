@@ -508,7 +508,7 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return a.scanEvents(rows)
 }
@@ -726,7 +726,7 @@ func (a *PostgresAdapter) GetAllCheckpoints(ctx context.Context) (map[string]uin
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to get all checkpoints: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	checkpoints := make(map[string]uint64)
 	for rows.Next() {
@@ -843,7 +843,7 @@ func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit 
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to list streams: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	streams := make([]adapters.StreamSummary, 0)
 	for rows.Next() {
