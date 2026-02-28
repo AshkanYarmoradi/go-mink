@@ -82,7 +82,7 @@ func setupOrderSummaryRepo(t *testing.T, tableName string) *testOrderSummaryRepo
 		t.Skip("Skipping integration test")
 	}
 	db := getTestDB(t)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	schema := createReadModelTestSchema(t, db)
 	repo, err := NewPostgresRepository[OrderSummary](db,
 		WithReadModelSchema(schema),

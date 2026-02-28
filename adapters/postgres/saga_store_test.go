@@ -39,7 +39,7 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 	}
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Skipf("PostgreSQL not available: %v", err)
 	}
 

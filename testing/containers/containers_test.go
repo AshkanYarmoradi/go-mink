@@ -328,7 +328,7 @@ func TestPostgresContainer_Schema_Integration(t *testing.T) {
 
 		db, err := container.DB(ctx)
 		require.NoError(t, err)
-		db.Close() // Close the connection
+		_ = db.Close() // Close the connection
 
 		_, err = container.CreateSchema(ctx, db, "test")
 		assert.Error(t, err)
