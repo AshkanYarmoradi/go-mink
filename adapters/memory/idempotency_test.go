@@ -315,7 +315,7 @@ func TestIdempotencyStore_Clear(t *testing.T) {
 func TestIdempotencyStore_Concurrency(t *testing.T) {
 	ctx := context.Background()
 	store := NewIdempotencyStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	t.Run("handles concurrent operations", func(t *testing.T) {
 		done := make(chan bool)

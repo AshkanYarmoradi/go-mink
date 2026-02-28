@@ -129,7 +129,7 @@ func TestNewPostgresRepository(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -196,7 +196,7 @@ func TestPostgresRepository_CRUD(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -702,7 +702,7 @@ func TestPostgresRepository_Migration(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -752,7 +752,7 @@ func TestPostgresRepository_NullableFields(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -821,7 +821,7 @@ func TestPostgresRepository_CustomerStats(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -875,7 +875,7 @@ func TestPostgresRepository_SimpleModel(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := createReadModelTestSchema(t, db)
 
@@ -1195,7 +1195,7 @@ func setupBenchmarkRepo(b *testing.B, tableName string) (*PostgresRepository[Ord
 	}
 	cleanup := func() {
 		_, _ = db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
-		db.Close()
+		_ = db.Close()
 	}
 	return repo, cleanup
 }

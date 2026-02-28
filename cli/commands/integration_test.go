@@ -28,7 +28,7 @@ func skipIfNoDatabase(t *testing.T) {
 	if err != nil {
 		t.Skipf("Skipping integration test: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -117,7 +117,7 @@ func cleanupTestDB(t *testing.T, db *sql.DB) {
 	db.Exec(`DELETE FROM mink.streams`)
 	db.Exec(`DELETE FROM mink.checkpoints`)
 	db.Exec(`DELETE FROM mink.migrations`)
-	db.Close()
+	_ = db.Close()
 }
 
 // ============================================================================
@@ -131,7 +131,7 @@ func withAdapter[T any](dbURL string, fn func(*postgres.PostgresAdapter, context
 	if err != nil {
 		return zero, err
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 	return fn(adapter, context.Background())
 }
 
@@ -141,7 +141,7 @@ func withAdapterNoResult(dbURL string, fn func(*postgres.PostgresAdapter, contex
 	if err != nil {
 		return err
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 	return fn(adapter, context.Background())
 }
 
@@ -264,7 +264,7 @@ func setupIntegrationEnv(t *testing.T, prefix string) *integrationTestEnv {
 func (e *integrationTestEnv) cleanup() {
 	_ = os.Chdir(e.origWd)
 	cleanupTestDB(e.t, e.db)
-	os.RemoveAll(e.tmpDir)
+	_ = os.RemoveAll(e.tmpDir)
 }
 
 // createConfig creates and saves a config file with postgres settings
@@ -685,7 +685,7 @@ func TestGetPendingMigrations_Integration(t *testing.T) {
 	// Create temp migrations dir
 	tmpDir, err := os.MkdirTemp("", "mink-migration-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create migration files
 	os.WriteFile(filepath.Join(tmpDir, "001_initial.sql"), []byte("-- up"), 0644)
@@ -711,7 +711,7 @@ func TestGetAppliedMigrations_Integration(t *testing.T) {
 
 	tmpDir, err := os.MkdirTemp("", "mink-migration-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	_, err = db.Exec(`INSERT INTO mink.migrations (name) VALUES ('001_initial')`)
 	require.NoError(t, err)
@@ -1297,7 +1297,7 @@ func TestDiagnoseCommand_Integration(t *testing.T) {
 func TestGetAllMigrations_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-all-migrations-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create migration files
 	os.WriteFile(filepath.Join(tmpDir, "001_first.sql"), []byte("-- first"), 0644)
@@ -1336,7 +1336,7 @@ func TestProjectionRebuildCommand_Force_Integration(t *testing.T) {
 func TestProjectionRebuildCommand_NoConfig_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-rebuild-noconfig-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	origWd, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -1354,7 +1354,7 @@ func TestProjectionRebuildCommand_NoConfig_Integration(t *testing.T) {
 func TestProjectionRebuildCommand_NoDBURL_Integration(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mink-rebuild-nodb-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg := config.DefaultConfig()
 	cfg.Database.Driver = "postgres"

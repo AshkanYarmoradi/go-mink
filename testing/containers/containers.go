@@ -171,7 +171,7 @@ func (c *PostgresContainer) DB(ctx context.Context) (*sql.DB, error) {
 	}
 
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("containers: failed to ping database: %w", err)
 	}
 
@@ -221,7 +221,7 @@ func waitForPostgres(ctx context.Context, connStr string) error {
 				continue
 			}
 			err = db.PingContext(ctx)
-			db.Close()
+			_ = db.Close()
 			if err == nil {
 				return nil
 			}
@@ -308,7 +308,7 @@ func NewIntegrationTest(t *testing.T, opts ...IntegrationTestOption) *Integratio
 
 	schema, err := container.CreateSchema(ctx, db, cfg.schemaPrefix)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("Failed to create schema: %v", err)
 	}
 
@@ -324,7 +324,7 @@ func NewIntegrationTest(t *testing.T, opts ...IntegrationTestOption) *Integratio
 		if err := container.DropSchema(context.Background(), db, schema); err != nil {
 			t.Logf("Warning: failed to drop schema %s: %v", schema, err)
 		}
-		db.Close()
+		_ = db.Close()
 	})
 
 	return it

@@ -474,7 +474,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Should have received at least historical + potentially new event
 		assert.GreaterOrEqual(t, len(received), 3)
@@ -499,7 +499,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 		require.NoError(t, err)
 
 		// Immediately close
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for goroutine to finish
 		time.Sleep(50 * time.Millisecond)
@@ -534,7 +534,7 @@ func TestCatchupSubscription_FullCatchupAndPolling(t *testing.T) {
 		// Should have context error
 		assert.ErrorIs(t, sub.Err(), context.Canceled)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 }
 
@@ -576,7 +576,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// Polling subscription tested - timing-dependent so we just verify no errors
 	})
@@ -602,7 +602,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 		// Should have context error
 		assert.ErrorIs(t, sub.Err(), context.Canceled)
 
-		sub.Close()
+		_ = sub.Close()
 	})
 
 	t.Run("stops on Close", func(t *testing.T) {
@@ -618,7 +618,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Close
-		sub.Close()
+		_ = sub.Close()
 
 		// Wait for poll to stop
 		time.Sleep(50 * time.Millisecond)
@@ -667,7 +667,7 @@ func TestPollingSubscription_Integration(t *testing.T) {
 			}
 		}
 
-		sub.Close()
+		_ = sub.Close()
 
 		// All received events should be from Order category
 		for _, e := range received {

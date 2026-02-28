@@ -874,7 +874,7 @@ func (a *PostgresAdapter) GetStreamEvents(ctx context.Context, streamID string, 
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to get stream events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return a.scanEvents(rows)
 }
@@ -911,7 +911,7 @@ func (a *PostgresAdapter) GetEventStoreStats(ctx context.Context) (*adapters.Eve
 		LIMIT 5
 	`)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var t adapters.EventTypeCount
 			if rows.Scan(&t.Type, &t.Count) == nil {
@@ -941,7 +941,7 @@ func (a *PostgresAdapter) ListProjections(ctx context.Context) ([]adapters.Proje
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to list projections: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	projections := make([]adapters.ProjectionInfo, 0)
 	for rows.Next() {
@@ -1056,7 +1056,7 @@ func (a *PostgresAdapter) GetAppliedMigrations(ctx context.Context) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to query migrations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	names := make([]string, 0)
 	for rows.Next() {

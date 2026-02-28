@@ -303,7 +303,7 @@ func setupIntegrationTest(t *testing.T, opts ...Option) *PostgresAdapter {
 	// Register cleanup to run after test completes
 	t.Cleanup(func() {
 		cleanupSchema(t, db, schema)
-		db.Close()
+		_ = db.Close()
 	})
 
 	allOpts := append([]Option{WithSchema(schema)}, opts...)
@@ -342,7 +342,7 @@ func TestNewAdapter(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NotNil(t, adapter)
-		defer adapter.Close()
+		defer func() { _ = adapter.Close() }()
 
 		assert.Equal(t, "custom_schema", adapter.Schema())
 	})
@@ -353,7 +353,7 @@ func TestNewAdapter(t *testing.T) {
 		if err == nil && adapter != nil {
 			// If it connected, try to ping - that should fail
 			err = adapter.Ping(context.Background())
-			adapter.Close()
+			_ = adapter.Close()
 		}
 		// Either connection fails or ping fails
 		assert.Error(t, err)
@@ -381,7 +381,7 @@ func TestNewAdapterWithDB(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("creates adapter with existing connection", func(t *testing.T) {
 		adapter, err := NewAdapterWithDB(db)
@@ -415,7 +415,7 @@ func TestPostgresAdapter_Initialize(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := newTestSchema()
 	defer cleanupSchema(t, db, schema)
@@ -455,7 +455,7 @@ func TestPostgresAdapter_MigrationVersion(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("returns 0 for uninitialized schema", func(t *testing.T) {
 		schema := newTestSchema()
@@ -1065,7 +1065,7 @@ func TestPostgresAdapter_Ping(t *testing.T) {
 	}
 
 	db := getTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	adapter := newTestAdapter(t, db)
 
@@ -1143,7 +1143,7 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 	}
 
 	db, _ := sql.Open("pgx", connStr)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := newTestSchema()
 	defer func() {
@@ -1177,7 +1177,7 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 	}
 
 	db, _ := sql.Open("pgx", connStr)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	schema := newTestSchema()
 	defer func() {
@@ -1251,7 +1251,7 @@ func TestPostgresAdapter_Stats(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	t.Run("returns connection pool statistics", func(t *testing.T) {
 		stats := adapter.Stats()
@@ -1286,7 +1286,7 @@ func TestPostgresAdapter_WithConnectionMaxIdleTime(t *testing.T) {
 			WithConnectionMaxIdleTime(5*time.Minute),
 		)
 		require.NoError(t, err)
-		defer adapter.Close()
+		defer func() { _ = adapter.Close() }()
 
 		// Verify adapter is functional
 		err = adapter.Ping(context.Background())
@@ -1310,7 +1310,7 @@ func TestPostgresAdapter_ListStreams(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1367,7 +1367,7 @@ func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1417,7 +1417,7 @@ func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1442,7 +1442,7 @@ func TestPostgresAdapter_ListProjections(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1482,7 +1482,7 @@ func TestPostgresAdapter_GetProjection(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1518,7 +1518,7 @@ func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1549,7 +1549,7 @@ func TestPostgresAdapter_ResetProjectionCheckpoint(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1580,7 +1580,7 @@ func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1604,7 +1604,7 @@ func TestPostgresAdapter_Migrations(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1650,7 +1650,7 @@ func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1677,7 +1677,7 @@ func TestPostgresAdapter_GenerateSchema(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	t.Run("generates schema SQL", func(t *testing.T) {
 		schema := adapter.GenerateSchema("test-project", "events", "snapshots", "outbox")
@@ -1699,7 +1699,7 @@ func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1724,7 +1724,7 @@ func TestPostgresAdapter_CheckSchema(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -1749,7 +1749,7 @@ func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))

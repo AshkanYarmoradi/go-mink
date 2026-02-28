@@ -42,7 +42,7 @@ func TestE2E_CompleteOrderLifecycle_Postgres(t *testing.T) {
 	// Arrange: Setup event store with PostgreSQL adapter
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestE2E_ConcurrentModification_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestE2E_ReadModelProjection_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -258,7 +258,7 @@ func TestE2E_EventMetadata_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -303,7 +303,7 @@ func TestE2E_LargeEventStream_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -362,7 +362,7 @@ func TestE2E_StreamOperations_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -410,7 +410,7 @@ func TestE2E_ErrorRecovery_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -475,7 +475,7 @@ func TestE2E_MultipleAggregates_Postgres(t *testing.T) {
 
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
@@ -576,7 +576,7 @@ func TestE2E_ReadModelRepository_CompleteFlow(t *testing.T) {
 	// Setup: Create database connection
 	db, err := openTestDB(connStr)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Create unique schema for this test run
 	schema := fmt.Sprintf("e2e_readmodel_%d", time.Now().UnixNano())

@@ -23,7 +23,7 @@ func TestPostgresSubscription_LoadFromPosition(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_test"))
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -92,7 +92,7 @@ func TestPostgresSubscription_SubscribeAll(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_all_test"))
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -144,7 +144,7 @@ func TestPostgresSubscription_SubscribeStream(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_stream_test"))
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))
@@ -195,7 +195,7 @@ func TestPostgresSubscription_SubscribeCategory(t *testing.T) {
 
 	adapter, err := NewAdapter(connStr, WithSchema("mink_sub_cat_test"))
 	require.NoError(t, err)
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	ctx := context.Background()
 	require.NoError(t, adapter.Initialize(ctx))

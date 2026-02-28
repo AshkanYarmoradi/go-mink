@@ -83,15 +83,15 @@ func TestDefaultPostgresConfig(t *testing.T) {
 	})
 
 	t.Run("fallback to TEST_ prefixed env vars", func(t *testing.T) {
-		os.Setenv("TEST_POSTGRES_DB", "test_db")
-		os.Setenv("TEST_POSTGRES_USER", "test_user")
-		os.Setenv("TEST_POSTGRES_PASSWORD", "test_pass")
-		os.Setenv("TEST_POSTGRES_PORT", "5434")
+		_ = os.Setenv("TEST_POSTGRES_DB", "test_db")
+		_ = os.Setenv("TEST_POSTGRES_USER", "test_user")
+		_ = os.Setenv("TEST_POSTGRES_PASSWORD", "test_pass")
+		_ = os.Setenv("TEST_POSTGRES_PORT", "5434")
 		defer func() {
-			os.Unsetenv("TEST_POSTGRES_DB")
-			os.Unsetenv("TEST_POSTGRES_USER")
-			os.Unsetenv("TEST_POSTGRES_PASSWORD")
-			os.Unsetenv("TEST_POSTGRES_PORT")
+			_ = os.Unsetenv("TEST_POSTGRES_DB")
+			_ = os.Unsetenv("TEST_POSTGRES_USER")
+			_ = os.Unsetenv("TEST_POSTGRES_PASSWORD")
+			_ = os.Unsetenv("TEST_POSTGRES_PORT")
 		}()
 
 		cfg := defaultPostgresConfig()
@@ -225,7 +225,7 @@ func TestPostgresContainer_DB_Integration(t *testing.T) {
 
 		db, err := container.DB(ctx)
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		assert.NotNil(t, db)
 
@@ -262,7 +262,7 @@ func TestPostgresContainer_MustDB_Integration(t *testing.T) {
 		ctx := context.Background()
 
 		db := container.MustDB(ctx)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		assert.NotNil(t, db)
 	})
@@ -295,7 +295,7 @@ func TestPostgresContainer_Schema_Integration(t *testing.T) {
 
 		db, err := container.DB(ctx)
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// Create schema
 		schema, err := container.CreateSchema(ctx, db, "test")
