@@ -14,6 +14,27 @@ import (
 
 // Test projections, checkpoint store, logger, and metrics are defined in test_helpers_test.go
 
+// newTestEngineWithStore creates a fully wired ProjectionEngine backed by an in-memory
+// EventStore with ProjectionTestEvent registered and a fresh checkpoint store.
+// It returns the engine, store, and checkpoint store for further assertions.
+func newTestEngineWithStore() (*ProjectionEngine, *EventStore, *testCheckpointStore) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	checkpoint := newTestCheckpointStore()
+	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	return engine, store, checkpoint
+}
+
+// fastAsyncOpts returns default AsyncOptions tuned for fast tests:
+// PollInterval=20ms, StartFromBeginning=true.
+func fastAsyncOpts() AsyncOptions {
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	opts.StartFromBeginning = true
+	return opts
+}
+
 // --- Projection Tests ---
 
 func TestProjectionBase(t *testing.T) {
@@ -480,9 +501,7 @@ func TestProjectionEngine_RegisterAsync_EmptyName(t *testing.T) {
 }
 
 func TestProjectionEngine_Stop_Timeout(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+	engine, _, _ := newTestEngineWithStore()
 
 	// Register projections
 	_ = engine.RegisterAsync(newTestAsyncProjection("AsyncStopTimeout"))
@@ -501,10 +520,7 @@ func TestProjectionEngine_Stop_Timeout(t *testing.T) {
 }
 
 func TestProjectionEngine_LiveProjection_WithEvents(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	store.RegisterEvents(&ProjectionTestEvent{})
-	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+	engine, store, _ := newTestEngineWithStore()
 
 	projection := newTestLiveProjection("LiveWithEvents", true, "ProjectionTestEvent")
 	_ = engine.RegisterLive(projection)
@@ -559,11 +575,7 @@ func TestProjectionEngine_NotifyLiveProjections_NotRunning(t *testing.T) {
 }
 
 func TestProjectionEngine_AsyncWorker_BatchProcessing(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	store.RegisterEvents(&ProjectionTestEvent{})
-	checkpoint := newTestCheckpointStore()
-	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	engine, store, _ := newTestEngineWithStore()
 
 	projection := newTestAsyncProjection("AsyncBatch", "ProjectionTestEvent")
 	projection.EnableBatch() // Enable batch processing
@@ -588,10 +600,7 @@ func TestProjectionEngine_AsyncWorker_BatchProcessing(t *testing.T) {
 }
 
 func TestProjectionEngine_AsyncWorker_RetryPolicy(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	checkpoint := newTestCheckpointStore()
-	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	engine, _, _ := newTestEngineWithStore()
 
 	projection := newTestAsyncProjection("AsyncRetry")
 	opts := DefaultAsyncOptions()
@@ -663,21 +672,12 @@ func TestProjectionEngine_GetStatus_InlineActive(t *testing.T) {
 }
 
 func TestAsyncProjectionWorker_ProcessBatch_WithCheckpoint(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	store.RegisterEvents(&ProjectionTestEvent{})
-	checkpoint := newTestCheckpointStore()
+	engine, store, checkpoint := newTestEngineWithStore()
 	logger := newTestLogger()
-	engine := NewProjectionEngine(store,
-		WithCheckpointStore(checkpoint),
-		WithProjectionLogger(logger),
-	)
+	engine.logger = logger
 
 	projection := newTestAsyncProjection("CheckpointProj", "ProjectionTestEvent")
-	opts := DefaultAsyncOptions()
-	opts.PollInterval = 20 * time.Millisecond
-	opts.StartFromBeginning = true
-	_ = engine.RegisterAsync(projection, opts)
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -699,18 +699,11 @@ func TestAsyncProjectionWorker_ProcessBatch_WithCheckpoint(t *testing.T) {
 
 // Test projection filtering
 func TestProjectionEngine_AsyncWorker_EventFiltering(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	store.RegisterEvents(&ProjectionTestEvent{})
-	checkpoint := newTestCheckpointStore()
-	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	engine, store, _ := newTestEngineWithStore()
 
 	// Projection only handles specific events
 	projection := newTestAsyncProjection("FilteredAsync", "DifferentEventType")
-	opts := DefaultAsyncOptions()
-	opts.PollInterval = 20 * time.Millisecond
-	opts.StartFromBeginning = true
-	_ = engine.RegisterAsync(projection, opts)
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -729,9 +722,7 @@ func TestProjectionEngine_AsyncWorker_EventFiltering(t *testing.T) {
 
 // Test context cancellation during NotifyLiveProjections
 func TestProjectionEngine_NotifyLiveProjections_ContextCancel(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+	engine, _, _ := newTestEngineWithStore()
 
 	projection := newTestLiveProjection("LiveCancel", true)
 	_ = engine.RegisterLive(projection)
@@ -759,11 +750,7 @@ type ProjectionTestEvent struct {
 }
 
 func TestProjectionEngine_AsyncWorker(t *testing.T) {
-	adapter := memory.NewAdapter()
-	store := New(adapter)
-	store.RegisterEvents(&ProjectionTestEvent{})
-	checkpoint := newTestCheckpointStore()
-	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	engine, store, checkpoint := newTestEngineWithStore()
 
 	t.Run("async worker processes events", func(t *testing.T) {
 		// Register async projection
@@ -810,12 +797,9 @@ func TestProjectionEngine_AsyncWorker(t *testing.T) {
 
 	t.Run("async worker handles checkpoint", func(t *testing.T) {
 		projection := newTestAsyncProjection("AsyncCheckpointTest")
-		opts := DefaultAsyncOptions()
-		opts.PollInterval = 20 * time.Millisecond
-		opts.StartFromBeginning = true
 
 		engine3 := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
-		_ = engine3.RegisterAsync(projection, opts)
+		_ = engine3.RegisterAsync(projection, fastAsyncOpts())
 
 		ctx, cancel := context.WithCancel(context.Background())
 		err := engine3.Start(ctx)
@@ -1050,4 +1034,526 @@ func TestShouldHandleEventType(t *testing.T) {
 		assert.False(t, ShouldHandleEventType(handledEvents, "ordercreated"))
 		assert.False(t, ShouldHandleEventType(handledEvents, "ORDERCREATED"))
 	})
+}
+
+// --- Exponential Backoff Delay Edge Cases ---
+
+func TestExponentialBackoffRetry_DelayEdgeCases(t *testing.T) {
+	policy := ExponentialBackoffRetry(5, 100*time.Millisecond, 10*time.Second)
+
+	t.Run("negative attempt clamps to zero", func(t *testing.T) {
+		delay := policy.Delay(-1)
+		assert.Equal(t, 100*time.Millisecond, delay)
+	})
+
+	t.Run("large attempt returns max delay", func(t *testing.T) {
+		delay := policy.Delay(63)
+		assert.Equal(t, 10*time.Second, delay)
+
+		delay = policy.Delay(100)
+		assert.Equal(t, 10*time.Second, delay)
+	})
+}
+
+// --- Async Worker Error Handling, Backoff & Recovery ---
+
+func TestProjectionEngine_AsyncWorker_ErrorAndRecovery(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	logger := newTestLogger()
+	metrics := newTestProjectionMetrics()
+	engine.logger = logger
+	engine.metrics = metrics
+
+	// Append an event so the worker has something to process
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-err-1", []interface{}{&ProjectionTestEvent{OrderID: "err1"}})
+
+	t.Run("worker enters faulted state on Apply error and recovers", func(t *testing.T) {
+		projection := newTestAsyncProjection("AsyncErrorRecovery", "ProjectionTestEvent")
+		projection.SetError(assert.AnError) // Will fail initially
+
+		opts := fastAsyncOpts()
+		opts.RetryPolicy = ExponentialBackoffRetry(10, 10*time.Millisecond, 50*time.Millisecond)
+		_ = engine.RegisterAsync(projection, opts)
+
+		runCtx, cancel := context.WithCancel(ctx)
+		_ = engine.Start(runCtx)
+
+		// Wait for error to be detected
+		time.Sleep(150 * time.Millisecond)
+
+		// Check the projection is faulted
+		status, err := engine.GetStatus("AsyncErrorRecovery")
+		require.NoError(t, err)
+		assert.Equal(t, ProjectionStateFaulted, status.State)
+		assert.NotEmpty(t, status.Error)
+
+		// Fix the error — should recover
+		projection.SetError(nil)
+
+		// Wait for recovery
+		time.Sleep(200 * time.Millisecond)
+
+		cancel()
+		_ = engine.Stop(context.Background())
+
+		// Logger should have recorded errors and recovery
+		assert.True(t, logger.hasLogMessage("error", "Async projection error"), "expected error log")
+		assert.True(t, logger.hasLogMessage("info", "Async projection recovered"), "expected recovery log")
+	})
+}
+
+func TestProjectionEngine_AsyncWorker_NilRetryPolicy(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+
+	_ = store.Append(context.Background(), "Order-nil-retry", []interface{}{&ProjectionTestEvent{OrderID: "nilretry"}})
+
+	// Use nil retry policy to exercise the built-in fallback backoff
+	projection := newTestAsyncProjection("AsyncNilRetry", "ProjectionTestEvent")
+	projection.SetError(assert.AnError)
+	opts := fastAsyncOpts()
+	opts.RetryPolicy = nil
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	// Wait for a few error cycles with built-in backoff
+	time.Sleep(150 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_AsyncWorker_PanicRecovery(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	logger := newTestLogger()
+	engine.logger = logger
+
+	_ = store.Append(context.Background(), "Order-panic-1", []interface{}{&ProjectionTestEvent{OrderID: "panic1"}})
+
+	// Create a panicking projection
+	projection := newTestPanickingAsyncProjection("AsyncPanic", "ProjectionTestEvent")
+	opts := fastAsyncOpts()
+	opts.RetryPolicy = ExponentialBackoffRetry(3, 10*time.Millisecond, 50*time.Millisecond)
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	// Wait for panic to be caught and logged
+	time.Sleep(150 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Logger should have recorded the panic
+	assert.True(t, logger.hasLogMessage("error", "Async projection panicked"), "expected panic log")
+}
+
+func TestProjectionEngine_AsyncWorker_BatchApplySuccess(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	metrics := newTestProjectionMetrics()
+	engine.metrics = metrics
+
+	// Append events
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_ = store.Append(ctx, "Order-batch-ok-"+string(rune('0'+i)),
+			[]interface{}{&ProjectionTestEvent{OrderID: "batchok"}})
+	}
+
+	// Create projection that supports batch mode
+	projection := newTestAsyncProjection("AsyncBatchSuccess", "ProjectionTestEvent")
+	projection.EnableBatch()
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	_ = engine.Start(runCtx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Should have processed events via batch
+	assert.GreaterOrEqual(t, len(projection.Events()), 1)
+
+	// Metrics should have recorded batch processing
+	metrics.mu.Lock()
+	batches := metrics.batchesProcessed
+	metrics.mu.Unlock()
+	assert.Greater(t, batches, 0)
+}
+
+func TestProjectionEngine_AsyncWorker_BatchApplyError(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	metrics := newTestProjectionMetrics()
+	engine.metrics = metrics
+
+	_ = store.Append(context.Background(), "Order-batch-err", []interface{}{&ProjectionTestEvent{OrderID: "batcherr"}})
+
+	projection := newTestAsyncProjection("AsyncBatchError", "ProjectionTestEvent")
+	projection.EnableBatch()
+	projection.batchApplyErr = assert.AnError
+	opts := fastAsyncOpts()
+	opts.RetryPolicy = ExponentialBackoffRetry(2, 10*time.Millisecond, 50*time.Millisecond)
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Metrics should have recorded failed batch
+	metrics.mu.Lock()
+	batches := metrics.batchesProcessed
+	metrics.mu.Unlock()
+	assert.Greater(t, batches, 0)
+}
+
+func TestProjectionEngine_Stop_ContextTimeout(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+
+	// Register a slow projection that blocks on Apply
+	projection := newTestBlockingAsyncProjection("AsyncBlocking")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 5 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	// Append an event to make the worker busy
+	_ = store.Append(context.Background(), "Order-block", []interface{}{&ProjectionTestEvent{OrderID: "block"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = engine.Start(ctx)
+
+	// Give worker time to start processing
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop with already-expired context
+	expiredCtx, expiredCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer expiredCancel()
+	time.Sleep(time.Millisecond)
+
+	err := engine.Stop(expiredCtx)
+	// Should timeout or succeed — either is OK since the context is expired
+	_ = err
+
+	// Clean up
+	cancel()
+	projection.unblock()
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_GetStatus_AsyncWithError(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+
+	// Append an event
+	_ = store.Append(context.Background(), "Order-status-err", []interface{}{&ProjectionTestEvent{OrderID: "statuserr"}})
+
+	projection := newTestAsyncProjection("StatusErrProj", "ProjectionTestEvent")
+	projection.SetError(assert.AnError)
+	opts := fastAsyncOpts()
+	opts.RetryPolicy = ExponentialBackoffRetry(1, 10*time.Millisecond, 50*time.Millisecond)
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	// Status should show the error
+	status, err := engine.GetStatus("StatusErrProj")
+	require.NoError(t, err)
+	assert.NotEmpty(t, status.Error)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_LiveWorker_StopViaClose(t *testing.T) {
+	engine, _, _ := newTestEngineWithStore()
+
+	projection := newTestLiveProjection("LiveStopClose", true)
+	_ = engine.RegisterLive(projection)
+
+	ctx := context.Background()
+	_ = engine.Start(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Unregister (which closes worker.stopCh)
+	_ = engine.Unregister("LiveStopClose")
+
+	// Stop engine
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_LiveWorker_PanicRecovery(t *testing.T) {
+	engine, _, _ := newTestEngineWithStore()
+	logger := newTestLogger()
+	engine.logger = logger
+
+	projection := newTestPanickingLiveProjection("LivePanic", "ProjectionTestEvent")
+	_ = engine.RegisterLive(projection)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Deliver event to trigger panic
+	events := []StoredEvent{{ID: "1", Type: "ProjectionTestEvent", Data: []byte("{}")}}
+	engine.NotifyLiveProjections(ctx, events)
+
+	// Wait for panic recovery
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Logger should have recorded the panic
+	assert.True(t, logger.hasLogMessage("error", "Live projection panicked"), "expected live projection panic log")
+}
+
+func TestProjectionEngine_LiveWorker_GetStatusWithError(t *testing.T) {
+	store := &EventStore{}
+	engine := NewProjectionEngine(store, WithCheckpointStore(newTestCheckpointStore()))
+
+	projection := newTestLiveProjection("LiveStatusErr", true)
+	_ = engine.RegisterLive(projection)
+
+	// Manually set an error on the worker
+	engine.liveMu.RLock()
+	worker := engine.liveProjections["LiveStatusErr"]
+	engine.liveMu.RUnlock()
+	worker.stateMu.Lock()
+	worker.lastError = assert.AnError
+	worker.stateMu.Unlock()
+
+	status, err := engine.GetStatus("LiveStatusErr")
+	require.NoError(t, err)
+	assert.NotEmpty(t, status.Error)
+}
+
+func TestProjectionEngine_AsyncWorker_ProcessBatchContextCancel(t *testing.T) {
+	engine, _, _ := newTestEngineWithStore()
+
+	projection := newTestAsyncProjection("AsyncCtxCancel", "ProjectionTestEvent")
+	opts := fastAsyncOpts()
+	opts.PollInterval = 10 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	// Start with a context we'll cancel immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	// Cancel to trigger the context.Canceled path
+	cancel()
+
+	time.Sleep(100 * time.Millisecond)
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_AsyncWorker_CheckpointSetError(t *testing.T) {
+	engine, store, checkpoint := newTestEngineWithStore()
+	logger := newTestLogger()
+	engine.logger = logger
+
+	_ = store.Append(context.Background(), "Order-cps", []interface{}{&ProjectionTestEvent{OrderID: "cps"}})
+
+	// Make checkpoint set fail
+	checkpoint.setErr = assert.AnError
+
+	projection := newTestAsyncProjection("AsyncCheckpointSetErr", "ProjectionTestEvent")
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Logger should warn about failed checkpoint
+	assert.True(t, logger.hasLogMessage("error", "Failed to save checkpoint"))
+}
+
+func TestProjectionEngine_AsyncWorker_StopViaUnregister(t *testing.T) {
+	engine, _, _ := newTestEngineWithStore()
+
+	projection := newTestAsyncProjection("AsyncUnregStop", "ProjectionTestEvent")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = engine.Start(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Unregister while running — this closes worker.stopCh
+	err := engine.Unregister("AsyncUnregStop")
+	require.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_NotifyLiveProjections_FullBuffer(t *testing.T) {
+	engine, _, _ := newTestEngineWithStore()
+
+	// Use buffer size of 1
+	projection := newTestLiveProjection("LiveFullBuffer", true)
+	opts := LiveOptions{BufferSize: 1}
+	_ = engine.RegisterLive(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+	time.Sleep(50 * time.Millisecond)
+
+	// Fill the buffer by not consuming events
+	// The live worker goroutine reads from eventCh, so we need to
+	// deliver many events rapidly to overflow. Use a separate goroutine
+	// that doesn't read.
+
+	// Cancel context first, then try to deliver - this should hit the ctx.Done path
+	cancel()
+	time.Sleep(10 * time.Millisecond)
+
+	// Now try to notify with cancelled context - the channel send should be
+	// competing with ctx.Done. We use a non-handled event type so the live
+	// worker's read from eventCh is not consuming.
+	events := make([]StoredEvent, 10)
+	for i := range events {
+		events[i] = StoredEvent{ID: string(rune('0' + i)), Type: "AllTypes", Data: []byte("{}")}
+	}
+	engine.NotifyLiveProjections(ctx, events)
+
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_AsyncWorker_HighConsecutiveErrors(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+
+	_ = store.Append(context.Background(), "Order-hce", []interface{}{&ProjectionTestEvent{OrderID: "hce"}})
+
+	// Use nil retry policy to exercise the built-in fallback with high shift values
+	projection := newTestAsyncProjection("AsyncHighErrors", "ProjectionTestEvent")
+	projection.SetError(assert.AnError)
+	opts := fastAsyncOpts()
+	opts.PollInterval = 5 * time.Millisecond
+	opts.RetryPolicy = nil
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	// Let it accumulate many consecutive errors to exercise the shift > 18 cap
+	time.Sleep(300 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+}
+
+func TestProjectionEngine_AsyncWorker_CheckpointGetError(t *testing.T) {
+	engine, _, checkpoint := newTestEngineWithStore()
+	checkpoint.getErr = assert.AnError
+	logger := newTestLogger()
+	engine.logger = logger
+
+	projection := newTestAsyncProjection("AsyncCheckpointGetErr", "ProjectionTestEvent")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = engine.Start(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	// Logger should have recorded the error
+	assert.True(t, logger.hasLogMessage("error", "Failed to get checkpoint"))
+}
+
+func TestProjectionEngine_AsyncWorker_InterruptDuringBackoff(t *testing.T) {
+	tests := []struct {
+		name       string
+		projName   string
+		streamID   string
+		interrupt  func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc)
+	}{
+		{
+			name:     "stop",
+			projName: "AsyncStopDuringBackoff",
+			streamID: "Order-sdb",
+			interrupt: func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc) {
+				defer cancel()
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer stopCancel()
+				err := engine.Stop(stopCtx)
+				assert.NoError(t, err)
+				status, statusErr := engine.GetStatus(projName)
+				require.NoError(t, statusErr)
+				assert.Equal(t, ProjectionStateStopped, status.State)
+			},
+		},
+		{
+			name:     "unregister",
+			projName: "AsyncUnregDuringBackoff",
+			streamID: "Order-udb",
+			interrupt: func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc) {
+				defer cancel()
+				err := engine.Unregister(projName)
+				assert.NoError(t, err)
+				time.Sleep(50 * time.Millisecond)
+				_ = engine.Stop(context.Background())
+			},
+		},
+		{
+			name:     "context cancel",
+			projName: "AsyncCtxCancelBackoff",
+			streamID: "Order-ccdb",
+			interrupt: func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc) {
+				cancel()
+				time.Sleep(50 * time.Millisecond)
+				_ = engine.Stop(context.Background())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, store, _ := newTestEngineWithStore()
+
+			_ = store.Append(context.Background(), tt.streamID, []interface{}{&ProjectionTestEvent{OrderID: tt.streamID}})
+
+			projection := newTestAsyncProjection(tt.projName, "ProjectionTestEvent")
+			projection.SetError(assert.AnError)
+			opts := fastAsyncOpts()
+			opts.PollInterval = 10 * time.Millisecond
+			opts.RetryPolicy = ExponentialBackoffRetry(100, 5*time.Second, 10*time.Second)
+			_ = engine.RegisterAsync(projection, opts)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			_ = engine.Start(ctx)
+
+			// Wait for at least one error to occur and the worker to enter backoff wait
+			time.Sleep(100 * time.Millisecond)
+
+			tt.interrupt(t, engine, tt.projName, cancel)
+		})
+	}
 }

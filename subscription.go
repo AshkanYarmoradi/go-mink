@@ -220,7 +220,7 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 		default:
 		}
 
-		events, err := subAdapter.LoadFromPosition(ctx, s.position, 100)
+		events, err := subAdapter.LoadFromPosition(ctx, s.getPosition(), 100)
 		if err != nil {
 			s.setErr(err)
 			return
@@ -232,13 +232,13 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 
 		for _, event := range events {
 			if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
-				s.position = event.GlobalPosition
+				s.setPosition(event.GlobalPosition)
 				continue
 			}
 
 			select {
 			case s.eventCh <- event:
-				s.position = event.GlobalPosition
+				s.setPosition(event.GlobalPosition)
 			case <-ctx.Done():
 				s.setErr(ctx.Err())
 				return
@@ -260,7 +260,7 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			events, err := subAdapter.LoadFromPosition(ctx, s.position, 100)
+			events, err := subAdapter.LoadFromPosition(ctx, s.getPosition(), 100)
 			if err != nil {
 				// Retry on error unless configured not to
 				if !s.opts.RetryOnError {
@@ -272,13 +272,13 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 
 			for _, event := range events {
 				if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
-					s.position = event.GlobalPosition
+					s.setPosition(event.GlobalPosition)
 					continue
 				}
 
 				select {
 				case s.eventCh <- event:
-					s.position = event.GlobalPosition
+					s.setPosition(event.GlobalPosition)
 				case <-ctx.Done():
 					s.setErr(ctx.Err())
 					return
@@ -321,6 +321,18 @@ func (s *CatchupSubscription) Position() uint64 {
 	s.errMu.RLock()
 	defer s.errMu.RUnlock()
 	return s.position
+}
+
+func (s *CatchupSubscription) getPosition() uint64 {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.position
+}
+
+func (s *CatchupSubscription) setPosition(pos uint64) {
+	s.errMu.Lock()
+	s.position = pos
+	s.errMu.Unlock()
 }
 
 func (s *CatchupSubscription) setErr(err error) {

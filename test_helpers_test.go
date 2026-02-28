@@ -50,6 +50,30 @@ func (l *testLogger) Error(msg string, args ...interface{}) {
 	l.errorLogs = append(l.errorLogs, msg)
 }
 
+// hasLogMessage checks whether a log message exists at the given level.
+// level must be one of "debug", "info", "warn", "error".
+func (l *testLogger) hasLogMessage(level string, message string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var logs []string
+	switch level {
+	case "debug":
+		logs = l.debugLogs
+	case "info":
+		logs = l.infoLogs
+	case "warn":
+		logs = l.warnLogs
+	case "error":
+		logs = l.errorLogs
+	}
+	for _, msg := range logs {
+		if msg == message {
+			return true
+		}
+	}
+	return false
+}
+
 // =============================================================================
 // Shared Test CheckpointStore
 // =============================================================================
@@ -225,8 +249,11 @@ func newTestAsyncProjection(name string, handledEvents ...string) *testAsyncProj
 }
 
 func (p *testAsyncProjection) Apply(ctx context.Context, event StoredEvent) error {
-	if p.applyErr != nil {
-		return p.applyErr
+	p.mu.Lock()
+	err := p.applyErr
+	p.mu.Unlock()
+	if err != nil {
+		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -235,11 +262,15 @@ func (p *testAsyncProjection) Apply(ctx context.Context, event StoredEvent) erro
 }
 
 func (p *testAsyncProjection) ApplyBatch(ctx context.Context, events []StoredEvent) error {
-	if !p.supportsBatch {
+	p.mu.Lock()
+	batch := p.supportsBatch
+	batchErr := p.batchApplyErr
+	p.mu.Unlock()
+	if !batch {
 		return ErrNotImplemented
 	}
-	if p.batchApplyErr != nil {
-		return p.batchApplyErr
+	if batchErr != nil {
+		return batchErr
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -256,10 +287,14 @@ func (p *testAsyncProjection) Events() []StoredEvent {
 }
 
 func (p *testAsyncProjection) SetError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.applyErr = err
 }
 
 func (p *testAsyncProjection) EnableBatch() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.supportsBatch = true
 }
 
@@ -310,4 +345,72 @@ func (p *testLiveProjection) WaitForEvent(timeout time.Duration) (StoredEvent, b
 	case <-time.After(timeout):
 		return StoredEvent{}, false
 	}
+}
+
+// =============================================================================
+// Shared Test Panicking Async Projection
+// =============================================================================
+
+// testPanickingAsyncProjection panics on Apply to test panic recovery.
+type testPanickingAsyncProjection struct {
+	AsyncProjectionBase
+}
+
+func newTestPanickingAsyncProjection(name string, handledEvents ...string) *testPanickingAsyncProjection {
+	return &testPanickingAsyncProjection{
+		AsyncProjectionBase: NewAsyncProjectionBase(name, handledEvents...),
+	}
+}
+
+func (p *testPanickingAsyncProjection) Apply(_ context.Context, _ StoredEvent) error {
+	panic("test panic in projection Apply")
+}
+
+// =============================================================================
+// Shared Test Blocking Async Projection
+// =============================================================================
+
+// testBlockingAsyncProjection blocks on Apply until unblocked.
+type testBlockingAsyncProjection struct {
+	AsyncProjectionBase
+	blockCh chan struct{}
+}
+
+func newTestBlockingAsyncProjection(name string, handledEvents ...string) *testBlockingAsyncProjection {
+	return &testBlockingAsyncProjection{
+		AsyncProjectionBase: NewAsyncProjectionBase(name, handledEvents...),
+		blockCh:             make(chan struct{}),
+	}
+}
+
+func (p *testBlockingAsyncProjection) Apply(_ context.Context, _ StoredEvent) error {
+	<-p.blockCh
+	return nil
+}
+
+func (p *testBlockingAsyncProjection) unblock() {
+	select {
+	case <-p.blockCh:
+	default:
+		close(p.blockCh)
+	}
+}
+
+// =============================================================================
+// Shared Test Panicking Live Projection
+// =============================================================================
+
+// testPanickingLiveProjection panics on OnEvent to test panic recovery.
+type testPanickingLiveProjection struct {
+	LiveProjectionBase
+}
+
+func newTestPanickingLiveProjection(name string, handledEvents ...string) *testPanickingLiveProjection {
+	return &testPanickingLiveProjection{
+		LiveProjectionBase: NewLiveProjectionBase(name, true, handledEvents...),
+	}
+}
+
+func (p *testPanickingLiveProjection) OnEvent(_ context.Context, _ StoredEvent) {
+	panic("test panic in live projection OnEvent")
 }
