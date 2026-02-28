@@ -2,6 +2,7 @@ package containers
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"testing"
 	"time"
@@ -63,6 +64,18 @@ func invalidContainer() *PostgresContainer {
 	}
 }
 
+// startPostgresWithDB starts a PostgreSQL container and returns a DB connection.
+func startPostgresWithDB(t *testing.T) (*PostgresContainer, context.Context, *sql.DB) {
+	t.Helper()
+	skipShort(t)
+	container := StartPostgres(t)
+	ctx := context.Background()
+	db, err := container.DB(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return container, ctx, db
+}
+
 // =============================================================================
 // PostgresContainer Tests
 // =============================================================================
@@ -85,20 +98,31 @@ func TestGetEnvOrDefault(t *testing.T) {
 }
 
 func TestDefaultPostgresConfig(t *testing.T) {
+	// assertConfig verifies the given config fields match expected values.
+	type expected struct {
+		image, database, user, password, port string
+	}
+	assertConfig := func(t *testing.T, cfg *postgresConfig, want expected) {
+		t.Helper()
+		if want.image != "" {
+			assert.Equal(t, want.image, cfg.image)
+		}
+		assert.Equal(t, want.database, cfg.database)
+		assert.Equal(t, want.user, cfg.user)
+		assert.Equal(t, want.password, cfg.password)
+		assert.Equal(t, want.port, cfg.port)
+	}
+
 	t.Run("returns default values when no env set", func(t *testing.T) {
 		clearTestEnvVars(t, []string{
 			"POSTGRES_IMAGE", "POSTGRES_DB", "TEST_POSTGRES_DB",
 			"POSTGRES_USER", "TEST_POSTGRES_USER", "POSTGRES_PASSWORD",
 			"TEST_POSTGRES_PASSWORD", "POSTGRES_PORT", "TEST_POSTGRES_PORT",
 		})
-
-		cfg := defaultPostgresConfig()
-
-		assert.Equal(t, "postgres:17", cfg.image)
-		assert.Equal(t, "mink_test", cfg.database)
-		assert.Equal(t, "postgres", cfg.user)
-		assert.Equal(t, "postgres", cfg.password)
-		assert.Equal(t, "5432", cfg.port)
+		assertConfig(t, defaultPostgresConfig(), expected{
+			image: "postgres:17", database: "mink_test",
+			user: "postgres", password: "postgres", port: "5432",
+		})
 	})
 
 	t.Run("reads from environment variables", func(t *testing.T) {
@@ -109,14 +133,10 @@ func TestDefaultPostgresConfig(t *testing.T) {
 			"POSTGRES_PASSWORD": "custom_pass",
 			"POSTGRES_PORT":     "5433",
 		})
-
-		cfg := defaultPostgresConfig()
-
-		assert.Equal(t, "postgres:16", cfg.image)
-		assert.Equal(t, "custom_db", cfg.database)
-		assert.Equal(t, "custom_user", cfg.user)
-		assert.Equal(t, "custom_pass", cfg.password)
-		assert.Equal(t, "5433", cfg.port)
+		assertConfig(t, defaultPostgresConfig(), expected{
+			image: "postgres:16", database: "custom_db",
+			user: "custom_user", password: "custom_pass", port: "5433",
+		})
 	})
 
 	t.Run("fallback to TEST_ prefixed env vars", func(t *testing.T) {
@@ -126,46 +146,33 @@ func TestDefaultPostgresConfig(t *testing.T) {
 			"TEST_POSTGRES_PASSWORD": "test_pass",
 			"TEST_POSTGRES_PORT":     "5434",
 		})
-
-		cfg := defaultPostgresConfig()
-
-		assert.Equal(t, "test_db", cfg.database)
-		assert.Equal(t, "test_user", cfg.user)
-		assert.Equal(t, "test_pass", cfg.password)
-		assert.Equal(t, "5434", cfg.port)
+		assertConfig(t, defaultPostgresConfig(), expected{
+			database: "test_db", user: "test_user",
+			password: "test_pass", port: "5434",
+		})
 	})
 }
 
 func TestPostgresOptions(t *testing.T) {
-	t.Run("WithPostgresImage", func(t *testing.T) {
-		cfg := defaultPostgresConfig()
-		WithPostgresImage("postgres:15")(cfg)
-		assert.Equal(t, "postgres:15", cfg.image)
-	})
-
-	t.Run("WithPostgresDatabase", func(t *testing.T) {
-		cfg := defaultPostgresConfig()
-		WithPostgresDatabase("testdb")(cfg)
-		assert.Equal(t, "testdb", cfg.database)
-	})
-
-	t.Run("WithPostgresUser", func(t *testing.T) {
-		cfg := defaultPostgresConfig()
-		WithPostgresUser("testuser")(cfg)
-		assert.Equal(t, "testuser", cfg.user)
-	})
-
-	t.Run("WithPostgresPassword", func(t *testing.T) {
-		cfg := defaultPostgresConfig()
-		WithPostgresPassword("testpass")(cfg)
-		assert.Equal(t, "testpass", cfg.password)
-	})
-
-	t.Run("WithPostgresPort", func(t *testing.T) {
-		cfg := defaultPostgresConfig()
-		WithPostgresPort("5433")(cfg)
-		assert.Equal(t, "5433", cfg.port)
-	})
+	tests := []struct {
+		name   string
+		option PostgresOption
+		field  func(*postgresConfig) string
+		want   string
+	}{
+		{"WithPostgresImage", WithPostgresImage("postgres:15"), func(c *postgresConfig) string { return c.image }, "postgres:15"},
+		{"WithPostgresDatabase", WithPostgresDatabase("testdb"), func(c *postgresConfig) string { return c.database }, "testdb"},
+		{"WithPostgresUser", WithPostgresUser("testuser"), func(c *postgresConfig) string { return c.user }, "testuser"},
+		{"WithPostgresPassword", WithPostgresPassword("testpass"), func(c *postgresConfig) string { return c.password }, "testpass"},
+		{"WithPostgresPort", WithPostgresPort("5433"), func(c *postgresConfig) string { return c.port }, "5433"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultPostgresConfig()
+			tt.option(cfg)
+			assert.Equal(t, tt.want, tt.field(cfg))
+		})
+	}
 }
 
 func TestPostgresContainer_ConnectionString(t *testing.T) {
@@ -198,17 +205,18 @@ func TestPostgresContainer_ConnectionString(t *testing.T) {
 }
 
 func TestQuoteIdentifier(t *testing.T) {
-	t.Run("quotes simple identifier", func(t *testing.T) {
-		assert.Equal(t, `"myschema"`, quoteIdentifier("myschema"))
-	})
-
-	t.Run("quotes identifier with numbers", func(t *testing.T) {
-		assert.Equal(t, `"schema123"`, quoteIdentifier("schema123"))
-	})
-
-	t.Run("quotes empty identifier", func(t *testing.T) {
-		assert.Equal(t, `""`, quoteIdentifier(""))
-	})
+	tests := []struct {
+		name, input, want string
+	}{
+		{"simple identifier", "myschema", `"myschema"`},
+		{"identifier with numbers", "schema123", `"schema123"`},
+		{"empty identifier", "", `""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, quoteIdentifier(tt.input))
+		})
+	}
 }
 
 // =============================================================================
@@ -216,17 +224,13 @@ func TestQuoteIdentifier(t *testing.T) {
 // =============================================================================
 
 func TestIntegrationTestOptions(t *testing.T) {
-	t.Run("WithSchemaPrefix", func(t *testing.T) {
-		cfg := &integrationTestConfig{}
-		WithSchemaPrefix("custom")(cfg)
-		assert.Equal(t, "custom", cfg.schemaPrefix)
-	})
+	cfg := &integrationTestConfig{}
 
-	t.Run("WithTimeout", func(t *testing.T) {
-		cfg := &integrationTestConfig{}
-		WithTimeout(60 * time.Second)(cfg)
-		assert.Equal(t, 60*time.Second, cfg.timeout)
-	})
+	WithSchemaPrefix("custom")(cfg)
+	assert.Equal(t, "custom", cfg.schemaPrefix)
+
+	WithTimeout(60 * time.Second)(cfg)
+	assert.Equal(t, 60*time.Second, cfg.timeout)
 }
 
 // =============================================================================
@@ -298,17 +302,9 @@ func TestPostgresContainer_MustDB_Integration(t *testing.T) {
 }
 
 func TestPostgresContainer_Schema_Integration(t *testing.T) {
-	skipShort(t)
+	container, ctx, db := startPostgresWithDB(t)
 
 	t.Run("creates and drops schema", func(t *testing.T) {
-		container := StartPostgres(t)
-		ctx := context.Background()
-
-		db, err := container.DB(ctx)
-		require.NoError(t, err)
-		defer func() { _ = db.Close() }()
-
-		// Create schema
 		schema, err := container.CreateSchema(ctx, db, "test")
 		require.NoError(t, err)
 		assert.Contains(t, schema, "test_")
@@ -334,14 +330,11 @@ func TestPostgresContainer_Schema_Integration(t *testing.T) {
 	})
 
 	t.Run("CreateSchema fails with closed connection", func(t *testing.T) {
-		container := StartPostgres(t)
-		ctx := context.Background()
-
-		db, err := container.DB(ctx)
+		closedDB, err := container.DB(ctx)
 		require.NoError(t, err)
-		_ = db.Close() // Close the connection
+		_ = closedDB.Close()
 
-		_, err = container.CreateSchema(ctx, db, "test")
+		_, err = container.CreateSchema(ctx, closedDB, "test")
 		assert.Error(t, err)
 	})
 }
@@ -375,30 +368,13 @@ func TestNewIntegrationTest_Integration(t *testing.T) {
 func TestIntegrationTest_Methods_Integration(t *testing.T) {
 	skipShort(t)
 
-	t.Run("Context returns context", func(t *testing.T) {
-		it := NewIntegrationTest(t)
-		assert.NotNil(t, it.Context())
-	})
+	it := NewIntegrationTest(t)
 
-	t.Run("DB returns connection", func(t *testing.T) {
-		it := NewIntegrationTest(t)
-		assert.NotNil(t, it.DB())
-	})
-
-	t.Run("Schema returns schema name", func(t *testing.T) {
-		it := NewIntegrationTest(t)
-		assert.NotEmpty(t, it.Schema())
-	})
-
-	t.Run("Container returns container", func(t *testing.T) {
-		it := NewIntegrationTest(t)
-		assert.NotNil(t, it.Container())
-	})
-
-	t.Run("ConnectionString includes schema", func(t *testing.T) {
-		it := NewIntegrationTest(t)
-		assert.Contains(t, it.ConnectionString(), "search_path=")
-	})
+	assert.NotNil(t, it.Context(), "Context should not be nil")
+	assert.NotNil(t, it.DB(), "DB should not be nil")
+	assert.NotEmpty(t, it.Schema(), "Schema should not be empty")
+	assert.NotNil(t, it.Container(), "Container should not be nil")
+	assert.Contains(t, it.ConnectionString(), "search_path=", "ConnectionString should include schema")
 }
 
 func TestIntegrationTest_Exec_Integration(t *testing.T) {

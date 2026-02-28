@@ -276,6 +276,16 @@ func getTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// getTestDBWithCleanup returns a database connection for testing and registers
+// cleanup to close it when the test completes. This avoids repeating the
+// db := getTestDB(t) + defer db.Close() pattern across multiple tests.
+func getTestDBWithCleanup(t *testing.T) *sql.DB {
+	t.Helper()
+	db := getTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 // newTestAdapter creates a new adapter for testing.
 // It requires a valid schema name and database connection.
 func newTestAdapter(t *testing.T, db *sql.DB, opts ...Option) *PostgresAdapter {
@@ -392,12 +402,7 @@ func TestNewAdapter(t *testing.T) {
 }
 
 func TestNewAdapterWithDB(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := getTestDBWithCleanup(t)
 
 	t.Run("creates adapter with existing connection", func(t *testing.T) {
 		adapter, err := NewAdapterWithDB(db)
@@ -426,15 +431,10 @@ func TestNewAdapterWithDB(t *testing.T) {
 }
 
 func TestPostgresAdapter_Initialize(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := getTestDBWithCleanup(t)
 
 	schema := newTestSchema()
-	defer cleanupSchema(t, db, schema)
+	t.Cleanup(func() { cleanupSchema(t, db, schema) })
 
 	adapter := newTestAdapter(t, db, WithSchema(schema))
 
@@ -466,18 +466,17 @@ func TestPostgresAdapter_Initialize(t *testing.T) {
 }
 
 func TestPostgresAdapter_MigrationVersion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
+	db := getTestDBWithCleanup(t)
+
+	newSchemaAdapter := func(t *testing.T) (*PostgresAdapter, string) {
+		t.Helper()
+		schema := newTestSchema()
+		t.Cleanup(func() { cleanupSchema(t, db, schema) })
+		return newTestAdapter(t, db, WithSchema(schema)), schema
 	}
 
-	db := getTestDB(t)
-	defer func() { _ = db.Close() }()
-
 	t.Run("returns 0 for uninitialized schema", func(t *testing.T) {
-		schema := newTestSchema()
-		defer cleanupSchema(t, db, schema)
-
-		adapter := newTestAdapter(t, db, WithSchema(schema))
+		adapter, _ := newSchemaAdapter(t)
 
 		version, err := adapter.MigrationVersion(context.Background())
 		require.NoError(t, err)
@@ -485,10 +484,7 @@ func TestPostgresAdapter_MigrationVersion(t *testing.T) {
 	})
 
 	t.Run("returns 1 for initialized schema", func(t *testing.T) {
-		schema := newTestSchema()
-		defer cleanupSchema(t, db, schema)
-
-		adapter := newTestAdapter(t, db, WithSchema(schema))
+		adapter, _ := newSchemaAdapter(t)
 		require.NoError(t, adapter.Initialize(context.Background()))
 
 		version, err := adapter.MigrationVersion(context.Background())
@@ -1069,12 +1065,7 @@ func TestPostgresAdapter_Close(t *testing.T) {
 }
 
 func TestPostgresAdapter_Ping(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	db := getTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := getTestDBWithCleanup(t)
 
 	adapter := newTestAdapter(t, db)
 
@@ -1145,29 +1136,37 @@ func TestExtractCategory(t *testing.T) {
 
 // Benchmarks
 
-func BenchmarkPostgresAdapter_Append(b *testing.B) {
+// setupBenchmarkAdapter creates a PostgresAdapter for benchmarks with a unique schema,
+// and registers cleanup for both the schema and the database connection.
+func setupBenchmarkAdapter(b *testing.B) *PostgresAdapter {
+	b.Helper()
 	connStr := os.Getenv("TEST_DATABASE_URL")
 	if connStr == "" {
 		b.Skip("TEST_DATABASE_URL not set")
 	}
 
 	db, _ := sql.Open("pgx", connStr)
-	defer func() { _ = db.Close() }()
 
 	schema := newTestSchema()
-	defer func() {
+	b.Cleanup(func() {
 		schemaQ, err := safeSchemaIdentifier(schema)
-		if err != nil {
-			return
+		if err == nil {
+			_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
 		}
-		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
-	}()
+		_ = db.Close()
+	})
 
 	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
 	if err != nil {
 		b.Fatal(err)
 	}
 	_ = adapter.Initialize(context.Background())
+
+	return adapter
+}
+
+func BenchmarkPostgresAdapter_Append(b *testing.B) {
+	adapter := setupBenchmarkAdapter(b)
 
 	ctx := context.Background()
 	events := []adapters.EventRecord{{Type: "Test", Data: []byte(`{"key":"value"}`)}}
@@ -1180,28 +1179,7 @@ func BenchmarkPostgresAdapter_Append(b *testing.B) {
 }
 
 func BenchmarkPostgresAdapter_Load(b *testing.B) {
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		b.Skip("TEST_DATABASE_URL not set")
-	}
-
-	db, _ := sql.Open("pgx", connStr)
-	defer func() { _ = db.Close() }()
-
-	schema := newTestSchema()
-	defer func() {
-		schemaQ, err := safeSchemaIdentifier(schema)
-		if err != nil {
-			return
-		}
-		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schemaQ + ` CASCADE`)
-	}()
-
-	adapter, err := NewAdapterWithDB(db, WithSchema(schema))
-	if err != nil {
-		b.Fatal(err)
-	}
-	_ = adapter.Initialize(context.Background())
+	adapter := setupBenchmarkAdapter(b)
 
 	ctx := context.Background()
 
