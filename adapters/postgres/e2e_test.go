@@ -28,28 +28,34 @@ func getTestDatabaseURL(t *testing.T) string {
 	return url
 }
 
-// =============================================================================
-// E2E Test: Complete Order Lifecycle with PostgreSQL Adapter
-// =============================================================================
-
-func TestE2E_CompleteOrderLifecycle_Postgres(t *testing.T) {
+// setupE2EStore creates an event store with PostgreSQL adapter for E2E tests.
+// It skips the test if short mode or TEST_DATABASE_URL is not set.
+func setupE2EStore(t *testing.T) (*mink.EventStore, context.Context) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("Skipping PostgreSQL E2E test in short mode")
 	}
 
 	connStr := getTestDatabaseURL(t)
 
-	// Arrange: Setup event store with PostgreSQL adapter
 	adapter, err := postgres.NewAdapter(connStr)
 	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
+	t.Cleanup(func() { _ = adapter.Close() })
 
 	err = adapter.Initialize(context.Background())
 	require.NoError(t, err)
 
 	store := mink.New(adapter)
 	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	return store, context.Background()
+}
+
+// =============================================================================
+// E2E Test: Complete Order Lifecycle with PostgreSQL Adapter
+// =============================================================================
+
+func TestE2E_CompleteOrderLifecycle_Postgres(t *testing.T) {
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID to avoid conflicts with other test runs
 	orderID := fmt.Sprintf("pg-order-%d", time.Now().UnixNano())
@@ -58,7 +64,7 @@ func TestE2E_CompleteOrderLifecycle_Postgres(t *testing.T) {
 	order := testutil.NewOrder(orderID)
 
 	// Step 1: Create order
-	err = order.Create("pg-customer-456")
+	err := order.Create("pg-customer-456")
 	require.NoError(t, err)
 
 	// Step 2: Add items
@@ -111,29 +117,14 @@ func TestE2E_CompleteOrderLifecycle_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_ConcurrentModification_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID
 	orderID := fmt.Sprintf("pg-concurrent-%d", time.Now().UnixNano())
 
 	// Create initial order
 	order := testutil.NewOrder(orderID)
-	err = order.Create("customer-1")
+	err := order.Create("customer-1")
 	require.NoError(t, err)
 	err = store.SaveAggregate(ctx, order)
 	require.NoError(t, err)
@@ -191,22 +182,7 @@ func TestE2E_ConcurrentModification_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_ReadModelProjection_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Create read model
 	readModel := testutil.NewOrderReadModel()
@@ -250,29 +226,14 @@ func TestE2E_ReadModelProjection_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_EventMetadata_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID
 	orderID := fmt.Sprintf("pg-meta-%d", time.Now().UnixNano())
 
 	// Create order
 	order := testutil.NewOrder(orderID)
-	err = order.Create("pg-customer-meta")
+	err := order.Create("pg-customer-meta")
 	require.NoError(t, err)
 	err = order.AddItem("PG-META-SKU", 1, 50.0)
 	require.NoError(t, err)
@@ -295,29 +256,14 @@ func TestE2E_EventMetadata_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_LargeEventStream_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL large event stream test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID
 	orderID := fmt.Sprintf("pg-large-%d", time.Now().UnixNano())
 
 	// Create order with many items
 	order := testutil.NewOrder(orderID)
-	err = order.Create("pg-customer-large")
+	err := order.Create("pg-customer-large")
 	require.NoError(t, err)
 	err = store.SaveAggregate(ctx, order)
 	require.NoError(t, err)
@@ -354,29 +300,14 @@ func TestE2E_LargeEventStream_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_StreamOperations_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID
 	orderID := fmt.Sprintf("pg-stream-%d", time.Now().UnixNano())
 
 	// Create an order
 	order := testutil.NewOrder(orderID)
-	err = order.Create("pg-stream-customer")
+	err := order.Create("pg-stream-customer")
 	require.NoError(t, err)
 	err = order.AddItem("PG-STREAM-SKU", 2, 25.0)
 	require.NoError(t, err)
@@ -402,29 +333,14 @@ func TestE2E_StreamOperations_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_ErrorRecovery_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique order ID
 	orderID := fmt.Sprintf("pg-recovery-%d", time.Now().UnixNano())
 
 	// Create and save an order
 	order := testutil.NewOrder(orderID)
-	err = order.Create("pg-customer")
+	err := order.Create("pg-customer")
 	require.NoError(t, err)
 	err = order.AddItem("PG-ITEM", 1, 10.0)
 	require.NoError(t, err)
@@ -467,22 +383,7 @@ func TestE2E_ErrorRecovery_Postgres(t *testing.T) {
 // =============================================================================
 
 func TestE2E_MultipleAggregates_Postgres(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PostgreSQL E2E test in short mode")
-	}
-
-	connStr := getTestDatabaseURL(t)
-
-	adapter, err := postgres.NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	err = adapter.Initialize(context.Background())
-	require.NoError(t, err)
-
-	store := mink.New(adapter)
-	testutil.RegisterTestEvents(store)
-	ctx := context.Background()
+	store, ctx := setupE2EStore(t)
 
 	// Use unique base ID for this test
 	baseID := time.Now().UnixNano()
@@ -505,7 +406,7 @@ func TestE2E_MultipleAggregates_Postgres(t *testing.T) {
 
 	// Ship only the first order
 	order1 := testutil.NewOrder(orderIDs[0])
-	err = store.LoadAggregate(ctx, order1)
+	err := store.LoadAggregate(ctx, order1)
 	require.NoError(t, err)
 	err = order1.Ship("PG-TRACK-001")
 	require.NoError(t, err)

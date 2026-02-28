@@ -14,21 +14,42 @@ import (
 )
 
 // =============================================================================
+// Test Helpers
+// =============================================================================
+
+// setTestEnv sets an environment variable and restores the original value when the test completes.
+func setTestEnv(t *testing.T, key, value string) {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Setenv(key, value)
+	t.Cleanup(func() {
+		if original != "" {
+			_ = os.Setenv(key, original)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+}
+
+// unsetTestEnv unsets an environment variable and restores the original value when the test completes.
+func unsetTestEnv(t *testing.T, key string) {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Unsetenv(key)
+	t.Cleanup(func() {
+		if original != "" {
+			_ = os.Setenv(key, original)
+		}
+	})
+}
+
+// =============================================================================
 // TestConfig Tests
 // =============================================================================
 
 func TestDefaultConfig(t *testing.T) {
 	t.Run("returns config from environment", func(t *testing.T) {
-		// Set environment variable
-		originalURL := os.Getenv("TEST_DATABASE_URL")
-		_ = os.Setenv("TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
-		defer func() {
-			if originalURL != "" {
-				_ = os.Setenv("TEST_DATABASE_URL", originalURL)
-			} else {
-				_ = os.Unsetenv("TEST_DATABASE_URL")
-			}
-		}()
+		setTestEnv(t, "TEST_DATABASE_URL", "postgres://test:test@localhost:5432/test")
 
 		config := DefaultConfig()
 
@@ -36,14 +57,7 @@ func TestDefaultConfig(t *testing.T) {
 	})
 
 	t.Run("returns default when env not set", func(t *testing.T) {
-		// Clear environment variable
-		originalURL := os.Getenv("TEST_DATABASE_URL")
-		_ = os.Unsetenv("TEST_DATABASE_URL")
-		defer func() {
-			if originalURL != "" {
-				_ = os.Setenv("TEST_DATABASE_URL", originalURL)
-			}
-		}()
+		unsetTestEnv(t, "TEST_DATABASE_URL")
 
 		config := DefaultConfig()
 

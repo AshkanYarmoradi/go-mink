@@ -236,13 +236,24 @@ func TestSafeSchemaIdentifier(t *testing.T) {
 	}
 }
 
+// requireIntegration skips the test if in short mode or TEST_DATABASE_URL is not set,
+// and returns the connection string.
+func requireIntegration(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	return connStr
+}
+
 // getTestDB returns a database connection for testing.
 // Set TEST_DATABASE_URL environment variable to run integration tests.
 func getTestDB(t *testing.T) *sql.DB {
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
-	}
+	connStr := requireIntegration(t)
 
 	db, err := sql.Open("pgx", connStr)
 	require.NoError(t, err)
@@ -274,6 +285,21 @@ func newTestAdapter(t *testing.T, db *sql.DB, opts ...Option) *PostgresAdapter {
 	return adapter
 }
 
+// setupDefaultAdapter creates an adapter with default schema, initializes it,
+// and registers cleanup. Returns the adapter and a background context.
+func setupDefaultAdapter(t *testing.T) (*PostgresAdapter, context.Context) {
+	t.Helper()
+	connStr := requireIntegration(t)
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	ctx := context.Background()
+	require.NoError(t, adapter.Initialize(ctx))
+	return adapter, ctx
+}
+
 // cleanupSchema drops the test schema.
 func cleanupSchema(t *testing.T, db *sql.DB, schema string) {
 	schemaQ := quoteIdentifier(schema)
@@ -293,9 +319,6 @@ func newTestSchema() string {
 // Returns the adapter and automatically registers cleanup with t.Cleanup.
 func setupIntegrationTest(t *testing.T, opts ...Option) *PostgresAdapter {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
 
 	db := getTestDB(t)
 	schema := newTestSchema()
@@ -314,14 +337,7 @@ func setupIntegrationTest(t *testing.T, opts ...Option) *PostgresAdapter {
 }
 
 func TestNewAdapter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	t.Run("creates adapter with connection string", func(t *testing.T) {
 		adapter, err := NewAdapter(connStr)
@@ -993,14 +1009,7 @@ func TestPostgresAdapter_Checkpoints(t *testing.T) {
 }
 
 func TestPostgresAdapter_Close(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	t.Run("close releases resources", func(t *testing.T) {
 		adapter, err := NewAdapter(connStr)
@@ -1210,14 +1219,7 @@ func BenchmarkPostgresAdapter_Load(b *testing.B) {
 }
 
 func TestPostgresAdapter_WithHealthCheck(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	t.Run("enables periodic health checking", func(t *testing.T) {
 		adapter, err := NewAdapter(connStr,
@@ -1240,14 +1242,7 @@ func TestPostgresAdapter_WithHealthCheck(t *testing.T) {
 }
 
 func TestPostgresAdapter_Stats(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
@@ -1272,14 +1267,7 @@ func TestPostgresAdapter_Stats(t *testing.T) {
 }
 
 func TestPostgresAdapter_WithConnectionMaxIdleTime(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	t.Run("sets connection max idle time", func(t *testing.T) {
 		adapter, err := NewAdapter(connStr,
@@ -1299,21 +1287,7 @@ func TestPostgresAdapter_WithConnectionMaxIdleTime(t *testing.T) {
 // ============================================================================
 
 func TestPostgresAdapter_ListStreams(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns empty list when no streams", func(t *testing.T) {
 		streams, err := adapter.ListStreams(ctx, "", 10)
@@ -1356,21 +1330,7 @@ func TestPostgresAdapter_ListStreams(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns events for stream", func(t *testing.T) {
 		streamID := fmt.Sprintf("EventsTest-%d", time.Now().UnixNano())
@@ -1406,21 +1366,7 @@ func TestPostgresAdapter_GetStreamEvents(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns stats", func(t *testing.T) {
 		stats, err := adapter.GetEventStoreStats(ctx)
@@ -1431,21 +1377,7 @@ func TestPostgresAdapter_GetEventStoreStats(t *testing.T) {
 }
 
 func TestPostgresAdapter_ListProjections(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns projections list", func(t *testing.T) {
 		// Create a checkpoint which creates a projection entry
@@ -1471,21 +1403,7 @@ func TestPostgresAdapter_ListProjections(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetProjection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns nil for non-existent projection", func(t *testing.T) {
 		proj, err := adapter.GetProjection(ctx, "nonexistent-projection")
@@ -1507,21 +1425,7 @@ func TestPostgresAdapter_GetProjection(t *testing.T) {
 }
 
 func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("sets projection status", func(t *testing.T) {
 		projName := fmt.Sprintf("StatusTest-%d", time.Now().UnixNano())
@@ -1538,21 +1442,7 @@ func TestPostgresAdapter_SetProjectionStatus(t *testing.T) {
 }
 
 func TestPostgresAdapter_ResetProjectionCheckpoint(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("resets checkpoint to zero", func(t *testing.T) {
 		projName := fmt.Sprintf("ResetTest-%d", time.Now().UnixNano())
@@ -1569,21 +1459,7 @@ func TestPostgresAdapter_ResetProjectionCheckpoint(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns event count", func(t *testing.T) {
 		count, err := adapter.GetTotalEventCount(ctx)
@@ -1593,21 +1469,7 @@ func TestPostgresAdapter_GetTotalEventCount(t *testing.T) {
 }
 
 func TestPostgresAdapter_Migrations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("GetAppliedMigrations returns list", func(t *testing.T) {
 		migrations, err := adapter.GetAppliedMigrations(ctx)
@@ -1639,21 +1501,7 @@ func TestPostgresAdapter_Migrations(t *testing.T) {
 }
 
 func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("executes SQL successfully", func(t *testing.T) {
 		tableName := fmt.Sprintf("test_table_%d", time.Now().UnixNano())
@@ -1666,14 +1514,7 @@ func TestPostgresAdapter_ExecuteSQL(t *testing.T) {
 }
 
 func TestPostgresAdapter_GenerateSchema(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	adapter, err := NewAdapter(connStr)
 	require.NoError(t, err)
@@ -1688,21 +1529,7 @@ func TestPostgresAdapter_GenerateSchema(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns diagnostic info", func(t *testing.T) {
 		info, err := adapter.GetDiagnosticInfo(ctx)
@@ -1713,21 +1540,7 @@ func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
 }
 
 func TestPostgresAdapter_CheckSchema(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("checks schema", func(t *testing.T) {
 		result, err := adapter.CheckSchema(ctx, "events")
@@ -1738,21 +1551,7 @@ func TestPostgresAdapter_CheckSchema(t *testing.T) {
 }
 
 func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-
-	adapter, err := NewAdapter(connStr)
-	require.NoError(t, err)
-	defer func() { _ = adapter.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, adapter.Initialize(ctx))
+	adapter, ctx := setupDefaultAdapter(t)
 
 	t.Run("returns projection health", func(t *testing.T) {
 		health, err := adapter.GetProjectionHealth(ctx)
@@ -1796,14 +1595,7 @@ func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
 // TestPostgresAdapter_ClosedAdapterErrors consolidates all "closed adapter" error tests
 // to reduce code duplication. Each operation on a closed adapter should return ErrAdapterClosed.
 func TestPostgresAdapter_ClosedAdapterErrors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	connStr := os.Getenv("TEST_DATABASE_URL")
-	if connStr == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	connStr := requireIntegration(t)
 
 	ctx := context.Background()
 
