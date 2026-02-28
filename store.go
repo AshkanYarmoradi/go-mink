@@ -13,6 +13,7 @@ type EventStore struct {
 	adapter    adapters.EventStoreAdapter
 	serializer Serializer
 	logger     Logger
+	upcasters  *UpcasterChain // nil by default — zero overhead when unused
 }
 
 // Logger defines the logging interface for the event store.
@@ -45,6 +46,16 @@ func WithSerializer(s Serializer) Option {
 func WithLogger(l Logger) Option {
 	return func(es *EventStore) {
 		es.logger = l
+	}
+}
+
+// WithUpcasters configures the event store with an upcaster chain for
+// transparent schema evolution. When set, events are automatically upcasted
+// to the latest schema version during loading and stamped with the latest
+// version during appending.
+func WithUpcasters(chain *UpcasterChain) Option {
+	return func(es *EventStore) {
+		es.upcasters = chain
 	}
 }
 
@@ -130,6 +141,11 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
+		// Stamp schema version if upcasters are configured
+		if s.upcasters != nil {
+			eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
+		}
+
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
 			Data:     eventData.Data,
@@ -160,7 +176,7 @@ func (s *EventStore) LoadFrom(ctx context.Context, streamID string, fromVersion 
 	events := make([]Event, len(storedEvents))
 	for i, stored := range storedEvents {
 		minkStored := convertStoredEventFromAdapter(stored)
-		event, err := DeserializeEvent(s.serializer, minkStored)
+		event, err := s.deserializeWithUpcast(minkStored)
 		if err != nil {
 			return nil, fmt.Errorf("mink: failed to deserialize event %d: %w", i, err)
 		}
@@ -212,6 +228,11 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 		eventData, err := SerializeEvent(s.serializer, event, Metadata{})
 		if err != nil {
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
+		}
+
+		// Stamp schema version if upcasters are configured
+		if s.upcasters != nil {
+			eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
 		}
 
 		records[i] = adapters.EventRecord{
@@ -267,8 +288,19 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 
 	// Apply each event to rebuild state
 	for i, stored := range storedEvents {
-		// Deserialize event data
-		data, err := s.serializer.Deserialize(stored.Data, stored.Type)
+		// Deserialize event data with optional upcasting
+		eventData := stored.Data
+		if s.upcasters != nil && s.upcasters.HasUpcasters(stored.Type) {
+			minkStored := convertStoredEventFromAdapter(stored)
+			schemaVersion := GetSchemaVersion(minkStored.Metadata)
+			upcasted, _, err := s.upcasters.Upcast(stored.Type, schemaVersion, stored.Data, minkStored.Metadata)
+			if err != nil {
+				return fmt.Errorf("mink: failed to upcast event %d: %w", i, err)
+			}
+			eventData = upcasted
+		}
+
+		data, err := s.serializer.Deserialize(eventData, stored.Type)
 		if err != nil {
 			return fmt.Errorf("mink: failed to deserialize event %d: %w", i, err)
 		}
@@ -368,6 +400,42 @@ func convertStoredEventFromAdapter(s adapters.StoredEvent) StoredEvent {
 		GlobalPosition: s.GlobalPosition,
 		Timestamp:      s.Timestamp,
 	}
+}
+
+// deserializeWithUpcast deserializes a stored event, applying upcasting if configured.
+// If no upcasters are registered or none exist for the event type, it falls back
+// to the standard DeserializeEvent path with zero overhead.
+func (s *EventStore) deserializeWithUpcast(stored StoredEvent) (Event, error) {
+	if s.upcasters == nil || !s.upcasters.HasUpcasters(stored.Type) {
+		return DeserializeEvent(s.serializer, stored)
+	}
+
+	schemaVersion := GetSchemaVersion(stored.Metadata)
+	upcasted, _, err := s.upcasters.Upcast(stored.Type, schemaVersion, stored.Data, stored.Metadata)
+	if err != nil {
+		return Event{}, err
+	}
+
+	data, err := s.serializer.Deserialize(upcasted, stored.Type)
+	if err != nil {
+		return Event{}, err
+	}
+
+	return EventFromStored(stored, data), nil
+}
+
+// RegisterUpcasters is a convenience method that registers upcasters with the event store.
+// If no UpcasterChain has been configured, a new one is created automatically.
+func (s *EventStore) RegisterUpcasters(upcasters ...Upcaster) error {
+	if s.upcasters == nil {
+		s.upcasters = NewUpcasterChain()
+	}
+	for _, u := range upcasters {
+		if err := s.upcasters.Register(u); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LoadEventsFromPosition loads events starting from a global position.
