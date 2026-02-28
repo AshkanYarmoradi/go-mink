@@ -203,6 +203,17 @@ func SerializeEvent(serializer Serializer, event interface{}, metadata Metadata)
 	}, nil
 }
 
+// SerializeEventWithVersion is a convenience function that serializes an event and
+// stamps the metadata with the given schema version.
+func SerializeEventWithVersion(serializer Serializer, event interface{}, metadata Metadata, schemaVersion int) (EventData, error) {
+	eventData, err := SerializeEvent(serializer, event, metadata)
+	if err != nil {
+		return EventData{}, err
+	}
+	eventData.Metadata = SetSchemaVersion(eventData.Metadata, schemaVersion)
+	return eventData, nil
+}
+
 // DeserializeEvent is a convenience function that deserializes a StoredEvent to an Event.
 func DeserializeEvent(serializer Serializer, stored StoredEvent) (Event, error) {
 	data, err := serializer.Deserialize(stored.Data, stored.Type)
