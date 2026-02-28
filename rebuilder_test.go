@@ -527,3 +527,231 @@ func TestProjectionRebuilder_RebuildWithFromPosition(t *testing.T) {
 	// Should have processed only events after position 5
 	assert.LessOrEqual(t, len(projection.events), 5)
 }
+
+// --- Additional Rebuilder Coverage Tests ---
+
+func TestProjectionRebuilder_RebuildAsync_BatchModeSuccess(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_ = store.Append(ctx, "Order-bm-"+string(rune('0'+i)),
+			[]interface{}{&OrderCreatedEvent{OrderID: "bm-" + string(rune('0'+i))}})
+	}
+
+	// Use batch-enabled projection
+	projection := newTestAsyncProjection("BatchModeRebuild")
+	projection.EnableBatch()
+
+	err := rebuilder.RebuildAsync(ctx, projection)
+	require.NoError(t, err)
+
+	// Events should be processed via batch
+	assert.GreaterOrEqual(t, len(projection.Events()), 1)
+}
+
+func TestProjectionRebuilder_RebuildAsync_ApplyError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-err-1", []interface{}{&OrderCreatedEvent{OrderID: "err1"}})
+
+	projection := newTestAsyncProjection("AsyncApplyError")
+	projection.SetError(assert.AnError)
+
+	err := rebuilder.RebuildAsync(ctx, projection)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to process batch")
+}
+
+func TestProjectionRebuilder_RebuildAsync_BatchApplyError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-be-1", []interface{}{&OrderCreatedEvent{OrderID: "be1"}})
+
+	projection := newTestAsyncProjection("BatchApplyError")
+	projection.EnableBatch()
+	projection.batchApplyErr = assert.AnError
+
+	err := rebuilder.RebuildAsync(ctx, projection)
+	assert.Error(t, err)
+}
+
+func TestProjectionRebuilder_RebuildInline_ApplyError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-ie-1", []interface{}{&OrderCreatedEvent{OrderID: "ie1"}})
+
+	projection := newTestInlineProjection("InlineApplyError")
+	projection.SetError(assert.AnError)
+
+	err := rebuilder.RebuildInline(ctx, projection)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to process batch")
+}
+
+func TestProjectionRebuilder_RebuildWithNilCheckpointStore(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	rebuilder := NewProjectionRebuilder(store, nil)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-nc-1", []interface{}{&OrderCreatedEvent{OrderID: "nc1"}})
+
+	projection := newTestAsyncProjection("NilCheckpointRebuild")
+
+	err := rebuilder.RebuildAsync(ctx, projection)
+	require.NoError(t, err)
+}
+
+func TestProjectionRebuilder_RebuildWithContextCancel(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint,
+		WithRebuilderBatchSize(2),
+	)
+
+	ctx := context.Background()
+
+	// Add many events
+	for i := 0; i < 50; i++ {
+		_ = store.Append(ctx, "Order-ctx-"+string(rune('0'+i%10)),
+			[]interface{}{&OrderCreatedEvent{OrderID: "ctx"}})
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel() // Cancel immediately
+
+	projection := newTestAsyncProjection("ContextCancelRebuild")
+	err := rebuilder.RebuildAsync(cancelCtx, projection)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestProjectionRebuilder_CheckpointDeleteError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	checkpoint.deleteErr = assert.AnError
+	logger := newTestLogger()
+	rebuilder := NewProjectionRebuilder(store, checkpoint,
+		WithRebuilderLogger(logger),
+	)
+
+	ctx := context.Background()
+	projection := newTestAsyncProjection("CheckpointDeleteErr")
+
+	// Should still succeed (checkpoint delete failure is non-fatal)
+	err := rebuilder.RebuildAsync(ctx, projection)
+	require.NoError(t, err)
+
+	// Logger should warn about failed delete
+	logger.mu.Lock()
+	hasWarn := false
+	for _, msg := range logger.warnLogs {
+		if msg == "Failed to delete checkpoint" {
+			hasWarn = true
+			break
+		}
+	}
+	logger.mu.Unlock()
+	assert.True(t, hasWarn)
+}
+
+func TestProjectionRebuilder_CheckpointSetError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	logger := newTestLogger()
+	rebuilder := NewProjectionRebuilder(store, checkpoint,
+		WithRebuilderLogger(logger),
+	)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-cse-1", []interface{}{&OrderCreatedEvent{OrderID: "cse1"}})
+
+	// Set error after deletion succeeds
+	checkpoint.setErr = assert.AnError
+
+	projection := newTestAsyncProjection("CheckpointSetErr")
+	err := rebuilder.RebuildAsync(ctx, projection)
+	require.NoError(t, err)
+
+	// Logger should warn about failed set
+	logger.mu.Lock()
+	hasWarn := false
+	for _, msg := range logger.warnLogs {
+		if msg == "Failed to save checkpoint" {
+			hasWarn = true
+			break
+		}
+	}
+	logger.mu.Unlock()
+	assert.True(t, hasWarn)
+}
+
+func TestProjectionRebuilder_RebuildWithFilteredEvents(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_ = store.Append(ctx, "Order-filt-"+string(rune('0'+i)),
+			[]interface{}{&OrderCreatedEvent{OrderID: "filt-" + string(rune('0'+i))}})
+	}
+
+	// Projection that only handles a non-existent event type — all events filtered out
+	projection := newTestAsyncProjection("FilteredEventsRebuild", "NonExistentEventType")
+
+	err := rebuilder.RebuildAsync(ctx, projection)
+	require.NoError(t, err)
+
+	// No events should be processed
+	assert.Empty(t, projection.Events())
+}
+
+func TestParallelRebuilder_RebuildAll_WithError(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+	checkpoint := newTestCheckpointStore()
+	rebuilder := NewProjectionRebuilder(store, checkpoint)
+
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-par-err", []interface{}{&OrderCreatedEvent{OrderID: "parerr"}})
+
+	pr := NewParallelRebuilder(rebuilder, 2)
+
+	// One projection that errors
+	proj1 := newTestAsyncProjection("ParallelErr1")
+	proj1.SetError(assert.AnError)
+	proj2 := newTestAsyncProjection("ParallelErr2")
+
+	err := pr.RebuildAll(ctx, []AsyncProjection{proj1, proj2})
+	assert.Error(t, err)
+}

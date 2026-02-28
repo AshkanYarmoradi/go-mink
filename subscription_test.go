@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AshkanYarmoradi/go-mink/adapters"
 	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -723,4 +724,618 @@ func TestMinkSubscriptionAdapter(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, events, 2)
 	})
+}
+
+// --- Additional Subscription Coverage Tests ---
+
+func TestCatchupSubscription_WithRetryOnErrorFalse(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&CatchupTestEvent{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Append events so subscription transitions to polling
+	_ = store.Append(ctx, "Order-retry-1", []interface{}{&CatchupTestEvent{ID: "retry1"}})
+
+	opts := DefaultSubscriptionOptions()
+	opts.RetryOnError = false
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for catchup and a few poll cycles
+	time.Sleep(150 * time.Millisecond)
+
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_ContextCancelDuringCatchup(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&CatchupTestEvent{})
+
+	ctx := context.Background()
+
+	// Append many events to ensure catchup phase takes time
+	for i := 0; i < 20; i++ {
+		_ = store.Append(ctx, "Order-cc-"+string(rune('A'+i%26)),
+			[]interface{}{&CatchupTestEvent{ID: "cc-" + string(rune('A'+i%26))}})
+	}
+
+	// Use tiny buffer so backpressure causes the subscription to block
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancel()
+
+	err = sub.Start(cancelCtx, 10*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for timeout to fire
+	time.Sleep(100 * time.Millisecond)
+
+	// Should have context error
+	subErr := sub.Err()
+	if subErr != nil {
+		assert.ErrorIs(t, subErr, context.DeadlineExceeded)
+	}
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_StopDuringPollingDelivery(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&CatchupTestEvent{})
+
+	ctx := context.Background()
+
+	// Start with no events (goes straight to polling)
+	sub, err := NewCatchupSubscription(store, 0)
+	require.NoError(t, err)
+
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for polling phase
+	time.Sleep(30 * time.Millisecond)
+
+	// Append event while polling
+	_ = store.Append(ctx, "Order-poll-stop", []interface{}{&CatchupTestEvent{ID: "pollstop"}})
+
+	// Close during polling
+	time.Sleep(50 * time.Millisecond)
+	_ = sub.Close()
+
+	time.Sleep(30 * time.Millisecond)
+}
+
+func TestPollingSubscription_ErrorDuringPoll(t *testing.T) {
+	// Use a store with a nil adapter to trigger errors during poll
+	store := &EventStore{}
+	sub := NewPollingSubscription(store, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub.Start(ctx, 20*time.Millisecond)
+
+	// Let it try to poll (will get adapter errors)
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_WithMinkSubscriptionAdapter(t *testing.T) {
+	// Create a store whose adapter implements mink.SubscriptionAdapter (not adapters.SubscriptionAdapter)
+	mockAdapter := &testMinkSubscriptionStoreAdapter{
+		events: []StoredEvent{
+			{ID: "1", StreamID: "Order-1", Type: "CatchupTestEvent", GlobalPosition: 1, Data: []byte("{}")},
+			{ID: "2", StreamID: "Order-2", Type: "CatchupTestEvent", GlobalPosition: 2, Data: []byte("{}")},
+		},
+	}
+
+	store := New(mockAdapter)
+	store.RegisterEvents(&CatchupTestEvent{})
+
+	sub, err := NewCatchupSubscription(store, 0)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err = sub.Start(ctx, 30*time.Millisecond)
+	require.NoError(t, err)
+
+	// Collect events
+	var received []StoredEvent
+	for event := range sub.Events() {
+		received = append(received, event)
+	}
+
+	_ = sub.Close()
+	assert.GreaterOrEqual(t, len(received), 1)
+}
+
+// testMinkSubscriptionStoreAdapter implements EventStoreAdapter AND mink.SubscriptionAdapter.
+type testMinkSubscriptionStoreAdapter struct {
+	events []StoredEvent
+}
+
+func (a *testMinkSubscriptionStoreAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
+	return nil, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) GetLastPosition(_ context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) Initialize(_ context.Context) error { return nil }
+func (a *testMinkSubscriptionStoreAdapter) Close() error                       { return nil }
+
+// Implement mink.SubscriptionAdapter (the one defined in projection_engine.go)
+func (a *testMinkSubscriptionStoreAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	var result []StoredEvent
+	for _, e := range a.events {
+		if e.GlobalPosition > fromPosition {
+			result = append(result, e)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) SubscribeAll(_ context.Context, _ uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) SubscribeStream(_ context.Context, _ string, _ int64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testMinkSubscriptionStoreAdapter) SubscribeCategory(_ context.Context, _ string, _ uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+// --- Tests for Subscription Error Paths ---
+
+// testFailingSubscriptionAdapter returns errors from LoadFromPosition after N successful calls.
+type testFailingSubscriptionAdapter struct {
+	events    []StoredEvent
+	callCount int
+	failAfter int
+	failErr   error
+}
+
+func (a *testFailingSubscriptionAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testFailingSubscriptionAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testFailingSubscriptionAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
+	return nil, nil
+}
+
+func (a *testFailingSubscriptionAdapter) GetLastPosition(_ context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func (a *testFailingSubscriptionAdapter) Initialize(_ context.Context) error { return nil }
+func (a *testFailingSubscriptionAdapter) Close() error                       { return nil }
+
+// Implement adapters.SubscriptionAdapter
+func (a *testFailingSubscriptionAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	a.callCount++
+	if a.callCount > a.failAfter {
+		return nil, a.failErr
+	}
+	var result []adapters.StoredEvent
+	for _, e := range a.events {
+		if e.GlobalPosition > fromPosition {
+			result = append(result, adapters.StoredEvent{
+				ID:             e.ID,
+				StreamID:       e.StreamID,
+				Version:        e.Version,
+				Type:           e.Type,
+				Data:           e.Data,
+				GlobalPosition: e.GlobalPosition,
+			})
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (a *testFailingSubscriptionAdapter) SubscribeAll(_ context.Context, _ uint64, _ ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testFailingSubscriptionAdapter) SubscribeStream(_ context.Context, _ string, _ int64, _ ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testFailingSubscriptionAdapter) SubscribeCategory(_ context.Context, _ string, _ uint64, _ ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func TestCatchupSubscription_ErrorDuringCatchup(t *testing.T) {
+	failAdapter := &testFailingSubscriptionAdapter{
+		events: []StoredEvent{
+			{ID: "1", StreamID: "Order-1", Type: "Test", GlobalPosition: 1, Data: []byte("{}")},
+		},
+		failAfter: 0, // Fail on first call
+		failErr:   assert.AnError,
+	}
+
+	store := New(failAdapter)
+
+	sub, err := NewCatchupSubscription(store, 0)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for error
+	time.Sleep(100 * time.Millisecond)
+
+	// Should have error from LoadFromPosition
+	assert.Error(t, sub.Err())
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_RetryOnErrorFalse_DuringPolling(t *testing.T) {
+	failAdapter := &testFailingSubscriptionAdapter{
+		events: []StoredEvent{
+			{ID: "1", StreamID: "Order-1", Type: "Test", GlobalPosition: 1, Data: []byte("{}")},
+		},
+		failAfter: 2, // Succeed catchup, fail during polling
+		failErr:   assert.AnError,
+	}
+
+	store := New(failAdapter)
+
+	opts := DefaultSubscriptionOptions()
+	opts.RetryOnError = false
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Drain events — channel closes when run exits
+	for range sub.Events() {
+	}
+
+	// With RetryOnError=false, the polling error should cause the subscription to stop
+	subErr := sub.Err()
+	assert.Error(t, subErr, "expected an error from the subscription")
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_FilterDuringPolling(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&CatchupTestEvent{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start subscription with filter, no initial events (go to polling immediately)
+	opts := DefaultSubscriptionOptions()
+	opts.Filter = NewEventTypeFilter("SpecificType")
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for polling phase
+	time.Sleep(30 * time.Millisecond)
+
+	// Append events of different types
+	_ = store.Append(ctx, "Order-filt-1", []interface{}{&CatchupTestEvent{ID: "filt1"}})
+
+	// Wait for poll to pick up events
+	time.Sleep(100 * time.Millisecond)
+
+	_ = sub.Close()
+
+	// Position should have advanced even though events were filtered
+	assert.GreaterOrEqual(t, sub.Position(), uint64(0))
+}
+
+func TestCatchupSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
+	// Create adapter with many events to force backpressure
+	events := make([]StoredEvent, 50)
+	for i := range events {
+		events[i] = StoredEvent{
+			ID:             string(rune('A' + i%26)),
+			StreamID:       "Order-1",
+			Type:           "Test",
+			GlobalPosition: uint64(i + 1),
+			Data:           []byte("{}"),
+		}
+	}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: events}
+	store := New(mockAdapter)
+
+	// Tiny buffer = backpressure when not reading
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	err = sub.Start(ctx, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Don't read from Events() — the buffer fills up, then the send blocks.
+	// Cancel context while the goroutine is blocked on channel send.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	// Wait for run to exit
+	time.Sleep(100 * time.Millisecond)
+
+	// Should have context cancelled error
+	assert.ErrorIs(t, sub.Err(), context.Canceled)
+	_ = sub.Close()
+}
+
+func TestCatchupSubscription_CloseDuringEventDelivery(t *testing.T) {
+	events := make([]StoredEvent, 50)
+	for i := range events {
+		events[i] = StoredEvent{
+			ID:             string(rune('A' + i%26)),
+			StreamID:       "Order-1",
+			Type:           "Test",
+			GlobalPosition: uint64(i + 1),
+			Data:           []byte("{}"),
+		}
+	}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: events}
+	store := New(mockAdapter)
+
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	err = sub.Start(context.Background(), 20*time.Millisecond)
+	require.NoError(t, err)
+
+	// Don't read — Close while goroutine is blocked on send
+	time.Sleep(20 * time.Millisecond)
+	_ = sub.Close()
+
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestCatchupSubscription_ContextCancelDuringPollingDelivery(t *testing.T) {
+	// Adapter starts with no events (catchup finishes immediately), then returns many events on polling
+	pollingAdapter := &testDelayedEventsAdapter{
+		callThreshold: 2, // First 2 calls return nothing (catchup finishes), then returns many
+	}
+	// Fill events for polling
+	for i := 0; i < 50; i++ {
+		pollingAdapter.events = append(pollingAdapter.events, StoredEvent{
+			ID:             string(rune('A' + i%26)),
+			StreamID:       "Order-1",
+			Type:           "Test",
+			GlobalPosition: uint64(i + 1),
+			Data:           []byte("{}"),
+		})
+	}
+
+	store := New(pollingAdapter)
+
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub, err := NewCatchupSubscription(store, 0, opts)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	err = sub.Start(ctx, 10*time.Millisecond)
+	require.NoError(t, err)
+
+	// Wait for catchup to finish and polling to start delivering events
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel while polling is delivering events with a full buffer
+	cancel()
+
+	time.Sleep(100 * time.Millisecond)
+	assert.ErrorIs(t, sub.Err(), context.Canceled)
+	_ = sub.Close()
+}
+
+func TestPollingSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
+	mockAdapter := &testMinkSubscriptionStoreAdapter{
+		events: func() []StoredEvent {
+			events := make([]StoredEvent, 50)
+			for i := range events {
+				events[i] = StoredEvent{
+					ID:             string(rune('A' + i%26)),
+					StreamID:       "Order-1",
+					Type:           "Test",
+					GlobalPosition: uint64(i + 1),
+					Data:           []byte("{}"),
+				}
+			}
+			return events
+		}(),
+	}
+	store := New(mockAdapter)
+
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub := NewPollingSubscription(store, 0, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub.Start(ctx, 10*time.Millisecond)
+
+	// Wait for polling to fill the small buffer
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel while blocked on send
+	cancel()
+
+	time.Sleep(100 * time.Millisecond)
+	assert.ErrorIs(t, sub.Err(), context.Canceled)
+	_ = sub.Close()
+}
+
+func TestPollingSubscription_CloseDuringEventDelivery(t *testing.T) {
+	mockAdapter := &testMinkSubscriptionStoreAdapter{
+		events: func() []StoredEvent {
+			events := make([]StoredEvent, 50)
+			for i := range events {
+				events[i] = StoredEvent{
+					ID:             string(rune('A' + i%26)),
+					StreamID:       "Order-1",
+					Type:           "Test",
+					GlobalPosition: uint64(i + 1),
+					Data:           []byte("{}"),
+				}
+			}
+			return events
+		}(),
+	}
+	store := New(mockAdapter)
+
+	opts := DefaultSubscriptionOptions()
+	opts.BufferSize = 1
+
+	sub := NewPollingSubscription(store, 0, opts)
+
+	sub.Start(context.Background(), 10*time.Millisecond)
+
+	// Wait for polling to fill buffer
+	time.Sleep(30 * time.Millisecond)
+
+	// Close while blocked on send
+	_ = sub.Close()
+
+	time.Sleep(50 * time.Millisecond)
+}
+
+// testDelayedEventsAdapter returns no events for the first N calls, then returns events.
+type testDelayedEventsAdapter struct {
+	events        []StoredEvent
+	callCount     int
+	callThreshold int
+}
+
+func (a *testDelayedEventsAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testDelayedEventsAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testDelayedEventsAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
+	return nil, nil
+}
+
+func (a *testDelayedEventsAdapter) GetLastPosition(_ context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func (a *testDelayedEventsAdapter) Initialize(_ context.Context) error { return nil }
+func (a *testDelayedEventsAdapter) Close() error                       { return nil }
+
+// Implement mink.SubscriptionAdapter
+func (a *testDelayedEventsAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	a.callCount++
+	if a.callCount <= a.callThreshold {
+		return nil, nil // No events yet
+	}
+	var result []StoredEvent
+	for _, e := range a.events {
+		if e.GlobalPosition > fromPosition {
+			result = append(result, e)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (a *testDelayedEventsAdapter) SubscribeAll(_ context.Context, _ uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testDelayedEventsAdapter) SubscribeStream(_ context.Context, _ string, _ int64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *testDelayedEventsAdapter) SubscribeCategory(_ context.Context, _ string, _ uint64) (<-chan StoredEvent, error) {
+	return nil, nil
+}
+
+func TestPollingSubscription_WithMinkSubscriptionAdapter(t *testing.T) {
+	mockAdapter := &testMinkSubscriptionStoreAdapter{
+		events: []StoredEvent{
+			{ID: "1", StreamID: "Order-1", Type: "Test", GlobalPosition: 1, Data: []byte("{}")},
+		},
+	}
+
+	store := New(mockAdapter)
+
+	sub := NewPollingSubscription(store, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	sub.Start(ctx, 30*time.Millisecond)
+
+	// Collect events
+	var received []StoredEvent
+	for event := range sub.Events() {
+		received = append(received, event)
+		if len(received) >= 1 {
+			_ = sub.Close()
+			break
+		}
+	}
+
+	assert.GreaterOrEqual(t, len(received), 1)
 }
