@@ -333,169 +333,57 @@ func AuditMiddleware(log AuditLog) Middleware {
 
 ## Event Versioning & Upcasting
 
-Handle schema evolution without breaking existing events.
+Handle schema evolution without breaking existing events. For comprehensive documentation, see the dedicated [Event Versioning](versioning) page.
 
-### Event Schema Versions
+### How It Works
+
+Schema version is stored in `Metadata.Custom["$schema_version"]` — no database migration needed. Events without a version are treated as version 1.
 
 ```go
-// Versioned event with schema version
-type VersionedEvent struct {
-    Type          string
-    SchemaVersion int
-    Data          []byte
+// Define upcasters — pure byte-level transformations
+type orderCreatedV1ToV2 struct{}
+
+func (u orderCreatedV1ToV2) EventType() string { return "OrderCreated" }
+func (u orderCreatedV1ToV2) FromVersion() int  { return 1 }
+func (u orderCreatedV1ToV2) ToVersion() int    { return 2 }
+func (u orderCreatedV1ToV2) Upcast(data []byte, metadata mink.Metadata) ([]byte, error) {
+    var m map[string]interface{}
+    json.Unmarshal(data, &m)
+    m["currency"] = "USD"
+    return json.Marshal(m)
 }
 
-// Event with version annotation
-type OrderCreatedV1 struct {
-    OrderID    string `json:"orderId"`
-    CustomerID string `json:"customerId"`
-}
+// Register with EventStore
+chain := mink.NewUpcasterChain()
+chain.Register(orderCreatedV1ToV2{})
+chain.Validate() // check for gaps
 
-type OrderCreatedV2 struct {
-    OrderID    string `json:"orderId"`
-    CustomerID string `json:"customerId"`
-    Currency   string `json:"currency"`   // New in V2
-    Channel    string `json:"channel"`    // New in V2
-}
+store := mink.New(adapter, mink.WithUpcasters(chain))
 
-// Current version alias
-type OrderCreated = OrderCreatedV2
+// Old events are transparently upcasted during Load/LoadAggregate
+// New events are stamped with $schema_version during Append/SaveAggregate
 ```
 
-### Upcaster Interface
+### Schema Compatibility Checking
 
 ```go
-// Upcaster transforms old event versions to current
-type Upcaster interface {
-    // Event type this upcaster handles
-    EventType() string
-    
-    // Source version
-    FromVersion() int
-    
-    // Target version  
-    ToVersion() int
-    
-    // Transform event data
-    Upcast(data []byte) ([]byte, error)
-}
+registry := mink.NewSchemaRegistry()
+registry.Register("OrderCreated", mink.SchemaDefinition{
+    Version: 1,
+    Fields: []mink.FieldDefinition{
+        {Name: "order_id", Type: "string", Required: true},
+    },
+})
+registry.Register("OrderCreated", mink.SchemaDefinition{
+    Version: 2,
+    Fields: []mink.FieldDefinition{
+        {Name: "order_id", Type: "string", Required: true},
+        {Name: "currency", Type: "string", Required: false},
+    },
+})
 
-// Example upcaster
-type OrderCreatedV1ToV2 struct{}
-
-func (u *OrderCreatedV1ToV2) EventType() string  { return "OrderCreated" }
-func (u *OrderCreatedV1ToV2) FromVersion() int   { return 1 }
-func (u *OrderCreatedV1ToV2) ToVersion() int     { return 2 }
-
-func (u *OrderCreatedV1ToV2) Upcast(data []byte) ([]byte, error) {
-    var v1 OrderCreatedV1
-    if err := json.Unmarshal(data, &v1); err != nil {
-        return nil, err
-    }
-    
-    v2 := OrderCreatedV2{
-        OrderID:    v1.OrderID,
-        CustomerID: v1.CustomerID,
-        Currency:   "USD",      // Default for old events
-        Channel:    "unknown",  // Default for old events
-    }
-    
-    return json.Marshal(v2)
-}
-```
-
-### Upcaster Chain
-
-```go
-// UpcasterChain applies upcasters in sequence
-type UpcasterChain struct {
-    upcasters map[string][]Upcaster // eventType -> upcasters (ordered by version)
-}
-
-func NewUpcasterChain() *UpcasterChain
-
-func (c *UpcasterChain) Register(upcaster Upcaster) {
-    eventType := upcaster.EventType()
-    c.upcasters[eventType] = append(c.upcasters[eventType], upcaster)
-    // Sort by FromVersion
-    sort.Slice(c.upcasters[eventType], func(i, j int) bool {
-        return c.upcasters[eventType][i].FromVersion() < c.upcasters[eventType][j].FromVersion()
-    })
-}
-
-func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte) ([]byte, int, error) {
-    upcasters := c.upcasters[eventType]
-    currentVersion := fromVersion
-    currentData := data
-    
-    for _, upcaster := range upcasters {
-        if upcaster.FromVersion() == currentVersion {
-            var err error
-            currentData, err = upcaster.Upcast(currentData)
-            if err != nil {
-                return nil, 0, err
-            }
-            currentVersion = upcaster.ToVersion()
-        }
-    }
-    
-    return currentData, currentVersion, nil
-}
-
-// Integration with serializer
-type UpcastingSerializer struct {
-    inner   Serializer
-    chain   *UpcasterChain
-}
-
-func (s *UpcastingSerializer) Deserialize(data []byte, eventType string, version int) (interface{}, error) {
-    // Upcast to latest version
-    upcastedData, _, err := s.chain.Upcast(eventType, version, data)
-    if err != nil {
-        return nil, err
-    }
-    
-    return s.inner.Deserialize(upcastedData, eventType)
-}
-```
-
-### Schema Registry
-
-```go
-// SchemaRegistry manages event schemas
-type SchemaRegistry interface {
-    // Register schema for event type
-    Register(eventType string, version int, schema Schema) error
-    
-    // Get schema
-    GetSchema(eventType string, version int) (Schema, error)
-    
-    // Get latest version
-    GetLatestVersion(eventType string) (int, error)
-    
-    // Check compatibility between versions
-    CheckCompatibility(eventType string, oldVersion, newVersion int) (Compatibility, error)
-}
-
-type Schema struct {
-    Version     int
-    JSONSchema  json.RawMessage
-    Fields      []FieldDef
-    CreatedAt   time.Time
-}
-
-type Compatibility int
-const (
-    FullyCompatible Compatibility = iota   // Both directions work
-    BackwardCompatible                      // New can read old
-    ForwardCompatible                       // Old can read new
-    Breaking                                // Incompatible
-)
-
-// CLI commands
-// $ mink schema register OrderCreated --version 2 --schema ./schemas/order_created_v2.json
-// $ mink schema check OrderCreated --from 1 --to 2
-// $ mink schema list OrderCreated
+compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
+// SchemaFullyCompatible | SchemaBackwardCompatible | SchemaForwardCompatible | SchemaBreaking
 ```
 
 ---

@@ -58,6 +58,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `postgres.WithSagaSchema()` - Configure PostgreSQL schema
 - `postgres.WithSagaTable()` - Configure table name
 
+#### Event Versioning & Upcasting (Phase 5)
+- `Upcaster` interface - Transform event data from one schema version to the next
+- `UpcasterChain` - Thread-safe registry with gap/duplicate validation
+- `NewUpcasterChain()` - Create empty upcaster chain
+- `UpcasterChain.Register()` - Register upcaster with version transition validation
+- `UpcasterChain.Validate()` - Check chain for contiguous version coverage
+- `UpcasterChain.Upcast()` - Apply upcasters in sequence from source to latest version
+- `UpcasterChain.HasUpcasters()` - Check if upcasters exist for event type
+- `UpcasterChain.LatestVersion()` - Get latest schema version for event type
+- `UpcasterChain.RegisteredEventTypes()` - List event types with upcasters
+- `GetSchemaVersion()` - Extract schema version from event metadata (defaults to 1)
+- `SetSchemaVersion()` - Set schema version in event metadata
+- `WithUpcasters()` - EventStore option to configure upcaster chain
+- `EventStore.RegisterUpcasters()` - Convenience method to register upcasters
+- Automatic upcasting during `Load()`, `LoadFrom()`, and `LoadAggregate()`
+- Automatic schema version stamping during `Append()` and `SaveAggregate()`
+- Zero overhead when no upcasters configured (nil chain short-circuit)
+
+#### UpcastingSerializer (Phase 5)
+- `UpcastingSerializer` - Serializer decorator that applies upcasting on deserialize
+- `NewUpcastingSerializer()` - Create decorator wrapping any Serializer
+- `Serialize()` - Pass-through to inner serializer
+- `Deserialize()` - Upcast from DefaultSchemaVersion before deserializing
+- `DeserializeWithVersion()` - Upcast from explicit version with metadata context
+- `Inner()` - Access the wrapped serializer
+- `Chain()` - Access the upcaster chain
+- `SerializeEventWithVersion()` - Convenience function to serialize with version stamp
+
+#### Schema Registry (Phase 5)
+- `SchemaRegistry` - In-memory registry for event schema definitions
+- `NewSchemaRegistry()` - Create empty schema registry
+- `SchemaRegistry.Register()` - Register schema definition for event type and version
+- `SchemaRegistry.GetSchema()` - Retrieve specific schema version
+- `SchemaRegistry.GetLatestVersion()` - Get highest registered version
+- `SchemaRegistry.CheckCompatibility()` - Compare schema versions
+- `SchemaRegistry.RegisteredEventTypes()` - List event types with schemas
+- `SchemaCompatibility` enum - FullyCompatible, BackwardCompatible, ForwardCompatible, Breaking
+- `SchemaDefinition` - Schema metadata with version, fields, and optional JSON Schema
+- `FieldDefinition` - Field metadata with name, type, and required flag
+
+#### Versioning Errors (Phase 5)
+- `ErrUpcastFailed` - Sentinel error for upcasting failures
+- `ErrSchemaVersionGap` - Sentinel error for gaps in upcaster chain
+- `ErrIncompatibleSchema` - Sentinel error for schema incompatibility
+- `ErrSchemaNotFound` - Sentinel error for missing schema
+- `UpcastError` - Typed error with EventType, FromVersion, ToVersion, Cause
+- `SchemaVersionGapError` - Typed error with EventType, MissingVersion, ExpectedVersion
+- `IncompatibleSchemaError` - Typed error with EventType, versions, Compatibility, Reason
+
 #### Saga Testing Utilities (`testing/sagas`)
 - `MinkSagaAdapter` - Adapter to use mink sagas with test fixtures
 - `NewMinkSagaAdapter()` - Create adapter from mink.Saga

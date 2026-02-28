@@ -34,6 +34,7 @@ Phase 5 (Security & Advanced Patterns) progress:
 - ✅ Saga testing utilities
 - ✅ CLI tool with code generation & diagnostics (84.9% coverage)
 - ✅ Outbox pattern for reliable messaging (Webhook, Kafka, SNS publishers)
+- ✅ Event versioning & upcasting (schema evolution without DB migration)
 - 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
 - 🔜 GDPR compliance (crypto-shredding)
 
@@ -80,6 +81,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 📦 **MessagePack** | ✅ v0.4.0 | Alternative serializer for performance |
 | 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
 | � **Sagas** | ✅ v0.5.0 | Process manager for long-running workflows |
+| 🔄 **Event Versioning** | ✅ v0.5.0 | Schema evolution with upcasting (zero DB migration) |
 | 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
 | 📤 **Outbox Pattern** | ✅ v0.5.0 | Reliable event publishing to external systems |
 
@@ -314,6 +316,41 @@ processor.Start(ctx)
 defer processor.Stop(ctx)
 ```
 
+## Event Versioning & Upcasting (v0.5.0)
+
+```go
+import (
+    "encoding/json"
+    "github.com/AshkanYarmoradi/go-mink"
+)
+
+// Define upcaster: v1 → v2 (add Currency field)
+type orderCreatedV1ToV2 struct{}
+
+func (u orderCreatedV1ToV2) EventType() string { return "OrderCreated" }
+func (u orderCreatedV1ToV2) FromVersion() int  { return 1 }
+func (u orderCreatedV1ToV2) ToVersion() int    { return 2 }
+func (u orderCreatedV1ToV2) Upcast(data []byte, m mink.Metadata) ([]byte, error) {
+    var obj map[string]interface{}
+    json.Unmarshal(data, &obj)
+    obj["currency"] = "USD" // default for old events
+    return json.Marshal(obj)
+}
+
+// Register with event store — old events upcasted transparently on load
+chain := mink.NewUpcasterChain()
+chain.Register(orderCreatedV1ToV2{})
+
+store := mink.New(adapter, mink.WithUpcasters(chain))
+
+// Schema compatibility checking
+registry := mink.NewSchemaRegistry()
+registry.Register("OrderCreated", mink.SchemaDefinition{Version: 1, Fields: v1Fields})
+registry.Register("OrderCreated", mink.SchemaDefinition{Version: 2, Fields: v2Fields})
+compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
+// compat == SchemaBackwardCompatible
+```
+
 ## Installation
 
 ```bash
@@ -334,7 +371,8 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 | [API Design](docs/api-design.md) | Public API reference |
 | [Roadmap](docs/roadmap.md) | Development phases |
 | [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox |
-| [Security](docs/security.md) | Encryption, GDPR, Versioning |
+| [Event Versioning](docs/versioning.md) | Schema evolution & upcasting |
+| [Security](docs/security.md) | Encryption, GDPR compliance |
 | [Testing](docs/testing.md) | BDD fixtures and test utilities |
 
 ## License

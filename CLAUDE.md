@@ -53,7 +53,7 @@ Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Eve
 
 ## Key File Locations
 
-All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors).
+All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking).
 
 Adapters:
 - `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, HealthChecker, Migrator, plus CLI adapters: StreamQueryAdapter, DiagnosticAdapter, SchemaProvider)
@@ -66,7 +66,7 @@ Other packages:
 - `serializer/{msgpack,protobuf}/` - Alternative serializers
 - `testing/{bdd,assertions,projections,sagas,containers}/` - Test utilities
 - `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
-- `examples/` - Example projects
+- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, etc.)
 
 ## Core Interfaces
 
@@ -114,6 +114,8 @@ Typed errors implement `Is()` for `errors.Is()` compatibility:
 // Sentinel: errors.Is(err, mink.ErrConcurrencyConflict)
 // Typed: err.(*mink.ConcurrencyError).StreamID for details
 // Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError, ProjectionError
+// Versioning: ErrUpcastFailed, ErrSchemaVersionGap, ErrIncompatibleSchema, ErrSchemaNotFound
+// Typed: UpcastError, SchemaVersionGapError, IncompatibleSchemaError
 ```
 
 ## Version Constants
@@ -166,11 +168,54 @@ container := containers.StartPostgres(t)
 db := container.MustDB(ctx)
 ```
 
+## Event Versioning & Upcasting
+
+Schema version is stored in `Metadata.Custom["$schema_version"]` — no DB column changes needed. Absent key defaults to version 1 (backward compatible with all existing events).
+
+```go
+// Upcaster interface — transforms raw bytes from one version to the next
+type Upcaster interface {
+    EventType() string
+    FromVersion() int
+    ToVersion() int   // Must equal FromVersion() + 1
+    Upcast(data []byte, metadata Metadata) ([]byte, error)
+}
+
+// UpcasterChain — thread-safe registry, validates no gaps/duplicates
+chain := mink.NewUpcasterChain()
+chain.Register(myUpcaster)  // v1→v2
+chain.Register(myUpcaster2) // v2→v3
+chain.Validate()            // checks for gaps
+
+// EventStore integration — zero overhead when no upcasters registered
+store := mink.New(adapter, mink.WithUpcasters(chain))
+// Or register after creation:
+store.RegisterUpcasters(myUpcaster, myUpcaster2)
+
+// UpcastingSerializer — decorator wrapping any Serializer
+s := mink.NewUpcastingSerializer(inner, chain)
+
+// SchemaRegistry — optional compatibility checking
+registry := mink.NewSchemaRegistry()
+registry.Register("OrderCreated", mink.SchemaDefinition{Version: 1, Fields: ...})
+compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
+// Returns: SchemaFullyCompatible, SchemaBackwardCompatible, SchemaForwardCompatible, SchemaBreaking
+
+// Metadata helpers
+version := mink.GetSchemaVersion(metadata)       // defaults to 1
+metadata = mink.SetSchemaVersion(metadata, 3)
+```
+
+Key design decisions:
+- Upcasters operate on raw `[]byte` — serializer-agnostic, no context, single-event output
+- `EventStore.upcasters` is `nil` by default — all code paths short-circuit with zero overhead
+- Events are automatically upcasted during `Load`/`LoadAggregate` and stamped with latest version during `Append`/`SaveAggregate`
+
 ## Current Development Phase
 
 **Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
-- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics)
-- Remaining: Event versioning & upcasting, field-level encryption, GDPR compliance
+- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics), Event versioning & upcasting
+- Remaining: Field-level encryption, GDPR compliance
 
 ## PostgreSQL Schema
 
