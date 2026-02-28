@@ -277,4 +277,3 @@ func submitOrder(ctx context.Context, store *mink.EventStore, tracer trace.Trace
 
 	return nil
 }
-
