@@ -50,6 +50,30 @@ func (l *testLogger) Error(msg string, args ...interface{}) {
 	l.errorLogs = append(l.errorLogs, msg)
 }
 
+// hasLogMessage checks whether a log message exists at the given level.
+// level must be one of "debug", "info", "warn", "error".
+func (l *testLogger) hasLogMessage(level string, message string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var logs []string
+	switch level {
+	case "debug":
+		logs = l.debugLogs
+	case "info":
+		logs = l.infoLogs
+	case "warn":
+		logs = l.warnLogs
+	case "error":
+		logs = l.errorLogs
+	}
+	for _, msg := range logs {
+		if msg == message {
+			return true
+		}
+	}
+	return false
+}
+
 // =============================================================================
 // Shared Test CheckpointStore
 // =============================================================================

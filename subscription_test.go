@@ -682,17 +682,8 @@ type testMinkSubscriptionAdapter struct {
 	events []StoredEvent
 }
 
-func (m *testMinkSubscriptionAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	var result []StoredEvent
-	for _, e := range m.events {
-		if e.GlobalPosition > fromPosition {
-			result = append(result, e)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
+func (m *testMinkSubscriptionAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	return filterEventsByPosition(m.events, fromPosition, limit), nil
 }
 
 func (m *testMinkSubscriptionAdapter) SubscribeAll(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error) {
@@ -866,34 +857,48 @@ func TestCatchupSubscription_WithMinkSubscriptionAdapter(t *testing.T) {
 	assert.GreaterOrEqual(t, len(received), 1)
 }
 
-// testMinkSubscriptionStoreAdapter implements EventStoreAdapter AND mink.SubscriptionAdapter.
-type testMinkSubscriptionStoreAdapter struct {
-	events []StoredEvent
-}
+// stubEventStoreAdapter provides no-op implementations of all adapters.EventStoreAdapter methods.
+// Embed it in test adapters to avoid duplicating these stubs.
+type stubEventStoreAdapter struct{}
 
-func (a *testMinkSubscriptionStoreAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
+func (stubEventStoreAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
 	return nil, nil
 }
 
-func (a *testMinkSubscriptionStoreAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
+func (stubEventStoreAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
 	return nil, nil
 }
 
-func (a *testMinkSubscriptionStoreAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
+func (stubEventStoreAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
 	return nil, nil
 }
 
-func (a *testMinkSubscriptionStoreAdapter) GetLastPosition(_ context.Context) (uint64, error) {
+func (stubEventStoreAdapter) GetLastPosition(_ context.Context) (uint64, error) {
 	return 0, nil
 }
 
-func (a *testMinkSubscriptionStoreAdapter) Initialize(_ context.Context) error { return nil }
-func (a *testMinkSubscriptionStoreAdapter) Close() error                       { return nil }
+func (stubEventStoreAdapter) Initialize(_ context.Context) error { return nil }
+func (stubEventStoreAdapter) Close() error                       { return nil }
 
-// Implement mink.SubscriptionAdapter (the one defined in projection_engine.go)
-func (a *testMinkSubscriptionStoreAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+// makeTestStoredEvents creates a slice of StoredEvent for testing.
+func makeTestStoredEvents(count int) []StoredEvent {
+	events := make([]StoredEvent, count)
+	for i := range events {
+		events[i] = StoredEvent{
+			ID:             string(rune('A' + i%26)),
+			StreamID:       "Order-1",
+			Type:           "Test",
+			GlobalPosition: uint64(i + 1),
+			Data:           []byte("{}"),
+		}
+	}
+	return events
+}
+
+// filterEventsByPosition returns events whose GlobalPosition > fromPosition, up to limit.
+func filterEventsByPosition(events []StoredEvent, fromPosition uint64, limit int) []StoredEvent {
 	var result []StoredEvent
-	for _, e := range a.events {
+	for _, e := range events {
 		if e.GlobalPosition > fromPosition {
 			result = append(result, e)
 			if len(result) >= limit {
@@ -901,7 +906,18 @@ func (a *testMinkSubscriptionStoreAdapter) LoadFromPosition(_ context.Context, f
 			}
 		}
 	}
-	return result, nil
+	return result
+}
+
+// testMinkSubscriptionStoreAdapter implements EventStoreAdapter AND mink.SubscriptionAdapter.
+type testMinkSubscriptionStoreAdapter struct {
+	stubEventStoreAdapter
+	events []StoredEvent
+}
+
+// Implement mink.SubscriptionAdapter (the one defined in projection_engine.go)
+func (a *testMinkSubscriptionStoreAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
+	return filterEventsByPosition(a.events, fromPosition, limit), nil
 }
 
 func (a *testMinkSubscriptionStoreAdapter) SubscribeAll(_ context.Context, _ uint64) (<-chan StoredEvent, error) {
@@ -920,30 +936,12 @@ func (a *testMinkSubscriptionStoreAdapter) SubscribeCategory(_ context.Context, 
 
 // testFailingSubscriptionAdapter returns errors from LoadFromPosition after N successful calls.
 type testFailingSubscriptionAdapter struct {
+	stubEventStoreAdapter
 	events    []StoredEvent
 	callCount int
 	failAfter int
 	failErr   error
 }
-
-func (a *testFailingSubscriptionAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
-	return nil, nil
-}
-
-func (a *testFailingSubscriptionAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
-	return nil, nil
-}
-
-func (a *testFailingSubscriptionAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
-	return nil, nil
-}
-
-func (a *testFailingSubscriptionAdapter) GetLastPosition(_ context.Context) (uint64, error) {
-	return 0, nil
-}
-
-func (a *testFailingSubscriptionAdapter) Initialize(_ context.Context) error { return nil }
-func (a *testFailingSubscriptionAdapter) Close() error                       { return nil }
 
 // Implement adapters.SubscriptionAdapter
 func (a *testFailingSubscriptionAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
@@ -1078,17 +1076,7 @@ func TestCatchupSubscription_FilterDuringPolling(t *testing.T) {
 
 func TestCatchupSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
 	// Create adapter with many events to force backpressure
-	events := make([]StoredEvent, 50)
-	for i := range events {
-		events[i] = StoredEvent{
-			ID:             string(rune('A' + i%26)),
-			StreamID:       "Order-1",
-			Type:           "Test",
-			GlobalPosition: uint64(i + 1),
-			Data:           []byte("{}"),
-		}
-	}
-	mockAdapter := &testMinkSubscriptionStoreAdapter{events: events}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: makeTestStoredEvents(50)}
 	store := New(mockAdapter)
 
 	// Tiny buffer = backpressure when not reading
@@ -1116,17 +1104,7 @@ func TestCatchupSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
 }
 
 func TestCatchupSubscription_CloseDuringEventDelivery(t *testing.T) {
-	events := make([]StoredEvent, 50)
-	for i := range events {
-		events[i] = StoredEvent{
-			ID:             string(rune('A' + i%26)),
-			StreamID:       "Order-1",
-			Type:           "Test",
-			GlobalPosition: uint64(i + 1),
-			Data:           []byte("{}"),
-		}
-	}
-	mockAdapter := &testMinkSubscriptionStoreAdapter{events: events}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: makeTestStoredEvents(50)}
 	store := New(mockAdapter)
 
 	opts := DefaultSubscriptionOptions()
@@ -1149,16 +1127,7 @@ func TestCatchupSubscription_ContextCancelDuringPollingDelivery(t *testing.T) {
 	// Adapter starts with no events (catchup finishes immediately), then returns many events on polling
 	pollingAdapter := &testDelayedEventsAdapter{
 		callThreshold: 2, // First 2 calls return nothing (catchup finishes), then returns many
-	}
-	// Fill events for polling
-	for i := 0; i < 50; i++ {
-		pollingAdapter.events = append(pollingAdapter.events, StoredEvent{
-			ID:             string(rune('A' + i%26)),
-			StreamID:       "Order-1",
-			Type:           "Test",
-			GlobalPosition: uint64(i + 1),
-			Data:           []byte("{}"),
-		})
+		events:        makeTestStoredEvents(50),
 	}
 
 	store := New(pollingAdapter)
@@ -1185,21 +1154,7 @@ func TestCatchupSubscription_ContextCancelDuringPollingDelivery(t *testing.T) {
 }
 
 func TestPollingSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
-	mockAdapter := &testMinkSubscriptionStoreAdapter{
-		events: func() []StoredEvent {
-			events := make([]StoredEvent, 50)
-			for i := range events {
-				events[i] = StoredEvent{
-					ID:             string(rune('A' + i%26)),
-					StreamID:       "Order-1",
-					Type:           "Test",
-					GlobalPosition: uint64(i + 1),
-					Data:           []byte("{}"),
-				}
-			}
-			return events
-		}(),
-	}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: makeTestStoredEvents(50)}
 	store := New(mockAdapter)
 
 	opts := DefaultSubscriptionOptions()
@@ -1222,21 +1177,7 @@ func TestPollingSubscription_ContextCancelDuringEventDelivery(t *testing.T) {
 }
 
 func TestPollingSubscription_CloseDuringEventDelivery(t *testing.T) {
-	mockAdapter := &testMinkSubscriptionStoreAdapter{
-		events: func() []StoredEvent {
-			events := make([]StoredEvent, 50)
-			for i := range events {
-				events[i] = StoredEvent{
-					ID:             string(rune('A' + i%26)),
-					StreamID:       "Order-1",
-					Type:           "Test",
-					GlobalPosition: uint64(i + 1),
-					Data:           []byte("{}"),
-				}
-			}
-			return events
-		}(),
-	}
+	mockAdapter := &testMinkSubscriptionStoreAdapter{events: makeTestStoredEvents(50)}
 	store := New(mockAdapter)
 
 	opts := DefaultSubscriptionOptions()
@@ -1257,29 +1198,11 @@ func TestPollingSubscription_CloseDuringEventDelivery(t *testing.T) {
 
 // testDelayedEventsAdapter returns no events for the first N calls, then returns events.
 type testDelayedEventsAdapter struct {
+	stubEventStoreAdapter
 	events        []StoredEvent
 	callCount     int
 	callThreshold int
 }
-
-func (a *testDelayedEventsAdapter) Append(_ context.Context, _ string, _ []adapters.EventRecord, _ int64) ([]adapters.StoredEvent, error) {
-	return nil, nil
-}
-
-func (a *testDelayedEventsAdapter) Load(_ context.Context, _ string, _ int64) ([]adapters.StoredEvent, error) {
-	return nil, nil
-}
-
-func (a *testDelayedEventsAdapter) GetStreamInfo(_ context.Context, _ string) (*adapters.StreamInfo, error) {
-	return nil, nil
-}
-
-func (a *testDelayedEventsAdapter) GetLastPosition(_ context.Context) (uint64, error) {
-	return 0, nil
-}
-
-func (a *testDelayedEventsAdapter) Initialize(_ context.Context) error { return nil }
-func (a *testDelayedEventsAdapter) Close() error                       { return nil }
 
 // Implement mink.SubscriptionAdapter
 func (a *testDelayedEventsAdapter) LoadFromPosition(_ context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
@@ -1287,16 +1210,7 @@ func (a *testDelayedEventsAdapter) LoadFromPosition(_ context.Context, fromPosit
 	if a.callCount <= a.callThreshold {
 		return nil, nil // No events yet
 	}
-	var result []StoredEvent
-	for _, e := range a.events {
-		if e.GlobalPosition > fromPosition {
-			result = append(result, e)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
+	return filterEventsByPosition(a.events, fromPosition, limit), nil
 }
 
 func (a *testDelayedEventsAdapter) SubscribeAll(_ context.Context, _ uint64) (<-chan StoredEvent, error) {
