@@ -577,7 +577,7 @@ func (w *asyncProjectionWorker) getStatus() *ProjectionStatus {
 		Name:            w.projection.Name(),
 		State:           w.state,
 		LastPosition:    w.lastPosition,
-		EventsProcessed: w.eventsProcessed,
+		EventsProcessed: atomic.LoadUint64(&w.eventsProcessed),
 		LastProcessedAt: w.lastProcessedAt,
 	}
 
@@ -626,7 +626,9 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 			startPosition = pos
 		}
 	}
+	worker.stateMu.Lock()
 	worker.lastPosition = startPosition
+	worker.stateMu.Unlock()
 
 	worker.setState(ProjectionStateRunning)
 

@@ -225,8 +225,11 @@ func newTestAsyncProjection(name string, handledEvents ...string) *testAsyncProj
 }
 
 func (p *testAsyncProjection) Apply(ctx context.Context, event StoredEvent) error {
-	if p.applyErr != nil {
-		return p.applyErr
+	p.mu.Lock()
+	err := p.applyErr
+	p.mu.Unlock()
+	if err != nil {
+		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -235,11 +238,15 @@ func (p *testAsyncProjection) Apply(ctx context.Context, event StoredEvent) erro
 }
 
 func (p *testAsyncProjection) ApplyBatch(ctx context.Context, events []StoredEvent) error {
-	if !p.supportsBatch {
+	p.mu.Lock()
+	batch := p.supportsBatch
+	batchErr := p.batchApplyErr
+	p.mu.Unlock()
+	if !batch {
 		return ErrNotImplemented
 	}
-	if p.batchApplyErr != nil {
-		return p.batchApplyErr
+	if batchErr != nil {
+		return batchErr
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -256,10 +263,14 @@ func (p *testAsyncProjection) Events() []StoredEvent {
 }
 
 func (p *testAsyncProjection) SetError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.applyErr = err
 }
 
 func (p *testAsyncProjection) EnableBatch() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.supportsBatch = true
 }
 
