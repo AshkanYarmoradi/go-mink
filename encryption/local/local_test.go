@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"github.com/AshkanYarmoradi/go-mink/encryption/providertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,16 +72,10 @@ func TestProvider_GenerateDataKey(t *testing.T) {
 	p := New(WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
-	ctx := context.Background()
-
-	dk, err := p.GenerateDataKey(ctx, "master-1")
-	require.NoError(t, err)
-	assert.Len(t, dk.Plaintext, 32)
-	assert.NotEmpty(t, dk.Ciphertext)
-	assert.Equal(t, "master-1", dk.KeyID)
+	dk := providertest.AssertGenerateDataKeyBasics(t, p, "master-1")
 
 	// Verify round-trip: decrypt the encrypted DEK
-	decrypted, err := p.DecryptDataKey(ctx, "master-1", dk.Ciphertext)
+	decrypted, err := p.DecryptDataKey(context.Background(), "master-1", dk.Ciphertext)
 	require.NoError(t, err)
 	assert.Equal(t, dk.Plaintext, decrypted)
 }
@@ -173,28 +168,12 @@ func TestProvider_Close(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
 
+	// Double close is safe
+	providertest.AssertCloseBlocksAllOperations(t, p)
 	err := p.Close()
 	require.NoError(t, err)
 
-	// Double close is safe
-	err = p.Close()
-	require.NoError(t, err)
-
-	ctx := context.Background()
-
-	// Operations fail after close
-	_, err = p.Encrypt(ctx, "master-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
-	_, err = p.Decrypt(ctx, "master-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
-	_, err = p.GenerateDataKey(ctx, "master-1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
+	// Local-specific: AddKey and RevokeKey also fail after close
 	err = p.AddKey("key", testKey(t))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, encryption.ErrProviderClosed)

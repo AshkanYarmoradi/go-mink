@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"github.com/AshkanYarmoradi/go-mink/encryption/providertest"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/stretchr/testify/assert"
@@ -52,9 +53,12 @@ func (m *mockKMSClient) GenerateDataKey(ctx context.Context, params *kms.Generat
 	}, nil
 }
 
+func newTestProvider(mock *mockKMSClient) *Provider {
+	return New(WithKMSClient(mock))
+}
+
 func TestProvider_EncryptDecrypt(t *testing.T) {
-	mock := &mockKMSClient{}
-	p := New(WithKMSClient(mock))
+	p := newTestProvider(&mockKMSClient{})
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -70,23 +74,16 @@ func TestProvider_EncryptDecrypt(t *testing.T) {
 }
 
 func TestProvider_GenerateDataKey(t *testing.T) {
-	mock := &mockKMSClient{}
-	p := New(WithKMSClient(mock))
+	p := newTestProvider(&mockKMSClient{})
 	defer func() { _ = p.Close() }()
 
-	ctx := context.Background()
-	dk, err := p.GenerateDataKey(ctx, "master-key")
-	require.NoError(t, err)
-
-	assert.Len(t, dk.Plaintext, 32)
-	assert.NotEmpty(t, dk.Ciphertext)
-	assert.Equal(t, "master-key", dk.KeyID)
+	providertest.AssertGenerateDataKeyBasics(t, p, "master-key")
 }
 
 func TestProvider_GenerateDataKey_RequestsAES256(t *testing.T) {
 	var capturedSpec types.DataKeySpec
-	mock := &mockKMSClient{
-		generateDataKeyFunc: func(ctx context.Context, params *kms.GenerateDataKeyInput) (*kms.GenerateDataKeyOutput, error) {
+	p := newTestProvider(&mockKMSClient{
+		generateDataKeyFunc: func(_ context.Context, params *kms.GenerateDataKeyInput) (*kms.GenerateDataKeyOutput, error) {
 			capturedSpec = params.KeySpec
 			return &kms.GenerateDataKeyOutput{
 				Plaintext:      make([]byte, 32),
@@ -94,8 +91,7 @@ func TestProvider_GenerateDataKey_RequestsAES256(t *testing.T) {
 				KeyId:          params.KeyId,
 			}, nil
 		},
-	}
-	p := New(WithKMSClient(mock))
+	})
 	defer func() { _ = p.Close() }()
 
 	_, err := p.GenerateDataKey(context.Background(), "key-1")
@@ -104,24 +100,21 @@ func TestProvider_GenerateDataKey_RequestsAES256(t *testing.T) {
 }
 
 func TestProvider_DecryptDataKey(t *testing.T) {
-	mock := &mockKMSClient{}
-	p := New(WithKMSClient(mock))
+	p := newTestProvider(&mockKMSClient{})
 	defer func() { _ = p.Close() }()
 
-	ctx := context.Background()
 	encrypted := []byte("enc:decrypted-dek-data")
-	plaintext, err := p.DecryptDataKey(ctx, "key-1", encrypted)
+	plaintext, err := p.DecryptDataKey(context.Background(), "key-1", encrypted)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("decrypted-dek-data"), plaintext)
 }
 
 func TestProvider_EncryptError(t *testing.T) {
-	mock := &mockKMSClient{
-		encryptFunc: func(ctx context.Context, params *kms.EncryptInput) (*kms.EncryptOutput, error) {
+	p := newTestProvider(&mockKMSClient{
+		encryptFunc: func(_ context.Context, _ *kms.EncryptInput) (*kms.EncryptOutput, error) {
 			return nil, fmt.Errorf("access denied")
 		},
-	}
-	p := New(WithKMSClient(mock))
+	})
 	defer func() { _ = p.Close() }()
 
 	_, err := p.Encrypt(context.Background(), "key-1", []byte("data"))
@@ -131,69 +124,39 @@ func TestProvider_EncryptError(t *testing.T) {
 }
 
 func TestProvider_DecryptError(t *testing.T) {
-	mock := &mockKMSClient{
-		decryptFunc: func(ctx context.Context, params *kms.DecryptInput) (*kms.DecryptOutput, error) {
+	p := newTestProvider(&mockKMSClient{
+		decryptFunc: func(_ context.Context, _ *kms.DecryptInput) (*kms.DecryptOutput, error) {
 			return nil, fmt.Errorf("key disabled")
 		},
-	}
-	p := New(WithKMSClient(mock))
+	})
 	defer func() { _ = p.Close() }()
 
-	_, err := p.Decrypt(context.Background(), "key-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	providertest.AssertDecryptError(t, p, "key-1")
 }
 
 func TestProvider_GenerateDataKeyError(t *testing.T) {
-	mock := &mockKMSClient{
-		generateDataKeyFunc: func(ctx context.Context, params *kms.GenerateDataKeyInput) (*kms.GenerateDataKeyOutput, error) {
+	p := newTestProvider(&mockKMSClient{
+		generateDataKeyFunc: func(_ context.Context, _ *kms.GenerateDataKeyInput) (*kms.GenerateDataKeyOutput, error) {
 			return nil, fmt.Errorf("key not found")
 		},
-	}
-	p := New(WithKMSClient(mock))
+	})
 	defer func() { _ = p.Close() }()
 
-	_, err := p.GenerateDataKey(context.Background(), "bad-key")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrEncryptionFailed)
+	providertest.AssertGenerateDataKeyError(t, p, "bad-key")
 }
 
 func TestProvider_DecryptDataKeyError(t *testing.T) {
-	mock := &mockKMSClient{
-		decryptFunc: func(ctx context.Context, params *kms.DecryptInput) (*kms.DecryptOutput, error) {
+	p := newTestProvider(&mockKMSClient{
+		decryptFunc: func(_ context.Context, _ *kms.DecryptInput) (*kms.DecryptOutput, error) {
 			return nil, fmt.Errorf("invalid ciphertext")
 		},
-	}
-	p := New(WithKMSClient(mock))
+	})
 	defer func() { _ = p.Close() }()
 
-	_, err := p.DecryptDataKey(context.Background(), "key-1", []byte("bad"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	providertest.AssertDecryptDataKeyError(t, p, "key-1")
 }
 
 func TestProvider_Close(t *testing.T) {
-	mock := &mockKMSClient{}
-	p := New(WithKMSClient(mock))
-
-	err := p.Close()
-	require.NoError(t, err)
-
-	ctx := context.Background()
-
-	_, err = p.Encrypt(ctx, "key-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
-	_, err = p.Decrypt(ctx, "key-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
-	_, err = p.GenerateDataKey(ctx, "key-1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
-
-	_, err = p.DecryptDataKey(ctx, "key-1", []byte("data"))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
+	p := newTestProvider(&mockKMSClient{})
+	providertest.AssertCloseBlocksAllOperations(t, p)
 }
