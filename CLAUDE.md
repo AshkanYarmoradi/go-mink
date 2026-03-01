@@ -10,6 +10,7 @@ go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .
 
 ```bash
 # Preferred: use Makefile targets (infrastructure managed via docker-compose.test.yml)
+make build                              # go build -v ./...
 make test-unit                          # Unit tests only (no infra needed, uses -short -race)
 make test                               # All tests (auto-starts PostgreSQL + Kafka via docker-compose)
 make lint                               # golangci-lint run ./... (uses defaults, no .golangci.yml)
@@ -32,7 +33,7 @@ TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode
 #   - TEST_KAFKA_BROKERS env var is not set (for Kafka tests)
 ```
 
-**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version compatibility: go.mod targets 1.25, CI tests Go 1.22–1.26 on Linux, macOS, Windows.
+**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), builds on Go 1.22–1.26 across Linux, macOS, Windows.
 
 ## Architecture
 
@@ -138,6 +139,8 @@ StreamExists = -2  // Stream must exist
 
 ## Testing Patterns
 
+Uses `github.com/stretchr/testify` (`assert` and `require`) for assertions.
+
 ```go
 // Table-driven tests
 func TestFoo(t *testing.T) {
@@ -233,6 +236,18 @@ CREATE TABLE mink_events (
     UNIQUE(stream_id, version)
 );
 ```
+
+## Commit Conventions
+
+```
+component: brief description
+
+Longer explanation if needed.
+
+Closes #123
+```
+
+PR titles: `[component] Brief description` (e.g., `[eventstore] Add PostgreSQL adapter with optimistic concurrency`).
 
 ## Don't Do
 
