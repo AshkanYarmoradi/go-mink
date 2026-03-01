@@ -14,8 +14,8 @@ import (
 
 // mockKMSClient implements KMSClient for testing.
 type mockKMSClient struct {
-	encryptFunc        func(ctx context.Context, params *kms.EncryptInput) (*kms.EncryptOutput, error)
-	decryptFunc        func(ctx context.Context, params *kms.DecryptInput) (*kms.DecryptOutput, error)
+	encryptFunc         func(ctx context.Context, params *kms.EncryptInput) (*kms.EncryptOutput, error)
+	decryptFunc         func(ctx context.Context, params *kms.DecryptInput) (*kms.DecryptOutput, error)
 	generateDataKeyFunc func(ctx context.Context, params *kms.GenerateDataKeyInput) (*kms.GenerateDataKeyOutput, error)
 }
 

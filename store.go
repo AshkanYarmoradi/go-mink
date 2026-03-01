@@ -13,8 +13,8 @@ type EventStore struct {
 	adapter    adapters.EventStoreAdapter
 	serializer Serializer
 	logger     Logger
-	upcasters  *UpcasterChain          // nil by default — zero overhead when unused
-	encryption *FieldEncryptionConfig   // nil by default — zero overhead when unused
+	upcasters  *UpcasterChain         // nil by default — zero overhead when unused
+	encryption *FieldEncryptionConfig // nil by default — zero overhead when unused
 }
 
 // Logger defines the logging interface for the event store.

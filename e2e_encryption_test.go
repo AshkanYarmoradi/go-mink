@@ -364,9 +364,9 @@ func TestE2E_Encryption_CryptoShredding(t *testing.T) {
 	require.Len(t, events2, 1)
 
 	e := events2[0].Data.(UserRegistered)
-	assert.Equal(t, "Jane", e.Name)     // Not encrypted
+	assert.Equal(t, "Jane", e.Name)                // Not encrypted
 	assert.NotEqual(t, "jane@secret.com", e.Email) // Encrypted ciphertext
-	assert.NotEqual(t, "+000", e.Phone)             // Encrypted ciphertext
+	assert.NotEqual(t, "+000", e.Phone)            // Encrypted ciphertext
 }
 
 // =============================================================================
