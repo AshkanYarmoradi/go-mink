@@ -88,3 +88,48 @@ func TestClearBytes_Empty(t *testing.T) {
 	ClearBytes(nil)
 	ClearBytes([]byte{})
 }
+
+func TestAESGCMEncrypt_RoundTrip(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	plaintext := []byte("hello world")
+
+	ciphertext, err := AESGCMEncrypt(key, plaintext)
+	assert.NoError(t, err)
+	assert.NotEqual(t, plaintext, ciphertext)
+
+	decrypted, err := AESGCMDecrypt(key, ciphertext)
+	assert.NoError(t, err)
+	assert.Equal(t, plaintext, decrypted)
+}
+
+func TestAESGCMEncrypt_InvalidKey(t *testing.T) {
+	_, err := AESGCMEncrypt([]byte("short"), []byte("data"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create cipher")
+}
+
+func TestAESGCMDecrypt_InvalidKey(t *testing.T) {
+	_, err := AESGCMDecrypt([]byte("short"), []byte("data-long-enough-for-nonce-size"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create cipher")
+}
+
+func TestAESGCMDecrypt_TooShort(t *testing.T) {
+	key := make([]byte, 32)
+	_, err := AESGCMDecrypt(key, []byte("short"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ciphertext too short")
+}
+
+func TestAESGCMEncrypt_EmptyPlaintext(t *testing.T) {
+	key := make([]byte, 32)
+	ciphertext, err := AESGCMEncrypt(key, []byte{})
+	assert.NoError(t, err)
+
+	decrypted, err := AESGCMDecrypt(key, ciphertext)
+	assert.NoError(t, err)
+	assert.Empty(t, decrypted)
+}

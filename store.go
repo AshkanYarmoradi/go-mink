@@ -151,19 +151,8 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
-		// Stamp schema version if upcasters are configured
-		if s.upcasters != nil {
-			eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
-		}
-
-		// Encrypt fields if encryption is configured
-		if s.encryption != nil && s.encryption.HasEncryptedFields(eventData.Type) {
-			encData, encMeta, err := s.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
-			if err != nil {
-				return fmt.Errorf("mink: failed to encrypt event %d: %w", i, err)
-			}
-			eventData.Data = encData
-			eventData.Metadata = encMeta
+		if err := s.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
 
 		records[i] = adapters.EventRecord{
@@ -250,19 +239,8 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
 		}
 
-		// Stamp schema version if upcasters are configured
-		if s.upcasters != nil {
-			eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
-		}
-
-		// Encrypt fields if encryption is configured
-		if s.encryption != nil && s.encryption.HasEncryptedFields(eventData.Type) {
-			encData, encMeta, err := s.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
-			if err != nil {
-				return fmt.Errorf("mink: failed to encrypt aggregate event %d: %w", i, err)
-			}
-			eventData.Data = encData
-			eventData.Metadata = encMeta
+		if err := s.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
 
 		records[i] = adapters.EventRecord{
@@ -483,6 +461,25 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 	}
 
 	return EventFromStored(stored, data), nil
+}
+
+// prepareEventData stamps the schema version and encrypts fields as needed.
+// This is the shared logic used by Append, SaveAggregate, and the outbox wrapper.
+func (s *EventStore) prepareEventData(ctx context.Context, eventData *EventData) error {
+	if s.upcasters != nil {
+		eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
+	}
+
+	if s.encryption != nil && s.encryption.HasEncryptedFields(eventData.Type) {
+		encData, encMeta, err := s.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
+		if err != nil {
+			return err
+		}
+		eventData.Data = encData
+		eventData.Metadata = encMeta
+	}
+
+	return nil
 }
 
 // RegisterUpcasters is a convenience method that registers upcasters with the event store.

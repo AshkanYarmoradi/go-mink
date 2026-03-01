@@ -2,13 +2,9 @@ package mink
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/AshkanYarmoradi/go-mink/encryption"
@@ -280,7 +276,7 @@ func encryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return false, fmt.Errorf("failed to marshal field value: %w", err)
 		}
 
-		ciphertext, err := aesGCMEncrypt(key, plaintext)
+		ciphertext, err := encryption.AESGCMEncrypt(key, plaintext)
 		if err != nil {
 			return false, err
 		}
@@ -323,7 +319,7 @@ func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return fmt.Errorf("failed to decode field: %w", err)
 		}
 
-		plaintext, err := aesGCMDecrypt(key, ciphertext)
+		plaintext, err := encryption.AESGCMDecrypt(key, ciphertext)
 		if err != nil {
 			return err
 		}
@@ -350,46 +346,4 @@ func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 	}
 
 	return decryptJSONField(childMap, parts[1], key)
-}
-
-// AES-256-GCM helpers (duplicated from encryption/local to avoid import cycle;
-// these operate on raw keys, not through the Provider interface).
-
-func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCM: %w", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
-}
-
-func aesGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCM: %w", err)
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-
-	nonce, body := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return gcm.Open(nil, nonce, body, nil)
 }

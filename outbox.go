@@ -253,19 +253,8 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
-		// Stamp schema version if upcasters are configured
-		if es.store.upcasters != nil {
-			eventData.Metadata = SetSchemaVersion(eventData.Metadata, es.store.upcasters.LatestVersion(eventData.Type))
-		}
-
-		// Encrypt fields if encryption is configured
-		if es.store.encryption != nil && es.store.encryption.HasEncryptedFields(eventData.Type) {
-			encData, encMeta, err := es.store.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
-			if err != nil {
-				return fmt.Errorf("mink: failed to encrypt event %d: %w", i, err)
-			}
-			eventData.Data = encData
-			eventData.Metadata = encMeta
+		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
 
 		records[i] = adapters.EventRecord{
@@ -321,19 +310,8 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
 		}
 
-		// Stamp schema version if upcasters are configured
-		if es.store.upcasters != nil {
-			eventData.Metadata = SetSchemaVersion(eventData.Metadata, es.store.upcasters.LatestVersion(eventData.Type))
-		}
-
-		// Encrypt fields if encryption is configured
-		if es.store.encryption != nil && es.store.encryption.HasEncryptedFields(eventData.Type) {
-			encData, encMeta, err := es.store.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
-			if err != nil {
-				return fmt.Errorf("mink: failed to encrypt aggregate event %d: %w", i, err)
-			}
-			eventData.Data = encData
-			eventData.Metadata = encMeta
+		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
 
 		records[i] = adapters.EventRecord{
