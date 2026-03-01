@@ -605,3 +605,33 @@ func TestWithEncryptedFields_NilMapInit(t *testing.T) {
 	opt(config)
 	assert.Equal(t, []string{"email"}, config.fields["UserCreated"])
 }
+
+func TestEncryptJSONField_MarshalError(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"email": make(chan int), // channels cannot be JSON-marshaled
+	}
+
+	_, err := encryptJSONField(data, "email", key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to marshal field value")
+}
+
+func TestDecryptJSONField_InvalidDecryptedJSON(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	// Encrypt raw bytes that are NOT valid JSON
+	ciphertext, err := encryption.AESGCMEncrypt(key, []byte("not-json"))
+	require.NoError(t, err)
+
+	data := map[string]interface{}{
+		"email": base64.StdEncoding.EncodeToString(ciphertext),
+	}
+
+	err = decryptJSONField(data, "email", key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to unmarshal decrypted field")
+}

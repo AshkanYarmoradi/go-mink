@@ -544,3 +544,89 @@ func TestE2E_Encryption_OutboxSaveAggregate(t *testing.T) {
 	assert.Equal(t, "agg@test.com", loaded.Email)
 	assert.Equal(t, "+444", loaded.Phone)
 }
+
+// =============================================================================
+// Test: Encryption error paths — store.Append / SaveAggregate / LoadAggregate
+// =============================================================================
+
+func newFailingEncryptionStore(t *testing.T) *mink.EventStore {
+	t.Helper()
+	provider := local.New() // No keys → GenerateDataKey will fail
+	t.Cleanup(func() { _ = provider.Close() })
+	adapter := memory.NewAdapter()
+	config := mink.NewFieldEncryptionConfig(
+		mink.WithEncryptionProvider(provider),
+		mink.WithDefaultKeyID("nonexistent"),
+		mink.WithEncryptedFields("UserRegistered", "email"),
+	)
+	store := mink.New(adapter, mink.WithFieldEncryption(config))
+	store.RegisterEvents(UserRegistered{})
+	return store
+}
+
+func TestE2E_Encryption_AppendError(t *testing.T) {
+	store := newFailingEncryptionStore(t)
+	err := store.Append(context.Background(), "User-fail-1", []interface{}{
+		UserRegistered{UserID: "fail-1", Name: "Test", Email: "test@test.com"},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+}
+
+func TestE2E_Encryption_SaveAggregateError(t *testing.T) {
+	store := newFailingEncryptionStore(t)
+	user := newUserProfile("fail-2")
+	user.Register("Test", "test@test.com", "+111")
+	err := store.SaveAggregate(context.Background(), user)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+}
+
+func TestE2E_Encryption_LoadAggregateDecryptError(t *testing.T) {
+	ctx, provider, store := newDefaultE2ESetup(t)
+
+	// Save aggregate successfully
+	user := newUserProfile("fail-3")
+	user.Register("Test", "test@test.com", "+111")
+	err := store.SaveAggregate(ctx, user)
+	require.NoError(t, err)
+
+	// Revoke key → decrypt will fail
+	err = provider.RevokeKey("master-1")
+	require.NoError(t, err)
+
+	loaded := newUserProfile("fail-3")
+	err = store.LoadAggregate(ctx, loaded)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyRevoked)
+}
+
+// =============================================================================
+// Test: Encryption error paths — outbox Append / SaveAggregate
+// =============================================================================
+
+func TestE2E_Encryption_OutboxAppendError(t *testing.T) {
+	store := newFailingEncryptionStore(t)
+	routes := []mink.OutboxRoute{{Destination: "webhook:https://example.com"}}
+	outboxStore := memory.NewOutboxStore()
+	esWithOutbox := mink.NewEventStoreWithOutbox(store, outboxStore, routes)
+
+	err := esWithOutbox.Append(context.Background(), "User-fail-4", []interface{}{
+		UserRegistered{UserID: "fail-4", Name: "Test", Email: "test@test.com"},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+}
+
+func TestE2E_Encryption_OutboxSaveAggregateError(t *testing.T) {
+	store := newFailingEncryptionStore(t)
+	routes := []mink.OutboxRoute{{Destination: "webhook:https://example.com"}}
+	outboxStore := memory.NewOutboxStore()
+	esWithOutbox := mink.NewEventStoreWithOutbox(store, outboxStore, routes)
+
+	user := newUserProfile("fail-5")
+	user.Register("Test", "test@test.com", "+111")
+	err := esWithOutbox.SaveAggregate(context.Background(), user)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+}
