@@ -36,7 +36,7 @@ func (m *mockVaultClient) Decrypt(ctx context.Context, keyName string, ciphertex
 func TestProvider_EncryptDecrypt(t *testing.T) {
 	mock := &mockVaultClient{}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 	plaintext := []byte("sensitive data")
@@ -53,7 +53,7 @@ func TestProvider_EncryptDecrypt(t *testing.T) {
 func TestProvider_GenerateDataKey(t *testing.T) {
 	mock := &mockVaultClient{}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 	dk, err := p.GenerateDataKey(ctx, "master-key")
@@ -72,7 +72,7 @@ func TestProvider_GenerateDataKey(t *testing.T) {
 func TestProvider_DecryptDataKey(t *testing.T) {
 	mock := &mockVaultClient{}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	encrypted := []byte("vault:dek-plaintext")
 	plaintext, err := p.DecryptDataKey(context.Background(), "key-1", encrypted)
@@ -87,7 +87,7 @@ func TestProvider_EncryptError(t *testing.T) {
 		},
 	}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.Encrypt(context.Background(), "key-1", []byte("data"))
 	require.Error(t, err)
@@ -102,7 +102,7 @@ func TestProvider_DecryptError(t *testing.T) {
 		},
 	}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.Decrypt(context.Background(), "key-1", []byte("data"))
 	require.Error(t, err)
@@ -116,7 +116,7 @@ func TestProvider_GenerateDataKeyError(t *testing.T) {
 		},
 	}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.GenerateDataKey(context.Background(), "key-1")
 	require.Error(t, err)
@@ -130,7 +130,7 @@ func TestProvider_DecryptDataKeyError(t *testing.T) {
 		},
 	}
 	p := New(WithVaultClient(mock))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.DecryptDataKey(context.Background(), "key-1", []byte("encrypted"))
 	require.Error(t, err)

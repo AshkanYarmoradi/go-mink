@@ -33,7 +33,7 @@ func TestFieldEncryptionConfig_HasEncryptedFields(t *testing.T) {
 
 func TestFieldEncryptionConfig_EncryptDecryptFields(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -85,7 +85,7 @@ func TestFieldEncryptionConfig_EncryptDecryptFields(t *testing.T) {
 
 func TestFieldEncryptionConfig_NestedFields(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -131,7 +131,7 @@ func TestFieldEncryptionConfig_NestedFields(t *testing.T) {
 
 func TestFieldEncryptionConfig_MissingField(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -166,7 +166,7 @@ func TestFieldEncryptionConfig_MissingField(t *testing.T) {
 
 func TestFieldEncryptionConfig_NoEncryptedFields(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -194,7 +194,7 @@ func TestFieldEncryptionConfig_TenantKeyResolver(t *testing.T) {
 		local.WithKey("tenant-A-key", key1),
 		local.WithKey("tenant-B-key", key2),
 	)
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -234,7 +234,7 @@ func TestFieldEncryptionConfig_CryptoShredding(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	var handlerCalled bool
 	config := NewFieldEncryptionConfig(
@@ -268,7 +268,7 @@ func TestFieldEncryptionConfig_CryptoShredding(t *testing.T) {
 
 func TestFieldEncryptionConfig_NoKeyID(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -314,7 +314,7 @@ func TestMetadataHelpers(t *testing.T) {
 
 func TestFieldEncryptionConfig_NumericFieldValues(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -346,7 +346,7 @@ func TestFieldEncryptionConfig_NumericFieldValues(t *testing.T) {
 
 func TestDecryptFields_UnencryptedData(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -367,7 +367,7 @@ func TestDecryptFields_UnencryptedData(t *testing.T) {
 func TestEncryptFields_GenerateDataKeyError(t *testing.T) {
 	// Use a provider with no keys to trigger key-not-found on GenerateDataKey
 	provider := local.New()
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -385,7 +385,7 @@ func TestEncryptFields_GenerateDataKeyError(t *testing.T) {
 
 func TestEncryptFields_InvalidJSON(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -404,7 +404,7 @@ func TestEncryptFields_InvalidJSON(t *testing.T) {
 
 func TestEncryptFields_AllFieldsMissing(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -424,7 +424,7 @@ func TestEncryptFields_AllFieldsMissing(t *testing.T) {
 
 func TestDecryptFields_InvalidBase64DEK(t *testing.T) {
 	provider := testProvider(t, "master-1")
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -452,7 +452,7 @@ func TestDecryptFields_DecryptDataKeyError_HandlerReturnsError(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	handlerErr := fmt.Errorf("custom handler error")
 	config := NewFieldEncryptionConfig(
@@ -486,7 +486,7 @@ func TestDecryptFields_DecryptDataKeyError_NoHandler(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -517,7 +517,7 @@ func TestDecryptFields_EmptyFieldNames(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -549,7 +549,7 @@ func TestDecryptFields_InvalidJSON(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -580,7 +580,7 @@ func TestDecryptFields_FieldDecryptError(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),

@@ -104,7 +104,7 @@ func TestE2E_Encryption_FullRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -140,7 +140,7 @@ func TestE2E_Encryption_DataAtRest(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -181,7 +181,7 @@ func TestE2E_Encryption_NonEncryptedEvents(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -241,7 +241,7 @@ func TestE2E_Encryption_AggregateRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -275,7 +275,7 @@ func TestE2E_Encryption_PerTenantKeys(t *testing.T) {
 		local.WithKey("tenant-A-key", keyA),
 		local.WithKey("tenant-B-key", keyB),
 	)
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	adapter := memory.NewAdapter()
 	config := mink.NewFieldEncryptionConfig(
@@ -325,7 +325,7 @@ func TestE2E_Encryption_CryptoShredding(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	adapter := memory.NewAdapter()
 	config := mink.NewFieldEncryptionConfig(
@@ -377,7 +377,7 @@ func TestE2E_Encryption_CryptoShredding_NoHandler(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -404,7 +404,7 @@ func TestE2E_Encryption_WithUpcasting(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	adapter := memory.NewAdapter()
 
@@ -454,7 +454,7 @@ func TestE2E_Encryption_MultipleEvents(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	store, _ := newEncryptedStore(t, provider, "master-1")
 
@@ -486,7 +486,7 @@ func TestE2E_Encryption_WithOutbox(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	adapter := memory.NewAdapter()
 	config := mink.NewFieldEncryptionConfig(
@@ -534,7 +534,7 @@ func TestE2E_Encryption_OutboxSaveAggregate(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
 	provider := local.New(local.WithKey("master-1", key))
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	adapter := memory.NewAdapter()
 	config := mink.NewFieldEncryptionConfig(

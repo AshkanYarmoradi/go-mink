@@ -81,7 +81,7 @@ func main() {
 		local.WithKey("tenant-A", tenantAKey),
 		local.WithKey("tenant-B", tenantBKey),
 	)
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	// 2. Configure field-level encryption
 	encConfig := mink.NewFieldEncryptionConfig(

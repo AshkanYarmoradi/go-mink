@@ -60,7 +60,7 @@ func (p *Provider) Encrypt(ctx context.Context, keyID string, plaintext []byte) 
 
 	ciphertext, err := p.client.Encrypt(ctx, keyID, plaintext)
 	if err != nil {
-		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("Vault encrypt: %w", err))
+		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("vault encrypt: %w", err))
 	}
 	return ciphertext, nil
 }
@@ -73,7 +73,7 @@ func (p *Provider) Decrypt(ctx context.Context, keyID string, ciphertext []byte)
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, ciphertext)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("Vault decrypt: %w", err))
+		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt: %w", err))
 	}
 	return plaintext, nil
 }
@@ -96,7 +96,7 @@ func (p *Provider) GenerateDataKey(ctx context.Context, keyID string) (*encrypti
 	encryptedDEK, err := p.client.Encrypt(ctx, keyID, dek)
 	if err != nil {
 		encryption.ClearBytes(dek)
-		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("Vault encrypt DEK: %w", err))
+		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("vault encrypt DEK: %w", err))
 	}
 
 	return &encryption.DataKey{

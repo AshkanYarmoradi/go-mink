@@ -22,7 +22,7 @@ func testKey(t *testing.T) []byte {
 func TestProvider_EncryptDecrypt(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 	plaintext := []byte("sensitive-email@example.com")
@@ -39,7 +39,7 @@ func TestProvider_EncryptDecrypt(t *testing.T) {
 func TestProvider_EncryptDecrypt_EmptyPlaintext(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -53,7 +53,7 @@ func TestProvider_EncryptDecrypt_EmptyPlaintext(t *testing.T) {
 
 func TestProvider_KeyNotFound(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -69,7 +69,7 @@ func TestProvider_KeyNotFound(t *testing.T) {
 func TestProvider_GenerateDataKey(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -87,7 +87,7 @@ func TestProvider_GenerateDataKey(t *testing.T) {
 
 func TestProvider_GenerateDataKey_KeyNotFound(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.GenerateDataKey(context.Background(), "nonexistent")
 	require.Error(t, err)
@@ -96,7 +96,7 @@ func TestProvider_GenerateDataKey_KeyNotFound(t *testing.T) {
 
 func TestProvider_DecryptDataKey_KeyNotFound(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	_, err := p.DecryptDataKey(context.Background(), "nonexistent", []byte("data"))
 	require.Error(t, err)
@@ -106,7 +106,7 @@ func TestProvider_DecryptDataKey_KeyNotFound(t *testing.T) {
 func TestProvider_RevokeKey(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -136,7 +136,7 @@ func TestProvider_RevokeKey(t *testing.T) {
 
 func TestProvider_RevokeKey_NotFound(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	err := p.RevokeKey("nonexistent")
 	require.Error(t, err)
@@ -145,7 +145,7 @@ func TestProvider_RevokeKey_NotFound(t *testing.T) {
 
 func TestProvider_AddKey(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	key := testKey(t)
 	err := p.AddKey("new-key", key)
@@ -162,7 +162,7 @@ func TestProvider_AddKey(t *testing.T) {
 
 func TestProvider_AddKey_InvalidLength(t *testing.T) {
 	p := New()
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	err := p.AddKey("bad-key", []byte("too-short"))
 	require.Error(t, err)
@@ -207,7 +207,7 @@ func TestProvider_Close(t *testing.T) {
 func TestProvider_Decrypt_InvalidCiphertext(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -225,7 +225,7 @@ func TestProvider_Decrypt_InvalidCiphertext(t *testing.T) {
 func TestProvider_ConcurrentAccess(t *testing.T) {
 	key := testKey(t)
 	p := New(WithKey("master-1", key))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -270,7 +270,7 @@ func TestProvider_KeyIsolation(t *testing.T) {
 	key1 := testKey(t)
 	key2 := testKey(t)
 	p := New(WithKey("key-1", key1), WithKey("key-2", key2))
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
