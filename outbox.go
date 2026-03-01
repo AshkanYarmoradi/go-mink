@@ -252,6 +252,11 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 		if err != nil {
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
+
+		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
+		}
+
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
 			Data:     eventData.Data,
@@ -304,6 +309,11 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 		if err != nil {
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
 		}
+
+		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
+		}
+
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
 			Data:     eventData.Data,

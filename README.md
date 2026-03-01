@@ -26,27 +26,21 @@
 
 ---
 
-## 🚀 Current Status: v0.5.0 (Phase 5 In Progress)
+## v1.0.0 — Stable Release
 
-Phase 5 (Security & Advanced Patterns) progress:
-- ✅ Saga / Process Manager with compensation handling
-- ✅ Saga Store (PostgreSQL & Memory implementations)
-- ✅ Saga testing utilities
-- ✅ CLI tool with code generation & diagnostics (84.9% coverage)
-- ✅ Outbox pattern for reliable messaging (Webhook, Kafka, SNS publishers)
-- ✅ Event versioning & upcasting (schema evolution without DB migration)
-- 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
-- 🔜 GDPR compliance (crypto-shredding)
+go-mink includes everything you need to build production event-sourced systems in Go:
 
-**Previous phases included:**
-- ✅ Event Store with optimistic concurrency (v0.1.0)
-- ✅ PostgreSQL & In-Memory adapters (v0.1.0)
-- ✅ Command Bus with middleware pipeline (v0.2.0)
-- ✅ Idempotency, Validation, Correlation tracking (v0.2.0)
-- ✅ Projection Engine & Read Models (v0.3.0)
-- ✅ Event subscriptions & checkpoint management (v0.3.0)
-- ✅ BDD testing fixtures, assertions, test containers (v0.4.0)
-- ✅ Prometheus metrics & OpenTelemetry tracing (v0.4.0)
+- **Event Store** with optimistic concurrency, PostgreSQL & in-memory adapters
+- **Command Bus** with middleware pipeline (validation, idempotency, correlation, recovery)
+- **Projection Engine** with inline, async, and live projections
+- **Saga / Process Manager** with compensation handling
+- **Outbox Pattern** for reliable messaging (Webhook, Kafka, SNS publishers)
+- **Event Versioning** with schema evolution via upcasting (zero DB migration)
+- **Field-Level Encryption** with AWS KMS, HashiCorp Vault, and local AES-256-GCM
+- **GDPR Compliance** via crypto-shredding (key revocation)
+- **Observability** with Prometheus metrics and OpenTelemetry tracing
+- **Testing Utilities** with BDD fixtures, assertions, and test containers
+- **CLI Tool** for code generation, migrations, and diagnostics
 
 ---
 
@@ -66,24 +60,24 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| 🎯 **Event Store** | ✅ v0.1.0 | Append-only event storage with optimistic concurrency |
-| 🔌 **PostgreSQL Adapter** | ✅ v0.1.0 | Production-ready PostgreSQL support |
-| 🧪 **Memory Adapter** | ✅ v0.1.0 | In-memory adapter for testing |
-| 🧱 **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
-| 📋 **Command Bus** | ✅ v0.2.0 | Full CQRS with command handlers and middleware |
-| 🔐 **Idempotency** | ✅ v0.2.0 | Prevent duplicate command processing |
-| 🔗 **Correlation/Causation** | ✅ v0.2.0 | Distributed tracing support |
-| 📖 **Projections** | ✅ v0.3.0 | Inline, async, and live projection engine |
-| 📊 **Read Models** | ✅ v0.3.0 | Generic repository with query builder |
-| 📡 **Subscriptions** | ✅ v0.3.0 | Catch-up and polling event subscriptions |
-| 🧪 **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
-| 📊 **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
-| 📦 **MessagePack** | ✅ v0.4.0 | Alternative serializer for performance |
-| 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
-| � **Sagas** | ✅ v0.5.0 | Process manager for long-running workflows |
-| 🔄 **Event Versioning** | ✅ v0.5.0 | Schema evolution with upcasting (zero DB migration) |
-| 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
-| 📤 **Outbox Pattern** | ✅ v0.5.0 | Reliable event publishing to external systems |
+| 🎯 **Event Store** | ✅ | Append-only event storage with optimistic concurrency |
+| 🔌 **PostgreSQL Adapter** | ✅ | Production-ready PostgreSQL support |
+| 🧪 **Memory Adapter** | ✅ | In-memory adapter for testing |
+| 🧱 **Aggregates** | ✅ | Base implementation with event application |
+| 📋 **Command Bus** | ✅ | Full CQRS with command handlers and middleware |
+| 🔐 **Idempotency** | ✅ | Prevent duplicate command processing |
+| 🔗 **Correlation/Causation** | ✅ | Distributed tracing support |
+| 📖 **Projections** | ✅ | Inline, async, and live projection engine |
+| 📊 **Read Models** | ✅ | Generic repository with query builder |
+| 📡 **Subscriptions** | ✅ | Catch-up and polling event subscriptions |
+| 🧪 **Testing Utilities** | ✅ | BDD fixtures, assertions, test containers |
+| 📊 **Observability** | ✅ | Prometheus metrics & OpenTelemetry tracing |
+| 📦 **MessagePack** | ✅ | Alternative serializer for performance |
+| 🛠️ **CLI Tool** | ✅ | Code generation, migrations, diagnostics |
+| � **Sagas** | ✅ | Process manager for long-running workflows |
+| 🔄 **Event Versioning** | ✅ | Schema evolution with upcasting (zero DB migration) |
+| 🔐 **Security** | ✅ | Field-level encryption and GDPR compliance |
+| 📤 **Outbox Pattern** | ✅ | Reliable event publishing to external systems |
 
 ## Quick Example
 
@@ -121,7 +115,7 @@ func main() {
 }
 ```
 
-## CQRS with Command Bus (v0.2.0)
+## CQRS with Command Bus
 
 ```go
 package main
@@ -177,7 +171,7 @@ func main() {
 }
 ```
 
-## Projections & Read Models (v0.3.0)
+## Projections & Read Models
 
 ```go
 package main
@@ -242,7 +236,7 @@ func main() {
 }
 ```
 
-## Testing Utilities (v0.4.0)
+## Testing Utilities
 
 ```go
 import (
@@ -270,7 +264,7 @@ container := containers.StartPostgres(t)
 db := container.MustDB(ctx)
 ```
 
-## Observability (v0.4.0)
+## Observability
 
 ```go
 import (
@@ -288,7 +282,7 @@ tracer := tracing.NewTracer(tracing.WithServiceName("order-service"))
 bus.Use(tracer.CommandMiddleware())
 ```
 
-## Outbox Pattern (v0.5.0)
+## Outbox Pattern
 
 ```go
 import (
@@ -316,7 +310,7 @@ processor.Start(ctx)
 defer processor.Stop(ctx)
 ```
 
-## Event Versioning & Upcasting (v0.5.0)
+## Event Versioning & Upcasting
 
 ```go
 import (
@@ -351,6 +345,43 @@ compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
 // compat == SchemaBackwardCompatible
 ```
 
+## Field-Level Encryption
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+)
+
+// Set up encryption provider (local for dev, KMS/Vault for production)
+provider := local.New(local.WithKey("master-1", myKey))
+defer provider.Close()
+
+// Configure which fields to encrypt per event type
+encConfig := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone", "ssn"),
+    // Per-tenant keys for multi-tenant apps
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+    // Crypto-shredding: graceful degradation when key is revoked
+    mink.WithDecryptionErrorHandler(func(err error, eventType string, meta mink.Metadata) error {
+        if errors.Is(err, encryption.ErrKeyRevoked) {
+            return nil // Return encrypted data as-is
+        }
+        return err
+    }),
+)
+
+// Create event store with encryption
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
+
+// PII fields are encrypted at rest, decrypted transparently on load
+// Revoking a key makes that tenant's data permanently unrecoverable (GDPR)
+```
+
 ## Installation
 
 ```bash
@@ -369,8 +400,8 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 | [Adapters](docs/adapters.md) | Database adapter system |
 | [CLI](docs/cli.md) | Command-line tooling |
 | [API Design](docs/api-design.md) | Public API reference |
-| [Roadmap](docs/roadmap.md) | Development phases |
-| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox |
+| [Roadmap](docs/roadmap.md) | Future development plans |
+| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox, Encryption |
 | [Event Versioning](docs/versioning.md) | Schema evolution & upcasting |
 | [Security](docs/security.md) | Encryption, GDPR compliance |
 | [Testing](docs/testing.md) | BDD fixtures and test utilities |

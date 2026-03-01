@@ -1490,10 +1490,10 @@ func TestProjectionEngine_AsyncWorker_CheckpointGetError(t *testing.T) {
 
 func TestProjectionEngine_AsyncWorker_InterruptDuringBackoff(t *testing.T) {
 	tests := []struct {
-		name       string
-		projName   string
-		streamID   string
-		interrupt  func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc)
+		name      string
+		projName  string
+		streamID  string
+		interrupt func(t *testing.T, engine *ProjectionEngine, projName string, cancel context.CancelFunc)
 	}{
 		{
 			name:     "stop",

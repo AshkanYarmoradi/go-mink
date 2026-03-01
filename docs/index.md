@@ -45,20 +45,20 @@ Building event-sourced applications in Go means wrestling with **boilerplate cod
 
 | | Feature | Status | What You Get |
 |:--|:--------|:-------|:-------------|
-| 🎯 | **Event Store** | ✅ v0.1.0 | Append-only storage with optimistic concurrency |
-| 🔌 | **Adapters** | ✅ v0.1.0 | PostgreSQL & In-Memory adapters |
-| 🧱 | **Aggregates** | ✅ v0.1.0 | Base implementation with event application |
-| 📋 | **Command Bus** | ✅ v0.2.0 | Full CQRS with middleware, validation & idempotency |
-| 🔐 | **Idempotency** | ✅ v0.2.0 | Prevent duplicate command processing |
-| 🔗 | **Correlation/Causation** | ✅ v0.2.0 | Distributed tracing support |
-| 📖 | **Projections** | ✅ v0.3.0 | Inline, async, and live read models |
-| 📡 | **Subscriptions** | ✅ v0.3.0 | Catch-up and polling event subscriptions |
-| 🧪 | **Testing Utilities** | ✅ v0.4.0 | BDD fixtures, assertions, test containers |
-| 📊 | **Observability** | ✅ v0.4.0 | Prometheus metrics & OpenTelemetry tracing |
-| 🛠️ | **CLI** | ✅ v0.5.0 | Generate code, run migrations, diagnose (84.9% coverage) |
-| � | **Sagas** | ✅ v0.5.0 | Coordinate long-running business processes |
-| 🔐 | **Security** | 🔜 v0.5.0 | Field-level encryption & GDPR compliance |
-| 📤 | **Outbox** | 🔜 v0.5.0 | Reliable event publishing |
+| 🎯 | **Event Store** | ✅ | Append-only storage with optimistic concurrency |
+| 🔌 | **Adapters** | ✅ | PostgreSQL & In-Memory adapters |
+| 🧱 | **Aggregates** | ✅ | Base implementation with event application |
+| 📋 | **Command Bus** | ✅ | Full CQRS with middleware, validation & idempotency |
+| 🔐 | **Idempotency** | ✅ | Prevent duplicate command processing |
+| 🔗 | **Correlation/Causation** | ✅ | Distributed tracing support |
+| 📖 | **Projections** | ✅ | Inline, async, and live read models |
+| 📡 | **Subscriptions** | ✅ | Catch-up and polling event subscriptions |
+| 🧪 | **Testing Utilities** | ✅ | BDD fixtures, assertions, test containers |
+| 📊 | **Observability** | ✅ | Prometheus metrics & OpenTelemetry tracing |
+| 🛠️ | **CLI** | ✅ | Generate code, run migrations, diagnose |
+| � | **Sagas** | ✅ | Coordinate long-running business processes |
+| 🔐 | **Security** | ✅ | Field-level encryption & GDPR compliance |
+| 📤 | **Outbox** | ✅ | Reliable event publishing |
 
 </div>
 

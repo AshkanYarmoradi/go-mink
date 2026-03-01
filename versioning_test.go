@@ -16,9 +16,9 @@ type testUpcaster struct {
 	upcastFn    func(data []byte, metadata Metadata) ([]byte, error)
 }
 
-func (u *testUpcaster) EventType() string  { return u.eventType }
-func (u *testUpcaster) FromVersion() int   { return u.fromVersion }
-func (u *testUpcaster) ToVersion() int     { return u.toVersion }
+func (u *testUpcaster) EventType() string { return u.eventType }
+func (u *testUpcaster) FromVersion() int  { return u.fromVersion }
+func (u *testUpcaster) ToVersion() int    { return u.toVersion }
 func (u *testUpcaster) Upcast(data []byte, metadata Metadata) ([]byte, error) {
 	return u.upcastFn(data, metadata)
 }

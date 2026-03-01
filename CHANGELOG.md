@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-02
+
+First stable release consolidating all features from the development phases.
+
 ### Added
 
-#### Saga / Process Manager (Phase 5)
+#### Saga / Process Manager
 - `Saga` interface - Contract for saga/process manager implementations
 - `SagaBase` - Embeddable base struct with ID, Type, Status, Version management
 - `SagaStatus` enum - Started, Running, Completed, Failed, Compensating, Compensated
@@ -58,7 +62,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `postgres.WithSagaSchema()` - Configure PostgreSQL schema
 - `postgres.WithSagaTable()` - Configure table name
 
-#### Event Versioning & Upcasting (Phase 5)
+#### Field-Level Encryption
+- `encryption.Provider` interface - Abstraction for key management and crypto operations
+- `encryption.DataKey` struct - Holds plaintext + ciphertext of data encryption keys
+- `encryption.ClearBytes()` - Securely zero key material after use
+- Sentinel errors: `ErrEncryptionFailed`, `ErrDecryptionFailed`, `ErrKeyNotFound`, `ErrKeyRevoked`, `ErrProviderClosed`
+- Typed errors: `EncryptionError`, `KeyNotFoundError`, `KeyRevokedError` with `Is()`, `Unwrap()`
+- `NewEncryptionError()`, `NewDecryptionError()`, `NewKeyNotFoundError()`, `NewKeyRevokedError()` constructors
+
+#### Local AES-256-GCM Provider (`encryption/local`)
+- `local.Provider` - In-memory AES-256-GCM encryption provider for development and testing
+- `local.New()` - Create provider with options
+- `local.WithKey()` - Pre-register encryption keys
+- `local.Provider.AddKey()` - Add keys at runtime
+- `local.Provider.RevokeKey()` - Revoke keys for crypto-shredding simulation
+- Thread-safe concurrent access with `sync.RWMutex`
+
+#### AWS KMS Provider (`encryption/kms`)
+- `kms.Provider` - AWS KMS encryption provider for production
+- `kms.KMSClient` interface - Minimal KMS client abstraction (wraps official SDK)
+- `kms.New()` - Create provider with options
+- `kms.WithKMSClient()` - Inject KMS client
+- `GenerateDataKey` uses `AES_256` spec for envelope encryption
+
+#### HashiCorp Vault Transit Provider (`encryption/vault`)
+- `vault.Provider` - Vault Transit encryption provider for production
+- `vault.VaultClient` interface - Minimal Transit client abstraction
+- `vault.New()` - Create provider with options
+- `vault.WithVaultClient()` - Inject Vault client
+- `GenerateDataKey` generates DEK locally, encrypts via Vault Transit
+
+#### Field Encryption Config (Root Package)
+- `FieldEncryptionConfig` - Per-event-type field encryption configuration
+- `EncryptionOption` type - Functional options pattern
+- `NewFieldEncryptionConfig()` - Create config with options
+- `WithEncryptionProvider()` - Set encryption provider
+- `WithDefaultKeyID()` - Set default master key ID
+- `WithEncryptedFields()` - Register fields to encrypt per event type (dot-path support)
+- `WithTenantKeyResolver()` - Per-tenant encryption key mapping
+- `WithDecryptionErrorHandler()` - Crypto-shredding handler (graceful degradation)
+- `WithFieldEncryption()` - EventStore option to enable field-level encryption
+- `GetEncryptedFields()` - Extract encrypted field names from metadata
+- `GetEncryptionKeyID()` - Extract key ID from metadata
+- `IsEncrypted()` - Check if event has encrypted fields
+- Envelope encryption: 1 provider call per event, local AES-256-GCM per field
+- Encryption metadata stored in `Metadata.Custom` with `$`-prefixed keys
+- Zero overhead when encryption not configured (nil check short-circuit)
+
+#### Encryption Error Aliases (Root Package)
+- `mink.ErrEncryptionFailed`, `mink.ErrDecryptionFailed`, `mink.ErrKeyNotFound`, `mink.ErrKeyRevoked`, `mink.ErrProviderClosed`
+- Type aliases: `mink.EncryptionError`, `mink.KeyNotFoundError`, `mink.KeyRevokedError`
+- Constructor aliases: `mink.NewEncryptionError()`, etc.
+
+#### EventStore Encryption Integration
+- `Append()` and `SaveAggregate()` encrypt configured fields before persisting
+- `Load()`, `LoadFrom()`, and `LoadAggregate()` decrypt fields transparently
+- Decrypt before upcast ordering in the event loading pipeline
+- `EventStoreWithOutbox` also supports field encryption in `Append()` and `SaveAggregate()`
+
+#### Encryption Example (`examples/encryption/`)
+- Full working example: encrypt on save, decrypt on load
+- Per-tenant encryption keys
+- Crypto-shredding (GDPR right to erasure) demonstration
+
+#### Event Versioning & Upcasting
 - `Upcaster` interface - Transform event data from one schema version to the next
 - `UpcasterChain` - Thread-safe registry with gap/duplicate validation
 - `NewUpcasterChain()` - Create empty upcaster chain
@@ -76,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic schema version stamping during `Append()` and `SaveAggregate()`
 - Zero overhead when no upcasters configured (nil chain short-circuit)
 
-#### UpcastingSerializer (Phase 5)
+#### UpcastingSerializer
 - `UpcastingSerializer` - Serializer decorator that applies upcasting on deserialize
 - `NewUpcastingSerializer()` - Create decorator wrapping any Serializer
 - `Serialize()` - Pass-through to inner serializer
@@ -86,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Chain()` - Access the upcaster chain
 - `SerializeEventWithVersion()` - Convenience function to serialize with version stamp
 
-#### Schema Registry (Phase 5)
+#### Schema Registry
 - `SchemaRegistry` - In-memory registry for event schema definitions
 - `NewSchemaRegistry()` - Create empty schema registry
 - `SchemaRegistry.Register()` - Register schema definition for event type and version
@@ -98,7 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SchemaDefinition` - Schema metadata with version, fields, and optional JSON Schema
 - `FieldDefinition` - Field metadata with name, type, and required flag
 
-#### Versioning Errors (Phase 5)
+#### Versioning Errors
 - `ErrUpcastFailed` - Sentinel error for upcasting failures
 - `ErrSchemaVersionGap` - Sentinel error for gaps in upcaster chain
 - `ErrIncompatibleSchema` - Sentinel error for schema incompatibility
@@ -422,7 +489,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ErrStreamNotFound` - Stream does not exist
 - `ConcurrencyError` - Detailed concurrency error info
 
-[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.1.0...v0.2.0

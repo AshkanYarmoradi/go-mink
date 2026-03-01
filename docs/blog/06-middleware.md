@@ -178,7 +178,7 @@ func AuthMiddleware(authService AuthService) mink.Middleware {
 
 ---
 
-## Observability Middleware (v0.4.0)
+## Observability Middleware
 
 ### Prometheus Metrics
 

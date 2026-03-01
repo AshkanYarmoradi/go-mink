@@ -47,7 +47,7 @@ permalink: /docs/architecture
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                      Saga Manager ✅                              │   │
+│  │                      Saga Manager                                 │   │
 │  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐    │   │
 │  │  │   Saga    │  │   Saga    │  │Compensate │  │   Saga    │    │   │
 │  │  │  Store    │  │  Factory  │  │  Handler  │  │  Worker   │    │   │
@@ -55,10 +55,18 @@ permalink: /docs/architecture
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                     Outbox System ✅                               │   │
+│  │                     Outbox System                                  │   │
 │  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐    │   │
 │  │  │  Outbox   │  │  Outbox   │  │ Publishers│  │Dead Letter│    │   │
 │  │  │  Store    │  │ Processor │  │(WH/K/SNS) │  │  Queue    │    │   │
+│  │  └───────────┘  └───────────┘  └───────────┘  └───────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                   Encryption Layer                                 │   │
+│  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐    │   │
+│  │  │  Local    │  │  AWS KMS  │  │   Vault   │  │  Envelope │    │   │
+│  │  │ AES-GCM  │  │ Provider  │  │  Transit  │  │ Encryption│    │   │
 │  │  └───────────┘  └───────────┘  └───────────┘  └───────────┘    │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
@@ -161,11 +169,12 @@ type Aggregate interface {
 ### Write Path (Commands)
 
 ```
-Command → Aggregate → Events → Event Store → Outbox → Projections
-    │         │          │          │           │          │
-    ▼         ▼          ▼          ▼           ▼          ▼
- Validate  Business   Generate  Persist    Publish    Update
-  Input    Logic      Events    Atomic    External   Read Models
+Command → Aggregate → Events → Serialize → Encrypt → Event Store → Outbox → Projections
+    │         │          │         │          │           │           │          │
+    ▼         ▼          ▼         ▼          ▼           ▼           ▼          ▼
+ Validate  Business   Generate  JSON +    Envelope    Persist    Publish    Update
+  Input    Logic      Events    Schema    Encrypt    Atomic    External   Read Models
+                                Stamp     PII Fields
 ```
 
 ### Read Path (Queries)
@@ -219,6 +228,12 @@ github.com/AshkanYarmoradi/go-mink/
 │   ├── inline.go           # Same-transaction projections
 │   ├── async.go            # Background projections
 │   └── rebuild.go          # Projection rebuilder
+│
+├── encryption/             # Encryption providers
+│   ├── provider.go         # Provider interface, types, errors
+│   ├── local/              # AES-256-GCM (testing/dev)
+│   ├── kms/                # AWS KMS (production)
+│   └── vault/              # HashiCorp Vault Transit (production)
 │
 ├── outbox/                 # Outbox publishers
 │   ├── webhook/            # HTTP webhook publisher

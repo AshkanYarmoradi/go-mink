@@ -10,6 +10,7 @@ go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .
 
 ```bash
 # Preferred: use Makefile targets (infrastructure managed via docker-compose.test.yml)
+make build                              # go build -v ./...
 make test-unit                          # Unit tests only (no infra needed, uses -short -race)
 make test                               # All tests (auto-starts PostgreSQL + Kafka via docker-compose)
 make lint                               # golangci-lint run ./... (uses defaults, no .golangci.yml)
@@ -32,7 +33,7 @@ TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode
 #   - TEST_KAFKA_BROKERS env var is not set (for Kafka tests)
 ```
 
-**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version compatibility: go.mod targets 1.25, CI tests Go 1.22–1.26 on Linux, macOS, Windows.
+**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), builds on Go 1.22–1.26 across Linux, macOS, Windows.
 
 ## Architecture
 
@@ -53,7 +54,7 @@ Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Eve
 
 ## Key File Locations
 
-All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking).
+All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking), `encryption.go` (FieldEncryptionConfig, encrypt/decrypt logic, metadata helpers), `encryption_errors.go` (encryption error aliases).
 
 Adapters:
 - `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, HealthChecker, Migrator, plus CLI adapters: StreamQueryAdapter, DiagnosticAdapter, SchemaProvider)
@@ -61,12 +62,16 @@ Adapters:
 - `adapters/memory/` - In-memory adapter (testing)
 
 Other packages:
+- `encryption/` - Provider interface, types, sentinel/typed errors
+- `encryption/local/` - AES-256-GCM provider (testing/development)
+- `encryption/kms/` - AWS KMS provider (production)
+- `encryption/vault/` - HashiCorp Vault Transit provider (production)
 - `outbox/{webhook,kafka,sns}/` - Outbox publishers
 - `middleware/{metrics,tracing}/` - Prometheus metrics, OpenTelemetry tracing
 - `serializer/{msgpack,protobuf}/` - Alternative serializers
 - `testing/{bdd,assertions,projections,sagas,containers}/` - Test utilities
 - `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
-- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, etc.)
+- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, encryption, etc.)
 
 ## Core Interfaces
 
@@ -116,6 +121,8 @@ Typed errors implement `Is()` for `errors.Is()` compatibility:
 // Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError, ProjectionError
 // Versioning: ErrUpcastFailed, ErrSchemaVersionGap, ErrIncompatibleSchema, ErrSchemaNotFound
 // Typed: UpcastError, SchemaVersionGapError, IncompatibleSchemaError
+// Encryption: ErrEncryptionFailed, ErrDecryptionFailed, ErrKeyNotFound, ErrKeyRevoked, ErrProviderClosed
+// Typed: EncryptionError, KeyNotFoundError, KeyRevokedError (all with Is(), Unwrap())
 ```
 
 ## Version Constants
@@ -137,6 +144,8 @@ StreamExists = -2  // Stream must exist
 7. **Naming**: Interfaces with single method use `-er` suffix (`Serializer`, `Subscriber`). Constructors use `NewXxx()`. Test functions: `TestXxx_Method_Scenario`.
 
 ## Testing Patterns
+
+Uses `github.com/stretchr/testify` (`assert` and `require`) for assertions.
 
 ```go
 // Table-driven tests
@@ -211,11 +220,41 @@ Key design decisions:
 - `EventStore.upcasters` is `nil` by default — all code paths short-circuit with zero overhead
 - Events are automatically upcasted during `Load`/`LoadAggregate` and stamped with latest version during `Append`/`SaveAggregate`
 
-## Current Development Phase
+## Current Version: v1.0.0 (Stable)
 
-**Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
-- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics), Event versioning & upcasting
-- Remaining: Field-level encryption, GDPR compliance
+First stable release. All core features are complete: Event Store, Command Bus, Projection Engine, Saga Manager, Outbox Pattern, Event Versioning & Upcasting, Field-Level Encryption, GDPR Compliance, Observability, Testing Utilities, CLI Tool.
+
+## Field-Level Encryption
+
+Encryption metadata stored in `Metadata.Custom` with `$`-prefixed keys (`$encrypted_fields`, `$encryption_key_id`, `$encrypted_dek`, `$encryption_algorithm`). No DB schema changes needed.
+
+```go
+// Provider interface (encryption/provider.go)
+type Provider interface {
+    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
+    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
+    GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
+    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
+    Close() error
+}
+
+// FieldEncryptionConfig (encryption.go) — options pattern
+config := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone"),
+    mink.WithTenantKeyResolver(func(tenantID string) string { return "tenant-" + tenantID }),
+    mink.WithDecryptionErrorHandler(handler), // crypto-shredding
+)
+store := mink.New(adapter, mink.WithFieldEncryption(config))
+```
+
+Key design decisions:
+- Envelope encryption: 1 provider call per event (GenerateDataKey), local AES-256-GCM per field
+- `FieldEncryptionConfig` is `nil` by default — all code paths short-circuit with zero overhead
+- Decrypt before upcast ordering: encrypted fields decrypted before upcasters run
+- Providers: `encryption/local` (AES-256-GCM, testing), `encryption/kms` (AWS KMS), `encryption/vault` (Vault Transit)
+- DEK plaintext zeroed after use via `ClearBytes()`
 
 ## PostgreSQL Schema
 
@@ -233,6 +272,18 @@ CREATE TABLE mink_events (
     UNIQUE(stream_id, version)
 );
 ```
+
+## Commit Conventions
+
+```
+component: brief description
+
+Longer explanation if needed.
+
+Closes #123
+```
+
+PR titles: `[component] Brief description` (e.g., `[eventstore] Add PostgreSQL adapter with optimistic concurrency`).
 
 ## Don't Do
 

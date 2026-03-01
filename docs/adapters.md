@@ -9,7 +9,7 @@ permalink: /docs/adapters
 {: .no_toc }
 
 {: .label .label-green }
-Phase 1 Complete
+v1.0.0
 
 ## Table of contents
 {: .no_toc .text-delta }
@@ -110,7 +110,7 @@ type SubscriptionOptions struct {
 }
 ```
 
-### Read Model Adapter (Future - Phase 3)
+### Read Model Adapter (Future)
 
 ```go
 // ReadModelAdapter provides generic document storage

@@ -60,19 +60,9 @@ type Projection interface {
 
 ## Development Priorities
 
-### Completed Phases
-- **Phase 1 (v0.1.0)**: Core Foundation - Event Store, Aggregates, PostgreSQL/Memory adapters
-- **Phase 2 (v0.2.0)**: CQRS Commands - Command Bus, middleware, idempotency
-- **Phase 3 (v0.3.0)**: Projections - Inline/async/live projections, subscriptions
-- **Phase 4 (v0.4.0)**: Developer Experience - Testing utilities, observability, MessagePack
-- **CLI Tool**: Complete with 84.9% test coverage (200+ unit tests, 67 integration tests, 4 E2E tests)
+### Current Version: v1.0.0 (Stable)
 
-### Phase 5 (In Progress): Security & Advanced Patterns
-- ✅ Saga / Process Manager implementation
-- 🔜 Outbox pattern for reliable messaging
-- 🔜 Event versioning & upcasting
-- 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
-- 🔜 GDPR compliance (crypto-shredding)
+All core features are complete: Event Store, Command Bus, Projection Engine, Saga Manager, Outbox Pattern, Event Versioning & Upcasting, Field-Level Encryption, GDPR Compliance, Observability, Testing Utilities, CLI Tool.
 
 ## Coding Standards
 

@@ -107,7 +107,7 @@ Please follow these steps to have your contribution considered by the maintainer
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later
 - PostgreSQL 14+ (for integration tests)
 - Docker (optional, for test containers)
 

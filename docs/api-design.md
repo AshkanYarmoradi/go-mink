@@ -95,7 +95,7 @@ func (a *AggregateBase) ClearUncommittedEvents() {
 }
 ```
 
-### Commands (v0.2.0)
+### Commands
 
 ```go
 // Command represents intent to change state
@@ -142,7 +142,7 @@ type IdempotentCommand interface {
 }
 ```
 
-### Command Bus (v0.2.0)
+### Command Bus
 
 ```go
 // CommandBus routes commands to handlers
@@ -176,7 +176,7 @@ type CommandHandlerFunc func(ctx context.Context, cmd Command) (CommandResult, e
 type CommandMiddleware func(CommandHandlerFunc) CommandHandlerFunc
 ```
 
-### Generic Handler (v0.2.0)
+### Generic Handler
 
 ```go
 // GenericHandler provides type-safe command handling
@@ -192,7 +192,7 @@ func (h *GenericHandler[T]) CommandType() string
 func (h *GenericHandler[T]) Handle(ctx context.Context, cmd Command) (CommandResult, error)
 ```
 
-### Aggregate Handler (v0.2.0)
+### Aggregate Handler
 
 ```go
 // AggregateHandler combines load/save with command handling
@@ -211,7 +211,7 @@ func NewAggregateHandler[C Command, A Aggregate](
 ) *AggregateHandler[C, A]
 ```
 
-### Built-in Middleware (v0.2.0)
+### Built-in Middleware
 
 ```go
 // Validation middleware - calls cmd.Validate()
@@ -245,7 +245,7 @@ func TenantMiddleware(resolver func(context.Context) string) CommandMiddleware
 func IdempotencyMiddleware(config IdempotencyConfig) CommandMiddleware
 ```
 
-### Idempotency Store (v0.2.0)
+### Idempotency Store
 
 ```go
 // IdempotencyStore tracks processed commands
@@ -425,7 +425,7 @@ orders, _ := repo.Find(ctx,
 )
 ```
 
-### Event Versioning & Upcasting (v0.5.0)
+### Event Versioning & Upcasting
 
 ```go
 // Upcaster transforms event data from one schema version to the next
@@ -497,6 +497,82 @@ var ErrUpcastFailed       = errors.New("mink: upcast failed")
 var ErrSchemaVersionGap   = errors.New("mink: schema version gap")
 var ErrIncompatibleSchema = errors.New("mink: incompatible schema")
 var ErrSchemaNotFound     = errors.New("mink: schema not found")
+```
+
+### Field-Level Encryption
+
+```go
+package encryption
+
+// Provider abstracts crypto operations for field-level encryption.
+type Provider interface {
+    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
+    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
+    GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
+    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
+    Close() error
+}
+
+type DataKey struct {
+    Plaintext  []byte
+    Ciphertext []byte
+    KeyID      string
+}
+
+// Sentinel errors
+var ErrEncryptionFailed = errors.New("mink: encryption failed")
+var ErrDecryptionFailed = errors.New("mink: decryption failed")
+var ErrKeyNotFound      = errors.New("mink: encryption key not found")
+var ErrKeyRevoked       = errors.New("mink: encryption key revoked")
+var ErrProviderClosed   = errors.New("mink: encryption provider closed")
+
+// Typed errors (implement Is(), Unwrap())
+type EncryptionError struct { Operation string; KeyID string; Field string; Cause error }
+type KeyNotFoundError struct { KeyID string }
+type KeyRevokedError struct { KeyID string }
+
+func NewEncryptionError(keyID, field string, cause error) *EncryptionError
+func NewDecryptionError(keyID, field string, cause error) *EncryptionError
+func NewKeyNotFoundError(keyID string) *KeyNotFoundError
+func NewKeyRevokedError(keyID string) *KeyRevokedError
+func ClearBytes(b []byte)
+
+// --- Providers ---
+
+// Local (encryption/local)
+func local.New(opts ...local.Option) *local.Provider
+func local.WithKey(keyID string, key []byte) local.Option
+func (p *local.Provider) AddKey(keyID string, key []byte) error
+func (p *local.Provider) RevokeKey(keyID string) error
+
+// AWS KMS (encryption/kms)
+func kms.New(opts ...kms.Option) *kms.Provider
+func kms.WithKMSClient(client kms.KMSClient) kms.Option
+
+// Vault Transit (encryption/vault)
+func vault.New(opts ...vault.Option) *vault.Provider
+func vault.WithVaultClient(client vault.VaultClient) vault.Option
+
+// --- Root package config ---
+
+// FieldEncryptionConfig configures per-event-type field encryption
+type FieldEncryptionConfig struct { /* ... */ }
+type EncryptionOption func(*FieldEncryptionConfig)
+
+func NewFieldEncryptionConfig(opts ...EncryptionOption) *FieldEncryptionConfig
+func WithEncryptionProvider(p encryption.Provider) EncryptionOption
+func WithDefaultKeyID(keyID string) EncryptionOption
+func WithEncryptedFields(eventType string, fields ...string) EncryptionOption
+func WithTenantKeyResolver(resolver func(tenantID string) string) EncryptionOption
+func WithDecryptionErrorHandler(handler func(err error, eventType string, metadata Metadata) error) EncryptionOption
+
+// EventStore option
+func WithFieldEncryption(config *FieldEncryptionConfig) Option
+
+// Metadata helpers
+func IsEncrypted(m Metadata) bool
+func GetEncryptedFields(m Metadata) []string
+func GetEncryptionKeyID(m Metadata) string
 ```
 
 ### Middleware
@@ -599,7 +675,7 @@ if errors.As(err, &concErr) {
 }
 ```
 
-### Testing Utilities (v0.4.0)
+### Testing Utilities
 
 ```go
 import (
