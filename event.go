@@ -112,7 +112,7 @@ func (m Metadata) WithCustom(key, value string) Metadata {
 	if m.Custom == nil {
 		m.Custom = make(map[string]string)
 	}
-	newCustom := make(map[string]string, len(m.Custom)+1)
+	newCustom := make(map[string]string, len(m.Custom))
 	for k, v := range m.Custom {
 		newCustom[k] = v
 	}
