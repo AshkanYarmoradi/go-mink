@@ -1075,4 +1075,131 @@ CREATE INDEX idx_mink_outbox_dead_letter ON mink_outbox (created_at) WHERE statu
 
 ---
 
+## Field-Level Encryption (v0.5.0) ✅
+
+Protect sensitive PII fields at rest with envelope encryption. go-mink encrypts individual JSON fields while keeping non-sensitive data queryable, and supports crypto-shredding for GDPR compliance.
+
+### How Envelope Encryption Works
+
+```
+Per event:
+1. GenerateDataKey(masterKeyID) → DEK plaintext + encrypted DEK    [1 provider call]
+2. AES-256-GCM encrypt each field with DEK plaintext               [local, fast]
+3. Store encrypted DEK in metadata                                  [persisted]
+4. Zero DEK plaintext                                               [security]
+
+On load:
+1. DecryptDataKey(masterKeyID, encryptedDEK) → DEK plaintext       [1 provider call]
+2. AES-256-GCM decrypt each field with DEK plaintext               [local, fast]
+3. Zero DEK plaintext                                               [security]
+```
+
+### Configuration
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/encryption"
+    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+)
+
+// Create encryption provider
+provider := local.New(
+    local.WithKey("master-1", masterKey),
+    local.WithKey("tenant-A", tenantAKey),
+    local.WithKey("tenant-B", tenantBKey),
+)
+defer provider.Close()
+
+// Configure field-level encryption
+encConfig := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+
+    // Encrypt specific fields per event type
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone", "ssn"),
+    mink.WithEncryptedFields("AddressUpdated", "address.street", "address.zip"),
+
+    // Per-tenant keys (multi-tenant applications)
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+
+    // Crypto-shredding handler
+    mink.WithDecryptionErrorHandler(func(err error, eventType string, metadata mink.Metadata) error {
+        if errors.Is(err, encryption.ErrKeyRevoked) {
+            return nil // Skip decryption, return encrypted data
+        }
+        return err
+    }),
+)
+
+// Create event store with encryption
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
+store.RegisterEvents(CustomerCreated{}, AddressUpdated{})
+```
+
+### Encryption Providers
+
+| Provider | Package | Use Case | Key Storage |
+|----------|---------|----------|-------------|
+| **Local** | `encryption/local` | Testing, development | In-memory (process lifetime) |
+| **AWS KMS** | `encryption/kms` | Production (AWS) | AWS KMS managed keys |
+| **Vault Transit** | `encryption/vault` | Production (self-hosted) | HashiCorp Vault |
+
+```go
+// Local provider — AES-256-GCM, in-memory keys
+provider := local.New(local.WithKey("key-1", key))
+
+// AWS KMS provider — uses kms.GenerateDataKey API
+provider := kms.New(kms.WithKMSClient(awsKMSClient))
+
+// Vault Transit provider — DEK generated locally, encrypted via Vault
+provider := vault.New(vault.WithVaultClient(vaultClient))
+```
+
+### Crypto-Shredding (GDPR)
+
+Revoke a tenant's encryption key to make their PII permanently unrecoverable:
+
+```go
+// Before: tenant B data loads normally
+events, _ := store.Load(ctx, "Customer-bob")
+e := events[0].Data.(CustomerCreated)
+fmt.Println(e.Email) // "bob@example.com"
+
+// GDPR deletion request — revoke the key
+provider.RevokeKey("tenant-B")
+
+// After: encrypted fields are unrecoverable
+events, _ = store.Load(ctx, "Customer-bob")
+e = events[0].Data.(CustomerCreated)
+fmt.Println(e.Name)  // "Bob Jones" (not encrypted, still readable)
+fmt.Println(e.Email) // "base64-gibberish..." (permanently encrypted)
+```
+
+### Metadata Storage
+
+Encryption metadata is stored in `Metadata.Custom` with `$`-prefixed keys (no DB schema changes):
+
+| Key | Value |
+|-----|-------|
+| `$encrypted_fields` | `["email","phone"]` |
+| `$encryption_key_id` | `"master-1"` |
+| `$encrypted_dek` | Base64-encoded encrypted DEK |
+| `$encryption_algorithm` | `"AES-256-GCM"` |
+
+### Integration with Event Versioning
+
+Encryption and upcasting work together seamlessly. The pipeline order is:
+
+```
+Save:  Serialize → Schema Stamp → Encrypt → Persist
+Load:  Load → Decrypt → Upcast → Deserialize
+```
+
+Encrypted fields are decrypted **before** upcasters run, so upcasters can transform plaintext field values normally.
+
+---
+
 Next: [Testing →](testing)

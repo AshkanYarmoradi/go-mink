@@ -333,14 +333,19 @@ data, _ := pbSerializer.Serialize(event)
 - [x] EventStore integration (transparent upcast on load, stamp on save)
 - [x] Full example (`examples/versioning/main.go`)
 
-### Security & Encryption
-- [ ] Field-level encryption
-- [ ] AWS KMS provider
-- [ ] HashiCorp Vault provider
-- [ ] Per-tenant encryption keys
+### Security & Encryption ✅
+- [x] Field-level encryption with envelope encryption (AES-256-GCM)
+- [x] AWS KMS provider (`encryption/kms`)
+- [x] HashiCorp Vault Transit provider (`encryption/vault`)
+- [x] Local AES-256-GCM provider for testing (`encryption/local`)
+- [x] Per-tenant encryption keys via `WithTenantKeyResolver()`
+- [x] Encryption metadata in `Metadata.Custom` (no DB schema changes)
+- [x] Zero overhead when encryption not configured
+- [x] Full example (`examples/encryption/main.go`)
 
-### GDPR Compliance
-- [ ] Crypto-shredding (forget data subject)
+### GDPR Compliance ✅
+- [x] Crypto-shredding via key revocation (data becomes unrecoverable)
+- [x] `WithDecryptionErrorHandler()` for graceful degradation
 - [ ] Data export (right to access)
 - [ ] Audit logging
 - [ ] Data retention policies
@@ -368,17 +373,20 @@ store := mink.New(adapter, mink.WithUpcasters(chain))
 registry := mink.NewSchemaRegistry()
 compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
 
-// Encryption (planned)
-store := mink.New(adapter, mink.WithEncryption(EncryptionConfig{
-    Provider: kms.NewProvider(awsConfig),
-    EncryptedFields: map[string][]string{
-        "CustomerCreated": {"email", "phone", "ssn"},
-    },
-}))
+// Field-level encryption
+provider := local.New(local.WithKey("master-1", key))
+encConfig := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone", "ssn"),
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+)
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 
-// GDPR (planned)
-gdpr := mink.NewGDPRManager(store, keyStore)
-gdpr.ForgetDataSubject(ctx, "customer-123")
+// Crypto-shredding (GDPR right to erasure)
+provider.RevokeKey("tenant-B") // tenant B data is now permanently unrecoverable
 ```
 
 ---
@@ -510,7 +518,7 @@ store := mink.New(adapter,
 | Performance benchmarks | Medium | Medium |
 | Saga implementation | Hard | High |
 | Outbox pattern | Hard | High |
-| Field-level encryption | Hard | High |
+| ~~Field-level encryption~~ | ~~Hard~~ | ~~High~~ (Done) |
 | DynamoDB adapter | Hard | Medium |
 
 ### Code Style

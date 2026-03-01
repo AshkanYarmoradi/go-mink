@@ -35,8 +35,8 @@ Phase 5 (Security & Advanced Patterns) progress:
 - ✅ CLI tool with code generation & diagnostics (84.9% coverage)
 - ✅ Outbox pattern for reliable messaging (Webhook, Kafka, SNS publishers)
 - ✅ Event versioning & upcasting (schema evolution without DB migration)
-- 🔜 Field-level encryption (AWS KMS, HashiCorp Vault)
-- 🔜 GDPR compliance (crypto-shredding)
+- ✅ Field-level encryption (AWS KMS, HashiCorp Vault, local AES-256-GCM)
+- ✅ GDPR compliance (crypto-shredding via key revocation)
 
 **Previous phases included:**
 - ✅ Event Store with optimistic concurrency (v0.1.0)
@@ -82,7 +82,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | 🛠️ **CLI Tool** | ✅ v0.5.0 | Code generation, migrations, diagnostics (84.9% coverage) |
 | � **Sagas** | ✅ v0.5.0 | Process manager for long-running workflows |
 | 🔄 **Event Versioning** | ✅ v0.5.0 | Schema evolution with upcasting (zero DB migration) |
-| 🔐 **Security** | 🔜 v0.5.0 | Field-level encryption and GDPR compliance |
+| 🔐 **Security** | ✅ v0.5.0 | Field-level encryption and GDPR compliance |
 | 📤 **Outbox Pattern** | ✅ v0.5.0 | Reliable event publishing to external systems |
 
 ## Quick Example
@@ -351,6 +351,43 @@ compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
 // compat == SchemaBackwardCompatible
 ```
 
+## Field-Level Encryption (v0.5.0)
+
+```go
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+)
+
+// Set up encryption provider (local for dev, KMS/Vault for production)
+provider := local.New(local.WithKey("master-1", myKey))
+defer provider.Close()
+
+// Configure which fields to encrypt per event type
+encConfig := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone", "ssn"),
+    // Per-tenant keys for multi-tenant apps
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+    // Crypto-shredding: graceful degradation when key is revoked
+    mink.WithDecryptionErrorHandler(func(err error, eventType string, meta mink.Metadata) error {
+        if errors.Is(err, encryption.ErrKeyRevoked) {
+            return nil // Return encrypted data as-is
+        }
+        return err
+    }),
+)
+
+// Create event store with encryption
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
+
+// PII fields are encrypted at rest, decrypted transparently on load
+// Revoking a key makes that tenant's data permanently unrecoverable (GDPR)
+```
+
 ## Installation
 
 ```bash
@@ -370,7 +407,7 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 | [CLI](docs/cli.md) | Command-line tooling |
 | [API Design](docs/api-design.md) | Public API reference |
 | [Roadmap](docs/roadmap.md) | Development phases |
-| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox |
+| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox, Encryption |
 | [Event Versioning](docs/versioning.md) | Schema evolution & upcasting |
 | [Security](docs/security.md) | Encryption, GDPR compliance |
 | [Testing](docs/testing.md) | BDD fixtures and test utilities |

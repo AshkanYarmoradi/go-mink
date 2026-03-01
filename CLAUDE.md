@@ -54,7 +54,7 @@ Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Eve
 
 ## Key File Locations
 
-All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking).
+All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking), `encryption.go` (FieldEncryptionConfig, encrypt/decrypt logic, metadata helpers), `encryption_errors.go` (encryption error aliases).
 
 Adapters:
 - `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, HealthChecker, Migrator, plus CLI adapters: StreamQueryAdapter, DiagnosticAdapter, SchemaProvider)
@@ -62,12 +62,16 @@ Adapters:
 - `adapters/memory/` - In-memory adapter (testing)
 
 Other packages:
+- `encryption/` - Provider interface, types, sentinel/typed errors
+- `encryption/local/` - AES-256-GCM provider (testing/development)
+- `encryption/kms/` - AWS KMS provider (production)
+- `encryption/vault/` - HashiCorp Vault Transit provider (production)
 - `outbox/{webhook,kafka,sns}/` - Outbox publishers
 - `middleware/{metrics,tracing}/` - Prometheus metrics, OpenTelemetry tracing
 - `serializer/{msgpack,protobuf}/` - Alternative serializers
 - `testing/{bdd,assertions,projections,sagas,containers}/` - Test utilities
 - `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
-- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, etc.)
+- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, encryption, etc.)
 
 ## Core Interfaces
 
@@ -117,6 +121,8 @@ Typed errors implement `Is()` for `errors.Is()` compatibility:
 // Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError, ProjectionError
 // Versioning: ErrUpcastFailed, ErrSchemaVersionGap, ErrIncompatibleSchema, ErrSchemaNotFound
 // Typed: UpcastError, SchemaVersionGapError, IncompatibleSchemaError
+// Encryption: ErrEncryptionFailed, ErrDecryptionFailed, ErrKeyNotFound, ErrKeyRevoked, ErrProviderClosed
+// Typed: EncryptionError, KeyNotFoundError, KeyRevokedError (all with Is(), Unwrap())
 ```
 
 ## Version Constants
@@ -217,8 +223,40 @@ Key design decisions:
 ## Current Development Phase
 
 **Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
-- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics), Event versioning & upcasting
-- Remaining: Field-level encryption, GDPR compliance
+- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics), Event versioning & upcasting, Field-level encryption (local/KMS/Vault providers, envelope encryption, per-tenant keys, crypto-shredding)
+- Remaining: Data export, audit logging, data retention policies
+
+## Field-Level Encryption
+
+Encryption metadata stored in `Metadata.Custom` with `$`-prefixed keys (`$encrypted_fields`, `$encryption_key_id`, `$encrypted_dek`, `$encryption_algorithm`). No DB schema changes needed.
+
+```go
+// Provider interface (encryption/provider.go)
+type Provider interface {
+    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
+    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
+    GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
+    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
+    Close() error
+}
+
+// FieldEncryptionConfig (encryption.go) — options pattern
+config := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("master-1"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone"),
+    mink.WithTenantKeyResolver(func(tenantID string) string { return "tenant-" + tenantID }),
+    mink.WithDecryptionErrorHandler(handler), // crypto-shredding
+)
+store := mink.New(adapter, mink.WithFieldEncryption(config))
+```
+
+Key design decisions:
+- Envelope encryption: 1 provider call per event (GenerateDataKey), local AES-256-GCM per field
+- `FieldEncryptionConfig` is `nil` by default — all code paths short-circuit with zero overhead
+- Decrypt before upcast ordering: encrypted fields decrypted before upcasters run
+- Providers: `encryption/local` (AES-256-GCM, testing), `encryption/kms` (AWS KMS), `encryption/vault` (Vault Transit)
+- DEK plaintext zeroed after use via `ClearBytes()`
 
 ## PostgreSQL Schema
 

@@ -16,218 +16,223 @@ permalink: /docs/security
 
 ---
 
-## Event Encryption
+## Field-Level Encryption ✅
 
-Protect sensitive data in events with field-level encryption.
+Protect sensitive PII data in events with field-level encryption. go-mink uses envelope encryption for performance: one provider call per event generates a data encryption key (DEK), then individual fields are encrypted locally with AES-256-GCM.
 
 ### Encryption Provider Interface
 
 ```go
-// EncryptionProvider handles key management and encryption
-type EncryptionProvider interface {
-    // Encrypt data with key ID
-    Encrypt(ctx context.Context, keyID string, plaintext []byte) ([]byte, error)
-    
-    // Decrypt data
-    Decrypt(ctx context.Context, keyID string, ciphertext []byte) ([]byte, error)
-    
-    // Generate new data encryption key
+package encryption
+
+// Provider abstracts crypto operations for field-level encryption.
+// Three built-in implementations: local (testing), AWS KMS, HashiCorp Vault.
+type Provider interface {
+    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
+    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
     GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
-    
-    // Rotate encryption key
-    RotateKey(ctx context.Context, keyID string) error
+    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
+    Close() error
 }
 
+// DataKey holds plaintext (in-memory only) + ciphertext (safe to persist) of a DEK.
 type DataKey struct {
-    KeyID      string
-    Plaintext  []byte // For encrypting data
-    Ciphertext []byte // For storage (encrypted by master key)
+    Plaintext  []byte // 32-byte AES key — NEVER persisted, zeroed after use
+    Ciphertext []byte // Encrypted DEK, stored in event metadata
+    KeyID      string // Master key that encrypted the DEK
 }
 
-// Built-in providers
-func NewAWSKMSProvider(client *kms.Client, masterKeyID string) EncryptionProvider
-func NewVaultProvider(client *vault.Client, transitPath string) EncryptionProvider
-func NewLocalProvider(masterKey []byte) EncryptionProvider // For testing only
+// Sentinel errors
+var ErrEncryptionFailed = errors.New("mink: encryption failed")
+var ErrDecryptionFailed = errors.New("mink: decryption failed")
+var ErrKeyNotFound      = errors.New("mink: encryption key not found")
+var ErrKeyRevoked       = errors.New("mink: encryption key revoked")
+var ErrProviderClosed   = errors.New("mink: encryption provider closed")
 ```
 
-### Field-Level Encryption
+### Built-in Providers
+
+**Local Provider** (testing/development):
+```go
+import "github.com/AshkanYarmoradi/go-mink/encryption/local"
+
+key := make([]byte, 32)
+rand.Read(key)
+
+provider := local.New(
+    local.WithKey("master-1", key),
+    local.WithKey("tenant-A", tenantAKey),
+)
+defer provider.Close()
+
+// Runtime key management
+provider.AddKey("new-key", newKey)
+provider.RevokeKey("old-key") // Crypto-shredding
+```
+
+**AWS KMS Provider** (production):
+```go
+import "github.com/AshkanYarmoradi/go-mink/encryption/kms"
+
+provider := kms.New(kms.WithKMSClient(kmsClient))
+defer provider.Close()
+
+// Uses kms.GenerateDataKey with AES_256 spec
+// Master keys are AWS KMS key ARNs or aliases
+```
+
+**HashiCorp Vault Transit Provider** (production):
+```go
+import "github.com/AshkanYarmoradi/go-mink/encryption/vault"
+
+provider := vault.New(vault.WithVaultClient(myVaultClient))
+defer provider.Close()
+
+// VaultClient is a minimal interface — inject your own wrapper
+// GenerateDataKey: random DEK locally, encrypted via Vault Transit
+```
+
+### Configuring Field-Level Encryption
 
 ```go
-// EncryptionConfig defines which fields to encrypt
-type EncryptionConfig struct {
-    Provider        EncryptionProvider
-    KeyIDResolver   func(event Event) string // Per-tenant keys
-    EncryptedFields map[string][]string      // eventType -> fields
-}
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/encryption"
+    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+)
 
-// Configuration example
-config := mink.EncryptionConfig{
-    Provider: kms.NewProvider(awsConfig),
-    KeyIDResolver: func(event Event) string {
-        // Use tenant-specific key
-        return fmt.Sprintf("alias/tenant-%s", event.Metadata.TenantID)
-    },
-    EncryptedFields: map[string][]string{
-        "CustomerCreated": {"email", "phone", "ssn", "address"},
-        "OrderCreated":    {"shippingAddress", "billingAddress"},
-        "PaymentProcessed": {"cardLastFour", "cardToken"},
-    },
-}
+encConfig := mink.NewFieldEncryptionConfig(
+    // Required: encryption provider
+    mink.WithEncryptionProvider(provider),
 
-store := mink.New(adapter, mink.WithEncryption(config))
+    // Required: default master key ID
+    mink.WithDefaultKeyID("master-1"),
+
+    // Required: which fields to encrypt per event type
+    // Supports dot-separated paths for nested fields (e.g., "address.street")
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone", "ssn"),
+    mink.WithEncryptedFields("AddressUpdated", "address.street", "address.zip"),
+
+    // Optional: per-tenant encryption keys
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+
+    // Optional: crypto-shredding handler
+    mink.WithDecryptionErrorHandler(func(err error, eventType string, metadata mink.Metadata) error {
+        if errors.Is(err, encryption.ErrKeyRevoked) {
+            // Return nil to skip decryption — data stays encrypted
+            return nil
+        }
+        return err
+    }),
+)
+
+// Create event store with encryption
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 ```
 
-### Encryption Middleware
+### How It Works
+
+**Encrypt on save** (in `Append()` / `SaveAggregate()`):
+1. `GenerateDataKey(ctx, keyID)` — one provider call per event
+2. AES-256-GCM encrypt each configured field with the DEK plaintext
+3. Store encrypted DEK + field list in `Metadata.Custom`:
+   - `$encrypted_fields` — JSON array of encrypted field names
+   - `$encryption_key_id` — master key ID
+   - `$encrypted_dek` — base64-encoded encrypted DEK
+   - `$encryption_algorithm` — `AES-256-GCM`
+4. Zero DEK plaintext after use
+
+**Decrypt on load** (in `Load()` / `LoadAggregate()`):
+1. Check `$encrypted_fields` in metadata (skip if absent)
+2. `DecryptDataKey(ctx, keyID, encryptedDEK)` — recover DEK plaintext
+3. AES-256-GCM decrypt each field locally
+4. Zero DEK plaintext after use
+
+**Pipeline ordering**: Serialize → Schema Stamp → **Encrypt** → Persist → Load → **Decrypt** → Upcast → Deserialize
+
+### Metadata Helpers
 
 ```go
-// Encryption serializer wraps standard serializer
-type EncryptingSerializer struct {
-    inner    Serializer
-    provider EncryptionProvider
-    config   EncryptionConfig
-}
-
-func (s *EncryptingSerializer) Serialize(event interface{}) ([]byte, error) {
-    // Serialize to JSON first
-    data, err := s.inner.Serialize(event)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Check if this event type has encrypted fields
-    eventType := reflect.TypeOf(event).Name()
-    fields, ok := s.config.EncryptedFields[eventType]
-    if !ok {
-        return data, nil
-    }
-    
-    // Parse JSON, encrypt fields, re-serialize
-    var doc map[string]interface{}
-    json.Unmarshal(data, &doc)
-    
-    keyID := s.config.KeyIDResolver(event)
-    for _, field := range fields {
-        if val, ok := doc[field]; ok {
-            plaintext, _ := json.Marshal(val)
-            ciphertext, _ := s.provider.Encrypt(ctx, keyID, plaintext)
-            doc[field] = base64.StdEncoding.EncodeToString(ciphertext)
-            doc[field+"_encrypted"] = true
-        }
-    }
-    
-    return json.Marshal(doc)
-}
-
-func (s *EncryptingSerializer) Deserialize(data []byte, eventType string) (interface{}, error) {
-    // Check for encrypted fields
-    fields, hasEncrypted := s.config.EncryptedFields[eventType]
-    if !hasEncrypted {
-        return s.inner.Deserialize(data, eventType)
-    }
-    
-    // Decrypt fields first
-    var doc map[string]interface{}
-    json.Unmarshal(data, &doc)
-    
-    for _, field := range fields {
-        if doc[field+"_encrypted"] == true {
-            ciphertext, _ := base64.StdEncoding.DecodeString(doc[field].(string))
-            plaintext, _ := s.provider.Decrypt(ctx, keyID, ciphertext)
-            var val interface{}
-            json.Unmarshal(plaintext, &val)
-            doc[field] = val
-            delete(doc, field+"_encrypted")
-        }
-    }
-    
-    decrypted, _ := json.Marshal(doc)
-    return s.inner.Deserialize(decrypted, eventType)
+// Check if an event has encrypted fields
+if mink.IsEncrypted(event.Metadata) {
+    fields := mink.GetEncryptedFields(event.Metadata)  // []string{"email", "phone"}
+    keyID := mink.GetEncryptionKeyID(event.Metadata)    // "master-1"
 }
 ```
+
+### Inspecting Raw Data
+
+```go
+// Load raw events without decryption
+raw, _ := store.LoadRaw(ctx, "Customer-cust-1", 0)
+fmt.Printf("Raw data at rest: %s\n", raw[0].Data)
+// {"name":"Alice Smith","email":"base64-encrypted...","phone":"base64-encrypted..."}
+
+fmt.Printf("Encrypted fields: %v\n", mink.GetEncryptedFields(raw[0].Metadata))
+// [email phone]
+```
+
+### Zero Overhead
+
+When `FieldEncryptionConfig` is not set (i.e., `mink.New(adapter)` without `WithFieldEncryption`), all encryption code paths are bypassed via nil-check. There is zero performance impact on applications that don't use encryption.
 
 ---
 
 ## GDPR Compliance
 
-### Crypto-Shredding
+### Crypto-Shredding ✅
 
-Delete personal data by destroying encryption keys.
+Make personal data permanently unrecoverable by revoking encryption keys. Since PII fields are encrypted with per-tenant keys, revoking a tenant's key makes all their encrypted data unreadable — even though the events remain in the store.
 
 ```go
-// GDPRManager handles data subject rights
-type GDPRManager interface {
-    // Right to be forgotten - destroy encryption key
-    ForgetDataSubject(ctx context.Context, subjectID string) error
-    
-    // Right to access - export all data
-    ExportDataSubject(ctx context.Context, subjectID string) (*DataExport, error)
-    
-    // Right to rectification - note: events are immutable
-    // Use compensating events instead
-    CreateRectificationEvent(ctx context.Context, subjectID string, 
-        corrections map[string]interface{}) error
-}
+import (
+    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/encryption"
+    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+)
 
-type DataExport struct {
-    SubjectID   string
-    ExportedAt  time.Time
-    Events      []ExportedEvent
-    ReadModels  map[string]interface{}
-}
+// 1. Set up per-tenant encryption keys
+provider := local.New(
+    local.WithKey("tenant-A", tenantAKey),
+    local.WithKey("tenant-B", tenantBKey),
+)
 
-// Implementation
-type gdprManager struct {
-    eventStore *EventStore
-    keyStore   EncryptionProvider
-}
+encConfig := mink.NewFieldEncryptionConfig(
+    mink.WithEncryptionProvider(provider),
+    mink.WithDefaultKeyID("tenant-A"),
+    mink.WithEncryptedFields("CustomerCreated", "email", "phone"),
+    mink.WithTenantKeyResolver(func(tenantID string) string {
+        return "tenant-" + tenantID
+    }),
+    // Graceful degradation when key is revoked
+    mink.WithDecryptionErrorHandler(func(err error, eventType string, metadata mink.Metadata) error {
+        if errors.Is(err, encryption.ErrKeyRevoked) {
+            fmt.Printf("Key revoked for tenant %s — data shredded\n", metadata.TenantID)
+            return nil // Return encrypted data as-is
+        }
+        return err
+    }),
+)
 
-func (m *gdprManager) ForgetDataSubject(ctx context.Context, subjectID string) error {
-    // 1. Get the encryption key ID for this subject
-    keyID := fmt.Sprintf("subject-%s", subjectID)
-    
-    // 2. Delete/disable the key - all encrypted data becomes unreadable
-    if err := m.keyStore.DeleteKey(ctx, keyID); err != nil {
-        return fmt.Errorf("failed to delete encryption key: %w", err)
-    }
-    
-    // 3. Record the deletion (for audit)
-    return m.eventStore.Append(ctx, "gdpr-audit", []interface{}{
-        DataSubjectForgotten{
-            SubjectID:   subjectID,
-            ForgottenAt: time.Now(),
-            KeyID:       keyID,
-        },
-    })
-}
+store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 
-func (m *gdprManager) ExportDataSubject(ctx context.Context, subjectID string) (*DataExport, error) {
-    // Find all events related to this subject
-    events, _ := m.eventStore.QueryByMetadata(ctx, "subjectId", subjectID)
-    
-    export := &DataExport{
-        SubjectID:  subjectID,
-        ExportedAt: time.Now(),
-    }
-    
-    for _, event := range events {
-        export.Events = append(export.Events, ExportedEvent{
-            Type:      event.Type,
-            Timestamp: event.Timestamp,
-            Data:      event.Data, // Decrypted automatically
-        })
-    }
-    
-    // Record the export (for audit)
-    m.eventStore.Append(ctx, "gdpr-audit", []interface{}{
-        DataSubjectExported{
-            SubjectID:  subjectID,
-            ExportedAt: time.Now(),
-            EventCount: len(export.Events),
-        },
-    })
-    
-    return export, nil
-}
+// 2. Normal operation — data is encrypted/decrypted transparently
+customer := NewCustomer("cust-1")
+customer.Create("Alice", "alice@example.com", "+1-555-0100")
+store.SaveAggregate(ctx, customer)
+
+loaded := NewCustomer("cust-1")
+store.LoadAggregate(ctx, loaded) // email/phone decrypted automatically
+
+// 3. GDPR deletion request — revoke tenant B's key
+provider.RevokeKey("tenant-B")
+
+// Tenant B's encrypted fields are now permanently unrecoverable
+// Tenant A's data is still fully accessible
+// Events remain in the store (audit trail preserved)
+// Non-encrypted fields (name, country) are still readable
 ```
 
 ### Data Retention

@@ -499,6 +499,82 @@ var ErrIncompatibleSchema = errors.New("mink: incompatible schema")
 var ErrSchemaNotFound     = errors.New("mink: schema not found")
 ```
 
+### Field-Level Encryption (v0.5.0)
+
+```go
+package encryption
+
+// Provider abstracts crypto operations for field-level encryption.
+type Provider interface {
+    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
+    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
+    GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
+    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
+    Close() error
+}
+
+type DataKey struct {
+    Plaintext  []byte
+    Ciphertext []byte
+    KeyID      string
+}
+
+// Sentinel errors
+var ErrEncryptionFailed = errors.New("mink: encryption failed")
+var ErrDecryptionFailed = errors.New("mink: decryption failed")
+var ErrKeyNotFound      = errors.New("mink: encryption key not found")
+var ErrKeyRevoked       = errors.New("mink: encryption key revoked")
+var ErrProviderClosed   = errors.New("mink: encryption provider closed")
+
+// Typed errors (implement Is(), Unwrap())
+type EncryptionError struct { Operation string; KeyID string; Field string; Cause error }
+type KeyNotFoundError struct { KeyID string }
+type KeyRevokedError struct { KeyID string }
+
+func NewEncryptionError(keyID, field string, cause error) *EncryptionError
+func NewDecryptionError(keyID, field string, cause error) *EncryptionError
+func NewKeyNotFoundError(keyID string) *KeyNotFoundError
+func NewKeyRevokedError(keyID string) *KeyRevokedError
+func ClearBytes(b []byte)
+
+// --- Providers ---
+
+// Local (encryption/local)
+func local.New(opts ...local.Option) *local.Provider
+func local.WithKey(keyID string, key []byte) local.Option
+func (p *local.Provider) AddKey(keyID string, key []byte) error
+func (p *local.Provider) RevokeKey(keyID string) error
+
+// AWS KMS (encryption/kms)
+func kms.New(opts ...kms.Option) *kms.Provider
+func kms.WithKMSClient(client kms.KMSClient) kms.Option
+
+// Vault Transit (encryption/vault)
+func vault.New(opts ...vault.Option) *vault.Provider
+func vault.WithVaultClient(client vault.VaultClient) vault.Option
+
+// --- Root package config ---
+
+// FieldEncryptionConfig configures per-event-type field encryption
+type FieldEncryptionConfig struct { /* ... */ }
+type EncryptionOption func(*FieldEncryptionConfig)
+
+func NewFieldEncryptionConfig(opts ...EncryptionOption) *FieldEncryptionConfig
+func WithEncryptionProvider(p encryption.Provider) EncryptionOption
+func WithDefaultKeyID(keyID string) EncryptionOption
+func WithEncryptedFields(eventType string, fields ...string) EncryptionOption
+func WithTenantKeyResolver(resolver func(tenantID string) string) EncryptionOption
+func WithDecryptionErrorHandler(handler func(err error, eventType string, metadata Metadata) error) EncryptionOption
+
+// EventStore option
+func WithFieldEncryption(config *FieldEncryptionConfig) Option
+
+// Metadata helpers
+func IsEncrypted(m Metadata) bool
+func GetEncryptedFields(m Metadata) []string
+func GetEncryptionKeyID(m Metadata) string
+```
+
 ### Middleware
 
 ```go
