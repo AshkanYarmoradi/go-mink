@@ -114,7 +114,7 @@ func (p *Provider) DecryptDataKey(ctx context.Context, keyID string, encryptedKe
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, encryptedKey)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("Vault decrypt DEK: %w", err))
+		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt DEK: %w", err))
 	}
 	return plaintext, nil
 }
