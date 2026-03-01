@@ -134,7 +134,7 @@ func (p *Provider) checkClosed() error {
 		return encryption.ErrProviderClosed
 	}
 	if p.client == nil {
-		return encryption.NewEncryptionError("", "", fmt.Errorf("Vault client not configured: use WithVaultClient option"))
+		return encryption.NewEncryptionError("", "", fmt.Errorf("vault client not configured: use WithVaultClient option"))
 	}
 	return nil
 }

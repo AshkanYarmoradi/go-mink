@@ -134,7 +134,7 @@ func (p *Provider) checkClosed() error {
 		return encryption.ErrProviderClosed
 	}
 	if p.client == nil {
-		return encryption.NewEncryptionError("", "", fmt.Errorf("KMS client not configured: use WithKMSClient option"))
+		return encryption.NewEncryptionError("", "", fmt.Errorf("kms client not configured: use WithKMSClient option"))
 	}
 	return nil
 }
