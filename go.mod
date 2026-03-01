@@ -3,6 +3,7 @@ module github.com/AshkanYarmoradi/go-mink
 go 1.25.0
 
 require (
+	github.com/aws/aws-sdk-go-v2/service/kms v1.50.1
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.12
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
