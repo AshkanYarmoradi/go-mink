@@ -30,9 +30,13 @@ type Provider struct {
 type Option func(*Provider)
 
 // WithKey pre-loads a master key into the provider.
-// The key must be exactly 32 bytes (AES-256).
+// The key must be exactly 32 bytes (AES-256). Panics if the key length is invalid
+// to fail fast during initialization rather than at runtime.
 func WithKey(keyID string, key []byte) Option {
 	return func(p *Provider) {
+		if len(key) != 32 {
+			panic(fmt.Sprintf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key)))
+		}
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		p.keys[keyID] = keyCopy

@@ -341,7 +341,7 @@ func TestEncryptFields_InvalidJSON(t *testing.T) {
 	_, _, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, encryption.ErrEncryptionFailed)
-	assert.Contains(t, err.Error(), "failed to parse event data")
+	assert.Contains(t, err.Error(), "field-level encryption requires JSON-encoded event data")
 }
 
 func TestEncryptFields_AllFieldsMissing(t *testing.T) {

@@ -116,6 +116,10 @@ func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, eventType str
 		return data, metadata, nil
 	}
 
+	if c.provider == nil {
+		return nil, metadata, encryption.NewEncryptionError("", "", fmt.Errorf("encryption provider not configured: use WithEncryptionProvider option"))
+	}
+
 	keyID := c.resolveKeyID(metadata)
 	if keyID == "" {
 		return nil, metadata, encryption.NewEncryptionError("", "", fmt.Errorf("no encryption key ID configured"))
@@ -128,10 +132,10 @@ func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, eventType str
 	}
 	defer encryption.ClearBytes(dk.Plaintext)
 
-	// Parse JSON data
+	// Parse JSON data — field-level encryption requires JSON-encoded event bodies
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal(data, &jsonData); err != nil {
-		return nil, metadata, encryption.NewEncryptionError(keyID, "", fmt.Errorf("failed to parse event data: %w", err))
+		return nil, metadata, encryption.NewEncryptionError(keyID, "", fmt.Errorf("field-level encryption requires JSON-encoded event data; failed to parse as JSON (incompatible with non-JSON serializers like MessagePack/Protobuf): %w", err))
 	}
 
 	// Encrypt each field
