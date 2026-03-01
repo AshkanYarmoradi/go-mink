@@ -3,7 +3,9 @@ package mink
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/AshkanYarmoradi/go-mink/encryption"
@@ -358,4 +360,372 @@ func TestDecryptFields_UnencryptedData(t *testing.T) {
 	result, err := config.decryptFields(ctx, "UserCreated", data, Metadata{})
 	require.NoError(t, err)
 	assert.Equal(t, data, result)
+}
+
+// --- Error path tests for 95%+ coverage ---
+
+func TestEncryptFields_GenerateDataKeyError(t *testing.T) {
+	// Use a provider with no keys to trigger key-not-found on GenerateDataKey
+	provider := local.New()
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("nonexistent"),
+		WithEncryptedFields("UserCreated", "email"),
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"email":"test@example.com"}`)
+
+	_, _, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+}
+
+func TestEncryptFields_InvalidJSON(t *testing.T) {
+	provider := testProvider(t, "master-1")
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+		WithEncryptedFields("UserCreated", "email"),
+	)
+
+	ctx := context.Background()
+	data := []byte(`{invalid json}`)
+
+	_, _, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrEncryptionFailed)
+	assert.Contains(t, err.Error(), "failed to parse event data")
+}
+
+func TestEncryptFields_AllFieldsMissing(t *testing.T) {
+	provider := testProvider(t, "master-1")
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+		WithEncryptedFields("UserCreated", "ssn", "dob"), // neither present
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"name":"John","email":"john@example.com"}`)
+
+	// When no configured fields exist in data, returns original data unmodified
+	result, meta, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.NoError(t, err)
+	assert.Equal(t, data, result)
+	assert.False(t, IsEncrypted(meta))
+}
+
+func TestDecryptFields_InvalidBase64DEK(t *testing.T) {
+	provider := testProvider(t, "master-1")
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"email":"encrypted-value"}`)
+
+	// Metadata says encrypted but DEK is not valid base64
+	meta := Metadata{Custom: map[string]string{
+		encryptedFieldsKey: `["email"]`,
+		encryptionKeyIDKey: "master-1",
+		encryptedDEKKey:    "!!!not-base64!!!",
+	}}
+
+	_, err := config.decryptFields(ctx, "UserCreated", data, meta)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), "failed to decode encrypted DEK")
+}
+
+func TestDecryptFields_DecryptDataKeyError_HandlerReturnsError(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	provider := local.New(local.WithKey("master-1", key))
+	defer provider.Close()
+
+	handlerErr := fmt.Errorf("custom handler error")
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+		WithEncryptedFields("UserCreated", "email"),
+		WithDecryptionErrorHandler(func(err error, eventType string, metadata Metadata) error {
+			return handlerErr // Handler propagates its own error
+		}),
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"email":"test@example.com"}`)
+
+	// Encrypt first
+	encData, encMeta, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.NoError(t, err)
+
+	// Revoke key to cause DecryptDataKey failure
+	err = provider.RevokeKey("master-1")
+	require.NoError(t, err)
+
+	// Handler returns non-nil error
+	_, err = config.decryptFields(ctx, "UserCreated", encData, encMeta)
+	require.Error(t, err)
+	assert.Equal(t, handlerErr, err)
+}
+
+func TestDecryptFields_DecryptDataKeyError_NoHandler(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	provider := local.New(local.WithKey("master-1", key))
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+		WithEncryptedFields("UserCreated", "email"),
+		// No decryption error handler set
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"email":"test@example.com"}`)
+
+	// Encrypt first
+	encData, encMeta, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.NoError(t, err)
+
+	// Revoke key
+	err = provider.RevokeKey("master-1")
+	require.NoError(t, err)
+
+	// Without handler, error is returned directly
+	_, err = config.decryptFields(ctx, "UserCreated", encData, encMeta)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrKeyRevoked)
+}
+
+func TestDecryptFields_EmptyFieldNames(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	provider := local.New(local.WithKey("master-1", key))
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+	)
+
+	ctx := context.Background()
+	data := []byte(`{"name":"John"}`)
+
+	// Encrypt a DEK properly
+	dk, err := provider.GenerateDataKey(ctx, "master-1")
+	require.NoError(t, err)
+
+	// Metadata says encrypted but field list is empty
+	meta := Metadata{Custom: map[string]string{
+		encryptedFieldsKey: `[]`,
+		encryptionKeyIDKey: "master-1",
+		encryptedDEKKey:    base64.StdEncoding.EncodeToString(dk.Ciphertext),
+	}}
+
+	// Should return data as-is when no field names
+	result, err := config.decryptFields(ctx, "UserCreated", data, meta)
+	require.NoError(t, err)
+	assert.Equal(t, data, result)
+}
+
+func TestDecryptFields_InvalidJSON(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	provider := local.New(local.WithKey("master-1", key))
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+	)
+
+	ctx := context.Background()
+
+	// Generate valid DEK
+	dk, err := provider.GenerateDataKey(ctx, "master-1")
+	require.NoError(t, err)
+
+	// Invalid JSON body with valid encryption metadata
+	meta := Metadata{Custom: map[string]string{
+		encryptedFieldsKey: `["email"]`,
+		encryptionKeyIDKey: "master-1",
+		encryptedDEKKey:    base64.StdEncoding.EncodeToString(dk.Ciphertext),
+	}}
+
+	_, err = config.decryptFields(ctx, "UserCreated", []byte(`{invalid}`), meta)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), "failed to parse event data")
+}
+
+func TestDecryptFields_FieldDecryptError(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	provider := local.New(local.WithKey("master-1", key))
+	defer provider.Close()
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("master-1"),
+	)
+
+	ctx := context.Background()
+
+	// Generate valid DEK
+	dk, err := provider.GenerateDataKey(ctx, "master-1")
+	require.NoError(t, err)
+
+	// Data with a field that has valid base64 but invalid ciphertext
+	invalidCiphertext := base64.StdEncoding.EncodeToString([]byte("not-valid-aes-gcm-ciphertext-at-all-needs-padding"))
+	data := []byte(fmt.Sprintf(`{"email":"%s"}`, invalidCiphertext))
+
+	meta := Metadata{Custom: map[string]string{
+		encryptedFieldsKey: `["email"]`,
+		encryptionKeyIDKey: "master-1",
+		encryptedDEKKey:    base64.StdEncoding.EncodeToString(dk.Ciphertext),
+	}}
+
+	_, err = config.decryptFields(ctx, "UserCreated", data, meta)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+}
+
+func TestDecryptJSONField_InvalidBase64Value(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"email": "!!!not-base64!!!",
+	}
+
+	err := decryptJSONField(data, "email", key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to decode field")
+}
+
+func TestDecryptJSONField_NonStringValue(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"count": 42, // Not a string, wasn't encrypted
+	}
+
+	// Should return nil (skip non-string values)
+	err := decryptJSONField(data, "count", key)
+	require.NoError(t, err)
+	assert.Equal(t, 42, data["count"]) // unchanged
+}
+
+func TestDecryptJSONField_MissingField(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"name": "John",
+	}
+
+	// Should return nil for missing field
+	err := decryptJSONField(data, "email", key)
+	require.NoError(t, err)
+}
+
+func TestDecryptJSONField_NestedMissingParent(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"name": "John",
+	}
+
+	// Parent key "address" doesn't exist
+	err := decryptJSONField(data, "address.street", key)
+	require.NoError(t, err)
+}
+
+func TestDecryptJSONField_NestedNonMapChild(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"address": "not-a-map", // String instead of map
+	}
+
+	// Parent exists but isn't a map
+	err := decryptJSONField(data, "address.street", key)
+	require.NoError(t, err)
+}
+
+func TestEncryptJSONField_NestedMissingParent(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"name": "John",
+	}
+
+	encrypted, err := encryptJSONField(data, "address.street", key)
+	require.NoError(t, err)
+	assert.False(t, encrypted)
+}
+
+func TestEncryptJSONField_NestedNonMapChild(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	data := map[string]interface{}{
+		"address": "not-a-map",
+	}
+
+	encrypted, err := encryptJSONField(data, "address.street", key)
+	require.NoError(t, err)
+	assert.False(t, encrypted)
+}
+
+func TestAesGCMEncrypt_InvalidKeyLength(t *testing.T) {
+	// AES requires 16, 24, or 32 byte keys
+	_, err := aesGCMEncrypt([]byte("short"), []byte("plaintext"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create cipher")
+}
+
+func TestAesGCMDecrypt_InvalidKeyLength(t *testing.T) {
+	_, err := aesGCMDecrypt([]byte("short"), []byte("some-ciphertext-long-enough-for-nonce"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create cipher")
+}
+
+func TestAesGCMDecrypt_CiphertextTooShort(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+
+	_, err := aesGCMDecrypt(key, []byte("short"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ciphertext too short")
+}
+
+func TestWithEncryptedFields_NilMapInit(t *testing.T) {
+	// Apply WithEncryptedFields directly to a config with nil fields map
+	config := &FieldEncryptionConfig{}
+	opt := WithEncryptedFields("UserCreated", "email")
+	opt(config)
+	assert.Equal(t, []string{"email"}, config.fields["UserCreated"])
 }
