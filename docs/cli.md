@@ -653,7 +653,7 @@ $ mink version
 🦫 Mink
 
 ┌───────────┬─────────────────────────────┐
-│ Version   │ v0.4.0                      │
+│ Version   │ v1.0.0                      │
 │ Commit    │ abc123def                   │
 │ Built     │ 2026-01-07                  │
 │ Go        │ go1.22.0                    │

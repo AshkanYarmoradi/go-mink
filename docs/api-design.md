@@ -95,7 +95,7 @@ func (a *AggregateBase) ClearUncommittedEvents() {
 }
 ```
 
-### Commands (v0.2.0)
+### Commands
 
 ```go
 // Command represents intent to change state
@@ -142,7 +142,7 @@ type IdempotentCommand interface {
 }
 ```
 
-### Command Bus (v0.2.0)
+### Command Bus
 
 ```go
 // CommandBus routes commands to handlers
@@ -176,7 +176,7 @@ type CommandHandlerFunc func(ctx context.Context, cmd Command) (CommandResult, e
 type CommandMiddleware func(CommandHandlerFunc) CommandHandlerFunc
 ```
 
-### Generic Handler (v0.2.0)
+### Generic Handler
 
 ```go
 // GenericHandler provides type-safe command handling
@@ -192,7 +192,7 @@ func (h *GenericHandler[T]) CommandType() string
 func (h *GenericHandler[T]) Handle(ctx context.Context, cmd Command) (CommandResult, error)
 ```
 
-### Aggregate Handler (v0.2.0)
+### Aggregate Handler
 
 ```go
 // AggregateHandler combines load/save with command handling
@@ -211,7 +211,7 @@ func NewAggregateHandler[C Command, A Aggregate](
 ) *AggregateHandler[C, A]
 ```
 
-### Built-in Middleware (v0.2.0)
+### Built-in Middleware
 
 ```go
 // Validation middleware - calls cmd.Validate()
@@ -245,7 +245,7 @@ func TenantMiddleware(resolver func(context.Context) string) CommandMiddleware
 func IdempotencyMiddleware(config IdempotencyConfig) CommandMiddleware
 ```
 
-### Idempotency Store (v0.2.0)
+### Idempotency Store
 
 ```go
 // IdempotencyStore tracks processed commands
@@ -425,7 +425,7 @@ orders, _ := repo.Find(ctx,
 )
 ```
 
-### Event Versioning & Upcasting (v0.5.0)
+### Event Versioning & Upcasting
 
 ```go
 // Upcaster transforms event data from one schema version to the next
@@ -499,7 +499,7 @@ var ErrIncompatibleSchema = errors.New("mink: incompatible schema")
 var ErrSchemaNotFound     = errors.New("mink: schema not found")
 ```
 
-### Field-Level Encryption (v0.5.0)
+### Field-Level Encryption
 
 ```go
 package encryption
@@ -675,7 +675,7 @@ if errors.As(err, &concErr) {
 }
 ```
 
-### Testing Utilities (v0.4.0)
+### Testing Utilities
 
 ```go
 import (

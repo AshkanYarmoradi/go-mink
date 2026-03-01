@@ -9,7 +9,7 @@ permalink: /docs/testing
 {: .no_toc }
 
 {: .label .label-green }
-Phase 4 Complete - Full Testing Utilities
+v1.0.0
 
 ## Table of contents
 {: .no_toc .text-delta }
@@ -47,7 +47,7 @@ Mink provides comprehensive testing utilities to make event-sourced systems easy
 
 ## Testing Packages
 
-Mink v0.4.0 includes a comprehensive suite of testing utilities:
+Mink includes a comprehensive suite of testing utilities:
 
 | Package | Purpose |
 |---------|---------|

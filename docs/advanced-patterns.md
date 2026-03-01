@@ -16,7 +16,7 @@ permalink: /docs/advanced-patterns
 
 ---
 
-## Command Bus & CQRS (v0.2.0) ✅
+## Command Bus & CQRS
 
 Complete CQRS pattern implementation with first-class Command support.
 
@@ -181,7 +181,7 @@ bus.Use(mink.TenantMiddleware(func(ctx context.Context) string {
 
 ---
 
-## Idempotency (v0.2.0) ✅
+## Idempotency
 
 Prevent duplicate command processing - essential for reliability.
 
@@ -317,7 +317,7 @@ CREATE INDEX IF NOT EXISTS idx_mink_idempotency_expires_at
 
 ---
 
-## Correlation & Causation Tracking (v0.2.0) ✅
+## Correlation & Causation Tracking
 
 Track request flow through distributed systems.
 
@@ -378,7 +378,7 @@ result, err := bus.Dispatch(ctx, cmd)
 
 ---
 
-## Saga / Process Manager (v0.5.0) ✅
+## Saga / Process Manager
 
 Orchestrate long-running business processes across aggregates. Sagas coordinate operations that span multiple aggregates or external services, providing compensation (rollback) when things go wrong.
 
@@ -784,7 +784,7 @@ func TestOrderFulfillmentSaga_Compensation(t *testing.T) {
 
 ---
 
-## Outbox Pattern (v0.5.0) ✅
+## Outbox Pattern
 
 Reliable event publishing to external systems. The outbox pattern ensures messages are published atomically with events by writing them in the same database transaction, then delivering them asynchronously via a background processor.
 
@@ -1075,7 +1075,7 @@ CREATE INDEX idx_mink_outbox_dead_letter ON mink_outbox (created_at) WHERE statu
 
 ---
 
-## Field-Level Encryption (v0.5.0) ✅
+## Field-Level Encryption
 
 Protect sensitive PII fields at rest with envelope encryption. go-mink encrypts individual JSON fields while keeping non-sensitive data queryable, and supports crypto-shredding for GDPR compliance.
 

@@ -16,7 +16,7 @@ permalink: /docs/security
 
 ---
 
-## Field-Level Encryption ✅
+## Field-Level Encryption
 
 Protect sensitive PII data in events with field-level encryption. go-mink uses envelope encryption for performance: one provider call per event generates a data encryption key (DEK), then individual fields are encrypted locally with AES-256-GCM.
 
@@ -182,7 +182,7 @@ When `FieldEncryptionConfig` is not set (i.e., `mink.New(adapter)` without `With
 
 ## GDPR Compliance
 
-### Crypto-Shredding ✅
+### Crypto-Shredding
 
 Make personal data permanently unrecoverable by revoking encryption keys. Since PII fields are encrypted with per-tenant keys, revoking a tenant's key makes all their encrypted data unreadable — even though the events remain in the store.
 

@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-02
+
+First stable release consolidating all features from the development phases.
+
 ### Added
 
-#### Saga / Process Manager (Phase 5)
+#### Saga / Process Manager
 - `Saga` interface - Contract for saga/process manager implementations
 - `SagaBase` - Embeddable base struct with ID, Type, Status, Version management
 - `SagaStatus` enum - Started, Running, Completed, Failed, Compensating, Compensated
@@ -58,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `postgres.WithSagaSchema()` - Configure PostgreSQL schema
 - `postgres.WithSagaTable()` - Configure table name
 
-#### Field-Level Encryption (Phase 5)
+#### Field-Level Encryption
 - `encryption.Provider` interface - Abstraction for key management and crypto operations
 - `encryption.DataKey` struct - Holds plaintext + ciphertext of data encryption keys
 - `encryption.ClearBytes()` - Securely zero key material after use
@@ -121,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-tenant encryption keys
 - Crypto-shredding (GDPR right to erasure) demonstration
 
-#### Event Versioning & Upcasting (Phase 5)
+#### Event Versioning & Upcasting
 - `Upcaster` interface - Transform event data from one schema version to the next
 - `UpcasterChain` - Thread-safe registry with gap/duplicate validation
 - `NewUpcasterChain()` - Create empty upcaster chain
@@ -139,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic schema version stamping during `Append()` and `SaveAggregate()`
 - Zero overhead when no upcasters configured (nil chain short-circuit)
 
-#### UpcastingSerializer (Phase 5)
+#### UpcastingSerializer
 - `UpcastingSerializer` - Serializer decorator that applies upcasting on deserialize
 - `NewUpcastingSerializer()` - Create decorator wrapping any Serializer
 - `Serialize()` - Pass-through to inner serializer
@@ -149,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Chain()` - Access the upcaster chain
 - `SerializeEventWithVersion()` - Convenience function to serialize with version stamp
 
-#### Schema Registry (Phase 5)
+#### Schema Registry
 - `SchemaRegistry` - In-memory registry for event schema definitions
 - `NewSchemaRegistry()` - Create empty schema registry
 - `SchemaRegistry.Register()` - Register schema definition for event type and version
@@ -161,7 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SchemaDefinition` - Schema metadata with version, fields, and optional JSON Schema
 - `FieldDefinition` - Field metadata with name, type, and required flag
 
-#### Versioning Errors (Phase 5)
+#### Versioning Errors
 - `ErrUpcastFailed` - Sentinel error for upcasting failures
 - `ErrSchemaVersionGap` - Sentinel error for gaps in upcaster chain
 - `ErrIncompatibleSchema` - Sentinel error for schema incompatibility
@@ -485,7 +489,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ErrStreamNotFound` - Stream does not exist
 - `ConcurrencyError` - Detailed concurrency error info
 
-[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AshkanYarmoradi/go-mink/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AshkanYarmoradi/go-mink/compare/v0.1.0...v0.2.0

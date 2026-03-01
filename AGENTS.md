@@ -70,7 +70,7 @@ github.com/AshkanYarmoradi/go-mink/
 │   │   ├── idempotency.go     # PostgreSQL idempotency store
 │   │   ├── subscription.go    # PostgreSQL subscriptions
 │   │   ├── snapshot.go        # PostgreSQL snapshots (planned)
-│   │   └── outbox.go          # PostgreSQL outbox (Phase 5)
+│   │   └── outbox.go          # PostgreSQL outbox
 │   ├── mongodb/
 │   ├── redis/
 │   └── memory/                # In-memory for testing
@@ -84,14 +84,14 @@ github.com/AshkanYarmoradi/go-mink/
 │
 ├── middleware/
 │   ├── logging.go
-│   ├── metrics/               # Prometheus metrics (v0.4.0+)
-│   ├── tracing/               # OpenTelemetry tracing (v0.4.0+)
+│   ├── metrics/               # Prometheus metrics
+│   ├── tracing/               # OpenTelemetry tracing
 │   ├── retry.go
 │   ├── idempotency.go
 │   └── validation.go
 │
 ├── serializer/
-│   └── msgpack/               # MessagePack serializer (v0.4.0+)
+│   └── msgpack/               # MessagePack serializer
 │
 ├── encryption/
 │   ├── provider.go            # EncryptionProvider interface
@@ -134,66 +134,19 @@ github.com/AshkanYarmoradi/go-mink/
 
 ---
 
-## Development Phases
+## Implemented Features (v1.0.0)
 
-### Completed Phases
+**Core**: Event Store with optimistic concurrency, PostgreSQL and in-memory adapters, JSON serializer with event registry, Aggregate interface and AggregateBase.
 
-**Phase 1 (v0.1.0)**: Foundation - COMPLETE
-- Core interfaces: `Event`, `EventData`, `StoredEvent`, `Metadata`
-- `Aggregate` interface and `AggregateBase` implementation
-- `EventStore` with `Append`, `Load`, `SaveAggregate`, `LoadAggregate`
-- PostgreSQL adapter with optimistic concurrency
-- In-memory adapter for testing
-- JSON serializer with event registry
+**CQRS**: Command interface with validation, CommandBus with middleware pipeline, IdempotencyStore (PostgreSQL and in-memory), Middleware: Logging, Validation, Recovery, Idempotency, Correlation, Causation, Tenant.
 
-**Phase 2 (v0.2.0)**: CQRS & Commands - COMPLETE
-- `Command` interface with validation
-- `CommandHandler` generic interface
-- `CommandBus` with middleware pipeline
-- `IdempotencyStore` interface and PostgreSQL implementation
-- Middleware: Logging, Validation, Recovery, Idempotency, Correlation, Causation, Tenant
+**Read Models**: Projection hierarchy (Inline, Async, Live), ProjectionEngine with worker pool, checkpoint management and rebuilding, ReadModelRepository with query builder, event subscriptions.
 
-**Phase 3 (v0.3.0)**: Read Models - COMPLETE
-- `Projection` interface hierarchy (Inline, Async, Live)
-- `ProjectionEngine` with worker pool
-- Checkpoint management and rebuilding
-- `ReadModelRepository` generic interface with query builder
-- PostgreSQL read model repository with auto-migration
-- Event subscriptions (`SubscribeAll`, `SubscribeStream`, `SubscribeCategory`)
+**Developer Experience**: Testing utilities (`testing/bdd`, `testing/assertions`, `testing/projections`, `testing/sagas`, `testing/containers`), Observability (`middleware/metrics`, `middleware/tracing`), MessagePack serializer, CLI tool (`cli/commands`).
 
-**Phase 4 (v0.4.0)**: Developer Experience - COMPLETE
-- Testing utilities: `testing/bdd`, `testing/assertions`, `testing/projections`, `testing/sagas`, `testing/containers`
-- Observability: `middleware/metrics` (Prometheus), `middleware/tracing` (OpenTelemetry)
-- MessagePack serializer: `serializer/msgpack`
-- CLI tool: `cli/commands` with 84.9% test coverage
-  - Commands: init, generate, migrate, projection, stream, diagnose, schema
-  - 200+ unit tests, 67 integration tests, 4 E2E tests
-  - Full PostgreSQL integration testing
+**Advanced Patterns**: Saga / Process Manager with compensation, Outbox pattern (stores, processor, Webhook/Kafka/SNS publishers), Event versioning & upcasting with schema registry, Field-level encryption (Local/AWS KMS/Vault Transit providers), GDPR crypto-shredding.
 
-### Phase 5 (v0.5.0): Security & Advanced Patterns - IN PROGRESS
-
-**Goal**: Production-ready features for enterprise use
-
-**Completed Tasks**:
-- ✅ Saga / Process Manager implementation
-  - `Saga` interface and `SagaBase` implementation
-  - `SagaManager` for orchestration
-  - `SagaStore` with PostgreSQL and Memory implementations
-  - `testing/sagas` package for testing
-- ✅ Outbox Pattern for reliable messaging
-  - `OutboxStore` interface with PostgreSQL and Memory implementations
-  - `OutboxAppender` for atomic event+outbox writes (PostgreSQL)
-  - `EventStoreWithOutbox` wrapper with automatic routing
-  - `OutboxProcessor` background worker with polling, retry, dead-letter
-  - Built-in publishers: Webhook (`outbox/webhook`), Kafka (`outbox/kafka`), SNS (`outbox/sns`)
-  - Prometheus metrics integration (`OutboxMetrics` in `middleware/metrics`)
-
-**Remaining Tasks**:
-1. Event versioning & upcasting
-2. Field-level encryption (AWS KMS, HashiCorp Vault)
-3. GDPR compliance (crypto-shredding, data export)
-
-### Phase 6-7: See roadmap.md for details
+See `docs/roadmap.md` for future development plans.
 
 ---
 
@@ -793,13 +746,13 @@ import (
     "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
     "github.com/AshkanYarmoradi/go-mink/adapters/memory"
 
-    // Testing utilities (v0.4.0+)
+    // Testing utilities
     "github.com/AshkanYarmoradi/go-mink/testing/bdd"
     "github.com/AshkanYarmoradi/go-mink/testing/assertions"
     "github.com/AshkanYarmoradi/go-mink/testing/projections"
     "github.com/AshkanYarmoradi/go-mink/testing/containers"
 
-    // Observability (v0.4.0+)
+    // Observability
     "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
     "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
 )

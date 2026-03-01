@@ -220,11 +220,9 @@ Key design decisions:
 - `EventStore.upcasters` is `nil` by default — all code paths short-circuit with zero overhead
 - Events are automatically upcasted during `Load`/`LoadAggregate` and stamped with latest version during `Append`/`SaveAggregate`
 
-## Current Development Phase
+## Current Version: v1.0.0 (Stable)
 
-**Phase 5 (v0.5.0)**: Security & Advanced Patterns - IN PROGRESS
-- Completed: Saga / Process Manager, CLI tool, Outbox pattern (stores, processor, publishers, metrics), Event versioning & upcasting, Field-level encryption (local/KMS/Vault providers, envelope encryption, per-tenant keys, crypto-shredding)
-- Remaining: Data export, audit logging, data retention policies
+First stable release. All core features are complete: Event Store, Command Bus, Projection Engine, Saga Manager, Outbox Pattern, Event Versioning & Upcasting, Field-Level Encryption, GDPR Compliance, Observability, Testing Utilities, CLI Tool.
 
 ## Field-Level Encryption
 
