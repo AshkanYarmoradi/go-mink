@@ -20,9 +20,16 @@ func testKey(t *testing.T) []byte {
 	return key
 }
 
+func mustNew(t *testing.T, opts ...Option) *Provider {
+	t.Helper()
+	p, err := New(opts...)
+	require.NoError(t, err)
+	return p
+}
+
 func TestProvider_EncryptDecrypt(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -39,7 +46,7 @@ func TestProvider_EncryptDecrypt(t *testing.T) {
 
 func TestProvider_EncryptDecrypt_EmptyPlaintext(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -53,7 +60,7 @@ func TestProvider_EncryptDecrypt_EmptyPlaintext(t *testing.T) {
 }
 
 func TestProvider_KeyNotFound(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -69,7 +76,7 @@ func TestProvider_KeyNotFound(t *testing.T) {
 
 func TestProvider_GenerateDataKey(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	dk := providertest.AssertGenerateDataKeyBasics(t, p, "master-1")
@@ -81,7 +88,7 @@ func TestProvider_GenerateDataKey(t *testing.T) {
 }
 
 func TestProvider_GenerateDataKey_KeyNotFound(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	_, err := p.GenerateDataKey(context.Background(), "nonexistent")
@@ -90,7 +97,7 @@ func TestProvider_GenerateDataKey_KeyNotFound(t *testing.T) {
 }
 
 func TestProvider_DecryptDataKey_KeyNotFound(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	_, err := p.DecryptDataKey(context.Background(), "nonexistent", []byte("data"))
@@ -100,7 +107,7 @@ func TestProvider_DecryptDataKey_KeyNotFound(t *testing.T) {
 
 func TestProvider_RevokeKey(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -130,7 +137,7 @@ func TestProvider_RevokeKey(t *testing.T) {
 }
 
 func TestProvider_RevokeKey_NotFound(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	err := p.RevokeKey("nonexistent")
@@ -139,7 +146,7 @@ func TestProvider_RevokeKey_NotFound(t *testing.T) {
 }
 
 func TestProvider_AddKey(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	key := testKey(t)
@@ -156,7 +163,7 @@ func TestProvider_AddKey(t *testing.T) {
 }
 
 func TestProvider_AddKey_InvalidLength(t *testing.T) {
-	p := New()
+	p := mustNew(t)
 	defer func() { _ = p.Close() }()
 
 	err := p.AddKey("bad-key", []byte("too-short"))
@@ -164,9 +171,15 @@ func TestProvider_AddKey_InvalidLength(t *testing.T) {
 	assert.Contains(t, err.Error(), "32 bytes")
 }
 
+func TestProvider_New_WithKey_InvalidLength(t *testing.T) {
+	_, err := New(WithKey("bad-key", []byte("too-short")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "32 bytes")
+}
+
 func TestProvider_Close(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 
 	// Double close is safe
 	providertest.AssertCloseBlocksAllOperations(t, p)
@@ -185,7 +198,7 @@ func TestProvider_Close(t *testing.T) {
 
 func TestProvider_Decrypt_InvalidCiphertext(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -203,7 +216,7 @@ func TestProvider_Decrypt_InvalidCiphertext(t *testing.T) {
 
 func TestProvider_ConcurrentAccess(t *testing.T) {
 	key := testKey(t)
-	p := New(WithKey("master-1", key))
+	p := mustNew(t, WithKey("master-1", key))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
@@ -248,7 +261,7 @@ func TestClearBytes(t *testing.T) {
 func TestProvider_KeyIsolation(t *testing.T) {
 	key1 := testKey(t)
 	key2 := testKey(t)
-	p := New(WithKey("key-1", key1), WithKey("key-2", key2))
+	p := mustNew(t, WithKey("key-1", key1), WithKey("key-2", key2))
 	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()

@@ -27,32 +27,34 @@ type Provider struct {
 }
 
 // Option configures a local Provider.
-type Option func(*Provider)
+type Option func(*Provider) error
 
 // WithKey pre-loads a master key into the provider.
-// The key must be exactly 32 bytes (AES-256). Panics if the key length is invalid
-// to fail fast during initialization rather than at runtime.
+// The key must be exactly 32 bytes (AES-256).
 func WithKey(keyID string, key []byte) Option {
-	return func(p *Provider) {
+	return func(p *Provider) error {
 		if len(key) != 32 {
-			panic(fmt.Sprintf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key)))
+			return fmt.Errorf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key))
 		}
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		p.keys[keyID] = keyCopy
+		return nil
 	}
 }
 
 // New creates a new local encryption provider.
-func New(opts ...Option) *Provider {
+func New(opts ...Option) (*Provider, error) {
 	p := &Provider{
 		keys:    make(map[string][]byte),
 		revoked: make(map[string]bool),
 	}
 	for _, opt := range opts {
-		opt(p)
+		if err := opt(p); err != nil {
+			return nil, err
+		}
 	}
-	return p
+	return p, nil
 }
 
 // AddKey adds a master key to the provider.

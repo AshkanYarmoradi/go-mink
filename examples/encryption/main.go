@@ -77,10 +77,13 @@ func main() {
 	tenantAKey := generateKey()
 	tenantBKey := generateKey()
 
-	provider := local.New(
+	provider, err := local.New(
 		local.WithKey("tenant-A", tenantAKey),
 		local.WithKey("tenant-B", tenantBKey),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer func() { _ = provider.Close() }()
 
 	// 2. Configure field-level encryption
