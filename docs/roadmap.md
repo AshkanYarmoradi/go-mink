@@ -171,10 +171,10 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 1. **Pick an issue** - Check GitHub issues labeled `good first issue`
 2. **Discuss** - Comment on the issue or join Discord
-3. **Fork & Branch** - Create feature branch from `main`
+3. **Fork & Branch** - Create feature branch from `develop`
 4. **Implement** - Follow code style guidelines
 5. **Test** - Add unit and integration tests
-6. **PR** - Submit pull request with description
+6. **PR** - Submit pull request targeting `develop`
 
 ### Priority Areas for Contributors
 

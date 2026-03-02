@@ -150,6 +150,20 @@ See `docs/roadmap.md` for future development plans.
 
 ---
 
+## Branching & Release Model
+
+```
+feature/xxx ──► develop (RC pre-releases) ──► main (stable releases)
+```
+
+- **Feature branches** are created from `develop` and merged back via PR.
+- Each merge to `develop` auto-creates an RC release (`v1.0.4-rc.1`, `v1.0.4-rc.2`, ...).
+- Merging `develop` into `main` auto-creates the next stable release (`v1.0.4`).
+- CI (tests, lint, build) runs on both `main` and `develop` branches.
+- RC versions are GitHub pre-releases — `go get module@latest` still returns stable.
+
+---
+
 ## Coding Standards
 
 ### Go Conventions
