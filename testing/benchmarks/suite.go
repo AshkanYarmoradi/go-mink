@@ -463,6 +463,7 @@ func runScaleConcurrentAppend(t *testing.T, f *AdapterBenchmarkFactory) {
 	n := f.scaleN()
 	const workers = 8
 	perWorker := n / workers
+	remainder := n - (perWorker * workers)
 
 	var memBefore, memAfter runtime.MemStats
 	runtime.GC()
@@ -474,17 +475,27 @@ func runScaleConcurrentAppend(t *testing.T, f *AdapterBenchmarkFactory) {
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func(workerID int) {
+		// Distribute remainder across the first workers.
+		count := perWorker
+		if w < remainder {
+			count++
+		}
+		go func(workerID, count int) {
 			defer wg.Done()
 			rec := SmallEventRecord()
 			base := workerID * perWorker
-			for i := 0; i < perWorker; i++ {
+			if workerID < remainder {
+				base += workerID
+			} else {
+				base += remainder
+			}
+			for i := 0; i < count; i++ {
 				_, err := adapter.Append(ctx, MakeStreamID("scale-conc", base+i), []adapters.EventRecord{rec}, AnyVersion)
 				if err != nil {
 					errCount.Add(1)
 				}
 			}
-		}(w)
+		}(w, count)
 	}
 	wg.Wait()
 	elapsed := time.Since(start)

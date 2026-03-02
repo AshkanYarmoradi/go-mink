@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -730,10 +731,20 @@ const (
 	scaleShort   = 10_000
 )
 
-func scaleN(t *testing.T) int {
+// skipUnlessScale skips the test unless scale tests are explicitly enabled.
+func skipUnlessScale(t *testing.T) {
+	t.Helper()
 	if testing.Short() {
-		t.Skip("skipping scale test in -short mode (run with: make benchmark)")
+		t.Skip("skipping scale test in -short mode")
 	}
+	if os.Getenv("MINK_SCALE_TESTS") != "1" {
+		t.Skip("skipping scale test; set MINK_SCALE_TESTS=1 to enable (run with: make benchmark)")
+	}
+}
+
+func scaleN(t *testing.T) int {
+	t.Helper()
+	skipUnlessScale(t)
 	return scaleDefault
 }
 
@@ -987,9 +998,7 @@ func TestScale_MillionCommandDispatches(t *testing.T) {
 }
 
 func TestScale_LargeAggregateReplay(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping scale test in -short mode")
-	}
+	skipUnlessScale(t)
 
 	numEvents := 100_000
 
@@ -1081,9 +1090,7 @@ func TestScale_ConcurrentMillionEvents(t *testing.T) {
 }
 
 func TestScale_LatencyDistribution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping scale test in -short mode")
-	}
+	skipUnlessScale(t)
 
 	// Measure batches of opsPerSample to get accurate sub-µs latencies on all platforms.
 	// Windows timer resolution is ~100ns; batching 100 ops ensures measurable durations.
@@ -1105,9 +1112,7 @@ func TestScale_LatencyDistribution(t *testing.T) {
 }
 
 func TestScale_MixedWorkloadConcurrent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping scale test in -short mode")
-	}
+	skipUnlessScale(t)
 
 	n := 500_000
 
@@ -1209,9 +1214,7 @@ func TestScale_SerializerThroughput(t *testing.T) {
 }
 
 func TestScale_CommandBusLatencyDistribution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping scale test in -short mode")
-	}
+	skipUnlessScale(t)
 
 	const totalOps = 100_000
 	const opsPerSample = 100

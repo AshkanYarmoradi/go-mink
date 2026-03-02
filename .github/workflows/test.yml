@@ -100,6 +100,7 @@ jobs:
       contents: read
     env:
       CGO_ENABLED: 0
+      MINK_SCALE_TESTS: 1
 
     steps:
       - name: Checkout code
@@ -108,7 +109,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run Go benchmarks
@@ -159,7 +160,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
 
       - name: Run PostgreSQL adapter benchmarks
@@ -170,6 +171,7 @@ jobs:
       - name: Run PostgreSQL adapter scale tests
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
+          MINK_SCALE_TESTS: 1
         run: go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/ 2>&1 | tee -a benchmark-postgres-results.txt
 
       - name: Upload benchmark results

@@ -69,5 +69,8 @@ func BenchmarkAdapter(b *testing.B) {
 }
 
 func TestAdapterScale(t *testing.T) {
+	if os.Getenv("MINK_SCALE_TESTS") != "1" {
+		t.Skip("Skipping scale test; set MINK_SCALE_TESTS=1 to enable")
+	}
 	benchmarks.RunScale(t, newBenchmarkFactory())
 }

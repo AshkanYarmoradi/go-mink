@@ -57,7 +57,7 @@ benchmark:
 	CGO_ENABLED=0 go test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 .
 	@echo ""
 	@echo "=== Running Scale Tests (1M events) ==="
-	CGO_ENABLED=0 go test -run='TestScale_' -v -timeout=10m -count=1 .
+	CGO_ENABLED=0 MINK_SCALE_TESTS=1 go test -run='TestScale_' -v -timeout=10m -count=1 .
 
 # Run quick benchmarks only (no scale tests)
 benchmark-quick:
@@ -69,7 +69,7 @@ benchmark-adapters:
 	CGO_ENABLED=0 go test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/memory/
 	@echo ""
 	@echo "=== Memory Adapter Scale Tests ==="
-	CGO_ENABLED=0 go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/memory/
+	CGO_ENABLED=0 MINK_SCALE_TESTS=1 go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/memory/
 
 # Run PostgreSQL adapter benchmarks (requires infra)
 benchmark-adapters-pg: infra-up
@@ -79,7 +79,7 @@ benchmark-adapters-pg: infra-up
 	@echo ""
 	@echo "=== PostgreSQL Adapter Scale Tests ==="
 	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
-	go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/
+	MINK_SCALE_TESTS=1 go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/
 
 #------------------------------------------------------------------------------
 # Test Infrastructure (docker-compose.test.yml is the single source of truth)
