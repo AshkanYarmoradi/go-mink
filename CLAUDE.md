@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .NET). Instead of storing current state, it stores all changes as immutable events and rebuilds state by replaying them.
 
+**Module path**: `github.com/AshkanYarmoradi/go-mink`
+
 ## Key Commands
 
 ```bash
@@ -32,9 +34,15 @@ TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode
 #   - testing.Short() is true (via -short flag)
 #   - TEST_DATABASE_URL env var is not set (for Postgres tests)
 #   - TEST_KAFKA_BROKERS env var is not set (for Kafka tests)
+
+# Benchmarks
+make benchmark                  # Full benchmark suite + 1M-event scale tests (memory, no infra)
+make benchmark-quick            # Go benchmarks only (fast, no infra)
+make benchmark-adapters         # Memory adapter benchmarks (no infra)
+make benchmark-adapters-pg      # PostgreSQL adapter benchmarks (requires infra)
 ```
 
-**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), builds on Go 1.22–1.26 across Linux, macOS, Windows.
+**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), lints on Go 1.25, builds on Go 1.22–1.26 across Linux, macOS, Windows. Scale tests enabled in CI via `MINK_SCALE_TESTS=1`.
 
 ## Architecture
 
@@ -180,82 +188,28 @@ db := container.MustDB(ctx)
 
 ## Event Versioning & Upcasting
 
-Schema version is stored in `Metadata.Custom["$schema_version"]` — no DB column changes needed. Absent key defaults to version 1 (backward compatible with all existing events).
-
-```go
-// Upcaster interface — transforms raw bytes from one version to the next
-type Upcaster interface {
-    EventType() string
-    FromVersion() int
-    ToVersion() int   // Must equal FromVersion() + 1
-    Upcast(data []byte, metadata Metadata) ([]byte, error)
-}
-
-// UpcasterChain — thread-safe registry, validates no gaps/duplicates
-chain := mink.NewUpcasterChain()
-chain.Register(myUpcaster)  // v1→v2
-chain.Register(myUpcaster2) // v2→v3
-chain.Validate()            // checks for gaps
-
-// EventStore integration — zero overhead when no upcasters registered
-store := mink.New(adapter, mink.WithUpcasters(chain))
-// Or register after creation:
-store.RegisterUpcasters(myUpcaster, myUpcaster2)
-
-// UpcastingSerializer — decorator wrapping any Serializer
-s := mink.NewUpcastingSerializer(inner, chain)
-
-// SchemaRegistry — optional compatibility checking
-registry := mink.NewSchemaRegistry()
-registry.Register("OrderCreated", mink.SchemaDefinition{Version: 1, Fields: ...})
-compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
-// Returns: SchemaFullyCompatible, SchemaBackwardCompatible, SchemaForwardCompatible, SchemaBreaking
-
-// Metadata helpers
-version := mink.GetSchemaVersion(metadata)       // defaults to 1
-metadata = mink.SetSchemaVersion(metadata, 3)
-```
+Schema version is stored in `Metadata.Custom["$schema_version"]` — no DB column changes needed. Absent key defaults to version 1 (backward compatible with all existing events). See `versioning.go` for the `Upcaster` interface and `UpcasterChain`.
 
 Key design decisions:
-- Upcasters operate on raw `[]byte` — serializer-agnostic, no context, single-event output
+- Upcasters operate on raw `[]byte` — serializer-agnostic, `ToVersion()` must equal `FromVersion() + 1`
 - `EventStore.upcasters` is `nil` by default — all code paths short-circuit with zero overhead
 - Events are automatically upcasted during `Load`/`LoadAggregate` and stamped with latest version during `Append`/`SaveAggregate`
-
-## Current Version: v1.0.0 (Stable)
-
-First stable release. All core features are complete: Event Store, Command Bus, Projection Engine, Saga Manager, Outbox Pattern, Event Versioning & Upcasting, Field-Level Encryption, GDPR Compliance, Observability, Testing Utilities, CLI Tool.
+- Decrypt before upcast ordering: encrypted fields decrypted before upcasters run
 
 ## Field-Level Encryption
 
-Encryption metadata stored in `Metadata.Custom` with `$`-prefixed keys (`$encrypted_fields`, `$encryption_key_id`, `$encrypted_dek`, `$encryption_algorithm`). No DB schema changes needed.
-
-```go
-// Provider interface (encryption/provider.go)
-type Provider interface {
-    Encrypt(ctx context.Context, keyID string, plaintext []byte) (ciphertext []byte, err error)
-    Decrypt(ctx context.Context, keyID string, ciphertext []byte) (plaintext []byte, err error)
-    GenerateDataKey(ctx context.Context, keyID string) (*DataKey, error)
-    DecryptDataKey(ctx context.Context, keyID string, encryptedKey []byte) ([]byte, error)
-    Close() error
-}
-
-// FieldEncryptionConfig (encryption.go) — options pattern
-config := mink.NewFieldEncryptionConfig(
-    mink.WithEncryptionProvider(provider),
-    mink.WithDefaultKeyID("master-1"),
-    mink.WithEncryptedFields("CustomerCreated", "email", "phone"),
-    mink.WithTenantKeyResolver(func(tenantID string) string { return "tenant-" + tenantID }),
-    mink.WithDecryptionErrorHandler(handler), // crypto-shredding
-)
-store := mink.New(adapter, mink.WithFieldEncryption(config))
-```
+Encryption metadata stored in `Metadata.Custom` with `$`-prefixed keys (`$encrypted_fields`, `$encryption_key_id`, `$encrypted_dek`, `$encryption_algorithm`). No DB schema changes needed. See `encryption.go` for `FieldEncryptionConfig` and `encryption/provider.go` for the `Provider` interface.
 
 Key design decisions:
 - Envelope encryption: 1 provider call per event (GenerateDataKey), local AES-256-GCM per field
 - `FieldEncryptionConfig` is `nil` by default — all code paths short-circuit with zero overhead
-- Decrypt before upcast ordering: encrypted fields decrypted before upcasters run
 - Providers: `encryption/local` (AES-256-GCM, testing), `encryption/kms` (AWS KMS), `encryption/vault` (Vault Transit)
 - DEK plaintext zeroed after use via `ClearBytes()`
+- GDPR via crypto-shredding: revoke a key to make tenant data permanently unrecoverable
+
+## Current Version: v1.0.0 (Stable)
+
+First stable release. All core features are complete.
 
 ## PostgreSQL Schema
 
@@ -285,6 +239,12 @@ Closes #123
 ```
 
 PR titles: `[component] Brief description` (e.g., `[eventstore] Add PostgreSQL adapter with optimistic concurrency`).
+
+## Common Contributor Tasks
+
+**Adding a new adapter**: Create package in `adapters/mydb/`, implement `EventStoreAdapter` (and optional interfaces like `SubscriptionAdapter`, `SagaStore`, etc.), add compile-time check `var _ adapters.EventStoreAdapter = (*MyAdapter)(nil)`, write integration tests with skip pattern, add benchmark suite using `adapters/common.go` shared helpers.
+
+**Adding a new feature**: Write tests first. Implement in the root `mink` package or appropriate sub-package. Ensure 90%+ coverage. Update CHANGELOG.md.
 
 ## Don't Do
 
