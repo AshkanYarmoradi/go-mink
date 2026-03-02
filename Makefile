@@ -5,6 +5,7 @@
 
 .PHONY: all build test test-unit test-unit-race test-coverage lint fmt clean help
 .PHONY: infra-up infra-down infra-logs infra-ps
+.PHONY: benchmark benchmark-quick benchmark-adapters benchmark-adapters-pg
 
 # Default target
 all: lint test build
@@ -45,6 +46,40 @@ test-coverage: infra-up
 	@go tool cover -func=coverage.out | grep total
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "Full report: coverage.html"
+
+#------------------------------------------------------------------------------
+# Benchmarks & Performance (no infrastructure required, uses in-memory adapter)
+#------------------------------------------------------------------------------
+
+# Run full benchmark suite: Go benchmarks + 1M-event scale tests
+benchmark:
+	@echo "=== Running Go Benchmarks ==="
+	CGO_ENABLED=0 go test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 .
+	@echo ""
+	@echo "=== Running Scale Tests (1M events) ==="
+	CGO_ENABLED=0 go test -run='TestScale_' -v -timeout=10m -count=1 .
+
+# Run quick benchmarks only (no scale tests)
+benchmark-quick:
+	CGO_ENABLED=0 go test -run='^$$' -bench=. -benchmem -benchtime=1s -count=1 .
+
+# Run memory adapter benchmarks (no infrastructure required)
+benchmark-adapters:
+	@echo "=== Memory Adapter Benchmarks ==="
+	CGO_ENABLED=0 go test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/memory/
+	@echo ""
+	@echo "=== Memory Adapter Scale Tests ==="
+	CGO_ENABLED=0 go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/memory/
+
+# Run PostgreSQL adapter benchmarks (requires infra)
+benchmark-adapters-pg: infra-up
+	@echo "=== PostgreSQL Adapter Benchmarks ==="
+	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
+	go test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/postgres/
+	@echo ""
+	@echo "=== PostgreSQL Adapter Scale Tests ==="
+	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
+	go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/
 
 #------------------------------------------------------------------------------
 # Test Infrastructure (docker-compose.test.yml is the single source of truth)
@@ -96,6 +131,12 @@ help:
 	@echo "  make test-unit-race - Run unit tests with race detector (requires gcc)"
 	@echo "  make test           - Run all tests (auto-starts infrastructure)"
 	@echo "  make test-coverage  - Run tests with coverage report"
+	@echo ""
+	@echo "Benchmarks:"
+	@echo "  make benchmark            - Full benchmark suite + 1M-event scale tests"
+	@echo "  make benchmark-quick      - Go benchmarks only (fast)"
+	@echo "  make benchmark-adapters   - Memory adapter benchmarks (no infra)"
+	@echo "  make benchmark-adapters-pg - PostgreSQL adapter benchmarks (needs infra)"
 	@echo ""
 	@echo "Infrastructure (defined in docker-compose.test.yml):"
 	@echo "  make infra-up      - Start test infrastructure"
