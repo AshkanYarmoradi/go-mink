@@ -42,8 +42,8 @@ func MetadataEventRecord() adapters.EventRecord {
 	}
 }
 
-// MakeBatch creates a batch of SmallEventRecords with the specified size.
-// Each record has a unique type suffix to avoid any deduplication.
+// MakeBatch creates a batch of EventRecords with the specified size.
+// All records share the same "OrderEvent" type with unique JSON payloads.
 func MakeBatch(size int) []adapters.EventRecord {
 	records := make([]adapters.EventRecord, size)
 	for i := range records {

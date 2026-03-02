@@ -187,7 +187,9 @@ func BenchmarkAppend_SingleEvent(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), []interface{}{event}, ExpectVersion(AnyVersion))
+		if err := store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+			b.Fatalf("append failed at %d: %v", i, err)
+		}
 	}
 
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -215,7 +217,9 @@ func BenchmarkAppend_BatchSize(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				_ = store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), events, ExpectVersion(AnyVersion))
+				if err := store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), events, ExpectVersion(AnyVersion)); err != nil {
+					b.Fatalf("batch append failed at %d: %v", i, err)
+				}
 			}
 
 			totalEvents := float64(b.N) * float64(batchSize)
@@ -241,8 +245,10 @@ func BenchmarkAppend_WithMetadata(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), []interface{}{event},
-			ExpectVersion(AnyVersion), WithAppendMetadata(meta))
+		if err := store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), []interface{}{event},
+			ExpectVersion(AnyVersion), WithAppendMetadata(meta)); err != nil {
+			b.Fatalf("append with metadata failed at %d: %v", i, err)
+		}
 	}
 
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -258,7 +264,9 @@ func BenchmarkAppend_SameStream_Sequential(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		event := BenchItemAdded{OrderID: "o1", SKU: "SKU-" + strconv.Itoa(i), Quantity: 1, Price: 10.0}
-		_ = store.Append(ctx, "BenchOrder-same", []interface{}{event}, ExpectVersion(AnyVersion))
+		if err := store.Append(ctx, "BenchOrder-same", []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+			b.Fatalf("same-stream append failed at %d: %v", i, err)
+		}
 	}
 
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -283,15 +291,18 @@ func BenchmarkLoad_StreamSize(b *testing.B) {
 					OrderID: "o1", SKU: "SKU-" + strconv.Itoa(j),
 					Name: "Product", Quantity: 1, Price: 10.0,
 				}
-				_ = store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
+				if err := store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+					b.Fatalf("seed failed at %d: %v", j, err)
+				}
 			}
 
 			b.ReportAllocs()
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				events, _ := store.Load(ctx, streamID)
-				_ = events
+				if _, err := store.Load(ctx, streamID); err != nil {
+					b.Fatalf("load failed at %d: %v", i, err)
+				}
 			}
 
 			b.ReportMetric(float64(size)*float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -308,15 +319,18 @@ func BenchmarkLoadFrom_MidStream(b *testing.B) {
 	streamID := "BenchOrder-loadfrom"
 	for j := 0; j < 1000; j++ {
 		event := BenchItemAdded{OrderID: "o1", SKU: "SKU-" + strconv.Itoa(j), Quantity: 1, Price: 10.0}
-		_ = store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
+		if err := store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+			b.Fatalf("seed failed at %d: %v", j, err)
+		}
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		events, _ := store.LoadFrom(ctx, streamID, 500)
-		_ = events
+		if _, err := store.LoadFrom(ctx, streamID, 500); err != nil {
+			b.Fatalf("load from failed at %d: %v", i, err)
+		}
 	}
 
 	b.ReportMetric(500.0*float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -342,7 +356,9 @@ func BenchmarkAggregate_Save(b *testing.B) {
 				for j := 1; j < numEvents; j++ {
 					order.AddItem("SKU-"+strconv.Itoa(j), "Product", j, 10.0)
 				}
-				_ = store.SaveAggregate(ctx, order)
+				if err := store.SaveAggregate(ctx, order); err != nil {
+					b.Fatalf("save aggregate failed at %d: %v", i, err)
+				}
 			}
 
 			b.ReportMetric(float64(numEvents)*float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -364,14 +380,18 @@ func BenchmarkAggregate_Load(b *testing.B) {
 			for j := 1; j < numEvents; j++ {
 				order.AddItem("SKU-"+strconv.Itoa(j), "Product", 1, 10.0)
 			}
-			_ = store.SaveAggregate(ctx, order)
+			if err := store.SaveAggregate(ctx, order); err != nil {
+				b.Fatalf("seed aggregate failed: %v", err)
+			}
 
 			b.ReportAllocs()
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
 				loaded := newBenchOrder("bench-load")
-				_ = store.LoadAggregate(ctx, loaded)
+				if err := store.LoadAggregate(ctx, loaded); err != nil {
+					b.Fatalf("load aggregate failed at %d: %v", i, err)
+				}
 			}
 
 			b.ReportMetric(float64(numEvents)*float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -396,13 +416,19 @@ func BenchmarkAggregate_FullLifecycle(b *testing.B) {
 		order.Create("cust-1", 100.0)
 		order.AddItem("SKU-1", "Widget", 2, 29.99)
 		order.AddItem("SKU-2", "Gadget", 1, 49.99)
-		_ = store.SaveAggregate(ctx, order)
+		if err := store.SaveAggregate(ctx, order); err != nil {
+			b.Fatalf("save failed at %d: %v", i, err)
+		}
 
 		// Load and modify
 		loaded := newBenchOrder(id)
-		_ = store.LoadAggregate(ctx, loaded)
+		if err := store.LoadAggregate(ctx, loaded); err != nil {
+			b.Fatalf("load failed at %d: %v", i, err)
+		}
 		loaded.Ship("TRACK-"+strconv.Itoa(i), "UPS")
-		_ = store.SaveAggregate(ctx, loaded)
+		if err := store.SaveAggregate(ctx, loaded); err != nil {
+			b.Fatalf("save modified failed at %d: %v", i, err)
+		}
 	}
 }
 
@@ -601,8 +627,10 @@ func BenchmarkConcurrent_AppendDifferentStreams(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			id := counter.Add(1)
-			_ = store.Append(ctx, "BenchOrder-"+strconv.FormatInt(id, 10),
-				[]interface{}{event}, ExpectVersion(AnyVersion))
+			if err := store.Append(ctx, "BenchOrder-"+strconv.FormatInt(id, 10),
+				[]interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+				b.Fatalf("concurrent append failed: %v", err)
+			}
 		}
 	})
 
@@ -620,7 +648,9 @@ func BenchmarkConcurrent_LoadWhileWriting(b *testing.B) {
 		streamID := "BenchOrder-rw-" + strconv.Itoa(s)
 		for e := 0; e < 10; e++ {
 			event := BenchItemAdded{OrderID: "o1", SKU: "SKU-" + strconv.Itoa(e), Quantity: 1, Price: 10.0}
-			_ = store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
+			if err := store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+				b.Fatalf("seed failed: %v", err)
+			}
 		}
 	}
 
@@ -635,12 +665,15 @@ func BenchmarkConcurrent_LoadWhileWriting(b *testing.B) {
 				// 1/3 writes
 				streamID := "BenchOrder-rw-new-" + strconv.FormatInt(id, 10)
 				event := BenchOrderCreated{OrderID: "o1", CustomerID: "c1", Total: 99.99}
-				_ = store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion))
+				if err := store.Append(ctx, streamID, []interface{}{event}, ExpectVersion(AnyVersion)); err != nil {
+					b.Fatalf("concurrent write failed: %v", err)
+				}
 			} else {
 				// 2/3 reads
 				streamID := "BenchOrder-rw-" + strconv.Itoa(int(id%100))
-				events, _ := store.Load(ctx, streamID)
-				_ = events
+				if _, err := store.Load(ctx, streamID); err != nil {
+					b.Fatalf("concurrent load failed: %v", err)
+				}
 			}
 		}
 	})
@@ -770,7 +803,7 @@ func sampleLatencies(numSamples, opsPerSample int, op func(globalIdx int)) []tim
 // latencyStats holds percentile statistics from a slice of latency samples.
 type latencyStats struct {
 	avg, p50, p90, p95, p99, p999 time.Duration
-	min, max                       time.Duration
+	min, max                      time.Duration
 }
 
 func computeLatencyStats(latencies []time.Duration) latencyStats {

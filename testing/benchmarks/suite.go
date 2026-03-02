@@ -30,9 +30,8 @@ import (
 	"github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
-// AnyVersion matches the mink.AnyVersion constant (-1) to skip version checks.
-// Duplicated here to avoid importing the root mink package.
-const AnyVersion int64 = -1
+// AnyVersion is an alias for adapters.AnyVersion, used to skip version checks.
+const AnyVersion = adapters.AnyVersion
 
 // AdapterBenchmarkFactory defines how to create an adapter for benchmarking.
 type AdapterBenchmarkFactory struct {
@@ -137,7 +136,9 @@ func runAppendBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.Append(ctx, MakeStreamID("bench", i), []adapters.EventRecord{rec}, AnyVersion)
+			if _, err := adapter.Append(ctx, MakeStreamID("bench", i), []adapters.EventRecord{rec}, AnyVersion); err != nil {
+				b.Fatalf("append failed at %d: %v", i, err)
+			}
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
 	})
@@ -152,7 +153,9 @@ func runAppendBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = adapter.Append(ctx, MakeStreamID("bench-batch", i), batch, AnyVersion)
+				if _, err := adapter.Append(ctx, MakeStreamID("bench-batch", i), batch, AnyVersion); err != nil {
+					b.Fatalf("batch append failed at %d: %v", i, err)
+				}
 			}
 			b.ReportMetric(float64(b.N*size)/b.Elapsed().Seconds(), "events/sec")
 		})
@@ -167,7 +170,9 @@ func runAppendBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.Append(ctx, MakeStreamID("bench-meta", i), []adapters.EventRecord{rec}, AnyVersion)
+			if _, err := adapter.Append(ctx, MakeStreamID("bench-meta", i), []adapters.EventRecord{rec}, AnyVersion); err != nil {
+				b.Fatalf("append failed at %d: %v", i, err)
+			}
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
 	})
@@ -180,13 +185,17 @@ func runAppendBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 
 		// Pre-populate streams so we can do version-checked appends.
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.Append(ctx, MakeStreamID("bench-cc", i), []adapters.EventRecord{rec}, AnyVersion)
+			if _, err := adapter.Append(ctx, MakeStreamID("bench-cc", i), []adapters.EventRecord{rec}, AnyVersion); err != nil {
+				b.Fatalf("pre-populate failed at %d: %v", i, err)
+			}
 		}
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.Append(ctx, MakeStreamID("bench-cc", i), []adapters.EventRecord{rec}, 1)
+			if _, err := adapter.Append(ctx, MakeStreamID("bench-cc", i), []adapters.EventRecord{rec}, 1); err != nil {
+				b.Fatalf("version-checked append failed at %d: %v", i, err)
+			}
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
 	})
@@ -213,7 +222,9 @@ func runLoadBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = adapter.Load(ctx, "bench-load", 0)
+				if _, err := adapter.Load(ctx, "bench-load", 0); err != nil {
+					b.Fatalf("load failed at %d: %v", i, err)
+				}
 			}
 			b.ReportMetric(float64(b.N*size)/b.Elapsed().Seconds(), "events/sec")
 		})
@@ -233,13 +244,19 @@ func runConcurrentBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 			rec := SmallEventRecord()
 			var counter atomic.Int64
 
-			b.SetParallelism(workers / runtime.GOMAXPROCS(0))
+			p := workers / runtime.GOMAXPROCS(0)
+			if p < 1 {
+				p = 1
+			}
+			b.SetParallelism(p)
 			b.ReportAllocs()
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
 					n := counter.Add(1)
-					_, _ = adapter.Append(ctx, MakeStreamID("bench-conc", int(n)), []adapters.EventRecord{rec}, AnyVersion)
+					if _, err := adapter.Append(ctx, MakeStreamID("bench-conc", int(n)), []adapters.EventRecord{rec}, AnyVersion); err != nil {
+						b.Fatalf("concurrent append failed: %v", err)
+					}
 				}
 			})
 			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/sec")
@@ -270,7 +287,9 @@ func runMixed(b *testing.B, f *AdapterBenchmarkFactory, readPct int) {
 	const seedStreams = 100
 	batch := MakeBatch(10)
 	for i := 0; i < seedStreams; i++ {
-		_, _ = adapter.Append(ctx, MakeStreamID("bench-mix", i), batch, AnyVersion)
+		if _, err := adapter.Append(ctx, MakeStreamID("bench-mix", i), batch, AnyVersion); err != nil {
+			b.Fatalf("seed failed at %d: %v", i, err)
+		}
 	}
 
 	var writeCounter atomic.Int64
@@ -280,10 +299,14 @@ func runMixed(b *testing.B, f *AdapterBenchmarkFactory, readPct int) {
 		for pb.Next() {
 			if rand.IntN(100) < readPct {
 				streamIdx := rand.IntN(seedStreams)
-				_, _ = adapter.Load(ctx, MakeStreamID("bench-mix", streamIdx), 0)
+				if _, err := adapter.Load(ctx, MakeStreamID("bench-mix", streamIdx), 0); err != nil {
+					b.Fatalf("mixed load failed: %v", err)
+				}
 			} else {
 				n := writeCounter.Add(1)
-				_, _ = adapter.Append(ctx, MakeStreamID("bench-mix-w", int(n)), []adapters.EventRecord{rec}, AnyVersion)
+				if _, err := adapter.Append(ctx, MakeStreamID("bench-mix-w", int(n)), []adapters.EventRecord{rec}, AnyVersion); err != nil {
+					b.Fatalf("mixed append failed: %v", err)
+				}
 			}
 		}
 	})
@@ -302,12 +325,16 @@ func runStreamOpsBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 
 		// Seed a stream.
 		batch := MakeBatch(50)
-		_, _ = adapter.Append(ctx, "bench-info", batch, AnyVersion)
+		if _, err := adapter.Append(ctx, "bench-info", batch, AnyVersion); err != nil {
+			b.Fatalf("seed failed: %v", err)
+		}
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.GetStreamInfo(ctx, "bench-info")
+			if _, err := adapter.GetStreamInfo(ctx, "bench-info"); err != nil {
+				b.Fatalf("GetStreamInfo failed at %d: %v", i, err)
+			}
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
 	})
@@ -319,12 +346,16 @@ func runStreamOpsBenchmarks(b *testing.B, f *AdapterBenchmarkFactory) {
 
 		// Seed some events.
 		batch := MakeBatch(50)
-		_, _ = adapter.Append(ctx, "bench-pos", batch, AnyVersion)
+		if _, err := adapter.Append(ctx, "bench-pos", batch, AnyVersion); err != nil {
+			b.Fatalf("seed failed: %v", err)
+		}
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = adapter.GetLastPosition(ctx)
+			if _, err := adapter.GetLastPosition(ctx); err != nil {
+				b.Fatalf("GetLastPosition failed at %d: %v", i, err)
+			}
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
 	})
@@ -379,20 +410,35 @@ func runScaleBatchAppend(t *testing.T, f *AdapterBenchmarkFactory) {
 	ctx := context.Background()
 	n := f.scaleN()
 	const batchSize = 100
+	fullBatches := n / batchSize
+	remainder := n % batchSize
+	totalBatches := fullBatches
+	if remainder > 0 {
+		totalBatches++
+	}
 
-	lc := NewLatencyCollector(n / batchSize)
+	lc := NewLatencyCollector(totalBatches)
 	var memBefore, memAfter runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&memBefore)
 
 	start := time.Now()
-	for i := 0; i < n/batchSize; i++ {
+	for i := 0; i < fullBatches; i++ {
 		batch := MakeBatch(batchSize)
 		opStart := time.Now()
 		_, err := adapter.Append(ctx, MakeStreamID("scale-batch", i), batch, AnyVersion)
 		lc.Record(time.Since(opStart))
 		if err != nil {
 			t.Fatalf("batch append failed at %d: %v", i, err)
+		}
+	}
+	if remainder > 0 {
+		batch := MakeBatch(remainder)
+		opStart := time.Now()
+		_, err := adapter.Append(ctx, MakeStreamID("scale-batch", fullBatches), batch, AnyVersion)
+		lc.Record(time.Since(opStart))
+		if err != nil {
+			t.Fatalf("remainder batch append failed: %v", err)
 		}
 	}
 	elapsed := time.Since(start)
@@ -402,7 +448,7 @@ func runScaleBatchAppend(t *testing.T, f *AdapterBenchmarkFactory) {
 	throughput := float64(n) / elapsed.Seconds()
 	allocMB, heapMB := memStatsDelta(memBefore, memAfter)
 
-	t.Logf("Batch Append: %d events (%d batches of %d) in %v (%.0f events/sec)", n, n/batchSize, batchSize, elapsed, throughput)
+	t.Logf("Batch Append: %d events (%d batches of %d) in %v (%.0f events/sec)", n, totalBatches, batchSize, elapsed, throughput)
 	t.Logf("Latency (per batch): %s", report)
 	t.Logf("Memory: allocs=%.1f MB, heap=%.1f MB", allocMB, heapMB)
 }
@@ -450,6 +496,10 @@ func runScaleConcurrentAppend(t *testing.T, f *AdapterBenchmarkFactory) {
 	t.Logf("Concurrent Append: %d events across %d workers in %v (%.0f events/sec)", n, workers, elapsed, throughput)
 	t.Logf("Errors: %d", errCount.Load())
 	t.Logf("Memory: allocs=%.1f MB, heap=%.1f MB", allocMB, heapMB)
+
+	if errCount.Load() > 0 {
+		t.Fatalf("concurrent append had %d errors", errCount.Load())
+	}
 }
 
 func runScaleLoad(t *testing.T, f *AdapterBenchmarkFactory) {
@@ -469,11 +519,20 @@ func runScaleLoad(t *testing.T, f *AdapterBenchmarkFactory) {
 
 	// Seed the stream in batches.
 	const batchSize = 1000
+	seeded := 0
 	for i := 0; i < loadSize/batchSize; i++ {
 		batch := MakeBatch(batchSize)
 		_, err := adapter.Append(ctx, "scale-load-stream", batch, AnyVersion)
 		if err != nil {
 			t.Fatalf("seed failed at batch %d: %v", i, err)
+		}
+		seeded += batchSize
+	}
+	if remainder := loadSize - seeded; remainder > 0 {
+		batch := MakeBatch(remainder)
+		_, err := adapter.Append(ctx, "scale-load-stream", batch, AnyVersion)
+		if err != nil {
+			t.Fatalf("seed remainder failed: %v", err)
 		}
 	}
 
@@ -510,6 +569,11 @@ func runScaleManyStreams(t *testing.T, f *AdapterBenchmarkFactory) {
 	n := f.scaleN()
 	const streams = 1000
 	perStream := n / streams
+	if perStream < 1 {
+		t.Fatalf("EventCount (%d) must be >= streams (%d)", n, streams)
+	}
+	// Distribute remainder events across the first streams.
+	remainder := n - (perStream * streams)
 
 	var memBefore, memAfter runtime.MemStats
 	runtime.GC()
@@ -518,7 +582,11 @@ func runScaleManyStreams(t *testing.T, f *AdapterBenchmarkFactory) {
 	start := time.Now()
 	for s := 0; s < streams; s++ {
 		// Append in batches to each stream.
-		remaining := perStream
+		target := perStream
+		if s < remainder {
+			target++
+		}
+		remaining := target
 		for remaining > 0 {
 			batchSize := remaining
 			if batchSize > 100 {
