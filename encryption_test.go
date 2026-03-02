@@ -578,13 +578,13 @@ func TestEncryptJSONField_NestedNonMapChild(t *testing.T) {
 
 func TestAesGCMEncrypt_InvalidKeyLength(t *testing.T) {
 	// AES requires 16, 24, or 32 byte keys
-	_, err := encryption.AESGCMEncrypt([]byte("short"), []byte("plaintext"))
+	_, err := encryption.AESGCMEncrypt([]byte("short"), []byte("plaintext"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
 
 func TestAesGCMDecrypt_InvalidKeyLength(t *testing.T) {
-	_, err := encryption.AESGCMDecrypt([]byte("short"), []byte("some-ciphertext-long-enough-for-nonce"))
+	_, err := encryption.AESGCMDecrypt([]byte("short"), []byte("some-ciphertext-long-enough-for-nonce"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
@@ -593,7 +593,7 @@ func TestAesGCMDecrypt_CiphertextTooShort(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 
-	_, err := encryption.AESGCMDecrypt(key, []byte("short"))
+	_, err := encryption.AESGCMDecrypt(key, []byte("short"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ciphertext too short")
 }
@@ -624,7 +624,7 @@ func TestDecryptJSONField_InvalidDecryptedJSON(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	// Encrypt raw bytes that are NOT valid JSON
-	ciphertext, err := encryption.AESGCMEncrypt(key, []byte("not-json"))
+	ciphertext, err := encryption.AESGCMEncrypt(key, []byte("not-json"), []byte("email"))
 	require.NoError(t, err)
 
 	data := map[string]interface{}{

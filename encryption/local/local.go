@@ -104,7 +104,7 @@ func (p *Provider) Encrypt(_ context.Context, keyID string, plaintext []byte) ([
 	if err != nil {
 		return nil, err
 	}
-	return encryption.AESGCMEncrypt(key, plaintext)
+	return encryption.AESGCMEncrypt(key, plaintext, []byte(keyID))
 }
 
 // Decrypt decrypts ciphertext using AES-256-GCM with the specified master key.
@@ -113,7 +113,7 @@ func (p *Provider) Decrypt(_ context.Context, keyID string, ciphertext []byte) (
 	if err != nil {
 		return nil, err
 	}
-	return encryption.AESGCMDecrypt(key, ciphertext)
+	return encryption.AESGCMDecrypt(key, ciphertext, []byte(keyID))
 }
 
 // GenerateDataKey creates a new random 32-byte DEK and encrypts it with the master key.
@@ -130,7 +130,7 @@ func (p *Provider) GenerateDataKey(_ context.Context, keyID string) (*encryption
 	}
 
 	// Encrypt DEK with master key
-	encryptedDEK, err := encryption.AESGCMEncrypt(key, dek)
+	encryptedDEK, err := encryption.AESGCMEncrypt(key, dek, []byte(keyID))
 	if err != nil {
 		encryption.ClearBytes(dek)
 		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("failed to encrypt DEK: %w", err))
@@ -150,7 +150,7 @@ func (p *Provider) DecryptDataKey(_ context.Context, keyID string, encryptedKey 
 		return nil, err
 	}
 
-	plaintext, err := encryption.AESGCMDecrypt(key, encryptedKey)
+	plaintext, err := encryption.AESGCMDecrypt(key, encryptedKey, []byte(keyID))
 	if err != nil {
 		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("failed to decrypt DEK: %w", err))
 	}

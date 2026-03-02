@@ -176,6 +176,10 @@ func (c *FieldEncryptionConfig) decryptFields(ctx context.Context, eventType str
 		return data, nil
 	}
 
+	if c.provider == nil {
+		return nil, encryption.NewDecryptionError("", "", fmt.Errorf("encryption provider not configured: use WithEncryptionProvider option"))
+	}
+
 	keyID := GetEncryptionKeyID(metadata)
 	encryptedDEK, err := base64.StdEncoding.DecodeString(metadata.Custom[encryptedDEKKey])
 	if err != nil {
@@ -280,7 +284,7 @@ func encryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return false, fmt.Errorf("failed to marshal field value: %w", err)
 		}
 
-		ciphertext, err := encryption.AESGCMEncrypt(key, plaintext)
+		ciphertext, err := encryption.AESGCMEncrypt(key, plaintext, []byte(fieldPath))
 		if err != nil {
 			return false, err
 		}
@@ -323,7 +327,7 @@ func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return fmt.Errorf("failed to decode field: %w", err)
 		}
 
-		plaintext, err := encryption.AESGCMDecrypt(key, ciphertext)
+		plaintext, err := encryption.AESGCMDecrypt(key, ciphertext, []byte(fieldPath))
 		if err != nil {
 			return err
 		}
