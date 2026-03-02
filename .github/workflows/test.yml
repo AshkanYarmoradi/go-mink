@@ -98,11 +98,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+    env:
+      CGO_ENABLED: 0
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go-version: ['1.22', '1.23', '1.24', '1.25', '1.26']
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
