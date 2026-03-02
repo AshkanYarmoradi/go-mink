@@ -93,6 +93,95 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
 
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: 0
+      MINK_SCALE_TESTS: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go benchmarks
+        run: go test -run='^$' -bench=. -benchmem -benchtime=3s -count=1 . 2>&1 | tee benchmark-results.txt
+
+      - name: Run scale tests (1M events)
+        run: go test -run='TestScale_' -v -timeout=10m -count=1 . 2>&1 | tee -a benchmark-results.txt
+
+      - name: Run memory adapter benchmarks
+        run: go test -run='^$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/memory/ 2>&1 | tee -a benchmark-results.txt
+
+      - name: Run memory adapter scale tests
+        run: go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/memory/ 2>&1 | tee -a benchmark-results.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: benchmark-results.txt
+          retention-days: 30
+
+  benchmark-postgres:
+    name: Benchmark (PostgreSQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mink_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run PostgreSQL adapter benchmarks
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
+        run: go test -run='^$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/postgres/ 2>&1 | tee benchmark-postgres-results.txt
+
+      - name: Run PostgreSQL adapter scale tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable
+          MINK_SCALE_TESTS: 1
+        run: go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/ 2>&1 | tee -a benchmark-postgres-results.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-postgres-results
+          path: benchmark-postgres-results.txt
+          retention-days: 30
+
   build:
     name: Build (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}

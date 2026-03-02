@@ -382,6 +382,25 @@ store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 // Revoking a key makes that tenant's data permanently unrecoverable (GDPR)
 ```
 
+## Performance
+
+go-mink is benchmarked on every commit with a shared adapter benchmark suite. Key metrics from CI (ubuntu-latest):
+
+| Adapter | Append (single) | Append (batch 100) | Load (1000 events) | Concurrent (8 workers) |
+|---------|-----------------|--------------------|--------------------|------------------------|
+| **Memory** | ~2.5M events/sec | ~6M events/sec | ~60M events/sec | ~1.5M events/sec |
+| **PostgreSQL** | ~5K events/sec | ~30K events/sec | ~300K events/sec | ~15K events/sec |
+
+Scale tests: Memory adapter processes **1M events** in under 1 second. PostgreSQL adapter handles **100K events** with p99 append latency under 2ms.
+
+Run benchmarks locally:
+```bash
+make benchmark-adapters      # Memory adapter (no infra)
+make benchmark-adapters-pg   # PostgreSQL adapter (needs infra)
+```
+
+See [full benchmark results](docs/benchmarks.md) for detailed throughput, latency percentiles, and instructions for adding benchmarks to new adapters.
+
 ## Installation
 
 ```bash
@@ -405,6 +424,7 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 | [Event Versioning](docs/versioning.md) | Schema evolution & upcasting |
 | [Security](docs/security.md) | Encryption, GDPR compliance |
 | [Testing](docs/testing.md) | BDD fixtures and test utilities |
+| [Benchmarks](docs/benchmarks.md) | Performance results and benchmark guide |
 
 ## License
 
