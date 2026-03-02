@@ -732,6 +732,68 @@ func memStatsDelta(before, after runtime.MemStats) (allocsMB float64, heapMB flo
 	return
 }
 
+// scaleTimer measures wall-clock time and memory allocation for scale tests.
+type scaleTimer struct {
+	start     time.Time
+	memBefore runtime.MemStats
+}
+
+func newScaleTimer() scaleTimer {
+	var m runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m)
+	return scaleTimer{start: time.Now(), memBefore: m}
+}
+
+func (s scaleTimer) stop() (elapsed time.Duration, allocMB, heapMB float64) {
+	elapsed = time.Since(s.start)
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	allocMB, heapMB = memStatsDelta(s.memBefore, memAfter)
+	return
+}
+
+// sampleLatencies measures per-op latency by running batches of opsPerSample invocations.
+func sampleLatencies(numSamples, opsPerSample int, op func(globalIdx int)) []time.Duration {
+	latencies := make([]time.Duration, numSamples)
+	for s := 0; s < numSamples; s++ {
+		start := time.Now()
+		base := s * opsPerSample
+		for i := 0; i < opsPerSample; i++ {
+			op(base + i)
+		}
+		latencies[s] = time.Since(start) / time.Duration(opsPerSample)
+	}
+	return latencies
+}
+
+// latencyStats holds percentile statistics from a slice of latency samples.
+type latencyStats struct {
+	avg, p50, p90, p95, p99, p999 time.Duration
+	min, max                       time.Duration
+}
+
+func computeLatencyStats(latencies []time.Duration) latencyStats {
+	n := len(latencies)
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+
+	var total time.Duration
+	for _, l := range latencies {
+		total += l
+	}
+
+	return latencyStats{
+		avg:  total / time.Duration(n),
+		p50:  latencies[n*50/100],
+		p90:  latencies[n*90/100],
+		p95:  latencies[n*95/100],
+		p99:  latencies[n*99/100],
+		p999: latencies[n*999/1000],
+		min:  latencies[0],
+		max:  latencies[n-1],
+	}
+}
+
 func TestScale_MillionEventsAppend(t *testing.T) {
 	n := scaleN(t)
 
@@ -740,11 +802,7 @@ func TestScale_MillionEventsAppend(t *testing.T) {
 	ctx := context.Background()
 	event := BenchOrderCreated{OrderID: "o1", CustomerID: "c1", Total: 99.99, Currency: "USD"}
 
-	var memBefore runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&memBefore)
-
-	start := time.Now()
+	timer := newScaleTimer()
 
 	for i := 0; i < n; i++ {
 		err := store.Append(ctx, "BenchOrder-"+strconv.Itoa(i), []interface{}{event}, ExpectVersion(AnyVersion))
@@ -753,11 +811,7 @@ func TestScale_MillionEventsAppend(t *testing.T) {
 		}
 	}
 
-	elapsed := time.Since(start)
-
-	var memAfter runtime.MemStats
-	runtime.ReadMemStats(&memAfter)
-	allocMB, heapMB := memStatsDelta(memBefore, memAfter)
+	elapsed, allocMB, heapMB := timer.stop()
 
 	throughput := float64(n) / elapsed.Seconds()
 	avgLatency := elapsed / time.Duration(n)
@@ -784,11 +838,7 @@ func TestScale_MillionEventsSingleStream(t *testing.T) {
 	store := New(adapter)
 	ctx := context.Background()
 
-	var memBefore runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&memBefore)
-
-	start := time.Now()
+	timer := newScaleTimer()
 
 	// Append in batches of 100 to a single stream for realistic throughput
 	batchSize := 100
@@ -813,11 +863,7 @@ func TestScale_MillionEventsSingleStream(t *testing.T) {
 		}
 	}
 
-	elapsed := time.Since(start)
-
-	var memAfter runtime.MemStats
-	runtime.ReadMemStats(&memAfter)
-	allocMB, heapMB := memStatsDelta(memBefore, memAfter)
+	elapsed, allocMB, heapMB := timer.stop()
 
 	throughput := float64(n) / elapsed.Seconds()
 
@@ -843,11 +889,7 @@ func TestScale_MillionEventsAcrossStreams(t *testing.T) {
 	numStreams := 10_000
 	eventsPerStream := n / numStreams
 
-	var memBefore runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&memBefore)
-
-	start := time.Now()
+	timer := newScaleTimer()
 
 	for s := 0; s < numStreams; s++ {
 		streamID := "BenchOrder-" + strconv.Itoa(s)
@@ -867,11 +909,7 @@ func TestScale_MillionEventsAcrossStreams(t *testing.T) {
 		}
 	}
 
-	elapsed := time.Since(start)
-
-	var memAfter runtime.MemStats
-	runtime.ReadMemStats(&memAfter)
-	allocMB, heapMB := memStatsDelta(memBefore, memAfter)
+	elapsed, allocMB, heapMB := timer.stop()
 
 	throughput := float64(n) / elapsed.Seconds()
 
@@ -989,11 +1027,7 @@ func TestScale_ConcurrentMillionEvents(t *testing.T) {
 	numWorkers := runtime.GOMAXPROCS(0)
 	eventsPerWorker := n / numWorkers
 
-	var memBefore runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&memBefore)
-
-	start := time.Now()
+	timer := newScaleTimer()
 
 	var wg sync.WaitGroup
 	var errorCount atomic.Int64
@@ -1013,11 +1047,7 @@ func TestScale_ConcurrentMillionEvents(t *testing.T) {
 	}
 	wg.Wait()
 
-	elapsed := time.Since(start)
-
-	var memAfter runtime.MemStats
-	runtime.ReadMemStats(&memAfter)
-	allocMB, heapMB := memStatsDelta(memBefore, memAfter)
+	elapsed, allocMB, heapMB := timer.stop()
 
 	actualEvents := numWorkers * eventsPerWorker
 	throughput := float64(actualEvents) / elapsed.Seconds()
@@ -1053,41 +1083,22 @@ func TestScale_LatencyDistribution(t *testing.T) {
 	ctx := context.Background()
 	event := BenchOrderCreated{OrderID: "o1", CustomerID: "c1", Total: 99.99, Currency: "USD"}
 
-	latencies := make([]time.Duration, numSamples)
+	latencies := sampleLatencies(numSamples, opsPerSample, func(idx int) {
+		_ = store.Append(ctx, "BenchOrder-"+strconv.Itoa(idx), []interface{}{event}, ExpectVersion(AnyVersion))
+	})
 
-	for s := 0; s < numSamples; s++ {
-		start := time.Now()
-		base := s * opsPerSample
-		for i := 0; i < opsPerSample; i++ {
-			_ = store.Append(ctx, "BenchOrder-"+strconv.Itoa(base+i), []interface{}{event}, ExpectVersion(AnyVersion))
-		}
-		latencies[s] = time.Since(start) / opsPerSample
-	}
-
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-
-	var total time.Duration
-	for _, l := range latencies {
-		total += l
-	}
-
-	p50 := latencies[numSamples*50/100]
-	p90 := latencies[numSamples*90/100]
-	p95 := latencies[numSamples*95/100]
-	p99 := latencies[numSamples*99/100]
-	p999 := latencies[numSamples*999/1000]
-	avg := total / numSamples
+	ls := computeLatencyStats(latencies)
 
 	t.Logf("")
 	t.Logf("=== LATENCY DISTRIBUTION: %d Appends (sampled per %d ops) ===", totalOps, opsPerSample)
-	t.Logf("  Average:  %v", avg)
-	t.Logf("  p50:      %v", p50)
-	t.Logf("  p90:      %v", p90)
-	t.Logf("  p95:      %v", p95)
-	t.Logf("  p99:      %v", p99)
-	t.Logf("  p99.9:    %v", p999)
-	t.Logf("  Min:      %v", latencies[0])
-	t.Logf("  Max:      %v", latencies[numSamples-1])
+	t.Logf("  Average:  %v", ls.avg)
+	t.Logf("  p50:      %v", ls.p50)
+	t.Logf("  p90:      %v", ls.p90)
+	t.Logf("  p95:      %v", ls.p95)
+	t.Logf("  p99:      %v", ls.p99)
+	t.Logf("  p99.9:    %v", ls.p999)
+	t.Logf("  Min:      %v", ls.min)
+	t.Logf("  Max:      %v", ls.max)
 	t.Logf("================================================")
 }
 
@@ -1228,37 +1239,21 @@ func TestScale_CommandBusLatencyDistribution(t *testing.T) {
 	bus.Register(handler)
 	ctx := context.Background()
 
-	latencies := make([]time.Duration, numSamples)
+	latencies := sampleLatencies(numSamples, opsPerSample, func(_ int) {
+		cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
+		_, _ = bus.Dispatch(ctx, cmd)
+	})
 
-	for s := 0; s < numSamples; s++ {
-		start := time.Now()
-		for i := 0; i < opsPerSample; i++ {
-			cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
-			_, _ = bus.Dispatch(ctx, cmd)
-		}
-		latencies[s] = time.Since(start) / opsPerSample
-	}
-
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-
-	var total time.Duration
-	for _, l := range latencies {
-		total += l
-	}
-
-	p50 := latencies[numSamples*50/100]
-	p90 := latencies[numSamples*90/100]
-	p95 := latencies[numSamples*95/100]
-	p99 := latencies[numSamples*99/100]
+	ls := computeLatencyStats(latencies)
 
 	t.Logf("")
 	t.Logf("=== LATENCY: Command Bus (AggregateHandler, %d dispatches) ===", totalOps)
-	t.Logf("  Average:  %v", total/numSamples)
-	t.Logf("  p50:      %v", p50)
-	t.Logf("  p90:      %v", p90)
-	t.Logf("  p95:      %v", p95)
-	t.Logf("  p99:      %v", p99)
-	t.Logf("  Min:      %v", latencies[0])
-	t.Logf("  Max:      %v", latencies[numSamples-1])
+	t.Logf("  Average:  %v", ls.avg)
+	t.Logf("  p50:      %v", ls.p50)
+	t.Logf("  p90:      %v", ls.p90)
+	t.Logf("  p95:      %v", ls.p95)
+	t.Logf("  p99:      %v", ls.p99)
+	t.Logf("  Min:      %v", ls.min)
+	t.Logf("  Max:      %v", ls.max)
 	t.Logf("================================================")
 }
