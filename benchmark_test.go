@@ -173,6 +173,26 @@ func benchRegisterEvents(store *EventStore) {
 	)
 }
 
+// newBenchAggregateHandlerBus creates a CommandBus with an AggregateHandler for BenchOrder.
+func newBenchAggregateHandlerBus(store *EventStore, middleware ...Middleware) *CommandBus {
+	idCounter := atomic.Int64{}
+	handler := NewAggregateHandler[BenchCreateOrderCmd, *BenchOrder](AggregateHandlerConfig[BenchCreateOrderCmd, *BenchOrder]{
+		Store:   store,
+		Factory: func(id string) *BenchOrder { return newBenchOrder(id) },
+		Executor: func(ctx context.Context, agg *BenchOrder, cmd BenchCreateOrderCmd) error {
+			agg.Create(cmd.CustomerID, cmd.Total)
+			return nil
+		},
+		NewIDFunc: func() string {
+			return "order-" + strconv.FormatInt(idCounter.Add(1), 10)
+		},
+	})
+
+	bus := NewCommandBus(WithMiddleware(middleware...))
+	bus.Register(handler)
+	return bus
+}
+
 // ============================================================================
 // Section 1: EventStore — Append Benchmarks
 // ============================================================================
@@ -436,85 +456,44 @@ func BenchmarkAggregate_FullLifecycle(b *testing.B) {
 // Section 4: Command Bus Benchmarks
 // ============================================================================
 
-func BenchmarkCommandBus_Dispatch_Bare(b *testing.B) {
-	bus := NewCommandBus()
-	bus.RegisterFunc("BenchCreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
-		return NewSuccessResult("agg-1", 1), nil
-	})
-	ctx := context.Background()
-	cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = bus.Dispatch(ctx, cmd)
+func BenchmarkCommandBus_Dispatch(b *testing.B) {
+	tests := []struct {
+		name       string
+		middleware []Middleware
+	}{
+		{"Bare", nil},
+		{"WithValidation", []Middleware{ValidationMiddleware()}},
+		{"FullPipeline", []Middleware{
+			ValidationMiddleware(), RecoveryMiddleware(),
+			CorrelationIDMiddleware(nil), CausationIDMiddleware(),
+		}},
 	}
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			bus := NewCommandBus(WithMiddleware(tt.middleware...))
+			bus.RegisterFunc("BenchCreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
+				return NewSuccessResult("agg-1", 1), nil
+			})
+			ctx := context.Background()
+			cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
 
-	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "commands/sec")
-}
+			b.ReportAllocs()
+			b.ResetTimer()
 
-func BenchmarkCommandBus_Dispatch_WithValidation(b *testing.B) {
-	bus := NewCommandBus(WithMiddleware(ValidationMiddleware()))
-	bus.RegisterFunc("BenchCreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
-		return NewSuccessResult("agg-1", 1), nil
-	})
-	ctx := context.Background()
-	cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
+			for i := 0; i < b.N; i++ {
+				_, _ = bus.Dispatch(ctx, cmd)
+			}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = bus.Dispatch(ctx, cmd)
+			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "commands/sec")
+		})
 	}
-
-	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "commands/sec")
-}
-
-func BenchmarkCommandBus_Dispatch_FullPipeline(b *testing.B) {
-	bus := NewCommandBus(WithMiddleware(
-		ValidationMiddleware(),
-		RecoveryMiddleware(),
-		CorrelationIDMiddleware(nil),
-		CausationIDMiddleware(),
-	))
-	bus.RegisterFunc("BenchCreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
-		return NewSuccessResult("agg-1", 1), nil
-	})
-	ctx := context.Background()
-	cmd := BenchCreateOrderCmd{CustomerID: "c1", Total: 99.99}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = bus.Dispatch(ctx, cmd)
-	}
-
-	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "commands/sec")
 }
 
 func BenchmarkCommandBus_Dispatch_AggregateHandler(b *testing.B) {
 	adapter := memory.NewAdapter()
 	store := New(adapter)
 	benchRegisterEvents(store)
-
-	idCounter := atomic.Int64{}
-	handler := NewAggregateHandler[BenchCreateOrderCmd, *BenchOrder](AggregateHandlerConfig[BenchCreateOrderCmd, *BenchOrder]{
-		Store:   store,
-		Factory: func(id string) *BenchOrder { return newBenchOrder(id) },
-		Executor: func(ctx context.Context, agg *BenchOrder, cmd BenchCreateOrderCmd) error {
-			agg.Create(cmd.CustomerID, cmd.Total)
-			return nil
-		},
-		NewIDFunc: func() string {
-			return "order-" + strconv.FormatInt(idCounter.Add(1), 10)
-		},
-	})
-
-	bus := NewCommandBus(WithMiddleware(ValidationMiddleware()))
-	bus.Register(handler)
+	bus := newBenchAggregateHandlerBus(store, ValidationMiddleware())
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -786,6 +765,21 @@ func (s scaleTimer) stop() (elapsed time.Duration, allocMB, heapMB float64) {
 	return
 }
 
+// logScaleResult logs common scale test metrics with optional extra lines.
+func logScaleResult(t *testing.T, title string, n int, elapsed time.Duration, allocMB, heapMB float64, unit string, extra ...string) {
+	t.Helper()
+	t.Logf("")
+	t.Logf("=== SCALE TEST: %s ===", title)
+	t.Logf("  Total time:     %v", elapsed.Round(time.Millisecond))
+	t.Logf("  Throughput:     %.0f %s", float64(n)/elapsed.Seconds(), unit)
+	t.Logf("  Heap allocated: %.1f MB", allocMB)
+	t.Logf("  Heap in-use:    %.1f MB", heapMB)
+	for _, line := range extra {
+		t.Logf("  %s", line)
+	}
+	t.Logf("================================================")
+}
+
 // sampleLatencies measures per-op latency by running batches of opsPerSample invocations.
 func sampleLatencies(numSamples, opsPerSample int, op func(globalIdx int)) []time.Duration {
 	latencies := make([]time.Duration, numSamples)
@@ -804,6 +798,21 @@ func sampleLatencies(numSamples, opsPerSample int, op func(globalIdx int)) []tim
 type latencyStats struct {
 	avg, p50, p90, p95, p99, p999 time.Duration
 	min, max                      time.Duration
+}
+
+func (ls latencyStats) log(t *testing.T, title string) {
+	t.Helper()
+	t.Logf("")
+	t.Logf("=== %s ===", title)
+	t.Logf("  Average:  %v", ls.avg)
+	t.Logf("  p50:      %v", ls.p50)
+	t.Logf("  p90:      %v", ls.p90)
+	t.Logf("  p95:      %v", ls.p95)
+	t.Logf("  p99:      %v", ls.p99)
+	t.Logf("  p99.9:    %v", ls.p999)
+	t.Logf("  Min:      %v", ls.min)
+	t.Logf("  Max:      %v", ls.max)
+	t.Logf("================================================")
 }
 
 func computeLatencyStats(latencies []time.Duration) latencyStats {
@@ -846,19 +855,11 @@ func TestScale_MillionEventsAppend(t *testing.T) {
 
 	elapsed, allocMB, heapMB := timer.stop()
 
-	throughput := float64(n) / elapsed.Seconds()
-	avgLatency := elapsed / time.Duration(n)
-
-	t.Logf("")
-	t.Logf("=== SCALE TEST: %d Event Appends (unique streams) ===", n)
-	t.Logf("  Total time:     %v", elapsed.Round(time.Millisecond))
-	t.Logf("  Throughput:     %.0f events/sec", throughput)
-	t.Logf("  Avg latency:    %v/op", avgLatency)
-	t.Logf("  Heap allocated: %.1f MB", allocMB)
-	t.Logf("  Heap in-use:    %.1f MB", heapMB)
-	t.Logf("  Streams:        %d", adapter.StreamCount())
-	t.Logf("  Events stored:  %d", adapter.EventCount())
-	t.Logf("================================================")
+	logScaleResult(t, fmt.Sprintf("%d Event Appends (unique streams)", n), n, elapsed, allocMB, heapMB, "events/sec",
+		fmt.Sprintf("Avg latency:    %v/op", elapsed/time.Duration(n)),
+		fmt.Sprintf("Streams:        %d", adapter.StreamCount()),
+		fmt.Sprintf("Events stored:  %d", adapter.EventCount()),
+	)
 
 	assert.Equal(t, n, adapter.EventCount())
 	assert.Equal(t, n, adapter.StreamCount())
@@ -898,16 +899,9 @@ func TestScale_MillionEventsSingleStream(t *testing.T) {
 
 	elapsed, allocMB, heapMB := timer.stop()
 
-	throughput := float64(n) / elapsed.Seconds()
-
-	t.Logf("")
-	t.Logf("=== SCALE TEST: %d Events into Single Stream (batch=%d) ===", n, batchSize)
-	t.Logf("  Total time:     %v", elapsed.Round(time.Millisecond))
-	t.Logf("  Throughput:     %.0f events/sec", throughput)
-	t.Logf("  Heap allocated: %.1f MB", allocMB)
-	t.Logf("  Heap in-use:    %.1f MB", heapMB)
-	t.Logf("  Events stored:  %d", adapter.EventCount())
-	t.Logf("================================================")
+	logScaleResult(t, fmt.Sprintf("%d Events into Single Stream (batch=%d)", n, batchSize), n, elapsed, allocMB, heapMB, "events/sec",
+		fmt.Sprintf("Events stored:  %d", adapter.EventCount()),
+	)
 
 	assert.Equal(t, n, adapter.EventCount())
 }
@@ -944,17 +938,10 @@ func TestScale_MillionEventsAcrossStreams(t *testing.T) {
 
 	elapsed, allocMB, heapMB := timer.stop()
 
-	throughput := float64(n) / elapsed.Seconds()
-
-	t.Logf("")
-	t.Logf("=== SCALE TEST: %d Events across %d Streams (%d events/stream) ===", n, numStreams, eventsPerStream)
-	t.Logf("  Total time:     %v", elapsed.Round(time.Millisecond))
-	t.Logf("  Throughput:     %.0f events/sec", throughput)
-	t.Logf("  Heap allocated: %.1f MB", allocMB)
-	t.Logf("  Heap in-use:    %.1f MB", heapMB)
-	t.Logf("  Streams:        %d", adapter.StreamCount())
-	t.Logf("  Events stored:  %d", adapter.EventCount())
-	t.Logf("================================================")
+	logScaleResult(t, fmt.Sprintf("%d Events across %d Streams (%d events/stream)", n, numStreams, eventsPerStream), n, elapsed, allocMB, heapMB, "events/sec",
+		fmt.Sprintf("Streams:        %d", adapter.StreamCount()),
+		fmt.Sprintf("Events stored:  %d", adapter.EventCount()),
+	)
 
 	assert.Equal(t, n, adapter.EventCount())
 	assert.Equal(t, numStreams, adapter.StreamCount())
@@ -1081,20 +1068,13 @@ func TestScale_ConcurrentMillionEvents(t *testing.T) {
 	wg.Wait()
 
 	elapsed, allocMB, heapMB := timer.stop()
-
 	actualEvents := numWorkers * eventsPerWorker
-	throughput := float64(actualEvents) / elapsed.Seconds()
 
-	t.Logf("")
-	t.Logf("=== SCALE TEST: %d Concurrent Events (%d workers) ===", actualEvents, numWorkers)
-	t.Logf("  Total time:     %v", elapsed.Round(time.Millisecond))
-	t.Logf("  Throughput:     %.0f events/sec", throughput)
-	t.Logf("  Errors:         %d", errorCount.Load())
-	t.Logf("  Heap allocated: %.1f MB", allocMB)
-	t.Logf("  Heap in-use:    %.1f MB", heapMB)
-	t.Logf("  Workers:        %d", numWorkers)
-	t.Logf("  Events stored:  %d", adapter.EventCount())
-	t.Logf("================================================")
+	logScaleResult(t, fmt.Sprintf("%d Concurrent Events (%d workers)", actualEvents, numWorkers), actualEvents, elapsed, allocMB, heapMB, "events/sec",
+		fmt.Sprintf("Errors:         %d", errorCount.Load()),
+		fmt.Sprintf("Workers:        %d", numWorkers),
+		fmt.Sprintf("Events stored:  %d", adapter.EventCount()),
+	)
 
 	assert.Equal(t, int64(0), errorCount.Load())
 	assert.Equal(t, actualEvents, adapter.EventCount())
@@ -1121,18 +1101,7 @@ func TestScale_LatencyDistribution(t *testing.T) {
 	})
 
 	ls := computeLatencyStats(latencies)
-
-	t.Logf("")
-	t.Logf("=== LATENCY DISTRIBUTION: %d Appends (sampled per %d ops) ===", totalOps, opsPerSample)
-	t.Logf("  Average:  %v", ls.avg)
-	t.Logf("  p50:      %v", ls.p50)
-	t.Logf("  p90:      %v", ls.p90)
-	t.Logf("  p95:      %v", ls.p95)
-	t.Logf("  p99:      %v", ls.p99)
-	t.Logf("  p99.9:    %v", ls.p999)
-	t.Logf("  Min:      %v", ls.min)
-	t.Logf("  Max:      %v", ls.max)
-	t.Logf("================================================")
+	ls.log(t, fmt.Sprintf("LATENCY DISTRIBUTION: %d Appends (sampled per %d ops)", totalOps, opsPerSample))
 }
 
 func TestScale_MixedWorkloadConcurrent(t *testing.T) {
@@ -1251,25 +1220,7 @@ func TestScale_CommandBusLatencyDistribution(t *testing.T) {
 	adapter := memory.NewAdapter()
 	store := New(adapter)
 	benchRegisterEvents(store)
-
-	idCounter := atomic.Int64{}
-	handler := NewAggregateHandler[BenchCreateOrderCmd, *BenchOrder](AggregateHandlerConfig[BenchCreateOrderCmd, *BenchOrder]{
-		Store:   store,
-		Factory: func(id string) *BenchOrder { return newBenchOrder(id) },
-		Executor: func(ctx context.Context, agg *BenchOrder, cmd BenchCreateOrderCmd) error {
-			agg.Create(cmd.CustomerID, cmd.Total)
-			return nil
-		},
-		NewIDFunc: func() string {
-			return "order-" + strconv.FormatInt(idCounter.Add(1), 10)
-		},
-	})
-
-	bus := NewCommandBus(WithMiddleware(
-		ValidationMiddleware(),
-		RecoveryMiddleware(),
-	))
-	bus.Register(handler)
+	bus := newBenchAggregateHandlerBus(store, ValidationMiddleware(), RecoveryMiddleware())
 	ctx := context.Background()
 
 	latencies := sampleLatencies(numSamples, opsPerSample, func(_ int) {
@@ -1278,15 +1229,5 @@ func TestScale_CommandBusLatencyDistribution(t *testing.T) {
 	})
 
 	ls := computeLatencyStats(latencies)
-
-	t.Logf("")
-	t.Logf("=== LATENCY: Command Bus (AggregateHandler, %d dispatches) ===", totalOps)
-	t.Logf("  Average:  %v", ls.avg)
-	t.Logf("  p50:      %v", ls.p50)
-	t.Logf("  p90:      %v", ls.p90)
-	t.Logf("  p95:      %v", ls.p95)
-	t.Logf("  p99:      %v", ls.p99)
-	t.Logf("  Min:      %v", ls.min)
-	t.Logf("  Max:      %v", ls.max)
-	t.Logf("================================================")
+	ls.log(t, fmt.Sprintf("LATENCY: Command Bus (AggregateHandler, %d dispatches)", totalOps))
 }
