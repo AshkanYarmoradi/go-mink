@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- RC (release candidate) release workflow for `develop` branch (`.github/workflows/rc-release.yml`)
+  - Automatic pre-release versioning: `v1.0.4-rc.1`, `v1.0.4-rc.2`, etc.
+  - Contextual changelogs (first RC diffs from stable, subsequent RCs diff from previous RC)
+  - GitHub pre-release flag and Go module proxy indexing
+  - Concurrency control to prevent race conditions on rapid pushes
+
+### Changed
+- CI test workflow now triggers on `develop` branch (push and pull request)
+- Stable release workflow uses stable-only tag filter to ignore RC tags when calculating next version
+
 ## [1.0.0] - 2026-03-02
 
 First stable release consolidating all features from the development phases.

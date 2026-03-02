@@ -61,8 +61,10 @@ This section guides you through submitting an enhancement suggestion for go-mink
 
 1.  **Fork the repository** on GitHub.
 2.  **Clone your fork** locally.
-3.  **Create a new branch** for your feature or fix.
+3.  **Create a new branch** from `develop` for your feature or fix.
     ```bash
+    git checkout develop
+    git pull origin develop
     git checkout -b feature/amazing-feature
     ```
 4.  **Make your changes**.
@@ -71,6 +73,26 @@ This section guides you through submitting an enhancement suggestion for go-mink
     go test ./...
     ```
 6.  **Commit your changes** using descriptive commit messages.
+
+### Branching Strategy & Release Process
+
+We use a two-branch model with automated releases:
+
+```
+feature branch ──► develop (RC releases) ──► main (stable releases)
+```
+
+*   **`develop`** — Integration branch. All feature branches target `develop` via pull request. Each merge to `develop` automatically creates a release candidate (e.g., `v1.0.4-rc.1`, `v1.0.4-rc.2`).
+*   **`main`** — Stable releases only. Merging `develop` into `main` automatically creates the next stable release (e.g., `v1.0.4`).
+*   **Feature branches** — Created from `develop`, named `feature/description` or `fix/description`.
+
+**RC (Release Candidate) versions** are published as GitHub pre-releases and indexed on the Go module proxy. Users can opt in:
+
+```bash
+go get github.com/AshkanYarmoradi/go-mink@v1.0.4-rc.1
+```
+
+The default `go get` (without a version suffix) always returns the latest **stable** release — RC versions are never served as `@latest`.
 
 ### Pull Requests
 

@@ -44,6 +44,8 @@ make benchmark-adapters-pg      # PostgreSQL adapter benchmarks (requires infra)
 
 **CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), lints on Go 1.25, builds on Go 1.22–1.26 across Linux, macOS, Windows. Scale tests enabled in CI via `MINK_SCALE_TESTS=1`.
 
+**Branching & Releases**: Feature branches target `develop`. Each merge to `develop` auto-creates an RC pre-release (`v1.0.4-rc.1`, `v1.0.4-rc.2`, ...). Merging `develop` into `main` auto-creates the next stable release (`v1.0.4`). CI (test/lint/build) runs on both `main` and `develop`.
+
 ## Architecture
 
 ```
