@@ -1,13 +1,13 @@
-# GitHub Actions workflow for automatic releases with patch version increment
-# Triggers on push to main branch and creates a new release with incremented version
-# Example: v1.0.0 → v1.0.1 → v1.0.2
+# GitHub Actions workflow for automatic RC (release candidate) releases
+# Triggers on push to develop branch and creates pre-release versions
+# Example: v1.0.3 (stable) → v1.0.4-rc.1 → v1.0.4-rc.2 → v1.0.4 (merge to main)
 
-name: Release
+name: RC Release
 
 on:
   push:
     branches:
-      - main
+      - develop
     paths-ignore:
       - 'docs/**'
       - '*.md'
@@ -16,84 +16,120 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: rc-release
+  cancel-in-progress: false
+
 jobs:
-  release:
-    name: Create Release
+  rc-release:
+    name: Create RC Release
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0  # Fetch all history for tags
+          fetch-depth: 0
           fetch-tags: true
 
-      - name: Get latest tag
+      - name: Get latest stable tag
         id: get_tag
         run: |
-          # Get the latest stable tag (exclude RC tags), default to v0.0.0 if no tags exist
+          # Get the latest stable tag (exclude RC/pre-release tags)
           LATEST_TAG=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v0.0.0"; fi
-          echo "Latest tag: $LATEST_TAG"
+          echo "Latest stable tag: $LATEST_TAG"
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-      - name: Calculate next version
+      - name: Calculate next RC version
         id: next_version
         run: |
           LATEST_TAG="${{ steps.get_tag.outputs.latest_tag }}"
-          
-          # Remove 'v' prefix if present
+
+          # Remove 'v' prefix
           VERSION="${LATEST_TAG#v}"
-          
-          # Split version into parts
+
+          # Split version into parts and increment patch
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          
-          # Increment patch version
           PATCH=$((PATCH + 1))
-          
-          # Construct new version
-          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          
-          echo "Previous version: $LATEST_TAG"
+          NEXT_STABLE="v${MAJOR}.${MINOR}.${PATCH}"
+
+          # Find the highest existing RC number for this version
+          HIGHEST_RC=$(git tag -l "${NEXT_STABLE}-rc.*" | sed "s/${NEXT_STABLE}-rc\.//" | sort -n | tail -1)
+
+          if [ -z "$HIGHEST_RC" ]; then
+            RC_NUM=1
+          else
+            RC_NUM=$((HIGHEST_RC + 1))
+          fi
+
+          NEW_VERSION="${NEXT_STABLE}-rc.${RC_NUM}"
+
+          echo "Next stable: $NEXT_STABLE"
+          echo "RC number: $RC_NUM"
           echo "New version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "next_stable=$NEXT_STABLE" >> $GITHUB_OUTPUT
+          echo "rc_num=$RC_NUM" >> $GITHUB_OUTPUT
 
       - name: Generate changelog
         id: changelog
         run: |
           LATEST_TAG="${{ steps.get_tag.outputs.latest_tag }}"
           NEW_VERSION="${{ steps.next_version.outputs.new_version }}"
-          
-          # Get commit messages since last tag
-          if [ "$LATEST_TAG" = "v0.0.0" ]; then
-            # No previous tags, get all commits
+          NEXT_STABLE="${{ steps.next_version.outputs.next_stable }}"
+          RC_NUM="${{ steps.next_version.outputs.rc_num }}"
+
+          if [ "$RC_NUM" = "1" ]; then
+            # First RC: all commits since last stable tag
+            COMPARE_TAG="$LATEST_TAG"
+          else
+            # Subsequent RCs: commits since previous RC tag
+            PREV_RC_NUM=$((RC_NUM - 1))
+            PREV_RC_TAG="${NEXT_STABLE}-rc.${PREV_RC_NUM}"
+
+            # Verify previous RC tag exists, fall back to stable tag
+            if git rev-parse "$PREV_RC_TAG" >/dev/null 2>&1; then
+              COMPARE_TAG="$PREV_RC_TAG"
+            else
+              COMPARE_TAG="$LATEST_TAG"
+            fi
+          fi
+
+          # Get commit messages since compare tag
+          if [ "$COMPARE_TAG" = "v0.0.0" ]; then
             COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges -n 50)
           else
-            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+            COMMITS=$(git log ${COMPARE_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
           fi
-          
+
           # Create changelog content
           CHANGELOG="## What's Changed in ${NEW_VERSION}
 
+          > **This is a release candidate.** Install with:
+          > \`\`\`
+          > go get github.com/${{ github.repository }}@${NEW_VERSION}
+          > \`\`\`
+
           ${COMMITS}
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LATEST_TAG}...${NEW_VERSION}"
-          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${COMPARE_TAG}...${NEW_VERSION}"
+
           # Write to file for the release body
           echo "$CHANGELOG" > RELEASE_NOTES.md
-          
-          echo "Changelog generated"
+
+          echo "Changelog generated (compared against $COMPARE_TAG)"
 
       - name: Create tag
         run: |
           NEW_VERSION="${{ steps.next_version.outputs.new_version }}"
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
+
+          git tag -a "$NEW_VERSION" -m "Release candidate $NEW_VERSION"
           git push origin "$NEW_VERSION"
-          
+
           echo "Tag $NEW_VERSION created and pushed"
 
       - name: Create GitHub Release
@@ -103,9 +139,9 @@ jobs:
           name: Release ${{ steps.next_version.outputs.new_version }}
           body_path: RELEASE_NOTES.md
           draft: false
-          prerelease: false
+          prerelease: true
           generate_release_notes: false
-          make_latest: true
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -118,44 +154,39 @@ jobs:
         run: |
           NEW_VERSION="${{ steps.next_version.outputs.new_version }}"
           MODULE="github.com/${{ github.repository }}"
-          
+
           echo "Requesting module from Go proxy to trigger indexing..."
-          
-          # Request the module version from proxy.golang.org to trigger caching
+
           PROXY_URL="https://proxy.golang.org/${MODULE}/@v/${NEW_VERSION}.info"
           echo "Requesting: $PROXY_URL"
-          
-          # Retry up to 5 times with 10 second delays (proxy may need time to fetch)
+
           for i in {1..5}; do
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROXY_URL")
             echo "Attempt $i: HTTP $HTTP_STATUS"
-            
+
             if [ "$HTTP_STATUS" = "200" ]; then
-              echo "✅ Module successfully indexed by Go proxy"
+              echo "Module successfully indexed by Go proxy"
               break
             fi
-            
+
             if [ $i -lt 5 ]; then
               echo "Waiting 10 seconds before retry..."
               sleep 10
             fi
           done
-          
-          # Also trigger pkg.go.dev to fetch the documentation
-          PKG_URL="https://pkg.go.dev/${MODULE}@${NEW_VERSION}"
-          echo "Module will be available at: $PKG_URL"
-          
-          # Request the module list to ensure it's fully indexed
+
           GOPROXY=https://proxy.golang.org go list -m "${MODULE}@${NEW_VERSION}" || true
 
       - name: Release summary
         run: |
-          echo "## 🎉 Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Candidate Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.next_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Previous:** ${{ steps.get_tag.outputs.latest_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Based on stable:** ${{ steps.get_tag.outputs.latest_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next stable:** ${{ steps.next_version.outputs.next_stable }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 **Go Module:** [pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }}](https://pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Go Module:** \`go get github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
