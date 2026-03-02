@@ -11,7 +11,8 @@ go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .
 ```bash
 # Preferred: use Makefile targets (infrastructure managed via docker-compose.test.yml)
 make build                              # go build -v ./...
-make test-unit                          # Unit tests only (no infra needed, uses -short -race)
+make test-unit                          # Unit tests only (no infra, CGO_ENABLED=0, works everywhere)
+make test-unit-race                     # Unit tests with race detector (requires gcc/clang)
 make test                               # All tests (auto-starts PostgreSQL + Kafka via docker-compose)
 make lint                               # golangci-lint run ./... (uses defaults, no .golangci.yml)
 make fmt                                # go fmt ./...

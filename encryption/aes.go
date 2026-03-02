@@ -8,9 +8,11 @@ import (
 	"io"
 )
 
-// AESGCMEncrypt encrypts plaintext using AES-256-GCM.
+// AESGCMEncrypt encrypts plaintext using AES-256-GCM with additional authenticated data.
+// The aad parameter binds the ciphertext to its context (e.g., field path, key ID),
+// preventing ciphertext from being moved between contexts undetected.
 // Output format: nonce (12 bytes) || ciphertext+tag
-func AESGCMEncrypt(key, plaintext []byte) ([]byte, error) {
+func AESGCMEncrypt(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("mink: failed to create cipher: %w", err)
@@ -26,11 +28,12 @@ func AESGCMEncrypt(key, plaintext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("mink: failed to generate nonce: %w", err)
 	}
 
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
 // AESGCMDecrypt decrypts ciphertext produced by AESGCMEncrypt.
-func AESGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
+// The aad parameter must match the value used during encryption.
+func AESGCMDecrypt(key, ciphertext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("mink: failed to create cipher: %w", err)
@@ -47,5 +50,5 @@ func AESGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
 	}
 
 	nonce, body := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return gcm.Open(nil, nonce, body, nil)
+	return gcm.Open(nil, nonce, body, aad)
 }

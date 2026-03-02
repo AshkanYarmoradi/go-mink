@@ -19,7 +19,9 @@ func testProvider(t *testing.T, keyID string) *local.Provider {
 	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	require.NoError(t, err)
-	return local.New(local.WithKey(keyID, key))
+	p, err := local.New(local.WithKey(keyID, key))
+	require.NoError(t, err)
+	return p
 }
 
 func testEncConfig(t *testing.T, keyID string, opts ...EncryptionOption) (*local.Provider, *FieldEncryptionConfig) {
@@ -169,10 +171,11 @@ func TestFieldEncryptionConfig_TenantKeyResolver(t *testing.T) {
 	_, _ = rand.Read(key1)
 	_, _ = rand.Read(key2)
 
-	provider := local.New(
+	provider, err := local.New(
 		local.WithKey("tenant-A-key", key1),
 		local.WithKey("tenant-B-key", key2),
 	)
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	config := NewFieldEncryptionConfig(
@@ -317,7 +320,8 @@ func TestDecryptFields_UnencryptedData(t *testing.T) {
 
 func TestEncryptFields_GenerateDataKeyError(t *testing.T) {
 	// Use a provider with no keys to trigger key-not-found on GenerateDataKey
-	provider := local.New()
+	provider, err := local.New()
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 	config := NewFieldEncryptionConfig(
 		WithEncryptionProvider(provider),
@@ -328,9 +332,9 @@ func TestEncryptFields_GenerateDataKeyError(t *testing.T) {
 	ctx := context.Background()
 	data := []byte(`{"email":"test@example.com"}`)
 
-	_, _, err := config.encryptFields(ctx, "UserCreated", data, Metadata{})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, encryption.ErrKeyNotFound)
+	_, _, encErr := config.encryptFields(ctx, "UserCreated", data, Metadata{})
+	require.Error(t, encErr)
+	assert.ErrorIs(t, encErr, encryption.ErrKeyNotFound)
 }
 
 func TestEncryptFields_InvalidJSON(t *testing.T) {
@@ -578,13 +582,13 @@ func TestEncryptJSONField_NestedNonMapChild(t *testing.T) {
 
 func TestAesGCMEncrypt_InvalidKeyLength(t *testing.T) {
 	// AES requires 16, 24, or 32 byte keys
-	_, err := encryption.AESGCMEncrypt([]byte("short"), []byte("plaintext"))
+	_, err := encryption.AESGCMEncrypt([]byte("short"), []byte("plaintext"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
 
 func TestAesGCMDecrypt_InvalidKeyLength(t *testing.T) {
-	_, err := encryption.AESGCMDecrypt([]byte("short"), []byte("some-ciphertext-long-enough-for-nonce"))
+	_, err := encryption.AESGCMDecrypt([]byte("short"), []byte("some-ciphertext-long-enough-for-nonce"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
@@ -593,7 +597,7 @@ func TestAesGCMDecrypt_CiphertextTooShort(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 
-	_, err := encryption.AESGCMDecrypt(key, []byte("short"))
+	_, err := encryption.AESGCMDecrypt(key, []byte("short"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ciphertext too short")
 }
@@ -624,7 +628,7 @@ func TestDecryptJSONField_InvalidDecryptedJSON(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	// Encrypt raw bytes that are NOT valid JSON
-	ciphertext, err := encryption.AESGCMEncrypt(key, []byte("not-json"))
+	ciphertext, err := encryption.AESGCMEncrypt(key, []byte("not-json"), []byte("email"))
 	require.NoError(t, err)
 
 	data := map[string]interface{}{

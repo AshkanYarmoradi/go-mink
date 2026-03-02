@@ -3,7 +3,7 @@
 # All test infrastructure is defined in docker-compose.test.yml
 # This is the single source of truth for both local and CI environments.
 
-.PHONY: all build test test-unit test-coverage lint fmt clean help
+.PHONY: all build test test-unit test-unit-race test-coverage lint fmt clean help
 .PHONY: infra-up infra-down infra-logs infra-ps
 
 # Default target
@@ -20,8 +20,12 @@ build:
 # Testing
 #------------------------------------------------------------------------------
 
-# Run unit tests only (no infrastructure required)
+# Run unit tests only (no infrastructure required, works on all platforms)
 test-unit:
+	CGO_ENABLED=0 go test -short -v ./...
+
+# Run unit tests with race detector (requires CGO toolchain: gcc/clang)
+test-unit-race:
 	go test -short -race -v ./...
 
 # Run all tests (starts infrastructure automatically)
@@ -88,9 +92,10 @@ help:
 	@echo "go-mink Development Commands"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test          - Run all tests (auto-starts infrastructure)"
-	@echo "  make test-unit     - Run unit tests only (no infrastructure)"
-	@echo "  make test-coverage - Run tests with coverage report"
+	@echo "  make test-unit      - Run unit tests (no infra, works on all platforms)"
+	@echo "  make test-unit-race - Run unit tests with race detector (requires gcc)"
+	@echo "  make test           - Run all tests (auto-starts infrastructure)"
+	@echo "  make test-coverage  - Run tests with coverage report"
 	@echo ""
 	@echo "Infrastructure (defined in docker-compose.test.yml):"
 	@echo "  make infra-up      - Start test infrastructure"

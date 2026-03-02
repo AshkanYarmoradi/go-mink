@@ -27,32 +27,34 @@ type Provider struct {
 }
 
 // Option configures a local Provider.
-type Option func(*Provider)
+type Option func(*Provider) error
 
 // WithKey pre-loads a master key into the provider.
-// The key must be exactly 32 bytes (AES-256). Panics if the key length is invalid
-// to fail fast during initialization rather than at runtime.
+// The key must be exactly 32 bytes (AES-256).
 func WithKey(keyID string, key []byte) Option {
-	return func(p *Provider) {
+	return func(p *Provider) error {
 		if len(key) != 32 {
-			panic(fmt.Sprintf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key)))
+			return fmt.Errorf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key))
 		}
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		p.keys[keyID] = keyCopy
+		return nil
 	}
 }
 
 // New creates a new local encryption provider.
-func New(opts ...Option) *Provider {
+func New(opts ...Option) (*Provider, error) {
 	p := &Provider{
 		keys:    make(map[string][]byte),
 		revoked: make(map[string]bool),
 	}
 	for _, opt := range opts {
-		opt(p)
+		if err := opt(p); err != nil {
+			return nil, err
+		}
 	}
-	return p
+	return p, nil
 }
 
 // AddKey adds a master key to the provider.
@@ -104,7 +106,7 @@ func (p *Provider) Encrypt(_ context.Context, keyID string, plaintext []byte) ([
 	if err != nil {
 		return nil, err
 	}
-	return encryption.AESGCMEncrypt(key, plaintext)
+	return encryption.AESGCMEncrypt(key, plaintext, []byte(keyID))
 }
 
 // Decrypt decrypts ciphertext using AES-256-GCM with the specified master key.
@@ -113,7 +115,7 @@ func (p *Provider) Decrypt(_ context.Context, keyID string, ciphertext []byte) (
 	if err != nil {
 		return nil, err
 	}
-	return encryption.AESGCMDecrypt(key, ciphertext)
+	return encryption.AESGCMDecrypt(key, ciphertext, []byte(keyID))
 }
 
 // GenerateDataKey creates a new random 32-byte DEK and encrypts it with the master key.
@@ -130,7 +132,7 @@ func (p *Provider) GenerateDataKey(_ context.Context, keyID string) (*encryption
 	}
 
 	// Encrypt DEK with master key
-	encryptedDEK, err := encryption.AESGCMEncrypt(key, dek)
+	encryptedDEK, err := encryption.AESGCMEncrypt(key, dek, []byte(keyID))
 	if err != nil {
 		encryption.ClearBytes(dek)
 		return nil, encryption.NewEncryptionError(keyID, "", fmt.Errorf("failed to encrypt DEK: %w", err))
@@ -150,7 +152,7 @@ func (p *Provider) DecryptDataKey(_ context.Context, keyID string, encryptedKey 
 		return nil, err
 	}
 
-	plaintext, err := encryption.AESGCMDecrypt(key, encryptedKey)
+	plaintext, err := encryption.AESGCMDecrypt(key, encryptedKey, []byte(keyID))
 	if err != nil {
 		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("failed to decrypt DEK: %w", err))
 	}

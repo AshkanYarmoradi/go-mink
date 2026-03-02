@@ -95,41 +95,69 @@ func TestAESGCMEncrypt_RoundTrip(t *testing.T) {
 		key[i] = byte(i)
 	}
 	plaintext := []byte("hello world")
+	aad := []byte("email")
 
-	ciphertext, err := AESGCMEncrypt(key, plaintext)
+	ciphertext, err := AESGCMEncrypt(key, plaintext, aad)
 	assert.NoError(t, err)
 	assert.NotEqual(t, plaintext, ciphertext)
 
-	decrypted, err := AESGCMDecrypt(key, ciphertext)
+	decrypted, err := AESGCMDecrypt(key, ciphertext, aad)
 	assert.NoError(t, err)
 	assert.Equal(t, plaintext, decrypted)
 }
 
+func TestAESGCMEncrypt_AADMismatch(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	ciphertext, err := AESGCMEncrypt(key, []byte("secret"), []byte("email"))
+	assert.NoError(t, err)
+
+	_, err = AESGCMDecrypt(key, ciphertext, []byte("phone"))
+	assert.Error(t, err)
+}
+
+func TestAESGCMEncrypt_NilAAD(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	ciphertext, err := AESGCMEncrypt(key, []byte("data"), nil)
+	assert.NoError(t, err)
+
+	decrypted, err := AESGCMDecrypt(key, ciphertext, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("data"), decrypted)
+}
+
 func TestAESGCMEncrypt_InvalidKey(t *testing.T) {
-	_, err := AESGCMEncrypt([]byte("short"), []byte("data"))
+	_, err := AESGCMEncrypt([]byte("short"), []byte("data"), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
 
 func TestAESGCMDecrypt_InvalidKey(t *testing.T) {
-	_, err := AESGCMDecrypt([]byte("short"), []byte("data-long-enough-for-nonce-size"))
+	_, err := AESGCMDecrypt([]byte("short"), []byte("data-long-enough-for-nonce-size"), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create cipher")
 }
 
 func TestAESGCMDecrypt_TooShort(t *testing.T) {
 	key := make([]byte, 32)
-	_, err := AESGCMDecrypt(key, []byte("short"))
+	_, err := AESGCMDecrypt(key, []byte("short"), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "ciphertext too short")
 }
 
 func TestAESGCMEncrypt_EmptyPlaintext(t *testing.T) {
 	key := make([]byte, 32)
-	ciphertext, err := AESGCMEncrypt(key, []byte{})
+	ciphertext, err := AESGCMEncrypt(key, []byte{}, nil)
 	assert.NoError(t, err)
 
-	decrypted, err := AESGCMDecrypt(key, ciphertext)
+	decrypted, err := AESGCMDecrypt(key, ciphertext, nil)
 	assert.NoError(t, err)
 	assert.Empty(t, decrypted)
 }

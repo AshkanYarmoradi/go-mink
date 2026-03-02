@@ -291,55 +291,17 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		return err
 	}
 
-	// Track the version from loaded events
-	var lastVersion int64
-
 	// Apply each event to rebuild state
 	for i, stored := range storedEvents {
-		// Decrypt fields if encryption is configured (before upcasting)
-		eventData := stored.Data
-		if s.encryption != nil {
-			minkStored := convertStoredEventFromAdapter(stored)
-			if IsEncrypted(minkStored.Metadata) {
-				decData, err := s.encryption.decryptFields(ctx, stored.Type, stored.Data, minkStored.Metadata)
-				if err != nil {
-					return fmt.Errorf("mink: failed to decrypt event %d: %w", i, err)
-				}
-				eventData = decData
-			}
-		}
-
-		// Upcast event data if upcasters are configured
-		if s.upcasters != nil && s.upcasters.HasUpcasters(stored.Type) {
-			minkStored := convertStoredEventFromAdapter(stored)
-			schemaVersion := GetSchemaVersion(minkStored.Metadata)
-			upcasted, _, err := s.upcasters.Upcast(stored.Type, schemaVersion, eventData, minkStored.Metadata)
-			if err != nil {
-				return fmt.Errorf("mink: failed to upcast event %d: %w", i, err)
-			}
-			eventData = upcasted
-		}
-
-		data, err := s.serializer.Deserialize(eventData, stored.Type)
+		minkStored := convertStoredEventFromAdapter(stored)
+		event, err := s.deserializeWithUpcast(ctx, minkStored)
 		if err != nil {
 			return fmt.Errorf("mink: failed to deserialize event %d: %w", i, err)
 		}
 
-		// Apply event to aggregate
-		if err := agg.ApplyEvent(data); err != nil {
+		if err := agg.ApplyEvent(event.Data); err != nil {
 			return fmt.Errorf("mink: failed to apply event %d: %w", i, err)
 		}
-
-		// Track version from stored event
-		lastVersion = stored.Version
-	}
-
-	// Set the aggregate's version to the last loaded event version.
-	// Aggregates that implement VersionSetter (such as those embedding AggregateBase)
-	// will have their version automatically set during load, which is used for
-	// optimistic concurrency control in SaveAggregate.
-	if setter, ok := agg.(VersionSetter); ok && len(storedEvents) > 0 {
-		setter.SetVersion(lastVersion)
 	}
 
 	// Set the aggregate version if it implements VersionSetter.

@@ -197,7 +197,7 @@ package mink
 
 // Version returns the library version string.
 func Version() string {
-	return "0.5.X"
+	return "1.0.X"
 }
 
 // BuildStreamID creates a stream ID from an aggregate type and ID.

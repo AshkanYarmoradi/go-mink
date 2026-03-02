@@ -99,7 +99,8 @@ func newEncryptedStore(t *testing.T, provider encryption.Provider, keyID string)
 func newDefaultE2ESetup(t *testing.T) (context.Context, *local.Provider, *mink.EventStore) {
 	t.Helper()
 	key := testEncryptionKey(t)
-	provider := local.New(local.WithKey("master-1", key))
+	provider, err := local.New(local.WithKey("master-1", key))
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 	store, _ := newEncryptedStore(t, provider, "master-1")
 	return context.Background(), provider, store
@@ -259,10 +260,11 @@ func TestE2E_Encryption_PerTenantKeys(t *testing.T) {
 	ctx := context.Background()
 	keyA := testEncryptionKey(t)
 	keyB := testEncryptionKey(t)
-	provider := local.New(
+	provider, err := local.New(
 		local.WithKey("tenant-A-key", keyA),
 		local.WithKey("tenant-B-key", keyB),
 	)
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	adapter := memory.NewAdapter()
@@ -278,7 +280,7 @@ func TestE2E_Encryption_PerTenantKeys(t *testing.T) {
 	store.RegisterEvents(UserRegistered{})
 
 	// Append with tenant A metadata
-	err := store.Append(ctx, "User-tenantA-1", []interface{}{
+	err = store.Append(ctx, "User-tenantA-1", []interface{}{
 		UserRegistered{UserID: "t-a-1", Name: "TenantA User", Email: "a@tenant.com"},
 	}, mink.WithAppendMetadata(mink.Metadata{TenantID: "A"}))
 	require.NoError(t, err)
@@ -312,7 +314,8 @@ func TestE2E_Encryption_PerTenantKeys(t *testing.T) {
 func TestE2E_Encryption_CryptoShredding(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
-	provider := local.New(local.WithKey("master-1", key))
+	provider, err := local.New(local.WithKey("master-1", key))
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	adapter := memory.NewAdapter()
@@ -331,7 +334,7 @@ func TestE2E_Encryption_CryptoShredding(t *testing.T) {
 	store.RegisterEvents(UserRegistered{})
 
 	// Store encrypted data
-	err := store.Append(ctx, "User-shred-1", []interface{}{
+	err = store.Append(ctx, "User-shred-1", []interface{}{
 		UserRegistered{UserID: "shred-1", Name: "Jane", Email: "jane@secret.com", Phone: "+000"},
 	})
 	require.NoError(t, err)
@@ -386,7 +389,8 @@ func TestE2E_Encryption_CryptoShredding_NoHandler(t *testing.T) {
 func TestE2E_Encryption_WithUpcasting(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
-	provider := local.New(local.WithKey("master-1", key))
+	provider, err := local.New(local.WithKey("master-1", key))
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	adapter := memory.NewAdapter()
@@ -408,7 +412,7 @@ func TestE2E_Encryption_WithUpcasting(t *testing.T) {
 	store.RegisterEvents(ProductAdded{})
 
 	// Append a v3 event with encrypted name field
-	err := store.Append(ctx, "ProductCatalog-enc-1", []interface{}{
+	err = store.Append(ctx, "ProductCatalog-enc-1", []interface{}{
 		ProductAdded{ProductID: "p1", Name: "Secret Product", Price: 42.0, Currency: "USD", Tax: 5.0},
 	})
 	require.NoError(t, err)
@@ -463,7 +467,8 @@ func TestE2E_Encryption_MultipleEvents(t *testing.T) {
 func TestE2E_Encryption_WithOutbox(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
-	provider := local.New(local.WithKey("master-1", key))
+	provider, err := local.New(local.WithKey("master-1", key))
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	adapter := memory.NewAdapter()
@@ -487,7 +492,7 @@ func TestE2E_Encryption_WithOutbox(t *testing.T) {
 	esWithOutbox := mink.NewEventStoreWithOutbox(store, outboxStore, routes)
 
 	// Append via outbox wrapper
-	err := esWithOutbox.Append(ctx, "User-outbox-1", []interface{}{
+	err = esWithOutbox.Append(ctx, "User-outbox-1", []interface{}{
 		UserRegistered{UserID: "ob-1", Name: "Outbox User", Email: "outbox@test.com", Phone: "+333"},
 	})
 	require.NoError(t, err)
@@ -511,7 +516,8 @@ func TestE2E_Encryption_WithOutbox(t *testing.T) {
 func TestE2E_Encryption_OutboxSaveAggregate(t *testing.T) {
 	ctx := context.Background()
 	key := testEncryptionKey(t)
-	provider := local.New(local.WithKey("master-1", key))
+	provider, err := local.New(local.WithKey("master-1", key))
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 
 	adapter := memory.NewAdapter()
@@ -534,7 +540,7 @@ func TestE2E_Encryption_OutboxSaveAggregate(t *testing.T) {
 	user := newUserProfile("outbox-agg-1")
 	user.Register("Outbox Agg User", "agg@test.com", "+444")
 
-	err := esWithOutbox.SaveAggregate(ctx, user)
+	err = esWithOutbox.SaveAggregate(ctx, user)
 	require.NoError(t, err)
 
 	// Load aggregate through the base store
@@ -551,7 +557,8 @@ func TestE2E_Encryption_OutboxSaveAggregate(t *testing.T) {
 
 func newFailingEncryptionStore(t *testing.T) *mink.EventStore {
 	t.Helper()
-	provider := local.New() // No keys → GenerateDataKey will fail
+	provider, err := local.New() // No keys → GenerateDataKey will fail
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = provider.Close() })
 	adapter := memory.NewAdapter()
 	config := mink.NewFieldEncryptionConfig(
