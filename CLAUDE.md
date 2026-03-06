@@ -65,7 +65,7 @@ Commands --> Command Bus (middleware pipeline) --> Handler --> Aggregate --> Eve
 
 ## Key File Locations
 
-All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking), `encryption.go` (FieldEncryptionConfig, encrypt/decrypt logic, metadata helpers), `encryption_errors.go` (encryption error aliases).
+All core types live in the root `mink` package. Key entry points: `store.go` (EventStore), `bus.go` (CommandBus), `projection_engine.go` (ProjectionEngine), `saga_manager.go` (SagaManager), `outbox_processor.go` (OutboxProcessor), `export.go` (DataExporter, GDPR data export), `export_errors.go` (export sentinel/typed errors), `errors.go` (all sentinel/typed errors), `versioning.go` (Upcaster, UpcasterChain, schema version helpers), `versioning_errors.go` (versioning sentinel/typed errors), `upcasting_serializer.go` (UpcastingSerializer decorator), `schema_registry.go` (SchemaRegistry, compatibility checking), `encryption.go` (FieldEncryptionConfig, encrypt/decrypt logic, metadata helpers), `encryption_errors.go` (encryption error aliases).
 
 Adapters:
 - `adapters/adapter.go` - All adapter interfaces and shared types (EventStoreAdapter, SubscriptionAdapter, SagaStore, OutboxStore, OutboxAppender, HealthChecker, Migrator, plus CLI adapters: StreamQueryAdapter, DiagnosticAdapter, SchemaProvider)
@@ -82,7 +82,7 @@ Other packages:
 - `serializer/{msgpack,protobuf}/` - Alternative serializers
 - `testing/{bdd,assertions,projections,sagas,containers}/` - Test utilities
 - `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
-- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, encryption, etc.)
+- `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, encryption, export, etc.)
 
 ## Core Interfaces
 

@@ -235,6 +235,102 @@ provider.RevokeKey("tenant-B")
 // Non-encrypted fields (name, country) are still readable
 ```
 
+### Data Export (Right to Access / Data Portability)
+
+The `DataExporter` collects events belonging to a data subject and returns them in a portable format. It integrates with field-level encryption: when a key has been revoked (crypto-shredding), affected events are included with `Redacted=true` and `nil` Data.
+
+```go
+import "github.com/AshkanYarmoradi/go-mink"
+
+exporter := mink.NewDataExporter(store,
+    mink.WithExportBatchSize(500),  // Events per batch during scan
+    mink.WithExportLogger(logger),
+)
+
+// Strategy 1: Stream-based — when you know the stream IDs (efficient, no scan)
+result, err := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123", "Order-ord-456"},
+})
+
+// Strategy 2: Scan-based — filter all events (requires SubscriptionAdapter)
+result, err := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "tenant-A-data",
+    Filter:    mink.FilterByTenantID("A"),
+})
+
+// Strategy 3: Streaming — memory-efficient for large exports
+err := exporter.ExportStream(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123"},
+}, func(ctx context.Context, event mink.ExportedEvent) error {
+    // Write to file, send via API, etc.
+    if event.Redacted {
+        // Encrypted data — key was revoked
+        return nil
+    }
+    return writeToJSON(event)
+})
+```
+
+**ExportResult** contains:
+
+| Field | Description |
+|-------|-------------|
+| `SubjectID` | The data subject identifier from the request |
+| `Events` | All exported events (including redacted ones) |
+| `Streams` | Unique stream IDs that contained matching events |
+| `TotalEvents` | Total event count (including redacted) |
+| `RedactedCount` | Events whose PII could not be decrypted |
+| `ExportedAt` | Timestamp when the export was generated |
+
+**Built-in filters** for scan-based export:
+
+```go
+mink.FilterByTenantID("tenant-A")                     // Match tenant ID
+mink.FilterByUserID("user-123")                        // Match user ID
+mink.FilterByStreamPrefix("Customer-")                 // Match stream prefix
+mink.FilterByMetadata("department", "sales")           // Match custom metadata
+mink.FilterByEventTypes("CustomerCreated", "OrderPlaced")  // Match event types
+
+// Combine filters (AND logic)
+mink.CombineFilters(
+    mink.FilterByTenantID("A"),
+    mink.FilterByEventTypes("OrderPlaced"),
+)
+```
+
+**Time range filtering**:
+
+```go
+from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+
+result, err := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123"},
+    FromTime:  &from,
+    ToTime:    &to,
+})
+```
+
+**Crypto-shredding integration**: When a key has been revoked, the exporter catches the decryption error and marks the event as redacted. The `RawData` field still contains the original encrypted bytes, and all non-PII metadata (stream ID, event type, timestamp, version) remains available.
+
+```go
+// After revoking a key:
+result, _ := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123"},
+})
+
+for _, e := range result.Events {
+    if e.Redacted {
+        fmt.Printf("Redacted: %s at %s\n", e.EventType, e.Timestamp)
+    }
+}
+fmt.Printf("Total: %d, Redacted: %d\n", result.TotalEvents, result.RedactedCount)
+```
+
 ### Data Retention
 
 ```go
