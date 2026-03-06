@@ -45,91 +45,56 @@ export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmo
 │  └──────────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                        ADAPTER LAYER                            │
-│  PostgreSQL │ MongoDB │ Redis │ Memory (testing)                │
+│  PostgreSQL │ Memory (testing)                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Package Structure (Target)
+### Package Structure
 
 ```
 github.com/AshkanYarmoradi/go-mink/
-├── mink.go                    # Public API entry point
-├── event.go                   # Event types: EventData, StoredEvent, Metadata
-├── aggregate.go               # Aggregate interface and AggregateBase
-├── command.go                 # Command interface and CommandBus
-├── projection.go              # Projection interfaces (Inline, Async, Live)
-├── store.go                   # EventStore implementation
-├── saga.go                    # Saga/Process Manager
-├── errors.go                  # Sentinel errors and typed errors
+├── *.go                       # Core types in root mink package:
+│                              #   store.go (EventStore), bus.go (CommandBus),
+│                              #   projection_engine.go (ProjectionEngine),
+│                              #   saga_manager.go (SagaManager), outbox_processor.go,
+│                              #   errors.go, versioning.go, encryption.go, etc.
 │
 ├── adapters/
-│   ├── adapter.go             # Adapter interfaces
-│   ├── postgres/
-│   │   ├── postgres.go        # PostgreSQL event store
-│   │   ├── readmodel.go       # PostgreSQL read models with auto-migration
-│   │   ├── idempotency.go     # PostgreSQL idempotency store
-│   │   ├── subscription.go    # PostgreSQL subscriptions
-│   │   ├── snapshot.go        # PostgreSQL snapshots (planned)
-│   │   └── outbox.go          # PostgreSQL outbox
-│   ├── mongodb/
-│   ├── redis/
-│   └── memory/                # In-memory for testing
-│
-├── projection/
-│   ├── engine.go              # Projection engine
-│   ├── inline.go              # Same-transaction projections
-│   ├── async.go               # Background projections
-│   ├── live.go                # Real-time projections
-│   └── rebuild.go             # Projection rebuilder
-│
-├── middleware/
-│   ├── logging.go
-│   ├── metrics/               # Prometheus metrics
-│   ├── tracing/               # OpenTelemetry tracing
-│   ├── retry.go
-│   ├── idempotency.go
-│   └── validation.go
-│
-├── serializer/
-│   └── msgpack/               # MessagePack serializer
+│   ├── adapter.go             # All adapter interfaces and shared types
+│   ├── postgres/              # PostgreSQL adapter (production)
+│   └── memory/                # In-memory adapter (testing)
 │
 ├── encryption/
-│   ├── provider.go            # EncryptionProvider interface
-│   ├── kms/                   # AWS KMS implementation
-│   ├── vault/                 # HashiCorp Vault implementation
-│   └── local/                 # Local encryption (testing only)
+│   ├── provider.go            # Provider interface, types, errors
+│   ├── local/                 # AES-256-GCM (testing/development)
+│   ├── kms/                   # AWS KMS (production)
+│   └── vault/                 # HashiCorp Vault Transit (production)
 │
-├── gdpr/
-│   ├── manager.go             # GDPRManager
-│   ├── export.go              # Data export
-│   └── retention.go           # Data retention policies
+├── outbox/
+│   ├── webhook/               # Webhook publisher
+│   ├── kafka/                 # Kafka publisher
+│   └── sns/                   # SNS publisher
 │
-├── upcasting/
-│   ├── upcaster.go            # Upcaster interface
-│   ├── chain.go               # UpcasterChain
-│   └── registry.go            # SchemaRegistry
+├── middleware/
+│   ├── metrics/               # Prometheus metrics
+│   └── tracing/               # OpenTelemetry tracing
 │
-├── cli/
-│   └── mink/
-│       ├── main.go
-│       ├── init.go
-│       ├── generate.go
-│       ├── migrate.go
-│       ├── projection.go
-│       └── stream.go
+├── serializer/
+│   ├── msgpack/               # MessagePack serializer
+│   └── protobuf/              # Protocol Buffers serializer
+│
+├── cli/commands/              # CLI tool (init, generate, migrate, projection,
+│                              #   stream, diagnose, schema)
 │
 ├── testing/
 │   ├── bdd/                   # BDD test fixtures (Given-When-Then)
 │   ├── assertions/            # Event assertions and diffing
 │   ├── projections/           # Projection testing utilities
 │   ├── sagas/                 # Saga testing utilities
-│   ├── containers/            # PostgreSQL test containers
-│   └── testutil/              # Mock adapters and helpers
+│   └── containers/            # PostgreSQL test containers
 │
-└── examples/
-    ├── basic/
-    ├── ecommerce/
-    └── multi-tenant/
+└── examples/                  # Example projects (basic, versioning, projections,
+                               #   sagas, cqrs, metrics, tracing, encryption, etc.)
 ```
 
 ---
@@ -212,27 +177,20 @@ func (e *ConcurrencyError) Is(target error) bool {
 ### Interface Design Principles
 
 ```go
-// 1. Small, focused interfaces
+// 1. Small, focused core interface — adapters implement only what they need
 type EventStoreAdapter interface {
-    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+    Append(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64) ([]StoredEvent, error)
     Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
+    GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+    GetLastPosition(ctx context.Context) (uint64, error)
+    Initialize(ctx context.Context) error
+    Close() error
 }
 
-// 2. Separate read and write concerns
-type EventReader interface {
-    Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
-}
-
-type EventWriter interface {
-    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
-}
-
-// EventStoreAdapter composes both
-type EventStoreAdapter interface {
-    EventReader
-    EventWriter
-    Subscriber
-}
+// 2. Optional interfaces via composition (adapters opt in as needed)
+// SubscriptionAdapter, SnapshotAdapter, TransactionalAdapter,
+// CheckpointAdapter, IdempotencyStore, SagaStore, OutboxStore,
+// OutboxAppender, StreamQueryAdapter, DiagnosticAdapter, SchemaProvider
 
 // 3. Context-first parameters
 func (s *EventStore) Append(ctx context.Context, streamID string, ...) error
@@ -249,21 +207,21 @@ func TestEventStore_Append(t *testing.T) {
     tests := []struct {
         name            string
         streamID        string
-        events          []EventData
+        events          []EventRecord
         expectedVersion int64
         wantErr         error
     }{
         {
             name:            "append to new stream",
             streamID:        "order-123",
-            events:          []EventData{{Type: "OrderCreated", Data: []byte("{}")}},
+            events:          []EventRecord{{ID: uuid.NewString(), Type: "OrderCreated", Data: []byte("{}")}},
             expectedVersion: mink.NoStream,
             wantErr:         nil,
         },
         {
             name:            "concurrency conflict",
             streamID:        "order-123",
-            events:          []EventData{{Type: "ItemAdded", Data: []byte("{}")}},
+            events:          []EventRecord{{ID: uuid.NewString(), Type: "ItemAdded", Data: []byte("{}")}},
             expectedVersion: 0, // Stream already has version 1
             wantErr:         mink.ErrConcurrencyConflict,
         },
@@ -318,7 +276,7 @@ type EventStore struct {
 //   - AnyVersion (-1): Skip version check
 //   - NoStream (0): Stream must not exist
 //   - StreamExists (-2): Stream must exist
-func (s *EventStore) Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) error {
+func (s *EventStore) Append(ctx context.Context, streamID string, events []interface{}, opts ...AppendOption) error {
     // ...
 }
 ```
@@ -327,22 +285,23 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []Event
 
 ## Implementation Guidelines
 
-### Event Store Implementation
+### Core Types
 
 ```go
-// event.go
-package mink
+// adapters/adapter.go — types used by adapter implementations
+package adapters
 
 import "time"
 
-// EventData represents an event to be stored.
-type EventData struct {
+// EventRecord represents an event to be stored (input to Append).
+type EventRecord struct {
+    ID       string
     Type     string
     Data     []byte
     Metadata Metadata
 }
 
-// StoredEvent represents a persisted event.
+// StoredEvent represents a persisted event (returned from Append/Load).
 type StoredEvent struct {
     ID             string
     StreamID       string
@@ -363,7 +322,7 @@ type Metadata struct {
     Custom        map[string]string `json:"custom,omitempty"`
 }
 
-// Version constants for optimistic concurrency.
+// Version constants for optimistic concurrency (defined in root mink package).
 const (
     AnyVersion   int64 = -1 // No concurrency check
     NoStream     int64 = 0  // Stream must not exist
@@ -422,58 +381,29 @@ func (a *AggregateBase) Apply(event interface{}) {
 ### PostgreSQL Adapter
 
 ```go
-// adapters/postgres/eventstore.go
+// adapters/postgres/ — uses pgx/v5 connection pool
 package postgres
 
 import (
     "context"
-    "database/sql"
-    
-    "github.com/AshkanYarmoradi/go-mink"
+    "github.com/AshkanYarmoradi/go-mink/adapters"
 )
 
-type PostgresAdapter struct {
-    db     *sql.DB
-    schema string
+// Compile-time interface checks
+var _ adapters.EventStoreAdapter = (*Adapter)(nil)
+
+func NewAdapter(connStr string, opts ...Option) (*Adapter, error) {
+    // Initializes pgx connection pool
 }
 
-func NewAdapter(connStr string, opts ...Option) (*PostgresAdapter, error) {
-    db, err := sql.Open("pgx", connStr)
-    if err != nil {
-        return nil, fmt.Errorf("mink/postgres: failed to connect: %w", err)
-    }
-    
-    adapter := &PostgresAdapter{
-        db:     db,
-        schema: "mink", // Default schema
-    }
-    
-    for _, opt := range opts {
-        opt(adapter)
-    }
-    
-    return adapter, nil
+func (a *Adapter) Append(ctx context.Context, streamID string,
+    events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
+    // Optimistic concurrency via UNIQUE(stream_id, version) constraint
 }
 
-func (a *PostgresAdapter) Append(ctx context.Context, streamID string, 
-    events []mink.EventData, expectedVersion int64) ([]mink.StoredEvent, error) {
-    
-    // Use transaction for atomicity
-    tx, err := a.db.BeginTx(ctx, nil)
-    if err != nil {
-        return nil, fmt.Errorf("mink/postgres: begin tx: %w", err)
-    }
-    defer tx.Rollback()
-    
-    // Call PostgreSQL function for optimistic concurrency
-    // See event-store.md for SQL schema
-    
-    if err := tx.Commit(); err != nil {
-        return nil, fmt.Errorf("mink/postgres: commit: %w", err)
-    }
-    
-    return stored, nil
-}
+// Also implements: SubscriptionAdapter, TransactionalAdapter, CheckpointAdapter,
+// IdempotencyStore, SagaStore, OutboxStore, OutboxAppender, SnapshotAdapter,
+// StreamQueryAdapter, DiagnosticAdapter, SchemaProvider, MigrationAdapter
 ```
 
 ---
@@ -537,8 +467,8 @@ func TestPostgresAdapter_Append(t *testing.T) {
     require.NoError(t, adapter.Initialize(context.Background()))
     
     // Test append
-    events := []mink.EventData{
-        {Type: "TestEvent", Data: []byte(`{"key":"value"}`)},
+    events := []adapters.EventRecord{
+        {ID: uuid.NewString(), Type: "TestEvent", Data: []byte(`{"key":"value"}`)},
     }
     
     stored, err := adapter.Append(context.Background(), "test-stream", events, mink.NoStream)
@@ -639,10 +569,13 @@ Closes #123
 
 package mydb
 
-import "github.com/AshkanYarmoradi/go-mink"
+import (
+    "context"
+    "github.com/AshkanYarmoradi/go-mink/adapters"
+)
 
 // Ensure interface compliance at compile time
-var _ mink.EventStoreAdapter = (*MyDBAdapter)(nil)
+var _ adapters.EventStoreAdapter = (*MyDBAdapter)(nil)
 
 type MyDBAdapter struct {
     client *mydb.Client
@@ -653,16 +586,17 @@ func NewAdapter(connStr string) (*MyDBAdapter, error) {
 }
 
 func (a *MyDBAdapter) Append(ctx context.Context, streamID string,
-    events []mink.EventData, expectedVersion int64) ([]mink.StoredEvent, error) {
+    events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
     // Implement with optimistic concurrency
 }
 
 func (a *MyDBAdapter) Load(ctx context.Context, streamID string,
-    fromVersion int64) ([]mink.StoredEvent, error) {
+    fromVersion int64) ([]adapters.StoredEvent, error) {
     // Load events
 }
 
-// ... implement other interface methods
+// ... implement remaining EventStoreAdapter methods (GetStreamInfo, GetLastPosition, Initialize, Close)
+// Optionally implement SubscriptionAdapter, SagaStore, OutboxStore, etc.
 ```
 
 ### Implementing a Projection
