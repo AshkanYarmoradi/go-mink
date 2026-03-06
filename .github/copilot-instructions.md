@@ -31,9 +31,12 @@ Commands → Command Bus → Aggregate → Events → Event Store
 ### EventStoreAdapter (adapters must implement)
 ```go
 type EventStoreAdapter interface {
-    Append(ctx context.Context, streamID string, events []EventData, expectedVersion int64) ([]StoredEvent, error)
+    Append(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64) ([]StoredEvent, error)
     Load(ctx context.Context, streamID string, fromVersion int64) ([]StoredEvent, error)
-    Subscribe(ctx context.Context, fromPosition uint64) (<-chan StoredEvent, error)
+    GetStreamInfo(ctx context.Context, streamID string) (*StreamInfo, error)
+    GetLastPosition(ctx context.Context) (uint64, error)
+    Initialize(ctx context.Context) error
+    Close() error
 }
 ```
 
@@ -123,25 +126,33 @@ bdd.Given(t, aggregate, previousEvents...).
 
 ```
 mink/
-├── mink.go              # Public API
-├── event.go             # Event types
-├── aggregate.go         # Aggregate interface
-├── store.go             # EventStore
+├── *.go                 # Core types (root mink package)
 ├── adapters/
-│   ├── postgres/        # PostgreSQL (primary)
-│   └── memory/          # Testing
+│   ├── adapter.go       # All adapter interfaces and shared types
+│   ├── postgres/        # PostgreSQL adapter (production)
+│   └── memory/          # In-memory adapter (testing)
+├── encryption/          # Provider interface, types, errors
+│   ├── local/           # AES-256-GCM provider (testing/development)
+│   ├── kms/             # AWS KMS provider (production)
+│   └── vault/           # HashiCorp Vault Transit provider (production)
+├── outbox/
+│   ├── webhook/         # Webhook publisher
+│   ├── kafka/           # Kafka publisher
+│   └── sns/             # SNS publisher
 ├── middleware/
-│   ├── metrics/         # Prometheus metrics (v0.4.0+)
-│   └── tracing/         # OpenTelemetry tracing (v0.4.0+)
+│   ├── metrics/         # Prometheus metrics
+│   └── tracing/         # OpenTelemetry tracing
 ├── serializer/
-│   └── msgpack/         # MessagePack serializer (v0.4.0+)
-└── testing/
-    ├── bdd/             # BDD test fixtures
-    ├── assertions/      # Event assertions
-    ├── projections/     # Projection testing
-    ├── sagas/           # Saga testing
-    ├── containers/      # PostgreSQL test containers
-    └── testutil/        # Mock adapters
+│   ├── msgpack/         # MessagePack serializer
+│   └── protobuf/        # Protocol Buffers serializer
+├── testing/
+│   ├── bdd/             # BDD test fixtures (Given-When-Then)
+│   ├── assertions/      # Event assertions
+│   ├── projections/     # Projection testing
+│   ├── sagas/           # Saga testing
+│   └── containers/      # PostgreSQL test containers
+├── cli/commands/        # CLI tool
+└── examples/            # Example projects
 ```
 
 ## PostgreSQL Schema
