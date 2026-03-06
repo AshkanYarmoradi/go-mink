@@ -37,7 +37,7 @@ go-mink includes everything you need to build production event-sourced systems i
 - **Outbox Pattern** for reliable messaging (Webhook, Kafka, SNS publishers)
 - **Event Versioning** with schema evolution via upcasting (zero DB migration)
 - **Field-Level Encryption** with AWS KMS, HashiCorp Vault, and local AES-256-GCM
-- **GDPR Compliance** via crypto-shredding (key revocation)
+- **GDPR Compliance** via crypto-shredding (key revocation) and data export (right to access)
 - **Observability** with Prometheus metrics and OpenTelemetry tracing
 - **Testing Utilities** with BDD fixtures, assertions, and test containers
 - **CLI Tool** for code generation, migrations, and diagnostics
@@ -77,6 +77,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 | � **Sagas** | ✅ | Process manager for long-running workflows |
 | 🔄 **Event Versioning** | ✅ | Schema evolution with upcasting (zero DB migration) |
 | 🔐 **Security** | ✅ | Field-level encryption and GDPR compliance |
+| 📦 **Data Export** | ✅ | GDPR right to access / data portability |
 | 📤 **Outbox Pattern** | ✅ | Reliable event publishing to external systems |
 
 ## Quick Example
@@ -382,6 +383,41 @@ store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 // Revoking a key makes that tenant's data permanently unrecoverable (GDPR)
 ```
 
+## GDPR Data Export
+
+```go
+import "github.com/AshkanYarmoradi/go-mink"
+
+exporter := mink.NewDataExporter(store)
+
+// Export by known stream IDs (efficient)
+result, _ := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123", "Order-ord-456"},
+})
+// result.Events, result.TotalEvents, result.RedactedCount
+
+// Or scan all events with filters
+result, _ = exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "tenant-A",
+    Filter: mink.CombineFilters(
+        mink.FilterByTenantID("A"),
+        mink.FilterByEventTypes("CustomerCreated", "OrderPlaced"),
+    ),
+})
+
+// Stream for large exports (no memory accumulation)
+exporter.ExportStream(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123"},
+}, func(ctx context.Context, event mink.ExportedEvent) error {
+    if event.Redacted {
+        return nil // Key revoked — crypto-shredded
+    }
+    return writeToFile(event)
+})
+```
+
 ## Performance
 
 go-mink is benchmarked on every commit with a shared adapter benchmark suite. Key metrics from CI (ubuntu-latest):
@@ -420,7 +456,7 @@ go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
 | [CLI](docs/cli.md) | Command-line tooling |
 | [API Design](docs/api-design.md) | Public API reference |
 | [Roadmap](docs/roadmap.md) | Future development plans |
-| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox, Encryption |
+| [Advanced Patterns](docs/advanced-patterns.md) | Commands, Sagas, Outbox, Encryption, Data Export |
 | [Event Versioning](docs/versioning.md) | Schema evolution & upcasting |
 | [Security](docs/security.md) | Encryption, GDPR compliance |
 | [Testing](docs/testing.md) | BDD fixtures and test utilities |

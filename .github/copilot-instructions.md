@@ -126,7 +126,11 @@ bdd.Given(t, aggregate, previousEvents...).
 
 ```
 mink/
-├── *.go                 # Core types (root mink package)
+├── *.go                 # Core types (root mink package), including:
+│                        #   store.go, bus.go, projection_engine.go,
+│                        #   saga_manager.go, outbox_processor.go,
+│                        #   export.go (DataExporter), export_errors.go,
+│                        #   encryption.go, versioning.go, errors.go
 ├── adapters/
 │   ├── adapter.go       # All adapter interfaces and shared types
 │   ├── postgres/        # PostgreSQL adapter (production)

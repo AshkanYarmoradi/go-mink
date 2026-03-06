@@ -1202,4 +1202,149 @@ Encrypted fields are decrypted **before** upcasters run, so upcasters can transf
 
 ---
 
+## Data Export (GDPR)
+
+Export personal data for GDPR Article 15 (right to access) and Article 20 (right to data portability). The `DataExporter` collects events belonging to a data subject, decrypts encrypted fields via the event store's pipeline, and returns them in a portable format.
+
+### Core Types
+
+```go
+// DataExporter handles GDPR data export
+type DataExporter struct { /* ... */ }
+
+// DataExporterOption configures a DataExporter
+func WithExportBatchSize(size int) DataExporterOption  // Events per scan batch (default: 1000)
+func WithExportLogger(l Logger) DataExporterOption
+
+// ExportRequest describes what to export
+type ExportRequest struct {
+    SubjectID string        // Required: identifies the data subject
+    Streams   []string      // Stream IDs (efficient, no scan)
+    Filter    ExportFilter  // Filter function (scan all events)
+    FromTime  *time.Time    // Optional: events at or after this time
+    ToTime    *time.Time    // Optional: events at or before this time
+}
+
+// ExportResult contains the exported data
+type ExportResult struct {
+    SubjectID     string
+    Events        []ExportedEvent
+    Streams       []string        // Unique stream IDs
+    TotalEvents   int
+    RedactedCount int             // Events that couldn't be decrypted
+    ExportedAt    time.Time
+}
+
+// ExportedEvent represents a single event in the export
+type ExportedEvent struct {
+    StreamID       string
+    EventType      string
+    Data           interface{}       // nil when Redacted
+    RawData        []byte            // Original bytes (encrypted when redacted)
+    Metadata       ExportedMetadata  // Non-PII metadata only
+    Version        int64
+    GlobalPosition uint64
+    Timestamp      time.Time
+    Redacted       bool              // True when key was revoked
+}
+```
+
+### Enumeration Strategies
+
+**Stream-based** — provide explicit stream IDs (efficient, no full scan):
+
+```go
+exporter := mink.NewDataExporter(store)
+
+result, err := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123", "Order-ord-1", "Order-ord-2"},
+})
+```
+
+**Scan-based** — scan all events with a filter (requires `SubscriptionAdapter`):
+
+```go
+result, err := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "tenant-A-data",
+    Filter:    mink.FilterByTenantID("A"),
+})
+```
+
+### Built-in Filters
+
+```go
+mink.FilterByTenantID("tenant-A")                          // By tenant ID
+mink.FilterByUserID("user-123")                             // By user ID
+mink.FilterByStreamPrefix("Customer-")                      // By stream prefix
+mink.FilterByMetadata("department", "sales")                // By custom metadata
+mink.FilterByEventTypes("CustomerCreated", "OrderPlaced")   // By event type
+
+// Combine filters with AND logic
+mink.CombineFilters(
+    mink.FilterByTenantID("A"),
+    mink.FilterByEventTypes("OrderPlaced"),
+)
+```
+
+### Streaming Export
+
+For large exports that shouldn't be held in memory, use `ExportStream`:
+
+```go
+err := exporter.ExportStream(ctx, mink.ExportRequest{
+    SubjectID: "user-123",
+    Streams:   []string{"Customer-user-123"},
+}, func(ctx context.Context, event mink.ExportedEvent) error {
+    if event.Redacted {
+        // Key was revoked — log redaction
+        return nil
+    }
+    // Write to JSON file, S3, API response, etc.
+    return writeEvent(event)
+})
+```
+
+### Crypto-Shredding Integration
+
+When encrypted events cannot be decrypted (key revoked via crypto-shredding), the exporter marks them as `Redacted=true` with `nil` Data. Non-PII fields (stream ID, event type, timestamp, metadata) remain available.
+
+```go
+// Revoke key (GDPR deletion request)
+provider.RevokeKey("tenant-B")
+
+// Export still works — redacted events are included
+result, _ := exporter.Export(ctx, mink.ExportRequest{
+    SubjectID: "bob-1",
+    Streams:   []string{"Customer-bob-1"},
+})
+
+for _, e := range result.Events {
+    if e.Redacted {
+        fmt.Printf("Redacted: %s (%s)\n", e.EventType, e.Timestamp)
+    }
+}
+// result.RedactedCount == 1
+```
+
+### Error Handling
+
+```go
+// Sentinel errors
+mink.ErrSubjectIDRequired      // SubjectID was empty
+mink.ErrNoExportSources        // Neither Streams nor Filter provided
+mink.ErrExportScanNotSupported // Adapter doesn't implement SubscriptionAdapter
+
+// Typed error for detailed info
+var exportErr *mink.ExportError
+if errors.As(err, &exportErr) {
+    fmt.Printf("Export failed for %s: %v\n", exportErr.SubjectID, exportErr.Cause)
+}
+
+// errors.Is compatibility
+errors.Is(err, mink.ErrExportFailed) // true for any ExportError
+```
+
+---
+
 Next: [Testing →](testing)
