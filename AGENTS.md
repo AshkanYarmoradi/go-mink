@@ -57,6 +57,7 @@ github.com/AshkanYarmoradi/go-mink/
 │                              #   store.go (EventStore), bus.go (CommandBus),
 │                              #   projection_engine.go (ProjectionEngine),
 │                              #   saga_manager.go (SagaManager), outbox_processor.go,
+│                              #   export.go (DataExporter), export_errors.go,
 │                              #   errors.go, versioning.go, encryption.go, etc.
 │
 ├── adapters/
@@ -94,7 +95,7 @@ github.com/AshkanYarmoradi/go-mink/
 │   └── containers/            # PostgreSQL test containers
 │
 └── examples/                  # Example projects (basic, versioning, projections,
-                               #   sagas, cqrs, metrics, tracing, encryption, etc.)
+                               #   sagas, cqrs, metrics, tracing, encryption, export, etc.)
 ```
 
 ---

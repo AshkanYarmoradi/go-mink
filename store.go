@@ -384,6 +384,13 @@ func convertStoredEventFromAdapter(s adapters.StoredEvent) StoredEvent {
 	}
 }
 
+// ProcessStoredEvent applies decryption, upcasting, and deserialization to a stored event.
+// This is used by components that work with raw StoredEvents (e.g., DataExporter)
+// and need the full processing pipeline.
+func (s *EventStore) ProcessStoredEvent(ctx context.Context, stored StoredEvent) (Event, error) {
+	return s.deserializeWithUpcast(ctx, stored)
+}
+
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.
 // Decryption happens before upcasting so that upcasters receive plaintext.
 // If no encryption or upcasters are registered, it falls back to the standard

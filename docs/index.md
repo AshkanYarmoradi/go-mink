@@ -58,6 +58,7 @@ Building event-sourced applications in Go means wrestling with **boilerplate cod
 | 🛠️ | **CLI** | ✅ | Generate code, run migrations, diagnose |
 | � | **Sagas** | ✅ | Coordinate long-running business processes |
 | 🔐 | **Security** | ✅ | Field-level encryption & GDPR compliance |
+| 📦 | **Data Export** | ✅ | GDPR right to access / data portability |
 | 📤 | **Outbox** | ✅ | Reliable event publishing |
 
 </div>

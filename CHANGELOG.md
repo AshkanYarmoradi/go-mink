@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **GDPR Data Export** — `DataExporter` for right to access / right to data portability (Article 15 & 20)
+  - `NewDataExporter()` with `WithExportBatchSize()` and `WithExportLogger()` options
+  - `Export()` — collects all matching events into an `ExportResult`
+  - `ExportStream()` — streams events via handler callback (memory-efficient for large exports)
+  - Two enumeration strategies: stream-based (efficient, explicit stream IDs) and scan-based (filter all events, requires `SubscriptionAdapter`)
+  - Crypto-shredding support: events with revoked encryption keys are included as `Redacted=true` with `nil` Data
+  - Built-in filters: `FilterByTenantID`, `FilterByUserID`, `FilterByStreamPrefix`, `FilterByMetadata`, `FilterByEventTypes`, `CombineFilters`
+  - Time range filtering via `FromTime` / `ToTime` on `ExportRequest`
+  - `ExportError` typed error with `Is(ErrExportFailed)` and `Unwrap()` support
+  - `EventStore.ProcessStoredEvent()` — public method exposing the decrypt→upcast→deserialize pipeline
 - RC (release candidate) release workflow for `develop` branch (`.github/workflows/rc-release.yml`)
   - Automatic pre-release versioning: `v1.0.4-rc.1`, `v1.0.4-rc.2`, etc.
   - Contextual changelogs (first RC diffs from stable, subsequent RCs diff from previous RC)
