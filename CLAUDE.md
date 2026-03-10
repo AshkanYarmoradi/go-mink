@@ -44,7 +44,7 @@ make benchmark-adapters-pg      # PostgreSQL adapter benchmarks (requires infra)
 
 **CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs tests with coverage on Go 1.24 (ubuntu), lints on Go 1.25, builds on Go 1.22–1.26 across Linux, macOS, Windows. Scale tests enabled in CI via `MINK_SCALE_TESTS=1`.
 
-**Branching & Releases**: Feature branches target `develop`. Each merge to `develop` auto-creates an RC pre-release (`v1.0.4-rc.1`, `v1.0.4-rc.2`, ...). Merging `develop` into `main` auto-creates the next stable release (`v1.0.4`). CI (test/lint/build) runs on both `main` and `develop`.
+**Branching & Releases**: Feature branches target `develop`. Each merge to `develop` auto-creates an RC pre-release (`v1.0.4-rc.1`, `v1.0.4-rc.2`, ...). Merging `develop` into `main` auto-creates the next stable release (`v1.0.4`). CI (test/lint/build) runs on both `main` and `develop`. Documentation deploys to GitHub Pages on push to `main` when `website/**` changes (via `.github/workflows/docs.yml`).
 
 ## Architecture
 
@@ -83,6 +83,23 @@ Other packages:
 - `testing/{bdd,assertions,projections,sagas,containers}/` - Test utilities
 - `cli/commands/` - CLI tool (init, generate, migrate, projection, stream, diagnose, schema)
 - `examples/` - Example projects (basic, versioning, projections, sagas, cqrs, metrics, tracing, encryption, export, etc.)
+
+Documentation website:
+- `website/` - Docusaurus 3 documentation site (Node.js 18+, TypeScript)
+- `website/docs/` - All documentation content as MDX files
+- `website/src/` - React components (landing page, custom theme)
+- `website/static/` - Static assets (images, SVGs)
+- `website/docusaurus.config.ts` - Site configuration, redirects, navbar, footer
+- `website/sidebars.ts` - Sidebar navigation structure (docs, tutorial, blogSeries)
+
+```bash
+# Website development
+cd website
+npm install                    # Install dependencies
+npm start                      # Dev server at localhost:3000
+npm run build                  # Production build to website/build/
+npm run typecheck              # TypeScript type checking
+```
 
 ## Core Interfaces
 
