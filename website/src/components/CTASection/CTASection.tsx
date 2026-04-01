@@ -32,7 +32,7 @@ export default function CTASection() {
           <h2 className="text-4xl sm:text-5xl md:text-6xl font-extrabold text-white mb-6">
             Ready to <GradientText>get started</GradientText>?
           </h2>
-          <p className="text-xl text-[#94a3b8] mb-10 max-w-xl mx-auto">
+          <p className="text-xl text-[#94a3b8] mb-10 max-w-xl !mx-auto">
             Add go-mink to your project and start building event-driven systems
             in minutes.
           </p>

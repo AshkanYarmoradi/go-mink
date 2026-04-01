@@ -95,8 +95,8 @@ export default function ComparisonTable() {
         </SectionReveal>
 
         <SectionReveal delay={0.1}>
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
+          <div className="flex justify-center align-center content-between">
+            <table>
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   <th className="text-left py-4 px-6 text-sm font-semibold text-[#94a3b8] uppercase tracking-wider">
