@@ -38,19 +38,47 @@ export default function SocialProof() {
           </div>
         </SectionReveal>
 
-        {/* Placeholder for future company logos */}
         <SectionReveal delay={0.2}>
-          <div className="mt-12 flex items-center justify-center gap-8 opacity-30">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div
-                key={i}
-                className="w-24 h-8 rounded bg-white/[0.05] border border-white/[0.04]"
-              />
+          <p className="text-center text-sm text-[#94a3b8] uppercase tracking-widest font-medium !mt-16 !mb-6">
+            Trusted by
+          </p>
+          <div className="flex items-center justify-center gap-6">
+            {[
+              { name: "Lawyours", domain: "lawyours.ai" },
+              { name: "HuisScan", domain: "huisscan.ai" },
+            ].map((customer) => (
+              <a
+                key={customer.domain}
+                href={`https://${customer.domain}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group relative rounded-2xl bg-[rgba(26,26,36,0.6)] backdrop-blur-xl border border-white/[0.08] px-8 py-5 flex items-center gap-3 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_8px_40px_rgba(0,173,216,0.12)] hover:border-[#00ADD8]/20"
+              >
+                <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#00ADD8]/20 to-[#7c3aed]/20 border border-white/[0.06] flex items-center justify-center">
+                  <span className="text-sm font-bold text-[#00ADD8] group-hover:text-white transition-colors duration-300">
+                    {customer.name[0]}
+                  </span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-white font-semibold text-base group-hover:text-white transition-colors duration-300">
+                    {customer.name}
+                  </span>
+                  <span className="text-xs text-[#64748b] group-hover:text-[#94a3b8] transition-colors duration-300">
+                    {customer.domain}
+                  </span>
+                </div>
+                <svg
+                  className="w-4 h-4 text-[#64748b] group-hover:text-[#00ADD8] ml-2 transition-all duration-300 group-hover:translate-x-0.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                </svg>
+              </a>
             ))}
           </div>
-          <p className="text-center text-xs text-[#64748b] !mt-4">
-            Trusted by teams building event-driven systems
-          </p>
         </SectionReveal>
       </div>
     </section>
