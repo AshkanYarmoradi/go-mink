@@ -48,7 +48,7 @@ export default function SocialProof() {
               />
             ))}
           </div>
-          <p className="text-center text-xs text-[#64748b] mt-4">
+          <p className="text-center text-xs text-[#64748b] !mt-4">
             Trusted by teams building event-driven systems
           </p>
         </SectionReveal>
