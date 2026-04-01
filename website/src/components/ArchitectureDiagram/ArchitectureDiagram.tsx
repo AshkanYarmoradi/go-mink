@@ -94,7 +94,7 @@ export default function ArchitectureDiagram() {
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-white mb-4">
               <GradientText>Architecture</GradientText> that scales
             </h2>
-            <p className="text-lg text-[#94a3b8] max-w-xl mx-auto">
+            <p className="text-lg text-[#94a3b8] max-w-xl !mx-auto">
               A clean, layered architecture from commands to read models.
             </p>
           </div>

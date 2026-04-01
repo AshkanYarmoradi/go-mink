@@ -156,7 +156,7 @@ export default function CodeShowcase() {
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-white mb-4">
               <GradientText>Clean, idiomatic</GradientText> Go
             </h2>
-            <p className="text-lg text-[#94a3b8] max-w-xl mx-auto">
+            <p className="text-lg text-[#94a3b8] max-w-xl !mx-auto">
               No magic. No ceremony. Just the patterns Go developers expect.
             </p>
           </div>

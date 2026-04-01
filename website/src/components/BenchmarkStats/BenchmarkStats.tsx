@@ -55,7 +55,7 @@ export default function BenchmarkStats() {
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-white mb-4">
               <GradientText>Blazing fast</GradientText> performance
             </h2>
-            <p className="text-lg text-[#94a3b8] max-w-xl mx-auto">
+            <p className="text-lg text-[#94a3b8] max-w-xl !mx-auto">
               Benchmarked with real workloads. Optimized for production scale.
             </p>
           </div>

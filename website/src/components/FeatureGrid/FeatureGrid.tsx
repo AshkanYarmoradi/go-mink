@@ -149,7 +149,7 @@ export default function FeatureGrid() {
               Everything you need to build{" "}
               <GradientText>event-driven systems</GradientText>
             </h2>
-            <p className="text-lg text-[#94a3b8] max-w-2xl mx-auto">
+            <p className="text-lg text-[#94a3b8] max-w-2xl !mx-auto">
               A comprehensive toolkit that covers the entire lifecycle — from
               event storage to projections, sagas, encryption, and beyond.
             </p>
