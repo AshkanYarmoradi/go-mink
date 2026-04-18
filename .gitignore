@@ -33,3 +33,9 @@ go.work.sum
 # .vscode/
 
 *.local.*
+
+# Website (Docusaurus)
+website/node_modules/
+website/build/
+website/.docusaurus/
+website/.cache-loader/
