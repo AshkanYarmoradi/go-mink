@@ -27,6 +27,20 @@ const config: Config = {
 
   headTags: [
     {
+      tagName: "meta",
+      attributes: {
+        name: "go-import",
+        content: "go-mink.dev git https://github.com/AshkanYarmoradi/go-mink",
+      },
+    },
+    {
+      tagName: "meta",
+      attributes: {
+        name: "go-source",
+        content: "go-mink.dev _ https://github.com/AshkanYarmoradi/go-mink/tree/main{/dir} https://github.com/AshkanYarmoradi/go-mink/blob/main{/dir}/{file}#L{line}",
+      },
+    },
+    {
       tagName: "link",
       attributes: {
         rel: "preconnect",
