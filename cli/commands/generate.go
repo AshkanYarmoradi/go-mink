@@ -9,10 +9,10 @@ import (
 	"text/template"
 	"unicode"
 
-	"go-mink.dev/cli/config"
-	"go-mink.dev/cli/styles"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/styles"
 )
 
 // promptInput runs an interactive input form and returns the entered value.

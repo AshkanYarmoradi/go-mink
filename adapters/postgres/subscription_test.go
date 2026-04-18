@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"go-mink.dev/adapters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
 )
 
 // setupSubscriptionAdapter creates an initialized adapter with the given schema for subscription tests.

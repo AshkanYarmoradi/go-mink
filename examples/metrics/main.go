@@ -13,11 +13,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go-mink.dev"
 	"go-mink.dev/adapters/memory"
 	minkmetrics "go-mink.dev/middleware/metrics"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // =============================================================================

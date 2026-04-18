@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"go-mink.dev/encryption/providertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption/providertest"
 )
 
 // mockVaultClient implements VaultClient for testing.

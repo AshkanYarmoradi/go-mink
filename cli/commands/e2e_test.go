@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"go-mink.dev/cli/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/cli/config"
 )
 
 // =============================================================================

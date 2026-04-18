@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go-mink.dev"
 	"go-mink.dev/adapters/memory"
 	"go-mink.dev/middleware/metrics"
@@ -16,9 +19,6 @@ import (
 	"go-mink.dev/testing/assertions"
 	"go-mink.dev/testing/bdd"
 	"go-mink.dev/testing/sagas"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )

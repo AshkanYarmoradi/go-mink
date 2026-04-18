@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"go-mink.dev/adapters"
 	"github.com/google/uuid"
+	"go-mink.dev/adapters"
 )
 
 // Ensure interface compliance at compile time

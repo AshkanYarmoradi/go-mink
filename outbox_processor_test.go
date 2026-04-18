@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"go-mink.dev/adapters"
-	"go-mink.dev/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
 )
 
 // mockPublisher is a test publisher that records published messages.

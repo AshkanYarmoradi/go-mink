@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"go-mink.dev"
-	"go-mink.dev/adapters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
 )
 
 // Unit tests for quoting functions

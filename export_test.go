@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go-mink.dev/adapters"
 	"go-mink.dev/adapters/memory"
 	"go-mink.dev/encryption/local"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -404,8 +404,8 @@ func (a *minimalExportAdapter) GetStreamInfo(_ context.Context, _ string) (*adap
 	return nil, nil
 }
 func (a *minimalExportAdapter) GetLastPosition(_ context.Context) (uint64, error) { return 0, nil }
-func (a *minimalExportAdapter) Initialize(_ context.Context) error               { return nil }
-func (a *minimalExportAdapter) Close() error                                     { return nil }
+func (a *minimalExportAdapter) Initialize(_ context.Context) error                { return nil }
+func (a *minimalExportAdapter) Close() error                                      { return nil }
 
 // =============================================================================
 // ExportStream tests
@@ -625,8 +625,8 @@ func (a *errorExportAdapter) GetStreamInfo(_ context.Context, _ string) (*adapte
 	return nil, nil
 }
 func (a *errorExportAdapter) GetLastPosition(_ context.Context) (uint64, error) { return 0, nil }
-func (a *errorExportAdapter) Initialize(_ context.Context) error               { return nil }
-func (a *errorExportAdapter) Close() error                                     { return nil }
+func (a *errorExportAdapter) Initialize(_ context.Context) error                { return nil }
+func (a *errorExportAdapter) Close() error                                      { return nil }
 
 // errorScanExportAdapter implements both EventStoreAdapter and SubscriptionAdapter,
 // returning an error from LoadFromPosition.
@@ -647,8 +647,8 @@ func (a *errorScanExportAdapter) GetStreamInfo(_ context.Context, _ string) (*ad
 	return nil, nil
 }
 func (a *errorScanExportAdapter) GetLastPosition(_ context.Context) (uint64, error) { return 0, nil }
-func (a *errorScanExportAdapter) Initialize(_ context.Context) error               { return nil }
-func (a *errorScanExportAdapter) Close() error                                     { return nil }
+func (a *errorScanExportAdapter) Initialize(_ context.Context) error                { return nil }
+func (a *errorScanExportAdapter) Close() error                                      { return nil }
 
 func (a *errorScanExportAdapter) LoadFromPosition(_ context.Context, _ uint64, _ int) ([]adapters.StoredEvent, error) {
 	return nil, a.loadErr
@@ -971,8 +971,8 @@ func (a *badDataExportAdapter) GetStreamInfo(_ context.Context, _ string) (*adap
 	return nil, nil
 }
 func (a *badDataExportAdapter) GetLastPosition(_ context.Context) (uint64, error) { return 0, nil }
-func (a *badDataExportAdapter) Initialize(_ context.Context) error               { return nil }
-func (a *badDataExportAdapter) Close() error                                     { return nil }
+func (a *badDataExportAdapter) Initialize(_ context.Context) error                { return nil }
+func (a *badDataExportAdapter) Close() error                                      { return nil }
 
 func TestDataExporter_Export_DecryptionFailedRedacted(t *testing.T) {
 	// Create a store with encryption configured but an adapter that returns
@@ -996,9 +996,9 @@ func TestDataExporter_Export_DecryptionFailedRedacted(t *testing.T) {
 				Metadata: adapters.Metadata{
 					Custom: map[string]string{
 						"$encrypted_fields":     `["email"]`,
-						"$encryption_key_id":     "test-key",
-						"$encrypted_dek":         "!!!not-valid-base64!!!",
-						"$encryption_algorithm":  "AES-256-GCM",
+						"$encryption_key_id":    "test-key",
+						"$encrypted_dek":        "!!!not-valid-base64!!!",
+						"$encryption_algorithm": "AES-256-GCM",
 					},
 				},
 				Version:        1,
@@ -1099,8 +1099,8 @@ func (a *badDataScanExportAdapter) GetStreamInfo(_ context.Context, _ string) (*
 	return nil, nil
 }
 func (a *badDataScanExportAdapter) GetLastPosition(_ context.Context) (uint64, error) { return 0, nil }
-func (a *badDataScanExportAdapter) Initialize(_ context.Context) error               { return nil }
-func (a *badDataScanExportAdapter) Close() error                                     { return nil }
+func (a *badDataScanExportAdapter) Initialize(_ context.Context) error                { return nil }
+func (a *badDataScanExportAdapter) Close() error                                      { return nil }
 
 func (a *badDataScanExportAdapter) LoadFromPosition(_ context.Context, _ uint64, _ int) ([]adapters.StoredEvent, error) {
 	events := a.events

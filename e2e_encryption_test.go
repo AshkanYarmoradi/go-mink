@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go-mink.dev"
 	"go-mink.dev/adapters/memory"
 	"go-mink.dev/encryption"
 	"go-mink.dev/encryption/local"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================

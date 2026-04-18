@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
+	"github.com/spf13/cobra"
 	"go-mink.dev/adapters"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
-	"github.com/charmbracelet/huh"
-	"github.com/spf13/cobra"
 )
 
 // NewProjectionCommand creates the projection command

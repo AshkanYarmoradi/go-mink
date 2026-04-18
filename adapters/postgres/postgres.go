@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	mink "go-mink.dev"
 	"go-mink.dev/adapters"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // schemaNamePattern validates PostgreSQL schema names.

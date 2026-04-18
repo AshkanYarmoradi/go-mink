@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"go-mink.dev/encryption"
-	"go-mink.dev/encryption/providertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/providertest"
 )
 
 func testKey(t *testing.T) []byte {

@@ -4,9 +4,9 @@ package commands
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
-	"github.com/spf13/cobra"
 )
 
 var (

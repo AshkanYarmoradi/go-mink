@@ -6,9 +6,9 @@ import (
 	"runtime"
 	"testing"
 
-	"go-mink.dev"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
 )
 
 // testContextKey is a custom type for context keys to satisfy SA1029

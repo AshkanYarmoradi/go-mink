@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
-	"github.com/spf13/cobra"
 )
 
 // NewSchemaCommand creates the schema command

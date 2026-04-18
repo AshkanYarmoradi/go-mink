@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"go-mink.dev/adapters"
-	"go-mink.dev/adapters/postgres"
-	"go-mink.dev/cli/config"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/postgres"
+	"go-mink.dev/cli/config"
 )
 
 // Test database URL - matches docker-compose.test.yml

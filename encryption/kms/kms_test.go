@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"testing"
 
-	"go-mink.dev/encryption"
-	"go-mink.dev/encryption/providertest"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/providertest"
 )
 
 // mockKMSClient implements KMSClient for testing.

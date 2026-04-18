@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"go-mink.dev/adapters"
 	"github.com/google/uuid"
+	"go-mink.dev/adapters"
 )
 
 // Version constants for optimistic concurrency control.

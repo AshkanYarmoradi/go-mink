@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"strings"
 
-	"go-mink.dev/adapters"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"go-mink.dev/adapters"
 )
 
 // SNSClient defines the subset of the SNS API used by the publisher.

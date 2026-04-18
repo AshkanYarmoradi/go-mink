@@ -6,9 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"go-mink.dev/encryption"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption"
 )
 
 // AssertCloseBlocksAllOperations verifies that after Close(), all Provider

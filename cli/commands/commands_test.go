@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"go-mink.dev/adapters"
-	"go-mink.dev/cli/config"
-	"go-mink.dev/cli/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/ui"
 )
 
 // ============================================================================
