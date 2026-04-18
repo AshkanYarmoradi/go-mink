@@ -1,9 +1,9 @@
-import React from "react";
+import React, { ElementType } from "react";
 
 interface GradientTextProps {
   children: React.ReactNode;
   className?: string;
-  as?: keyof JSX.IntrinsicElements;
+  as?: ElementType;
 }
 
 export default function GradientText({
