@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
 )
 
 func TestOutboxStore_Schedule(t *testing.T) {

@@ -90,6 +90,18 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Check code formatting
+        run: |
+          FORMAT_OUTPUT=$(go fmt ./...)
+          if [ -n "$FORMAT_OUTPUT" ]; then
+            echo "❌ Go code is not formatted. The following files need formatting:"
+            echo "$FORMAT_OUTPUT"
+            echo "Run 'go fmt ./...' locally and commit the changes."
+            exit 1
+          else
+            echo "✅ Go code is formatted correctly."
+          fi
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
 

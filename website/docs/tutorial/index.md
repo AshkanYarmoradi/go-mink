@@ -179,7 +179,7 @@ Can't wait to get started? Here's the fastest path:
 
 ```bash
 # 1. Install the CLI
-go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+go install go-mink.dev/cmd/mink@latest
 
 # 2. Create project
 mkdir minkshop && cd minkshop
@@ -215,7 +215,7 @@ mkdir minkshop && cd minkshop
 go mod init minkshop
 
 # 2. Install go-mink
-go get github.com/AshkanYarmoradi/go-mink
+go get go-mink.dev
 
 # 3. Start PostgreSQL
 docker run -d --name minkshop-db \

@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/commands"
 	"github.com/stretchr/testify/assert"
+	"go-mink.dev/cli/commands"
 )
 
 // TestVersionVariables tests that version variables are properly declared.

@@ -56,7 +56,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/testing/bdd"
+	"go-mink.dev/testing/bdd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"minkshop/internal/domain/product"
@@ -243,7 +243,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/testing/bdd"
+	"go-mink.dev/testing/bdd"
 	"github.com/stretchr/testify/assert"
 	"minkshop/internal/domain/order"
 )
@@ -468,8 +468,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/testing/projections"
+	"go-mink.dev"
+	"go-mink.dev/testing/projections"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"minkshop/internal/domain/product"
@@ -651,7 +651,7 @@ package product_test
 import (
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/testing/assertions"
+	"go-mink.dev/testing/assertions"
 	"minkshop/internal/domain/product"
 )
 
@@ -749,9 +749,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
-	"github.com/AshkanYarmoradi/go-mink/testing/containers"
+	"go-mink.dev"
+	"go-mink.dev/adapters/postgres"
+	"go-mink.dev/testing/containers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	
@@ -1022,8 +1022,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 	"minkshop/internal/domain/product"
 	"minkshop/internal/domain/cart"
 	"minkshop/internal/domain/order"

@@ -200,7 +200,7 @@ config := go-mink.Config{
 ## Package Structure
 
 ```
-github.com/AshkanYarmoradi/go-mink/
+go-mink.dev/
 ├── go-mink.go                 # Public API entry point
 ├── event.go                # Event types and interfaces
 ├── aggregate.go            # Aggregate base implementation

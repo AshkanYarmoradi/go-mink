@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/testing/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/testing/testutil"
 )
 
 // =============================================================================

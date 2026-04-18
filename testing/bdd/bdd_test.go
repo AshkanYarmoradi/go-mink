@@ -6,10 +6,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 )
 
 // testContextKey is a type for context keys to avoid staticcheck SA1029

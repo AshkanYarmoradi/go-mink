@@ -145,8 +145,8 @@ package youradapter
 import (
     "testing"
 
-    "github.com/AshkanYarmoradi/go-mink/adapters"
-    "github.com/AshkanYarmoradi/go-mink/testing/benchmarks"
+    "go-mink.dev/adapters"
+    "go-mink.dev/testing/benchmarks"
 )
 
 func newBenchmarkFactory() benchmarks.AdapterBenchmarkFactory {

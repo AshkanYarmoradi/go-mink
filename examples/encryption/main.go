@@ -14,10 +14,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/encryption"
-	"github.com/AshkanYarmoradi/go-mink/encryption/local"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/local"
 )
 
 // Domain Events

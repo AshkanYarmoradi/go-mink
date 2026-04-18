@@ -57,7 +57,7 @@ The `testing/bdd` package provides Given-When-Then style test fixtures.
 ### Aggregate Testing
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+import "go-mink.dev/testing/bdd"
 
 func TestOrderCanBeCreated(t *testing.T) {
     order := NewOrder("order-123")
@@ -155,7 +155,7 @@ The `testing/assertions` package provides utilities for asserting event properti
 ### Basic Assertions
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/assertions"
+import "go-mink.dev/testing/assertions"
 
 func TestOrderCreation(t *testing.T) {
     order := NewOrder("order-123")
@@ -288,7 +288,7 @@ The `testing/projections` package provides fixtures for testing projections.
 ### Inline Projection Testing
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/projections"
+import "go-mink.dev/testing/projections"
 
 func TestOrderSummaryProjection(t *testing.T) {
     projection := &OrderSummaryProjection{repo: mink.NewInMemoryRepository[OrderSummary](nil)}
@@ -387,7 +387,7 @@ The `testing/sagas` package provides fixtures for testing sagas and process mana
 ### Basic Saga Testing
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/sagas"
+import "go-mink.dev/testing/sagas"
 
 func TestOrderFulfillmentSaga(t *testing.T) {
     saga := NewOrderFulfillmentSaga("saga-123")
@@ -479,7 +479,7 @@ The `testing/containers` package provides PostgreSQL test containers for integra
 ### Starting PostgreSQL
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/containers"
+import "go-mink.dev/testing/containers"
 
 func TestWithPostgres(t *testing.T) {
     if testing.Short() {
@@ -569,7 +569,7 @@ The `testing/testutil` package provides mock implementations for testing.
 ### Mock Event Store Adapter
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/testutil"
+import "go-mink.dev/testing/testutil"
 
 func TestWithMockAdapter(t *testing.T) {
     adapter := &testutil.MockAdapter{}

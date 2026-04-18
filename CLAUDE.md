@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 go-mink is an Event Sourcing and CQRS library for Go (inspired by MartenDB for .NET). Instead of storing current state, it stores all changes as immutable events and rebuilds state by replaying them.
 
-**Module path**: `github.com/AshkanYarmoradi/go-mink`
+**Module path**: `go-mink.dev`
 
 ## Key Commands
 

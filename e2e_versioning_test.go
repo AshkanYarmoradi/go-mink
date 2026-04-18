@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
 )
 
 // =============================================================================

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // ExportFilter determines whether a stored event should be included in a data export.

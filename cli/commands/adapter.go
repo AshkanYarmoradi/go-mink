@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/adapters/postgres"
+	"go-mink.dev/cli/config"
 )
 
 // CLIAdapter combines all adapter interfaces needed by CLI commands.

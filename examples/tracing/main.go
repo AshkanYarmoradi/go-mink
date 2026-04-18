@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	minktracing "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
+	minktracing "go-mink.dev/middleware/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"

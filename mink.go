@@ -9,8 +9,8 @@
 // Create an event store with the in-memory adapter for development:
 //
 //	import (
-//	    "github.com/AshkanYarmoradi/go-mink"
-//	    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+//	    "go-mink.dev"
+//	    "go-mink.dev/adapters/memory"
 //	)
 //
 //	store := mink.New(memory.NewAdapter())
@@ -18,8 +18,8 @@
 // For production, use the PostgreSQL adapter:
 //
 //	import (
-//	    "github.com/AshkanYarmoradi/go-mink"
-//	    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+//	    "go-mink.dev"
+//	    "go-mink.dev/adapters/postgres"
 //	)
 //
 //	adapter, err := postgres.NewAdapter(ctx, connStr)

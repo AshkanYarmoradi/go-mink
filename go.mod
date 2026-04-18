@@ -1,4 +1,4 @@
-module github.com/AshkanYarmoradi/go-mink
+module go-mink.dev
 
 go 1.25.0
 

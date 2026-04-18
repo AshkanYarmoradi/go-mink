@@ -172,7 +172,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // Reservation tracks stock reserved for an order.
@@ -601,7 +601,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // Item represents an item in the shopping cart.
@@ -1046,7 +1046,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // OrderStatus represents the current status of an order.
@@ -1429,7 +1429,7 @@ import (
 
 	"minkshop/internal/domain/product"
 
-	"github.com/AshkanYarmoradi/go-mink/testing/bdd"
+	"go-mink.dev/testing/bdd"
 )
 
 func TestProduct_Create(t *testing.T) {
@@ -1523,7 +1523,7 @@ import (
 
 	"minkshop/internal/domain/cart"
 
-	"github.com/AshkanYarmoradi/go-mink/testing/bdd"
+	"go-mink.dev/testing/bdd"
 )
 
 func TestCart_AddItem(t *testing.T) {

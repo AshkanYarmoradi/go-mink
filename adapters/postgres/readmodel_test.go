@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	mink "github.com/AshkanYarmoradi/go-mink"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	mink "go-mink.dev"
 )
 
 // Test models

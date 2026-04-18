@@ -213,7 +213,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 ## Get Involved
 
-- **GitHub**: github.com/AshkanYarmoradi/go-mink
+- **GitHub**: go-mink.dev
 - **Discord**: discord.gg/go-mink-go
 - **Twitter**: @go-mink_go
 - **Blog**: blog.go-mink-go.dev

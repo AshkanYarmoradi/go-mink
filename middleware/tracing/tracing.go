@@ -28,13 +28,13 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
 )
 
 const (
 	// TracerName is the name of the mink tracer.
-	TracerName = "github.com/AshkanYarmoradi/go-mink"
+	TracerName = "go-mink.dev"
 
 	// DefaultServiceName is the default service name for spans.
 	DefaultServiceName = "mink"

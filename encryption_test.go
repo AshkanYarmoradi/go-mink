@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
-	"github.com/AshkanYarmoradi/go-mink/encryption/local"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/local"
 )
 
 func testProvider(t *testing.T, keyID string) *local.Provider {

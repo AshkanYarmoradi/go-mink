@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Re-export types from adapters package for convenience

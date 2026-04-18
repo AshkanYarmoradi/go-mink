@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/testing/benchmarks"
+	"go-mink.dev/adapters"
+	"go-mink.dev/testing/benchmarks"
 )
 
 // benchDB opens a database connection for benchmarks.

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
 )
 
 // Test helper to get database URL

@@ -30,8 +30,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+	"go-mink.dev"
+	"go-mink.dev/adapters/postgres"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
 )

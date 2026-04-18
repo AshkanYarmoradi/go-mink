@@ -1,6 +1,6 @@
 package mink
 
-import "github.com/AshkanYarmoradi/go-mink/encryption"
+import "go-mink.dev/encryption"
 
 // Encryption-related sentinel errors.
 // These are aliases to the encryption package errors for compatibility.
