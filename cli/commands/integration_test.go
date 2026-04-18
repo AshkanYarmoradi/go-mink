@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/postgres"
+	"go-mink.dev/cli/config"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

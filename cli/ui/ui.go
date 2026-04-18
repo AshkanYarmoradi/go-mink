@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/styles"
+	"go-mink.dev/cli/styles"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"

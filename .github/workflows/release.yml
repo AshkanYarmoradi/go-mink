@@ -117,7 +117,7 @@ jobs:
       - name: Publish to Go Module Proxy
         run: |
           NEW_VERSION="${{ steps.next_version.outputs.new_version }}"
-          MODULE="github.com/${{ github.repository }}"
+          MODULE="go-mink.dev"
           
           echo "Requesting module from Go proxy to trigger indexing..."
           
@@ -158,4 +158,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 **Go Module:** [pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }}](https://pkg.go.dev/github.com/${{ github.repository }}@${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
+          echo "📦 **Go Module:** [pkg.go.dev/go-mink.dev@${{ steps.next_version.outputs.new_version }}](https://pkg.go.dev/go-mink.dev@${{ steps.next_version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY

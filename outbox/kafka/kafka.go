@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 	kafkago "github.com/segmentio/kafka-go"
 )
 

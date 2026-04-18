@@ -173,7 +173,7 @@ func AuthMiddleware(authService AuthService) mink.Middleware {
 ### Prometheus Metrics
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+import "go-mink.dev/middleware/metrics"
 
 // Create metrics
 m := metrics.New(
@@ -205,7 +205,7 @@ metricsProjection := m.WrapProjection(projection)
 ### OpenTelemetry Tracing
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+import "go-mink.dev/middleware/tracing"
 
 // Create tracer
 tracer := tracing.NewTracer(

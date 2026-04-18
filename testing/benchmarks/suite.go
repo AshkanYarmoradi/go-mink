@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // AnyVersion is an alias for adapters.AnyVersion, used to skip version checks.

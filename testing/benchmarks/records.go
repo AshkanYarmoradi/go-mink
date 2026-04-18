@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // SmallEventRecord returns a pre-serialized event record with ~100 bytes of JSON payload.

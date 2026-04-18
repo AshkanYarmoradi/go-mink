@@ -10,7 +10,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"go-mink.dev/encryption"
 )
 
 // VaultClient defines the minimal interface for Vault Transit operations.

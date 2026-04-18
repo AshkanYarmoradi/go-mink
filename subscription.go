@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Subscription represents an active event subscription.

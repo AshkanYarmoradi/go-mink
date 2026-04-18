@@ -11,7 +11,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"go-mink.dev/encryption"
 )
 
 // Compile-time interface check.

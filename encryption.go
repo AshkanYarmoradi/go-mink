@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"go-mink.dev/encryption"
 )
 
 // Metadata keys for field-level encryption.

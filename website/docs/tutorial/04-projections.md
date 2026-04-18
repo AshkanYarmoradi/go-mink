@@ -76,7 +76,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/product"
 )
 
@@ -220,7 +220,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/order"
 )
 
@@ -405,7 +405,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/order"
 	"minkshop/internal/domain/product"
 )
@@ -599,9 +599,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/adapters/postgres"
 	
 	"minkshop/internal/domain/cart"
 	"minkshop/internal/domain/order"
@@ -804,7 +804,7 @@ package queries
 import (
 	"context"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/projections"
 )
 
@@ -864,7 +864,7 @@ package queries
 import (
 	"context"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/projections"
 )
 

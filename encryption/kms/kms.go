@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
+	"go-mink.dev/encryption"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 )

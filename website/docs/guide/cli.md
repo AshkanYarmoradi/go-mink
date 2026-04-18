@@ -14,7 +14,7 @@ The `mink` CLI provides essential tooling for development and operations with ev
 Install the CLI using Go:
 
 ```bash
-go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+go install go-mink.dev/cmd/mink@latest
 ```
 
 Or build from source:
@@ -168,7 +168,7 @@ package domain
 
 import (
     "errors"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type Order struct {
@@ -238,7 +238,7 @@ package projections
 import (
     "context"
     "encoding/json"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type OrderSummaryProjection struct {
@@ -291,7 +291,7 @@ package commands
 import (
     "context"
     "errors"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type CreateOrder struct {

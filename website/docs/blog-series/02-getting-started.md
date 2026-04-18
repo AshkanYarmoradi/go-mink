@@ -33,13 +33,13 @@ The library follows Go idioms: explicit over implicit, composition over inherita
 First, add go-mink to your project:
 
 ```bash
-go get github.com/AshkanYarmoradi/go-mink
+go get go-mink.dev
 ```
 
 For production use with PostgreSQL:
 
 ```bash
-go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
+go get go-mink.dev/adapters/postgres
 ```
 
 ---
@@ -56,8 +56,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 func main() {
@@ -269,8 +269,8 @@ import (
     "log"
     "time"
 
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 // Events
@@ -481,8 +481,8 @@ The in-memory adapter is great for learning and testing, but for production you'
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+    "go-mink.dev"
+    "go-mink.dev/adapters/postgres"
 )
 
 func main() {

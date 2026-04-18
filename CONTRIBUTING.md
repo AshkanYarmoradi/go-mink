@@ -89,7 +89,7 @@ feature branch ──► develop (RC releases) ──► main (stable releases)
 **RC (Release Candidate) versions** are published as GitHub pre-releases and indexed on the Go module proxy. Users can opt in:
 
 ```bash
-go get github.com/AshkanYarmoradi/go-mink@v1.0.4-rc.1
+go get go-mink.dev@v1.0.4-rc.1
 ```
 
 The default `go get` (without a version suffix) always returns the latest **stable** release — RC versions are never served as `@latest`.

@@ -31,8 +31,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
 )
 
 // Default metric labels.

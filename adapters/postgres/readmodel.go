@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"strings"
 
-	mink "github.com/AshkanYarmoradi/go-mink"
+	mink "go-mink.dev"
 )
 
 // dbExecutor abstracts database operations for both *sql.DB and *sql.Tx.

@@ -9,8 +9,8 @@ import (
 	"text/template"
 	"unicode"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
-	"github.com/AshkanYarmoradi/go-mink/cli/styles"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/styles"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
@@ -406,7 +406,7 @@ var aggregateTemplate = `package {{.Package}}
 import (
 	"errors"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // {{.Name}} represents the {{.Name}} aggregate.
@@ -535,7 +535,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // {{.Name}} is a read model projection.
@@ -632,7 +632,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // {{.Name}} is a command to {{.Name | ToLower}} on {{.Aggregate}}.

@@ -121,7 +121,7 @@ type CartCheckedOut struct {
 ```go
 package cart
 
-import "github.com/AshkanYarmoradi/go-mink"
+import "go-mink.dev"
 
 // CartItem represents an item in the cart
 type CartItem struct {

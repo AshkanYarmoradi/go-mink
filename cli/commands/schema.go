@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
-	"github.com/AshkanYarmoradi/go-mink/cli/styles"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/styles"
 	"github.com/spf13/cobra"
 )
 

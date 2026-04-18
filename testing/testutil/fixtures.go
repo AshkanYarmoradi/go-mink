@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // =============================================================================

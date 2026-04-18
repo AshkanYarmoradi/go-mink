@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Sentinel errors for common error conditions.

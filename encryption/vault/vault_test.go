@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption/providertest"
+	"go-mink.dev/encryption/providertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

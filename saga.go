@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Saga-related sentinel errors.

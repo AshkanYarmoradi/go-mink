@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // maxProcessedEventsToTrack is the maximum number of processed events to retain

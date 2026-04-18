@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // Ensure interface compliance at compile time

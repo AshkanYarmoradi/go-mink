@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 )
 
 // TB is an alias for testing.TB to enable easier mocking in tests.

@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

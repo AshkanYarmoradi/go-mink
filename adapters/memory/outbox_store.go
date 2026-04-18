@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 	"github.com/google/uuid"
 )
 

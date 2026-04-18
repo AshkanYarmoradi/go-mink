@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/encryption/local"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/encryption/local"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

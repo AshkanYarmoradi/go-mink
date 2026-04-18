@@ -45,7 +45,7 @@ var ErrProviderClosed   = errors.New("mink: encryption provider closed")
 
 **Local Provider** (testing/development):
 ```go
-import "github.com/AshkanYarmoradi/go-mink/encryption/local"
+import "go-mink.dev/encryption/local"
 
 key := make([]byte, 32)
 rand.Read(key)
@@ -63,7 +63,7 @@ provider.RevokeKey("old-key") // Crypto-shredding
 
 **AWS KMS Provider** (production):
 ```go
-import "github.com/AshkanYarmoradi/go-mink/encryption/kms"
+import "go-mink.dev/encryption/kms"
 
 provider := kms.New(kms.WithKMSClient(kmsClient))
 defer provider.Close()
@@ -74,7 +74,7 @@ defer provider.Close()
 
 **HashiCorp Vault Transit Provider** (production):
 ```go
-import "github.com/AshkanYarmoradi/go-mink/encryption/vault"
+import "go-mink.dev/encryption/vault"
 
 provider := vault.New(vault.WithVaultClient(myVaultClient))
 defer provider.Close()
@@ -87,9 +87,9 @@ defer provider.Close()
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/encryption"
-    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+    "go-mink.dev"
+    "go-mink.dev/encryption"
+    "go-mink.dev/encryption/local"
 )
 
 encConfig := mink.NewFieldEncryptionConfig(
@@ -179,9 +179,9 @@ Make personal data permanently unrecoverable by revoking encryption keys. Since 
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/encryption"
-    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+    "go-mink.dev"
+    "go-mink.dev/encryption"
+    "go-mink.dev/encryption/local"
 )
 
 // 1. Set up per-tenant encryption keys
@@ -231,7 +231,7 @@ provider.RevokeKey("tenant-B")
 The `DataExporter` collects events belonging to a data subject and returns them in a portable format. It integrates with field-level encryption: when a key has been revoked (crypto-shredding), affected events are included with `Redacted=true` and `nil` Data.
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink"
+import "go-mink.dev"
 
 exporter := mink.NewDataExporter(store,
     mink.WithExportBatchSize(500),  // Events per batch during scan

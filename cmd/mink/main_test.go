@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/commands"
+	"go-mink.dev/cli/commands"
 	"github.com/stretchr/testify/assert"
 )
 

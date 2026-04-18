@@ -8,8 +8,8 @@ import (
 	"log"
 	"time"
 
-	mink "github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	mink "go-mink.dev"
+	"go-mink.dev/adapters/memory"
 )
 
 // --- Events ---

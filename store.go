@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // EventStore is the main entry point for event sourcing operations.

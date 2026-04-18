@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	mink "github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	mink "go-mink.dev"
+	"go-mink.dev/adapters"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

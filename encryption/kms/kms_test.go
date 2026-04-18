@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
-	"github.com/AshkanYarmoradi/go-mink/encryption/providertest"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/providertest"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/stretchr/testify/assert"

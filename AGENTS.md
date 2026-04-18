@@ -52,7 +52,7 @@ export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmo
 ### Package Structure
 
 ```
-github.com/AshkanYarmoradi/go-mink/
+go-mink.dev/
 ├── *.go                       # Core types in root mink package:
 │                              #   store.go (EventStore), bus.go (CommandBus),
 │                              #   projection_engine.go (ProjectionEngine),
@@ -387,7 +387,7 @@ package postgres
 
 import (
     "context"
-    "github.com/AshkanYarmoradi/go-mink/adapters"
+    "go-mink.dev/adapters"
 )
 
 // Compile-time interface checks
@@ -482,7 +482,7 @@ func TestPostgresAdapter_Append(t *testing.T) {
 ### BDD Tests (Behavior)
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/bdd"
+import "go-mink.dev/testing/bdd"
 
 func TestOrderFulfillment(t *testing.T) {
     t.Run("successful order flow", func(t *testing.T) {
@@ -572,7 +572,7 @@ package mydb
 
 import (
     "context"
-    "github.com/AshkanYarmoradi/go-mink/adapters"
+    "go-mink.dev/adapters"
 )
 
 // Ensure interface compliance at compile time
@@ -691,19 +691,19 @@ errors.Is(err, mink.ErrEventNotFound)
 ### Common Imports
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/postgres"
+    "go-mink.dev/adapters/memory"
 
     // Testing utilities
-    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
-    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
-    "github.com/AshkanYarmoradi/go-mink/testing/projections"
-    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+    "go-mink.dev/testing/bdd"
+    "go-mink.dev/testing/assertions"
+    "go-mink.dev/testing/projections"
+    "go-mink.dev/testing/containers"
 
     // Observability
-    "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
-    "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+    "go-mink.dev/middleware/metrics"
+    "go-mink.dev/middleware/tracing"
 )
 ```
 

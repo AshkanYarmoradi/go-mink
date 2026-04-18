@@ -164,7 +164,7 @@ package postgres
 
 import (
     "database/sql"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type PostgresAdapter struct {
@@ -221,7 +221,7 @@ package mongodb
 
 import (
     "go.mongodb.org/mongo-driver/mongo"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type MongoAdapter struct {
@@ -276,7 +276,7 @@ package redis
 
 import (
     "github.com/redis/go-redis/v9"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 type RedisAdapter struct {
@@ -385,7 +385,7 @@ func (a *InMemoryAdapter) Append(ctx context.Context, streamID string,
 ```go
 package myadapter
 
-import "github.com/AshkanYarmoradi/go-mink"
+import "go-mink.dev"
 
 // Implement your own adapter
 type MyCustomAdapter struct {

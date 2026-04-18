@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
-	"github.com/AshkanYarmoradi/go-mink/encryption/local"
+	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/local"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

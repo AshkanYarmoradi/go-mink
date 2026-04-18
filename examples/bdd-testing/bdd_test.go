@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/testing/bdd"
+	"go-mink.dev"
+	"go-mink.dev/testing/bdd"
 )
 
 // =============================================================================

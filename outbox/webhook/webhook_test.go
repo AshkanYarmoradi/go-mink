@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

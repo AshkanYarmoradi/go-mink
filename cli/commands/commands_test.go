@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
-	"github.com/AshkanYarmoradi/go-mink/cli/ui"
+	"go-mink.dev/adapters"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"

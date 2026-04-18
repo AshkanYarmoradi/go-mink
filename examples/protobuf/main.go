@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
-	"github.com/AshkanYarmoradi/go-mink/serializer/protobuf"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/serializer/protobuf"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )

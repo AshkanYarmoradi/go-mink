@@ -305,7 +305,7 @@ repo.Delete(ctx, "order-1")
 For production use, go-mink provides a PostgreSQL-backed repository with **automatic schema migration**:
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+import "go-mink.dev/adapters/postgres"
 
 // Define your read model with mink struct tags
 type OrderSummary struct {
