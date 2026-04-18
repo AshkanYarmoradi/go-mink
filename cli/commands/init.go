@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AshkanYarmoradi/go-mink/cli/config"
-	"github.com/AshkanYarmoradi/go-mink/cli/styles"
-	"github.com/AshkanYarmoradi/go-mink/cli/ui"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"go-mink.dev/cli/config"
+	"go-mink.dev/cli/styles"
+	"go-mink.dev/cli/ui"
 )
 
 // NewInitCommand creates the init command

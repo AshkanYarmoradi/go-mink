@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Sentinel errors for the memory adapter.

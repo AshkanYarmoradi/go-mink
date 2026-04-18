@@ -81,7 +81,7 @@ Create `internal/domain/product/commands.go`:
 package product
 
 import (
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // CreateProductCommand creates a new product in the catalog.
@@ -218,7 +218,7 @@ Create `internal/domain/cart/commands.go`:
 package cart
 
 import (
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // CreateCartCommand creates a new shopping cart.
@@ -345,7 +345,7 @@ Create `internal/domain/order/commands.go`:
 package order
 
 import (
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // PlaceOrderCommand creates a new order.
@@ -496,7 +496,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/product"
 )
 
@@ -625,7 +625,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/cart"
 )
 
@@ -753,7 +753,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 	"minkshop/internal/domain/order"
 )
 
@@ -897,8 +897,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+	"go-mink.dev"
+	"go-mink.dev/adapters/postgres"
 	
 	"minkshop/internal/domain/cart"
 	"minkshop/internal/domain/order"

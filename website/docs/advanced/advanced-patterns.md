@@ -195,7 +195,7 @@ type IdempotencyStore interface {
 ### In-Memory Store (Testing)
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+import "go-mink.dev/adapters/memory"
 
 store := memory.NewIdempotencyStore()
 defer store.Close()
@@ -207,7 +207,7 @@ bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(store)))
 ### PostgreSQL Store (Production)
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+import "go-mink.dev/adapters/postgres"
 
 store, err := postgres.NewIdempotencyStore(connStr)
 if err != nil {
@@ -732,7 +732,7 @@ CREATE INDEX idx_sagas_running ON mink_sagas(type)
 ### Testing Sagas
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/testing/sagas"
+import "go-mink.dev/testing/sagas"
 
 func TestOrderFulfillmentSaga_HappyPath(t *testing.T) {
     saga := NewOrderFulfillmentSaga("saga-123")
@@ -835,8 +835,8 @@ Wraps an `EventStore` to automatically schedule outbox messages when events are 
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 // Create stores
@@ -891,9 +891,9 @@ Background worker that polls for pending messages and delivers them via register
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
-    "github.com/AshkanYarmoradi/go-mink/outbox/kafka"
+    "go-mink.dev"
+    "go-mink.dev/outbox/webhook"
+    "go-mink.dev/outbox/kafka"
 )
 
 // Create publishers
@@ -933,7 +933,7 @@ processor.Stop(stopCtx)
 
 **Webhook Publisher** - HTTP POST delivery:
 ```go
-import "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
+import "go-mink.dev/outbox/webhook"
 
 pub := webhook.New(
     webhook.WithTimeout(10 * time.Second),
@@ -946,7 +946,7 @@ pub := webhook.New(
 
 **Kafka Publisher** - Apache Kafka delivery:
 ```go
-import "github.com/AshkanYarmoradi/go-mink/outbox/kafka"
+import "go-mink.dev/outbox/kafka"
 
 pub := kafka.New(
     kafka.WithBrokers("broker1:9092", "broker2:9092"),
@@ -957,7 +957,7 @@ pub := kafka.New(
 
 **SNS Publisher** - AWS SNS delivery:
 ```go
-import "github.com/AshkanYarmoradi/go-mink/outbox/sns"
+import "go-mink.dev/outbox/sns"
 
 pub := sns.New(
     sns.WithSNSClient(snsClient),
@@ -970,7 +970,7 @@ pub := sns.New(
 
 **PostgreSQL** (production):
 ```go
-import "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+import "go-mink.dev/adapters/postgres"
 
 outboxStore := postgres.NewOutboxStore(db,
     postgres.WithOutboxSchema("myapp"),
@@ -985,7 +985,7 @@ The PostgreSQL implementation uses `SELECT ... FOR UPDATE SKIP LOCKED` for concu
 
 **In-Memory** (testing):
 ```go
-import "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+import "go-mink.dev/adapters/memory"
 
 outboxStore := memory.NewOutboxStore()
 ```
@@ -1007,7 +1007,7 @@ The PostgreSQL adapter implements `OutboxAppender` for atomic event+outbox write
 ### Metrics Integration
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+import "go-mink.dev/middleware/metrics"
 
 m := metrics.New(metrics.WithMetricsServiceName("order-service"))
 
@@ -1089,9 +1089,9 @@ On load:
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/encryption"
-    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+    "go-mink.dev"
+    "go-mink.dev/encryption"
+    "go-mink.dev/encryption/local"
 )
 
 // Create encryption provider

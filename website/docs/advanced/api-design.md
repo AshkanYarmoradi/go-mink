@@ -670,11 +670,11 @@ if errors.As(err, &concErr) {
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
-    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
-    "github.com/AshkanYarmoradi/go-mink/testing/projections"
-    "github.com/AshkanYarmoradi/go-mink/testing/sagas"
-    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+    "go-mink.dev/testing/bdd"
+    "go-mink.dev/testing/assertions"
+    "go-mink.dev/testing/projections"
+    "go-mink.dev/testing/sagas"
+    "go-mink.dev/testing/containers"
 )
 
 // BDD-style aggregate testing

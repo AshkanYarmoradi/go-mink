@@ -38,8 +38,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/middleware/metrics"
+	"go-mink.dev"
+	"go-mink.dev/middleware/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -379,7 +379,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // TracingConfig holds tracing configuration.
@@ -577,7 +577,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // AppError represents an application error with HTTP status.

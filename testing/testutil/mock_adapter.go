@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // MockAdapter is a mock implementation of adapters.EventStoreAdapter for testing.

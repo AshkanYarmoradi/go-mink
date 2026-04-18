@@ -35,8 +35,8 @@ import (
     "context"
     "encoding/json"
 
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 // ProductAdded is the latest (v3) event schema.

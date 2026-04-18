@@ -28,7 +28,7 @@ In this first part, you'll:
 You can use the `mink` CLI to scaffold your project quickly:
 ```bash
 # Install CLI
-go install github.com/AshkanYarmoradi/go-mink/cmd/mink@latest
+go install go-mink.dev/cmd/mink@latest
 
 # Initialize project
 mkdir minkshop && cd minkshop
@@ -66,8 +66,8 @@ cd minkshop
 go mod init minkshop
 
 # Install go-mink and dependencies
-go get github.com/AshkanYarmoradi/go-mink
-go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
+go get go-mink.dev
+go get go-mink.dev/adapters/postgres
 ```
 
 Create the initial project structure:
@@ -183,8 +183,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+	"go-mink.dev"
+	"go-mink.dev/adapters/postgres"
 )
 
 func main() {
@@ -480,8 +480,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 )
 
 // TestEventStoreBasics verifies basic event store operations.

@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/AshkanYarmoradi/go-mink"
+	"go-mink.dev"
 )
 
 // MockProjection is a mock implementation of mink.InlineProjection for testing.

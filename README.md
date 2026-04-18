@@ -3,8 +3,8 @@
 **A Comprehensive Event Sourcing & CQRS Toolkit for Go**
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/AshkanYarmoradi/go-mink"><img src="https://pkg.go.dev/badge/github.com/AshkanYarmoradi/go-mink.svg" alt="Go Reference"></a>
-  <a href="https://goreportcard.com/report/github.com/AshkanYarmoradi/go-mink"><img src="https://goreportcard.com/badge/github.com/AshkanYarmoradi/go-mink" alt="Go Report Card"></a>
+  <a href="https://pkg.go.dev/go-mink.dev"><img src="https://pkg.go.dev/badge/go-mink.dev.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/go-mink.dev"><img src="https://goreportcard.com/badge/go-mink.dev" alt="Go Report Card"></a>
   <a href="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml"><img src="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg" alt="Build Status"></a>
   <a href="https://codecov.io/gh/AshkanYarmoradi/go-mink"><img src="https://codecov.io/gh/AshkanYarmoradi/go-mink/graph/badge.svg?token=ZCB3IDSI2Q" alt="codecov"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
@@ -88,8 +88,8 @@ package main
 import (
     "context"
     
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+    "go-mink.dev"
+    "go-mink.dev/adapters/postgres"
 )
 
 func main() {
@@ -124,8 +124,8 @@ package main
 import (
     "context"
     
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 // Define a command
@@ -181,8 +181,8 @@ import (
     "context"
     "time"
 
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
 )
 
 // Define a read model
@@ -241,9 +241,9 @@ func main() {
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink/testing/bdd"
-    "github.com/AshkanYarmoradi/go-mink/testing/assertions"
-    "github.com/AshkanYarmoradi/go-mink/testing/containers"
+    "go-mink.dev/testing/bdd"
+    "go-mink.dev/testing/assertions"
+    "go-mink.dev/testing/containers"
 )
 
 // BDD-style aggregate testing
@@ -269,8 +269,8 @@ db := container.MustDB(ctx)
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink/middleware/metrics"
-    "github.com/AshkanYarmoradi/go-mink/middleware/tracing"
+    "go-mink.dev/middleware/metrics"
+    "go-mink.dev/middleware/tracing"
 )
 
 // Prometheus metrics
@@ -287,9 +287,9 @@ bus.Use(tracer.CommandMiddleware())
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/memory"
-    "github.com/AshkanYarmoradi/go-mink/outbox/webhook"
+    "go-mink.dev"
+    "go-mink.dev/adapters/memory"
+    "go-mink.dev/outbox/webhook"
 )
 
 // Wrap event store with outbox for reliable publishing
@@ -316,7 +316,7 @@ defer processor.Stop(ctx)
 ```go
 import (
     "encoding/json"
-    "github.com/AshkanYarmoradi/go-mink"
+    "go-mink.dev"
 )
 
 // Define upcaster: v1 → v2 (add Currency field)
@@ -350,8 +350,8 @@ compat, _ := registry.CheckCompatibility("OrderCreated", 1, 2)
 
 ```go
 import (
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/encryption/local"
+    "go-mink.dev"
+    "go-mink.dev/encryption/local"
 )
 
 // Set up encryption provider (local for dev, KMS/Vault for production)
@@ -386,7 +386,7 @@ store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 ## GDPR Data Export
 
 ```go
-import "github.com/AshkanYarmoradi/go-mink"
+import "go-mink.dev"
 
 exporter := mink.NewDataExporter(store)
 
@@ -440,8 +440,8 @@ See [full benchmark results](docs/benchmarks.md) for detailed throughput, latenc
 ## Installation
 
 ```bash
-go get github.com/AshkanYarmoradi/go-mink
-go get github.com/AshkanYarmoradi/go-mink/adapters/postgres
+go get go-mink.dev
+go get go-mink.dev/adapters/postgres
 ```
 
 ## Documentation

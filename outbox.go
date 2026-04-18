@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // OutboxStatus represents the current status of an outbox message.

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
 	kafkago "github.com/segmentio/kafka-go"
+	"go-mink.dev/adapters"
 )
 
 // Publisher publishes outbox messages to Kafka topics.

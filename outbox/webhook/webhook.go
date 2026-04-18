@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Publisher publishes outbox messages as HTTP POST requests.

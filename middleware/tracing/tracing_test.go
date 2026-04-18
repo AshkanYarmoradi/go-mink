@@ -14,9 +14,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	minktest "github.com/AshkanYarmoradi/go-mink/testing/testutil"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
+	minktest "go-mink.dev/testing/testutil"
 )
 
 // Ensure MockProjection implements mink.InlineProjection

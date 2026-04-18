@@ -6,7 +6,7 @@ import GradientText from "../shared/GradientText";
 export default function CTASection() {
   const [copied, setCopied] = useState(false);
 
-  const installCmd = "go get github.com/AshkanYarmoradi/go-mink";
+  const installCmd = "go get go-mink.dev";
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(installCmd);

@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/postgres"
-	"github.com/AshkanYarmoradi/go-mink/testing/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
+	"go-mink.dev/adapters/postgres"
+	"go-mink.dev/testing/testutil"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 )

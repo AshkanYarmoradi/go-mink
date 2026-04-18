@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev"
 )
 
 // testContextKey is a type for context keys to avoid staticcheck SA1029

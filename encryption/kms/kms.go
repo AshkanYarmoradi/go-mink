@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/AshkanYarmoradi/go-mink/encryption"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"go-mink.dev/encryption"
 )
 
 // KMSClient defines the subset of the KMS API used by the provider.

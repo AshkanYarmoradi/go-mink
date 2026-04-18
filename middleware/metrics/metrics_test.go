@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	minktest "github.com/AshkanYarmoradi/go-mink/testing/testutil"
+	"go-mink.dev"
+	"go-mink.dev/adapters"
+	minktest "go-mink.dev/testing/testutil"
 )
 
 // Ensure MockProjection implements mink.InlineProjection

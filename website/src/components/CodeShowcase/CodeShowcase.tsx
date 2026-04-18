@@ -12,8 +12,8 @@ const tabs = [
 
 import (
     "context"
-    "github.com/AshkanYarmoradi/go-mink"
-    "github.com/AshkanYarmoradi/go-mink/adapters/postgres"
+    "go-mink.dev"
+    "go-mink.dev/adapters/postgres"
 )
 
 func main() {

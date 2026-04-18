@@ -17,8 +17,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
+	"go-mink.dev"
+	"go-mink.dev/adapters/memory"
 )
 
 // =============================================================================

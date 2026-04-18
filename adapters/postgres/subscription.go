@@ -8,7 +8,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
+	"go-mink.dev/adapters"
 )
 
 // Default values for subscriptions.

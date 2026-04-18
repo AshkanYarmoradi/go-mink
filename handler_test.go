@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/AshkanYarmoradi/go-mink/adapters"
-	"github.com/AshkanYarmoradi/go-mink/adapters/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/memory"
 )
 
 // newInMemoryAdapter creates a new in-memory adapter for tests
