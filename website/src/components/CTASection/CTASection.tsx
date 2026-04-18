@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Link from "@docusaurus/Link";
 import SectionReveal from "../shared/SectionReveal";
 import GradientText from "../shared/GradientText";
 
@@ -84,18 +85,18 @@ export default function CTASection() {
 
           {/* CTA buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <a
-              href="/docs/getting-started/introduction"
+            <Link
+              to="/docs/getting-started/introduction"
               className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#00ADD8] to-[#0077b6] px-8 py-3.5 text-base font-semibold text-white shadow-lg shadow-[#00ADD8]/20 transition-all duration-200 hover:shadow-xl hover:shadow-[#00ADD8]/30 hover:-translate-y-0.5 no-underline hover:no-underline hover:text-white"
             >
               Read the Docs
-            </a>
-            <a
-              href="/docs/tutorial/setup"
+            </Link>
+            <Link
+              to="/docs/tutorial/setup"
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-8 py-3.5 text-base font-semibold text-[#e2e8f0] transition-all duration-200 hover:bg-white/[0.06] hover:border-white/20 no-underline hover:no-underline hover:text-white"
             >
               View Tutorial
-            </a>
+            </Link>
           </div>
         </SectionReveal>
       </div>

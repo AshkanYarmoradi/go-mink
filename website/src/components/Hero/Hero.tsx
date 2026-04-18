@@ -1,5 +1,7 @@
 import React from "react";
 import { motion, useReducedMotion } from "framer-motion";
+import Link from "@docusaurus/Link";
+import CodeBlock from "@theme/CodeBlock";
 import GradientText from "../shared/GradientText";
 import HeroBackground from "./HeroBackground";
 
@@ -57,15 +59,15 @@ export default function Hero() {
 
       {/* CTAs */}
       <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-        <a
-          href="/docs/getting-started/introduction"
+        <Link
+          to="/docs/getting-started/introduction"
           className="group inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#00ADD8] to-[#0077b6] px-8 py-3.5 text-base font-semibold text-white shadow-lg shadow-[#00ADD8]/20 transition-all duration-200 hover:shadow-xl hover:shadow-[#00ADD8]/30 hover:-translate-y-0.5 no-underline hover:no-underline hover:text-white"
         >
           Get Started
           <span className="transition-transform duration-200 group-hover:translate-x-0.5">
             &rarr;
           </span>
-        </a>
+        </Link>
         <a
           href="https://github.com/AshkanYarmoradi/go-mink"
           className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-8 py-3.5 text-base font-semibold text-[#e2e8f0] transition-all duration-200 hover:bg-white/[0.06] hover:border-white/20 no-underline hover:no-underline hover:text-white"
@@ -89,9 +91,9 @@ export default function Hero() {
               main.go
             </span>
           </div>
-          <pre className="text-sm font-mono text-[#e2e8f0] leading-relaxed overflow-x-auto m-0 bg-transparent border-none p-0">
-            <code>{codeSnippet}</code>
-          </pre>
+          <CodeBlock language="go" className="text-sm font-mono leading-relaxed overflow-x-auto m-0 bg-transparent border-none p-0 mb-0 shadow-none">
+            {codeSnippet}
+          </CodeBlock>
         </div>
       </div>
     </>
@@ -139,15 +141,15 @@ export default function Hero() {
               variants={itemVariants}
               className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16"
             >
-              <a
-                href="/docs/getting-started/introduction"
+              <Link
+                to="/docs/getting-started/introduction"
                 className="group inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#00ADD8] to-[#0077b6] px-8 py-3.5 text-base font-semibold text-white shadow-lg shadow-[#00ADD8]/20 transition-all duration-200 hover:shadow-xl hover:shadow-[#00ADD8]/30 hover:-translate-y-0.5 no-underline hover:no-underline hover:text-white"
               >
                 Get Started
                 <span className="transition-transform duration-200 group-hover:translate-x-0.5">
                   &rarr;
                 </span>
-              </a>
+              </Link>
               <a
                 href="https://github.com/AshkanYarmoradi/go-mink"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-8 py-3.5 text-base font-semibold text-[#e2e8f0] transition-all duration-200 hover:bg-white/[0.06] hover:border-white/20 no-underline hover:no-underline hover:text-white"
@@ -175,9 +177,9 @@ export default function Hero() {
                       main.go
                     </span>
                   </div>
-                  <pre className="text-sm font-mono text-[#e2e8f0] leading-relaxed overflow-x-auto m-0 bg-transparent border-none p-0">
-                    <code>{codeSnippet}</code>
-                  </pre>
+                  <CodeBlock language="go" className="text-sm font-mono leading-relaxed overflow-x-auto m-0 bg-transparent border-none p-0 mb-0 shadow-none">
+                    {codeSnippet}
+                  </CodeBlock>
                 </div>
               </div>
             </motion.div>
