@@ -575,7 +575,7 @@ func TestSerializer_ProtoCloneCompatibility(t *testing.T) {
 		// Get proto.Message for cloning - use reflect to get addressable pointer
 		var msg proto.Message
 		rv := reflect.ValueOf(result)
-		if rv.Kind() == reflect.Ptr {
+		if rv.Kind() == reflect.Pointer {
 			msg = result.(proto.Message)
 		} else {
 			// Create a new pointer and set its value

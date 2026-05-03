@@ -260,7 +260,7 @@ func GetCommandType(cmd interface{}) string {
 		return ""
 	}
 	t := reflect.TypeOf(cmd)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

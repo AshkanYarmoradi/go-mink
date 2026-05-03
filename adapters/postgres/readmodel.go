@@ -138,7 +138,7 @@ func NewPostgresRepository[T any](db *sql.DB, opts ...ReadModelOption) (*Postgre
 	if config.tableName == "" {
 		var t T
 		typ := reflect.TypeOf(t)
-		if typ.Kind() == reflect.Ptr {
+		if typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
 		}
 		config.tableName = toSnakeCase(typ.Name())
@@ -187,7 +187,7 @@ func NewPostgresRepository[T any](db *sql.DB, opts ...ReadModelOption) (*Postgre
 func (r *PostgresRepository[T]) buildTableSchema() (*TableSchema, error) {
 	var t T
 	typ := reflect.TypeOf(t)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if typ.Kind() != reflect.Struct {
@@ -976,7 +976,7 @@ func goTypeToSQL(t reflect.Type) string {
 			return "TIMESTAMPTZ"
 		}
 		return "JSONB"
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return goTypeToSQL(t.Elem())
 	default:
 		return "TEXT"

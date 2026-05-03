@@ -137,7 +137,7 @@ func (s *Serializer) Register(eventType string, event interface{}) error {
 	if _, ok := event.(proto.Message); !ok {
 		// Check if pointer implements proto.Message
 		v := reflect.ValueOf(event)
-		if v.Kind() != reflect.Ptr {
+		if v.Kind() != reflect.Pointer {
 			ptrType := reflect.PointerTo(reflect.TypeOf(event))
 			if !ptrType.Implements(reflect.TypeOf((*proto.Message)(nil)).Elem()) {
 				return &SerializationError{
@@ -153,7 +153,7 @@ func (s *Serializer) Register(eventType string, event interface{}) error {
 	defer s.mu.Unlock()
 
 	typ := reflect.TypeOf(event)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	s.registry[eventType] = typ
@@ -165,7 +165,7 @@ func (s *Serializer) Register(eventType string, event interface{}) error {
 func (s *Serializer) RegisterAll(events ...interface{}) error {
 	for _, event := range events {
 		typ := reflect.TypeOf(event)
-		if typ.Kind() == reflect.Ptr {
+		if typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
 		}
 		eventType := typ.Name()
@@ -234,7 +234,7 @@ func (s *Serializer) Serialize(event interface{}) ([]byte, error) {
 	if !ok {
 		// Try to get proto.Message from pointer
 		v := reflect.ValueOf(event)
-		if v.Kind() == reflect.Ptr && !v.IsNil() {
+		if v.Kind() == reflect.Pointer && !v.IsNil() {
 			if pm, ok := v.Interface().(proto.Message); ok {
 				msg = pm
 			} else {
