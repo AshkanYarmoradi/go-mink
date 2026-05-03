@@ -63,7 +63,7 @@ func (s *Serializer) Register(eventType string, example interface{}) {
 	defer s.mu.Unlock()
 
 	t := reflect.TypeOf(example)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	s.registry[eventType] = t
@@ -77,7 +77,7 @@ func (s *Serializer) RegisterAll(examples ...interface{}) {
 
 	for _, example := range examples {
 		t := reflect.TypeOf(example)
-		if t.Kind() == reflect.Ptr {
+		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		s.registry[t.Name()] = t

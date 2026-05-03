@@ -39,7 +39,7 @@ func (r *EventRegistry) Register(eventType string, example interface{}) {
 
 	t := reflect.TypeOf(example)
 	// If a pointer was passed, get the element type
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	r.types[eventType] = t
@@ -53,7 +53,7 @@ func (r *EventRegistry) RegisterAll(examples ...interface{}) {
 
 	for _, example := range examples {
 		t := reflect.TypeOf(example)
-		if t.Kind() == reflect.Ptr {
+		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		r.types[t.Name()] = t
@@ -178,7 +178,7 @@ func GetEventType(event interface{}) string {
 	}
 
 	t := reflect.TypeOf(event)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()
