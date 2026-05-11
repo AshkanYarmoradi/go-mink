@@ -744,9 +744,7 @@ func TestCheckEventStoreSchema_Integration(t *testing.T) {
 	result := checkEventStoreSchema()
 
 	assert.Equal(t, "Event Store Schema", result.Name)
-	// The check may return WARNING if it can't find the legacy mink_events table,
-	// but our test uses mink.events (in mink schema). Either status is acceptable.
-	assert.Contains(t, []CheckStatus{StatusOK, StatusWarning}, result.Status)
+	assert.Equal(t, StatusOK, result.Status)
 }
 
 // Test diagnose projections check

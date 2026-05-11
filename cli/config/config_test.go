@@ -16,7 +16,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "my-mink-app", cfg.Project.Name)
 	assert.Equal(t, "postgres", cfg.Database.Driver)
 	assert.Equal(t, "mink", cfg.Database.Schema)
-	assert.Equal(t, "mink_events", cfg.EventStore.TableName)
+	assert.Equal(t, "events", cfg.EventStore.TableName)
 }
 
 func TestConfig_Validate(t *testing.T) {
@@ -164,7 +164,7 @@ func TestGenerateYAML(t *testing.T) {
 	assert.Contains(t, yaml, "test-app")
 	assert.Contains(t, yaml, "github.com/test/app")
 	assert.Contains(t, yaml, "postgres")
-	assert.Contains(t, yaml, "mink_events")
+	assert.Contains(t, yaml, "events")
 	assert.Contains(t, yaml, "# Mink Configuration File")
 }
 
