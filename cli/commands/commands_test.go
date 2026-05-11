@@ -633,6 +633,8 @@ func TestGenerateSchema(t *testing.T) {
 	assert.Contains(t, schema, "my_outbox")
 	assert.Contains(t, schema, "CREATE TABLE")
 	assert.Contains(t, schema, "CREATE INDEX")
+	assert.Contains(t, schema, `event_type`)
+	assert.NotContains(t, schema, "    type VARCHAR")
 }
 
 func TestExecute(t *testing.T) {
@@ -732,10 +734,11 @@ func TestGenerateSchemaContent(t *testing.T) {
 	assert.Contains(t, schema, "my_events")
 	assert.Contains(t, schema, "my_snapshots")
 	assert.Contains(t, schema, "my_outbox")
-	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS my_events")
-	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS my_snapshots")
-	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS mink_checkpoints")
-	assert.Contains(t, schema, "CREATE TABLE IF NOT EXISTS my_outbox")
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."streams"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."my_events"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."my_snapshots"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."checkpoints"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."my_outbox"`)
 	assert.Contains(t, schema, "CREATE INDEX")
 }
 
@@ -1298,7 +1301,7 @@ func TestSchemaGenerateCommand_OutputFile(t *testing.T) {
 	content, err := os.ReadFile(outputFile)
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "CREATE TABLE")
-	assert.Contains(t, string(content), "mink_events")
+	assert.Contains(t, string(content), `"mink"."events"`)
 }
 
 func TestSchemaPrintCommand_Execute(t *testing.T) {
@@ -2623,7 +2626,7 @@ func TestGenerateFallbackSchema_Valid(t *testing.T) {
 	cfg := config.DefaultConfig()
 	schema := generateFallbackSchema(cfg)
 	assert.Contains(t, schema, "CREATE TABLE")
-	assert.Contains(t, schema, "mink_events")
+	assert.Contains(t, schema, `"mink"."events"`)
 }
 
 // Test ProjectionInfo struct initialization
@@ -4103,7 +4106,7 @@ func TestProjectionCommands_PostgreSQL_WithData(t *testing.T) {
 		{
 			name:           "list with projection",
 			projectionName: "test-projection",
-			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+			setupSQL: `INSERT INTO mink.checkpoints (projection_name, position, status) 
 				VALUES ('test-projection', 0, 'active')
 				ON CONFLICT (projection_name) DO NOTHING;`,
 			args: []string{"list"},
@@ -4111,7 +4114,7 @@ func TestProjectionCommands_PostgreSQL_WithData(t *testing.T) {
 		{
 			name:           "status for projection",
 			projectionName: "test-status-projection",
-			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+			setupSQL: `INSERT INTO mink.checkpoints (projection_name, position, status) 
 				VALUES ('test-status-projection', 5, 'active')
 				ON CONFLICT (projection_name) DO UPDATE SET position = 5, status = 'active';`,
 			args: []string{"status", "test-status-projection"},
@@ -4119,7 +4122,7 @@ func TestProjectionCommands_PostgreSQL_WithData(t *testing.T) {
 		{
 			name:           "rebuild projection",
 			projectionName: "test-rebuild-projection",
-			setupSQL: `INSERT INTO mink_checkpoints (projection_name, position, status) 
+			setupSQL: `INSERT INTO mink.checkpoints (projection_name, position, status) 
 				VALUES ('test-rebuild-projection', 10, 'active')
 				ON CONFLICT (projection_name) DO UPDATE SET position = 10, status = 'active';`,
 			args: []string{"rebuild", "test-rebuild-projection", "--yes"},
@@ -4158,7 +4161,7 @@ func TestStreamCommands_PostgreSQL_WithData(t *testing.T) {
 	}{
 		{
 			name: "list with events",
-			setupSQL: []string{`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+			setupSQL: []string{`INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 				VALUES ('test-stream-list', 1, 'TestEvent', '{"test": true}', '{}')
 				ON CONFLICT (stream_id, version) DO NOTHING;`},
 			args: []string{"list"},
@@ -4166,10 +4169,10 @@ func TestStreamCommands_PostgreSQL_WithData(t *testing.T) {
 		{
 			name: "events with stream data",
 			setupSQL: []string{
-				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				`INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 				VALUES ('test-stream-events', 1, 'TestEvent1', '{"order": 1}', '{"correlationId": "123"}')
 				ON CONFLICT (stream_id, version) DO NOTHING;`,
-				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				`INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 				VALUES ('test-stream-events', 2, 'TestEvent2', '{"order": 2}', '{"correlationId": "456"}')
 				ON CONFLICT (stream_id, version) DO NOTHING;`,
 			},
@@ -4178,10 +4181,10 @@ func TestStreamCommands_PostgreSQL_WithData(t *testing.T) {
 		{
 			name: "stats with multiple streams",
 			setupSQL: []string{
-				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				`INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 				VALUES ('stats-stream-1', 1, 'EventType1', '{"data": 1}', '{}')
 				ON CONFLICT (stream_id, version) DO NOTHING;`,
-				`INSERT INTO mink_events (stream_id, version, type, data, metadata)
+				`INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 				VALUES ('stats-stream-2', 1, 'EventType2', '{"data": 2}', '{}')
 				ON CONFLICT (stream_id, version) DO NOTHING;`,
 			},
@@ -4250,7 +4253,7 @@ func TestProjectionPauseResumeCommands_PostgreSQL(t *testing.T) {
 			if err == nil {
 				defer cleanup()
 				_ = adapter.ExecuteSQL(ctx, fmt.Sprintf(`
-					INSERT INTO mink_checkpoints (projection_name, position, status) 
+					INSERT INTO mink.checkpoints (projection_name, position, status) 
 					VALUES ('%s', 5, '%s')
 					ON CONFLICT (projection_name) DO UPDATE SET status = '%s';
 				`, tt.projectionName, tt.initialStatus, tt.initialStatus))
@@ -4313,7 +4316,7 @@ func TestStreamExportCommand_PostgreSQL_WithEvents(t *testing.T) {
 	if err == nil {
 		defer cleanup()
 		_ = adapter.ExecuteSQL(ctx, `
-			INSERT INTO mink_events (stream_id, version, type, data, metadata)
+			INSERT INTO mink.events (stream_id, version, event_type, data, metadata)
 			VALUES ('export-stream', 1, 'ExportEvent', '{"exported": true}', '{"user": "test"}')
 			ON CONFLICT (stream_id, version) DO NOTHING;
 		`)
@@ -7008,7 +7011,7 @@ func TestSchemaGenerate_ToFile(t *testing.T) {
 
 	content, err := os.ReadFile(outFile)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "mink_events")
+	assert.Contains(t, string(content), `"mink"."events"`)
 }
 
 // TestSchemaPrint_Memory_AllPaths tests schema print with memory driver

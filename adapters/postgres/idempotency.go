@@ -77,25 +77,7 @@ func (s *IdempotencyStore) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	tableQ := s.fullTableName()
-	query := `
-		CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
-			key VARCHAR(255) PRIMARY KEY,
-			command_type VARCHAR(255) NOT NULL,
-			aggregate_id VARCHAR(255),
-			version BIGINT,
-			response JSONB,
-			error TEXT,
-			success BOOLEAN NOT NULL DEFAULT false,
-			processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			expires_at TIMESTAMPTZ NOT NULL
-		);
-
-		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_expires_at") + ` ON ` + tableQ + ` (expires_at);
-		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_processed_at") + ` ON ` + tableQ + ` (processed_at);
-	`
-
-	_, err := s.db.ExecContext(ctx, query)
+	_, err := s.db.ExecContext(ctx, joinSQLStatements(idempotencySchemaStatements(s.schema, s.table)))
 	if err != nil {
 		return fmt.Errorf("mink/postgres/idempotency: failed to create table: %w", err)
 	}

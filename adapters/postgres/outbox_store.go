@@ -77,30 +77,7 @@ func (s *OutboxStore) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	tableQ := s.fullTableName()
-	query := `
-		CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			aggregate_id VARCHAR(255) NOT NULL,
-			event_type VARCHAR(255) NOT NULL,
-			destination VARCHAR(255) NOT NULL,
-			payload JSONB NOT NULL,
-			headers JSONB DEFAULT '{}',
-			status INT NOT NULL DEFAULT 0,
-			attempts INT NOT NULL DEFAULT 0,
-			max_attempts INT NOT NULL DEFAULT 5,
-			last_error TEXT,
-			scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_attempt_at TIMESTAMPTZ,
-			processed_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-
-		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_pending") + ` ON ` + tableQ + ` (scheduled_at) WHERE status = 0;
-		CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_dead_letter") + ` ON ` + tableQ + ` (created_at) WHERE status = 4;
-	`
-
-	_, err := s.db.ExecContext(ctx, query)
+	_, err := s.db.ExecContext(ctx, joinSQLStatements(outboxSchemaStatements(s.schema, s.table)))
 	if err != nil {
 		return fmt.Errorf("mink/postgres/outbox: failed to create table: %w", err)
 	}

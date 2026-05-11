@@ -49,7 +49,12 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 
 	switch f.config.Database.Driver {
 	case "postgres", "postgresql":
-		adapter, err := postgres.NewAdapter(f.dbURL)
+		opts := make([]postgres.Option, 0, 1)
+		if f.config.Database.Schema != "" {
+			opts = append(opts, postgres.WithSchema(f.config.Database.Schema))
+		}
+
+		adapter, err := postgres.NewAdapter(f.dbURL, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create postgres adapter: %w", err)
 		}
