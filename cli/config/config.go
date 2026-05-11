@@ -95,8 +95,8 @@ func DefaultConfig() *Config {
 			MigrationsDir: "migrations",
 		},
 		EventStore: EventStoreConfig{
-			TableName:         "mink_events",
-			SnapshotTableName: "mink_snapshots",
+			TableName:         "events",
+			SnapshotTableName: "snapshots",
 			OutboxTableName:   "mink_outbox",
 		},
 		Generation: GenerationConfig{

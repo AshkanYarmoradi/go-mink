@@ -98,6 +98,24 @@ go-mink.dev/
                                #   sagas, cqrs, metrics, tracing, encryption, export, etc.)
 ```
 
+### Repository Mental Model for Agents
+
+Use this as the working map before making changes:
+
+- The root `mink` package is the public developer API. Core entry points are `EventStore`, `AggregateBase`, `CommandBus`, `ProjectionEngine`, `SagaManager`, `EventStoreWithOutbox`, `DataExporter`, upcasting, and field encryption.
+- `adapters/adapter.go` is the backend contract layer. Keep adapter interfaces small and add capabilities through optional interfaces such as `SubscriptionAdapter`, `SnapshotAdapter`, `CheckpointAdapter`, `IdempotencyStore`, `SagaStore`, `OutboxStore`, `OutboxAppender`, diagnostic, migration, and schema interfaces.
+- Event writes flow through `EventStore.Append` or `SaveAggregate`: serialize event, stamp schema version if upcasters are configured, encrypt configured JSON fields if field encryption is configured, then call the adapter. Aggregate saves use the aggregate version as the expected stream version.
+- Event reads flow through the adapter, then optional decryption, optional upcasting, and finally deserialization. Reuse `ProcessStoredEvent` when a subsystem needs the full read pipeline for raw stored events.
+- Projections are explicit. The event store does not automatically run projections after every append. Inline projections are invoked through `ProjectionEngine.ProcessInlineProjections`, async projections poll through `LoadEventsFromPosition`, and live projections are notified through `NotifyLiveProjections`.
+- PostgreSQL subscriptions are polling-based. Do not assume LISTEN/NOTIFY semantics unless that support is explicitly added.
+- The memory adapter is for tests and development. It is thread-safe and implements many optional interfaces, but it is not durable and includes package-level CLI projection/migration state.
+- The PostgreSQL adapter owns production storage, optimistic concurrency via row locking and unique `(stream_id, version)`, snapshots, checkpoints, polling subscriptions, CLI inspection, diagnostics, idempotency, saga storage, read model repositories, and atomic event-plus-outbox writes through `OutboxAppender`.
+- Field-level encryption is JSON-only because it edits JSON object fields before storage. MessagePack and Protobuf serializers are useful alternatives, but they are not compatible with field-level encryption.
+- Outbox writes are atomic only when the adapter implements `OutboxAppender` (PostgreSQL does). The fallback path appends events first and schedules outbox messages separately.
+- Sagas use persisted `SagaState`, per-saga in-memory locks, processed-event tracking for idempotency, and optimistic concurrency retries. Keep saga changes careful around terminal states and version updates.
+- Integration tests rely on `TEST_DATABASE_URL` and `TEST_KAFKA_BROKERS`; short tests skip infrastructure-heavy paths. The local quick health check is `go test -short ./...`.
+- Keep version and schema declarations synchronized: `go.mod`, the README badge, and the CI matrix should agree on Go support, and PostgreSQL generated DDL should stay aligned with runtime migrations.
+
 ---
 
 ## Implemented Features (v1.0.0)

@@ -124,11 +124,13 @@ project:
 database:
   driver: postgres
   url: ${DATABASE_URL}
+  schema: mink
   migrations_dir: migrations
 
-eventstore:
-  table_name: mink_events
-  schema: mink
+event_store:
+  table_name: events
+  snapshot_table_name: snapshots
+  outbox_table_name: mink_outbox
 
 generation:
   aggregate_package: internal/domain
@@ -556,7 +558,7 @@ Mink
 Running Diagnostics
 
   Checking Go Version... OK
-    go1.22.0
+    go1.25.0
   Checking Configuration... OK
     Project: minkshop, Driver: postgres
   Checking Database Connection... OK
@@ -606,27 +608,26 @@ $ mink schema print
 **Generated schema:**
 
 ```sql
--- Mink Event Store Schema
--- Generated for PostgreSQL
+-- Mink Event Store Schema (PostgreSQL)
+-- Generated for: minkshop
 
-CREATE SCHEMA IF NOT EXISTS mink;
+CREATE SCHEMA IF NOT EXISTS "mink";
 
-CREATE TABLE IF NOT EXISTS mink.events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    stream_id VARCHAR(255) NOT NULL,
+CREATE TABLE IF NOT EXISTS "mink"."events" (
+    global_position BIGSERIAL PRIMARY KEY,
+    stream_id VARCHAR(500) NOT NULL,
     version BIGINT NOT NULL,
-    type VARCHAR(255) NOT NULL,
+    event_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    event_type VARCHAR(500) NOT NULL,
     data JSONB NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    global_position BIGSERIAL,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    metadata JSONB,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(stream_id, version)
 );
 
-CREATE INDEX idx_events_stream_id ON mink.events(stream_id);
-CREATE INDEX idx_events_type ON mink.events(type);
-CREATE INDEX idx_events_global_position ON mink.events(global_position);
-CREATE INDEX idx_events_timestamp ON mink.events(timestamp);
+CREATE INDEX IF NOT EXISTS "idx_events_stream" ON "mink"."events" (stream_id, version);
+CREATE INDEX IF NOT EXISTS "idx_events_type" ON "mink"."events" (event_type);
+CREATE INDEX IF NOT EXISTS "idx_events_timestamp" ON "mink"."events" (timestamp);
 
 -- ... additional tables for streams, snapshots, checkpoints
 ```
@@ -646,7 +647,7 @@ Mink
 │ Version   │ v1.0.0                      │
 │ Commit    │ abc123def                   │
 │ Built     │ 2026-01-07                  │
-│ Go        │ go1.22.0                    │
+│ Go        │ go1.25.0                    │
 │ OS/Arch   │ darwin/arm64                │
 └───────────┴─────────────────────────────┘
 ```
@@ -669,11 +670,13 @@ project:
 database:
   driver: postgres           # postgres or memory
   url: ${DATABASE_URL}       # Environment variable expansion
+  schema: mink
   migrations_dir: migrations
 
-eventstore:
-  table_name: mink_events
-  schema: mink
+event_store:
+  table_name: events
+  snapshot_table_name: snapshots
+  outbox_table_name: mink_outbox
 
 generation:
   aggregate_package: internal/domain

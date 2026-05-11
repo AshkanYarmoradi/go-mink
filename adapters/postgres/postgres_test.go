@@ -1501,9 +1501,45 @@ func TestPostgresAdapter_GenerateSchema(t *testing.T) {
 	t.Run("generates schema SQL", func(t *testing.T) {
 		schema := adapter.GenerateSchema("test-project", "events", "snapshots", "outbox")
 		assert.Contains(t, schema, "CREATE TABLE")
-		assert.Contains(t, schema, "events")
+		assert.Contains(t, schema, `CREATE SCHEMA IF NOT EXISTS "mink"`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."streams"`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."events"`)
+		assert.Contains(t, schema, `global_position BIGSERIAL PRIMARY KEY`)
+		assert.Contains(t, schema, `event_id UUID NOT NULL DEFAULT gen_random_uuid()`)
+		assert.Contains(t, schema, `event_type VARCHAR(500) NOT NULL`)
+		assert.Contains(t, schema, `metadata JSONB`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."snapshots"`)
+		assert.Contains(t, schema, `data BYTEA NOT NULL`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."checkpoints"`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."migrations"`)
+		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."mink_idempotency"`)
+		assert.NotContains(t, schema, "    type VARCHAR")
+		assert.NotContains(t, schema, "mink_checkpoints")
+		assert.NotContains(t, schema, "mink_append_events")
 		assert.Contains(t, schema, "test-project")
 	})
+}
+
+func TestGenerateSchema(t *testing.T) {
+	schema := GenerateSchema("test-project", "mink", "events", "snapshots", "mink_outbox")
+
+	assert.Contains(t, schema, "CREATE TABLE")
+	assert.Contains(t, schema, `CREATE SCHEMA IF NOT EXISTS "mink"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."streams"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."events"`)
+	assert.Contains(t, schema, `global_position BIGSERIAL PRIMARY KEY`)
+	assert.Contains(t, schema, `event_id UUID NOT NULL DEFAULT gen_random_uuid()`)
+	assert.Contains(t, schema, `event_type VARCHAR(500) NOT NULL`)
+	assert.Contains(t, schema, `metadata JSONB`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."snapshots"`)
+	assert.Contains(t, schema, `data BYTEA NOT NULL`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."checkpoints"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."migrations"`)
+	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."mink_idempotency"`)
+	assert.NotContains(t, schema, "    type VARCHAR")
+	assert.NotContains(t, schema, "mink_checkpoints")
+	assert.NotContains(t, schema, "mink_append_events")
+	assert.Contains(t, schema, "test-project")
 }
 
 func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
@@ -1538,15 +1574,6 @@ func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
 	})
 
 	t.Run("returns health with projections behind", func(t *testing.T) {
-		// Create checkpoints table if it doesn't exist
-		_, _ = adapter.db.ExecContext(ctx, `
-			CREATE TABLE IF NOT EXISTS mink_checkpoints (
-				name VARCHAR(255) PRIMARY KEY,
-				position BIGINT NOT NULL DEFAULT 0,
-				updated_at TIMESTAMPTZ DEFAULT NOW()
-			)
-		`)
-
 		// Use a unique stream name
 		streamID := fmt.Sprintf("health-test-stream-%d", time.Now().UnixNano())
 
@@ -1558,8 +1585,9 @@ func TestPostgresAdapter_GetProjectionHealth(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create a checkpoint that is behind
+		checkpointsTable := quoteQualifiedTable(adapter.schema, "checkpoints")
 		_, err = adapter.db.ExecContext(ctx,
-			"INSERT INTO mink_checkpoints (name, position, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET position = $2",
+			fmt.Sprintf("INSERT INTO %s (projection_name, position, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (projection_name) DO UPDATE SET position = $2", checkpointsTable),
 			"health_test_projection", 0)
 		require.NoError(t, err)
 
