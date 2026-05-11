@@ -613,23 +613,8 @@ $ mink schema print
 
 CREATE SCHEMA IF NOT EXISTS "mink";
 
-CREATE TABLE IF NOT EXISTS "mink"."events" (
-    global_position BIGSERIAL PRIMARY KEY,
-    stream_id VARCHAR(500) NOT NULL,
-    version BIGINT NOT NULL,
-    event_id UUID NOT NULL DEFAULT gen_random_uuid(),
-    event_type VARCHAR(500) NOT NULL,
-    data JSONB NOT NULL,
-    metadata JSONB,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(stream_id, version)
-);
-
-CREATE INDEX IF NOT EXISTS "idx_events_stream" ON "mink"."events" (stream_id, version);
-CREATE INDEX IF NOT EXISTS "idx_events_type" ON "mink"."events" (event_type);
-CREATE INDEX IF NOT EXISTS "idx_events_timestamp" ON "mink"."events" (timestamp);
-
--- ... additional tables for streams, snapshots, checkpoints
+-- Includes streams, events, snapshots, checkpoints, migrations,
+-- outbox, and idempotency tables using schema-qualified names.
 ```
 
 ---

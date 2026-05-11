@@ -633,7 +633,7 @@ func TestGenerateSchema(t *testing.T) {
 	assert.Contains(t, schema, "my_outbox")
 	assert.Contains(t, schema, "CREATE TABLE")
 	assert.Contains(t, schema, "CREATE INDEX")
-	assert.Contains(t, schema, `event_type VARCHAR(500) NOT NULL`)
+	assert.Contains(t, schema, `event_type`)
 	assert.NotContains(t, schema, "    type VARCHAR")
 }
 

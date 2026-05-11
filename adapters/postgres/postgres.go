@@ -220,34 +220,34 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 
 // Migrate runs database migrations.
 func (a *PostgresAdapter) Migrate(ctx context.Context) error {
-	// Use pre-validated schemaQ from constructor
-	schemaQ := a.schemaQ
-
-	// Create schema
-	_, err := a.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schemaQ)
-	if err != nil {
-		return fmt.Errorf("mink/postgres: failed to create schema: %w", err)
+	for _, stmt := range eventStoreSchemaStatements(a.schema, "events", "snapshots") {
+		if _, err := a.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("mink/postgres: failed to initialize schema: %w", err)
+		}
 	}
 
-	// Create streams table
-	streamsSQL := `
-		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.streams (
+	return nil
+}
+
+func eventStoreSchemaStatements(schemaName, tableName, snapshotTableName string) []string {
+	schemaQ := quoteIdentifier(schemaName)
+	streamsTable := quoteQualifiedTable(schemaName, "streams")
+	eventsTable := quoteQualifiedTable(schemaName, tableName)
+	snapshotsTable := quoteQualifiedTable(schemaName, snapshotTableName)
+	checkpointsTable := quoteQualifiedTable(schemaName, "checkpoints")
+
+	return []string{
+		`CREATE SCHEMA IF NOT EXISTS ` + schemaQ,
+		`CREATE TABLE IF NOT EXISTS ` + streamsTable + ` (
 			id              BIGSERIAL PRIMARY KEY,
 			stream_id       VARCHAR(500) NOT NULL UNIQUE,
 			category        VARCHAR(250) NOT NULL,
 			version         BIGINT NOT NULL DEFAULT 0,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`
-
-	_, err = a.db.ExecContext(ctx, streamsSQL)
-	if err != nil {
-		return fmt.Errorf("mink/postgres: failed to create streams table: %w", err)
-	}
-
-	// Create events table
-	eventsSQL := `
-		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.events (
+		)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_streams_category") + ` ON ` + streamsTable + ` (category)`,
+		`CREATE TABLE IF NOT EXISTS ` + eventsTable + ` (
 			global_position BIGSERIAL PRIMARY KEY,
 			stream_id       VARCHAR(500) NOT NULL,
 			version         BIGINT NOT NULL,
@@ -257,59 +257,88 @@ func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 			metadata        JSONB,
 			timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(stream_id, version)
-		)`
-
-	_, err = a.db.ExecContext(ctx, eventsSQL)
-	if err != nil {
-		return fmt.Errorf("mink/postgres: failed to create events table: %w", err)
-	}
-
-	// Create indexes
-	streamsTableQ := quoteQualifiedTable(a.schema, "streams")
-	eventsTableQ := quoteQualifiedTable(a.schema, "events")
-	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_streams_category ON ` + streamsTableQ + `(category)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_stream ON ` + eventsTableQ + `(stream_id, version)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_type ON ` + eventsTableQ + `(event_type)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON ` + eventsTableQ + `(timestamp)`,
-	}
-
-	for _, idx := range indexes {
-		_, err = a.db.ExecContext(ctx, idx)
-		if err != nil {
-			return fmt.Errorf("mink/postgres: failed to create index: %w", err)
-		}
-	}
-
-	// Create snapshots table
-	snapshotsSQL := `
-		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.snapshots (
+		)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_stream") + ` ON ` + eventsTable + ` (stream_id, version)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_type") + ` ON ` + eventsTable + ` (event_type)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_timestamp") + ` ON ` + eventsTable + ` (timestamp)`,
+		`CREATE TABLE IF NOT EXISTS ` + snapshotsTable + ` (
 			stream_id       VARCHAR(500) PRIMARY KEY,
 			version         BIGINT NOT NULL,
 			data            BYTEA NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`
-
-	_, err = a.db.ExecContext(ctx, snapshotsSQL)
-	if err != nil {
-		return fmt.Errorf("mink/postgres: failed to create snapshots table: %w", err)
-	}
-
-	// Create checkpoints table
-	checkpointsSQL := `
-		CREATE TABLE IF NOT EXISTS ` + schemaQ + `.checkpoints (
+		)`,
+		`CREATE TABLE IF NOT EXISTS ` + checkpointsTable + ` (
 			projection_name VARCHAR(500) PRIMARY KEY,
 			position        BIGINT NOT NULL DEFAULT 0,
 			status          VARCHAR(50) DEFAULT 'active',
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`
-
-	_, err = a.db.ExecContext(ctx, checkpointsSQL)
-	if err != nil {
-		return fmt.Errorf("mink/postgres: failed to create checkpoints table: %w", err)
+		)`,
 	}
+}
 
-	return nil
+func migrationSchemaStatements(schemaName string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS ` + quoteQualifiedTable(schemaName, "migrations") + ` (
+			name VARCHAR(255) PRIMARY KEY,
+			applied_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+	}
+}
+
+func outboxSchemaStatements(schemaName, tableName string) []string {
+	tableQ := quoteQualifiedTable(schemaName, tableName)
+	return []string{
+		`CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			aggregate_id VARCHAR(255) NOT NULL,
+			event_type VARCHAR(255) NOT NULL,
+			destination VARCHAR(255) NOT NULL,
+			payload JSONB NOT NULL,
+			headers JSONB DEFAULT '{}',
+			status INT NOT NULL DEFAULT 0,
+			attempts INT NOT NULL DEFAULT 0,
+			max_attempts INT NOT NULL DEFAULT 5,
+			last_error TEXT,
+			scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_attempt_at TIMESTAMPTZ,
+			processed_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_pending") + ` ON ` + tableQ + ` (scheduled_at) WHERE status = 0`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_dead_letter") + ` ON ` + tableQ + ` (created_at) WHERE status = 4`,
+	}
+}
+
+func idempotencySchemaStatements(schemaName, tableName string) []string {
+	tableQ := quoteQualifiedTable(schemaName, tableName)
+	return []string{
+		`CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
+			key VARCHAR(255) PRIMARY KEY,
+			command_type VARCHAR(255) NOT NULL,
+			aggregate_id VARCHAR(255),
+			version BIGINT,
+			response JSONB,
+			error TEXT,
+			success BOOLEAN NOT NULL DEFAULT false,
+			processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_expires_at") + ` ON ` + tableQ + ` (expires_at)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_processed_at") + ` ON ` + tableQ + ` (processed_at)`,
+	}
+}
+
+func appendSQLStatements(b *strings.Builder, statements []string) {
+	for _, stmt := range statements {
+		b.WriteString(stmt)
+		b.WriteString(";\n\n")
+	}
+}
+
+func joinSQLStatements(statements []string) string {
+	var b strings.Builder
+	appendSQLStatements(&b, statements)
+	return b.String()
 }
 
 // MigrationVersion returns the current migration version.
@@ -1042,15 +1071,10 @@ func (a *PostgresAdapter) GetAppliedMigrations(ctx context.Context) ([]string, e
 	}
 
 	schemaQ := a.schemaQ
-	// Ensure migrations table exists
-	_, err := a.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS `+schemaQ+`.migrations (
-			name VARCHAR(255) PRIMARY KEY,
-			applied_at TIMESTAMPTZ DEFAULT NOW()
-		)
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("mink/postgres: failed to create migrations table: %w", err)
+	for _, stmt := range migrationSchemaStatements(a.schema) {
+		if _, err := a.db.ExecContext(ctx, stmt); err != nil {
+			return nil, fmt.Errorf("mink/postgres: failed to create migrations table: %w", err)
+		}
 	}
 
 	rows, err := a.db.QueryContext(ctx, "SELECT name FROM "+schemaQ+".migrations ORDER BY name")
@@ -1135,138 +1159,25 @@ func GenerateSchema(projectName, schemaName, tableName, snapshotTableName, outbo
 		outboxTableName = "mink_outbox"
 	}
 
-	schemaQ := quoteIdentifier(schemaName)
-	streamsTable := quoteQualifiedTable(schemaName, "streams")
-	eventsTable := quoteQualifiedTable(schemaName, tableName)
-	snapshotsTable := quoteQualifiedTable(schemaName, snapshotTableName)
-	checkpointsTable := quoteQualifiedTable(schemaName, "checkpoints")
-	migrationsTable := quoteQualifiedTable(schemaName, "migrations")
-	outboxTable := quoteQualifiedTable(schemaName, outboxTableName)
-	idempotencyTable := quoteQualifiedTable(schemaName, "mink_idempotency")
-
 	var b strings.Builder
 	fmt.Fprintf(&b, `-- Mink Event Store Schema (PostgreSQL)
 -- Generated for: %s
 
-CREATE SCHEMA IF NOT EXISTS %s;
-
--- Streams table
-CREATE TABLE IF NOT EXISTS %s (
-    id BIGSERIAL PRIMARY KEY,
-    stream_id VARCHAR(500) NOT NULL UNIQUE,
-    category VARCHAR(250) NOT NULL,
-    version BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS %s ON %s (category);
-
--- Events table
-CREATE TABLE IF NOT EXISTS %s (
-    global_position BIGSERIAL PRIMARY KEY,
-    stream_id VARCHAR(500) NOT NULL,
-    version BIGINT NOT NULL,
-    event_id UUID NOT NULL DEFAULT gen_random_uuid(),
-    event_type VARCHAR(500) NOT NULL,
-    data JSONB NOT NULL,
-    metadata JSONB,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(stream_id, version)
-);
-
-CREATE INDEX IF NOT EXISTS %s ON %s (stream_id, version);
-CREATE INDEX IF NOT EXISTS %s ON %s (event_type);
-CREATE INDEX IF NOT EXISTS %s ON %s (timestamp);
-
--- Snapshots table
-CREATE TABLE IF NOT EXISTS %s (
-    stream_id VARCHAR(500) PRIMARY KEY,
-    version BIGINT NOT NULL,
-    data BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Projection checkpoints
-CREATE TABLE IF NOT EXISTS %s (
-    projection_name VARCHAR(500) PRIMARY KEY,
-    position BIGINT NOT NULL DEFAULT 0,
-    status VARCHAR(50) DEFAULT 'active',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Outbox table (transactional outbox for reliable messaging)
-CREATE TABLE IF NOT EXISTS %s (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    aggregate_id VARCHAR(255) NOT NULL,
-    event_type VARCHAR(255) NOT NULL,
-    destination VARCHAR(255) NOT NULL,
-    payload JSONB NOT NULL,
-    headers JSONB DEFAULT '{}',
-    status INT NOT NULL DEFAULT 0,
-    attempts INT NOT NULL DEFAULT 0,
-    max_attempts INT NOT NULL DEFAULT 5,
-    last_error TEXT,
-    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_attempt_at TIMESTAMPTZ,
-    processed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS %s ON %s (scheduled_at) WHERE status = 0;
-CREATE INDEX IF NOT EXISTS %s ON %s (created_at) WHERE status = 4;
-
--- Migrations tracking
-CREATE TABLE IF NOT EXISTS %s (
-    name VARCHAR(255) PRIMARY KEY,
-    applied_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Idempotency keys
-CREATE TABLE IF NOT EXISTS %s (
-    key VARCHAR(255) PRIMARY KEY,
-    command_type VARCHAR(255) NOT NULL,
-    aggregate_id VARCHAR(255),
-    version BIGINT,
-    response JSONB,
-    error TEXT,
-    success BOOLEAN NOT NULL DEFAULT false,
-    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS %s ON %s (expires_at);
-CREATE INDEX IF NOT EXISTS %s ON %s (processed_at);
-
-COMMENT ON TABLE %s IS 'Mink event store streams';
-COMMENT ON TABLE %s IS 'Mink event store - immutable event log';
-COMMENT ON TABLE %s IS 'Aggregate snapshots for optimization';
-COMMENT ON TABLE %s IS 'Projection checkpoint positions';
-COMMENT ON TABLE %s IS 'Transactional outbox for reliable messaging';
 `,
 		projectName,
-		schemaQ,
-		streamsTable,
-		quoteIdentifier("idx_streams_category"), streamsTable,
-		eventsTable,
-		quoteIdentifier("idx_"+tableName+"_stream"), eventsTable,
-		quoteIdentifier("idx_"+tableName+"_type"), eventsTable,
-		quoteIdentifier("idx_"+tableName+"_timestamp"), eventsTable,
-		snapshotsTable,
-		checkpointsTable,
-		outboxTable,
-		quoteIdentifier("idx_"+outboxTableName+"_pending"), outboxTable,
-		quoteIdentifier("idx_"+outboxTableName+"_dead_letter"), outboxTable,
-		migrationsTable,
-		idempotencyTable,
-		quoteIdentifier("idx_mink_idempotency_expires_at"), idempotencyTable,
-		quoteIdentifier("idx_mink_idempotency_processed_at"), idempotencyTable,
-		streamsTable,
-		eventsTable,
-		snapshotsTable,
-		checkpointsTable,
-		outboxTable,
 	)
+
+	appendSQLStatements(&b, eventStoreSchemaStatements(schemaName, tableName, snapshotTableName))
+	appendSQLStatements(&b, outboxSchemaStatements(schemaName, outboxTableName))
+	appendSQLStatements(&b, migrationSchemaStatements(schemaName))
+	appendSQLStatements(&b, idempotencySchemaStatements(schemaName, "mink_idempotency"))
+	appendSQLStatements(&b, []string{
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Mink event store streams'", quoteQualifiedTable(schemaName, "streams")),
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Mink event store - immutable event log'", quoteQualifiedTable(schemaName, tableName)),
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Aggregate snapshots for optimization'", quoteQualifiedTable(schemaName, snapshotTableName)),
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Projection checkpoint positions'", quoteQualifiedTable(schemaName, "checkpoints")),
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Transactional outbox for reliable messaging'", quoteQualifiedTable(schemaName, outboxTableName)),
+	})
 
 	return b.String()
 }

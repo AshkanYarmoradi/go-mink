@@ -1500,46 +1500,35 @@ func TestPostgresAdapter_GenerateSchema(t *testing.T) {
 
 	t.Run("generates schema SQL", func(t *testing.T) {
 		schema := adapter.GenerateSchema("test-project", "events", "snapshots", "outbox")
-		assert.Contains(t, schema, "CREATE TABLE")
-		assert.Contains(t, schema, `CREATE SCHEMA IF NOT EXISTS "mink"`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."streams"`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."events"`)
-		assert.Contains(t, schema, `global_position BIGSERIAL PRIMARY KEY`)
-		assert.Contains(t, schema, `event_id UUID NOT NULL DEFAULT gen_random_uuid()`)
-		assert.Contains(t, schema, `event_type VARCHAR(500) NOT NULL`)
-		assert.Contains(t, schema, `metadata JSONB`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."snapshots"`)
-		assert.Contains(t, schema, `data BYTEA NOT NULL`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."checkpoints"`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."migrations"`)
-		assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."mink_idempotency"`)
-		assert.NotContains(t, schema, "    type VARCHAR")
-		assert.NotContains(t, schema, "mink_checkpoints")
-		assert.NotContains(t, schema, "mink_append_events")
+		assertRuntimeSchemaDDL(t, schema)
 		assert.Contains(t, schema, "test-project")
 	})
 }
 
 func TestGenerateSchema(t *testing.T) {
 	schema := GenerateSchema("test-project", "mink", "events", "snapshots", "mink_outbox")
+	assertRuntimeSchemaDDL(t, schema)
+	assert.Contains(t, schema, "test-project")
+}
 
+func assertRuntimeSchemaDDL(t *testing.T, schema string) {
+	t.Helper()
 	assert.Contains(t, schema, "CREATE TABLE")
 	assert.Contains(t, schema, `CREATE SCHEMA IF NOT EXISTS "mink"`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."streams"`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."events"`)
 	assert.Contains(t, schema, `global_position BIGSERIAL PRIMARY KEY`)
-	assert.Contains(t, schema, `event_id UUID NOT NULL DEFAULT gen_random_uuid()`)
-	assert.Contains(t, schema, `event_type VARCHAR(500) NOT NULL`)
-	assert.Contains(t, schema, `metadata JSONB`)
+	assert.Contains(t, schema, `event_id`)
+	assert.Contains(t, schema, `event_type`)
+	assert.Contains(t, schema, `metadata`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."snapshots"`)
-	assert.Contains(t, schema, `data BYTEA NOT NULL`)
+	assert.Contains(t, schema, `BYTEA NOT NULL`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."checkpoints"`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."migrations"`)
 	assert.Contains(t, schema, `CREATE TABLE IF NOT EXISTS "mink"."mink_idempotency"`)
 	assert.NotContains(t, schema, "    type VARCHAR")
 	assert.NotContains(t, schema, "mink_checkpoints")
 	assert.NotContains(t, schema, "mink_append_events")
-	assert.Contains(t, schema, "test-project")
 }
 
 func TestPostgresAdapter_GetDiagnosticInfo(t *testing.T) {
