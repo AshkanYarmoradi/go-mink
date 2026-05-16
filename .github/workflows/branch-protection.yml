@@ -11,7 +11,11 @@ jobs:
     steps:
       - name: Verify PR comes from develop
         if: github.head_ref != 'develop'
+        # Bind the expression to an environment variable to prevent script injection
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
         run: |
           echo "❌ ERROR: Pull requests to 'main' must originate from the 'develop' branch."
-          echo "Current source branch is '${{ github.head_ref }}'."
+          # Safely reference the environment variable using standard shell syntax
+          echo "Current source branch is '${SOURCE_BRANCH}'."
           exit 1
