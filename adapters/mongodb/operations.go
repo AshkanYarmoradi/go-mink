@@ -1,0 +1,615 @@
+package mongodb
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"go-mink.dev/adapters"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+const (
+	defaultPollInterval       = 100 * time.Millisecond
+	defaultSubscriptionBuffer = 100
+	defaultMaxRetries         = 5
+)
+
+type snapshotDoc struct {
+	ID        string      `bson:"_id"`
+	Version   int64       `bson:"version"`
+	Data      bson.Binary `bson:"data"`
+	CreatedAt time.Time   `bson:"created_at"`
+}
+
+type checkpointDoc struct {
+	ID        string    `bson:"_id"`
+	Position  int64     `bson:"position"`
+	Status    string    `bson:"status"`
+	UpdatedAt time.Time `bson:"updated_at"`
+}
+
+type migrationDoc struct {
+	ID        string    `bson:"_id"`
+	AppliedAt time.Time `bson:"applied_at"`
+}
+
+// LoadFromPosition loads events starting from a global position.
+func (a *MongoAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	limit = adapters.DefaultLimit(limit, 1000)
+	filter := bson.M{"global_position": bson.M{"$gt": int64(fromPosition)}}
+	opts := options.Find().SetSort(bson.D{{Key: "global_position", Value: 1}}).SetLimit(int64(limit))
+	return a.findEvents(ctx, filter, opts)
+}
+
+// SubscribeAll subscribes to all events across all streams.
+func (a *MongoAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
+
+	loader := func(ctx context.Context, position uint64) ([]adapters.StoredEvent, uint64, error) {
+		events, err := a.LoadFromPosition(ctx, position, cfg.bufferSize)
+		if err != nil {
+			return nil, position, err
+		}
+		if len(events) == 0 {
+			return events, position, nil
+		}
+		return events, events[len(events)-1].GlobalPosition, nil
+	}
+	go runPollingLoop(ctx, cfg, ch, "SubscribeAll", fromPosition, loader)
+	return ch, nil
+}
+
+// SubscribeStream subscribes to events from a specific stream.
+func (a *MongoAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
+
+	loader := func(ctx context.Context, version int64) ([]adapters.StoredEvent, int64, error) {
+		events, err := a.Load(ctx, streamID, version)
+		if err != nil {
+			return nil, version, err
+		}
+		if len(events) == 0 {
+			return events, version, nil
+		}
+		return events, events[len(events)-1].Version, nil
+	}
+	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeStream(%s)", streamID), fromVersion, loader)
+	return ch, nil
+}
+
+// SubscribeCategory subscribes to all events from streams in a category.
+func (a *MongoAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	cfg := newSubscriptionConfig(opts)
+	ch := make(chan adapters.StoredEvent, cfg.bufferSize)
+
+	loader := func(ctx context.Context, position uint64) ([]adapters.StoredEvent, uint64, error) {
+		filter := bson.M{
+			"global_position": bson.M{"$gt": int64(position)},
+			"stream_id":       bson.M{"$regex": "^" + regexpQuote(category) + "-"},
+		}
+		findOpts := options.Find().SetSort(bson.D{{Key: "global_position", Value: 1}}).SetLimit(int64(cfg.bufferSize))
+		events, err := a.findEvents(ctx, filter, findOpts)
+		if err != nil {
+			return nil, position, err
+		}
+		if len(events) == 0 {
+			return events, position, nil
+		}
+		return events, events[len(events)-1].GlobalPosition, nil
+	}
+	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeCategory(%s)", category), fromPosition, loader)
+	return ch, nil
+}
+
+// SaveSnapshot stores a snapshot for the given stream.
+func (a *MongoAdapter) SaveSnapshot(ctx context.Context, streamID string, version int64, data []byte) error {
+	if a.closed {
+		return ErrAdapterClosed
+	}
+	doc := snapshotDoc{
+		ID:        streamID,
+		Version:   version,
+		Data:      bson.Binary{Subtype: bson.TypeBinaryGeneric, Data: data},
+		CreatedAt: time.Now().UTC(),
+	}
+	_, err := a.snapshots().ReplaceOne(ctx, bson.M{"_id": streamID}, doc, options.Replace().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("mink/mongodb: failed to save snapshot: %w", err)
+	}
+	return nil
+}
+
+// LoadSnapshot retrieves the latest snapshot for the given stream.
+func (a *MongoAdapter) LoadSnapshot(ctx context.Context, streamID string) (*adapters.SnapshotRecord, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	var doc snapshotDoc
+	err := a.snapshots().FindOne(ctx, bson.M{"_id": streamID}).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mink/mongodb: failed to load snapshot: %w", err)
+	}
+	return &adapters.SnapshotRecord{StreamID: streamID, Version: doc.Version, Data: doc.Data.Data}, nil
+}
+
+// DeleteSnapshot removes the snapshot for the given stream.
+func (a *MongoAdapter) DeleteSnapshot(ctx context.Context, streamID string) error {
+	if a.closed {
+		return ErrAdapterClosed
+	}
+	_, err := a.snapshots().DeleteOne(ctx, bson.M{"_id": streamID})
+	return err
+}
+
+// GetCheckpoint returns the last processed position for a projection.
+func (a *MongoAdapter) GetCheckpoint(ctx context.Context, projectionName string) (uint64, error) {
+	if a.closed {
+		return 0, ErrAdapterClosed
+	}
+	var doc checkpointDoc
+	err := a.checkpoints().FindOne(ctx, bson.M{"_id": projectionName}).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("mink/mongodb: failed to get checkpoint: %w", err)
+	}
+	if doc.Position < 0 {
+		return 0, fmt.Errorf("mink/mongodb: invalid negative checkpoint: %d", doc.Position)
+	}
+	return uint64(doc.Position), nil
+}
+
+// SetCheckpoint stores the last processed position for a projection.
+func (a *MongoAdapter) SetCheckpoint(ctx context.Context, projectionName string, position uint64) error {
+	if a.closed {
+		return ErrAdapterClosed
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"position":   int64(position),
+			"status":     "active",
+			"updated_at": time.Now().UTC(),
+		},
+	}
+	_, err := a.checkpoints().UpdateOne(ctx, bson.M{"_id": projectionName}, update, options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+// DeleteCheckpoint removes the checkpoint for a projection.
+func (a *MongoAdapter) DeleteCheckpoint(ctx context.Context, projectionName string) error {
+	if a.closed {
+		return ErrAdapterClosed
+	}
+	_, err := a.checkpoints().DeleteOne(ctx, bson.M{"_id": projectionName})
+	return err
+}
+
+// GetAllCheckpoints returns checkpoints for all projections.
+func (a *MongoAdapter) GetAllCheckpoints(ctx context.Context) (map[string]uint64, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	cursor, err := a.checkpoints().Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	result := make(map[string]uint64)
+	for cursor.Next(ctx) {
+		var doc checkpointDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, err
+		}
+		if doc.Position >= 0 {
+			result[doc.ID] = uint64(doc.Position)
+		}
+	}
+	return result, cursor.Err()
+}
+
+// ListStreams returns a list of stream summaries.
+func (a *MongoAdapter) ListStreams(ctx context.Context, prefix string, limit int) ([]adapters.StreamSummary, error) {
+	if a.closed {
+		return nil, ErrAdapterClosed
+	}
+	filter := bson.M{}
+	if prefix != "" {
+		filter["_id"] = bson.M{"$regex": "^" + regexpQuote(prefix)}
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}})
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+	cursor, err := a.streams().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var summaries []adapters.StreamSummary
+	for cursor.Next(ctx) {
+		var stream streamDoc
+		if err := cursor.Decode(&stream); err != nil {
+			return nil, err
+		}
+		lastType := ""
+		var last eventDoc
+		err := a.events().FindOne(
+			ctx,
+			bson.M{"stream_id": stream.ID},
+			options.FindOne().SetSort(bson.D{{Key: "version", Value: -1}}),
+		).Decode(&last)
+		if err == nil {
+			lastType = last.Type
+		}
+		summaries = append(summaries, adapters.StreamSummary{
+			StreamID:      stream.ID,
+			EventCount:    stream.EventCount,
+			LastEventType: lastType,
+			LastUpdated:   stream.UpdatedAt,
+		})
+	}
+	return summaries, cursor.Err()
+}
+
+// GetStreamEvents returns events from a stream with pagination.
+func (a *MongoAdapter) GetStreamEvents(ctx context.Context, streamID string, fromVersion int64, limit int) ([]adapters.StoredEvent, error) {
+	if limit <= 0 {
+		return a.Load(ctx, streamID, fromVersion)
+	}
+	filter := bson.M{"stream_id": streamID, "version": bson.M{"$gt": fromVersion}}
+	opts := options.Find().SetSort(bson.D{{Key: "version", Value: 1}}).SetLimit(int64(limit))
+	return a.findEvents(ctx, filter, opts)
+}
+
+// GetEventStoreStats returns aggregate statistics about the event store.
+func (a *MongoAdapter) GetEventStoreStats(ctx context.Context) (*adapters.EventStoreStats, error) {
+	totalEvents, err := a.events().CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	totalStreams, err := a.streams().CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+
+	stats := &adapters.EventStoreStats{TotalEvents: totalEvents, TotalStreams: totalStreams}
+	if totalStreams > 0 {
+		stats.AvgEventsPerStream = float64(totalEvents) / float64(totalStreams)
+	}
+
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$type"}, {Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}}}}},
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "count", Value: -1}}}},
+		bson.D{{Key: "$limit", Value: 5}},
+	}
+	cursor, err := a.events().Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	for cursor.Next(ctx) {
+		var row struct {
+			Type  string `bson:"_id"`
+			Count int64  `bson:"count"`
+		}
+		if err := cursor.Decode(&row); err != nil {
+			return nil, err
+		}
+		stats.TopEventTypes = append(stats.TopEventTypes, adapters.EventTypeCount{Type: row.Type, Count: row.Count})
+	}
+	stats.EventTypes = int64(len(stats.TopEventTypes))
+	return stats, cursor.Err()
+}
+
+// ListProjections returns all registered projections.
+func (a *MongoAdapter) ListProjections(ctx context.Context) ([]adapters.ProjectionInfo, error) {
+	cursor, err := a.checkpoints().Find(ctx, bson.M{}, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var projections []adapters.ProjectionInfo
+	for cursor.Next(ctx) {
+		var doc checkpointDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, err
+		}
+		projections = append(projections, projectionInfoFromDoc(doc))
+	}
+	return projections, cursor.Err()
+}
+
+// GetProjection returns information about a specific projection.
+func (a *MongoAdapter) GetProjection(ctx context.Context, name string) (*adapters.ProjectionInfo, error) {
+	var doc checkpointDoc
+	err := a.checkpoints().FindOne(ctx, bson.M{"_id": name}).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	info := projectionInfoFromDoc(doc)
+	return &info, nil
+}
+
+// SetProjectionStatus updates a projection's status.
+func (a *MongoAdapter) SetProjectionStatus(ctx context.Context, name string, status string) error {
+	res, err := a.checkpoints().UpdateOne(ctx, bson.M{"_id": name}, bson.M{"$set": bson.M{"status": status, "updated_at": time.Now().UTC()}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("mink/mongodb: projection %q not found", name)
+	}
+	return nil
+}
+
+// ResetProjectionCheckpoint resets a projection's position to 0 for rebuild.
+func (a *MongoAdapter) ResetProjectionCheckpoint(ctx context.Context, name string) error {
+	_, err := a.checkpoints().UpdateOne(ctx, bson.M{"_id": name}, bson.M{"$set": bson.M{"position": int64(0), "updated_at": time.Now().UTC()}})
+	return err
+}
+
+// GetTotalEventCount returns the highest global position.
+func (a *MongoAdapter) GetTotalEventCount(ctx context.Context) (int64, error) {
+	pos, err := a.GetLastPosition(ctx)
+	return int64(pos), err
+}
+
+// GetAppliedMigrations returns the list of applied migration names.
+func (a *MongoAdapter) GetAppliedMigrations(ctx context.Context) ([]string, error) {
+	cursor, err := a.migrations().Find(ctx, bson.M{}, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+	var names []string
+	for cursor.Next(ctx) {
+		var doc migrationDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, err
+		}
+		names = append(names, doc.ID)
+	}
+	return names, cursor.Err()
+}
+
+// RecordMigration marks a migration as applied.
+func (a *MongoAdapter) RecordMigration(ctx context.Context, name string) error {
+	_, err := a.migrations().ReplaceOne(ctx, bson.M{"_id": name}, migrationDoc{ID: name, AppliedAt: time.Now().UTC()}, options.Replace().SetUpsert(true))
+	return err
+}
+
+// RemoveMigrationRecord removes a migration record.
+func (a *MongoAdapter) RemoveMigrationRecord(ctx context.Context, name string) error {
+	_, err := a.migrations().DeleteOne(ctx, bson.M{"_id": name})
+	return err
+}
+
+// ExecuteSQL returns an unsupported error because MongoDB does not execute SQL migrations.
+func (a *MongoAdapter) ExecuteSQL(ctx context.Context, sql string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("mink/mongodb: SQL migrations are not supported; MongoDB schema is created with Initialize")
+}
+
+// GetDiagnosticInfo returns MongoDB version and connection status.
+func (a *MongoAdapter) GetDiagnosticInfo(ctx context.Context) (*adapters.DiagnosticInfo, error) {
+	info := &adapters.DiagnosticInfo{}
+	if err := a.Ping(ctx); err != nil {
+		info.Connected = false
+		info.Message = err.Error()
+		return info, nil
+	}
+	info.Connected = true
+	var result struct {
+		Version string `bson:"version"`
+	}
+	if err := a.db.RunCommand(ctx, bson.D{{Key: "buildInfo", Value: 1}}).Decode(&result); err != nil {
+		info.Message = "Connected but couldn't get MongoDB version"
+		return info, nil
+	}
+	info.Version = "MongoDB " + result.Version
+	mode := "standalone/best-effort"
+	if a.transactionsActive {
+		mode = "transactions"
+	}
+	info.Message = "Connected successfully (" + mode + ")"
+	return info, nil
+}
+
+// CheckSchema verifies the event store collection exists.
+func (a *MongoAdapter) CheckSchema(ctx context.Context, tableName string) (*adapters.SchemaCheckResult, error) {
+	collectionName := tableName
+	if collectionName == "" {
+		collectionName = a.collections.Events
+	}
+	names, err := a.db.ListCollectionNames(ctx, bson.M{"name": collectionName})
+	if err != nil {
+		return nil, err
+	}
+	result := &adapters.SchemaCheckResult{TableExists: len(names) > 0}
+	if !result.TableExists {
+		result.Message = fmt.Sprintf("Collection %q not found", collectionName)
+		return result, nil
+	}
+	count, err := a.collection(collectionName).CountDocuments(ctx, bson.M{})
+	if err != nil {
+		result.Message = fmt.Sprintf("Collection exists but couldn't count events: %v", err)
+		return result, nil
+	}
+	result.EventCount = count
+	result.Message = fmt.Sprintf("Collection exists (%d events)", count)
+	return result, nil
+}
+
+// GetProjectionHealth returns projection health status.
+func (a *MongoAdapter) GetProjectionHealth(ctx context.Context) (*adapters.ProjectionHealthResult, error) {
+	total, err := a.checkpoints().CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	max, err := a.GetTotalEventCount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	behind, err := a.checkpoints().CountDocuments(ctx, bson.M{"position": bson.M{"$lt": max}})
+	if err != nil {
+		return nil, err
+	}
+	result := &adapters.ProjectionHealthResult{
+		TotalProjections:  total,
+		ProjectionsBehind: behind,
+		MaxPosition:       max,
+	}
+	if total == 0 {
+		result.Message = "No projections registered"
+	} else if behind > 0 {
+		result.Message = fmt.Sprintf("%d/%d projections behind", behind, total)
+	} else {
+		result.Message = fmt.Sprintf("%d projections, all up to date", total)
+	}
+	return result, nil
+}
+
+func projectionInfoFromDoc(doc checkpointDoc) adapters.ProjectionInfo {
+	status := doc.Status
+	if status == "" {
+		status = "active"
+	}
+	return adapters.ProjectionInfo{
+		Name:      doc.ID,
+		Position:  doc.Position,
+		Status:    status,
+		UpdatedAt: doc.UpdatedAt,
+	}
+}
+
+type subscriptionConfig struct {
+	bufferSize   int
+	pollInterval time.Duration
+	maxRetries   int
+	onError      func(error)
+}
+
+func newSubscriptionConfig(opts []adapters.SubscriptionOptions) subscriptionConfig {
+	cfg := subscriptionConfig{
+		bufferSize:   defaultSubscriptionBuffer,
+		pollInterval: defaultPollInterval,
+		maxRetries:   defaultMaxRetries,
+	}
+	if len(opts) > 0 {
+		if opts[0].BufferSize > 0 {
+			cfg.bufferSize = opts[0].BufferSize
+		}
+		if opts[0].PollInterval > 0 {
+			cfg.pollInterval = opts[0].PollInterval
+		}
+		cfg.onError = opts[0].OnError
+	}
+	return cfg
+}
+
+type eventLoader[P any] func(context.Context, P) ([]adapters.StoredEvent, P, error)
+
+func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan adapters.StoredEvent, label string, initial P, loader eventLoader[P]) {
+	defer close(ch)
+	ticker := time.NewTicker(cfg.pollInterval)
+	defer ticker.Stop()
+
+	position := initial
+	consecutiveErrors := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		events, newPosition, err := loader(ctx, position)
+		if err != nil {
+			consecutiveErrors++
+			if consecutiveErrors >= cfg.maxRetries {
+				if cfg.onError != nil {
+					cfg.onError(err)
+				} else {
+					log.Printf("mink/mongodb: subscription error (%s): %v", label, err)
+				}
+				consecutiveErrors = 0
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+		consecutiveErrors = 0
+
+		for _, event := range events {
+			select {
+			case ch <- event:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if len(events) > 0 {
+			position = newPosition
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func regexpQuote(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`.`, `\.`,
+		`+`, `\+`,
+		`*`, `\*`,
+		`?`, `\?`,
+		`(`, `\(`,
+		`)`, `\)`,
+		`[`, `\[`,
+		`]`, `\]`,
+		`{`, `\{`,
+		`}`, `\}`,
+		`^`, `\^`,
+		`$`, `\$`,
+		`|`, `\|`,
+	)
+	return replacer.Replace(value)
+}

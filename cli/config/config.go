@@ -40,7 +40,7 @@ type ProjectConfig struct {
 
 // DatabaseConfig contains database connection settings
 type DatabaseConfig struct {
-	// Driver is the database driver (postgres, memory)
+	// Driver is the database driver (postgres, mongodb, memory)
 	Driver string `yaml:"driver"`
 
 	// URL is the database connection string
@@ -193,12 +193,13 @@ func (c *Config) Validate() []string {
 		errors = append(errors, "database.driver is required")
 	}
 
-	if c.Database.Driver != "postgres" && c.Database.Driver != "memory" {
-		errors = append(errors, "database.driver must be 'postgres' or 'memory'")
+	isPersistentDriver := c.Database.Driver == "postgres" || c.Database.Driver == "postgresql" || c.Database.Driver == "mongodb" || c.Database.Driver == "mongo"
+	if !isPersistentDriver && c.Database.Driver != "memory" {
+		errors = append(errors, "database.driver must be 'postgres', 'mongodb', or 'memory'")
 	}
 
-	if c.Database.Driver == "postgres" && c.Database.URL == "" {
-		errors = append(errors, "database.url is required for postgres driver")
+	if isPersistentDriver && c.Database.URL == "" {
+		errors = append(errors, "database.url is required for persistent database drivers")
 	}
 
 	return errors
@@ -206,6 +207,10 @@ func (c *Config) Validate() []string {
 
 // GenerateYAML generates YAML content with comments
 func GenerateYAML(cfg *Config) string {
+	urlPlaceholder := "${DATABASE_URL}"
+	if cfg.Database.Driver == "mongodb" || cfg.Database.Driver == "mongo" {
+		urlPlaceholder = "${MONGODB_URL}"
+	}
 	return `# Mink Configuration File
 # This file configures the mink CLI and code generation
 
@@ -224,16 +229,16 @@ project:
 
 # Database configuration
 database:
-  # Driver: postgres or memory
+  # Driver: postgres, mongodb, or memory
   driver: "` + cfg.Database.Driver + `"
   
-  # Connection URL (required for postgres)
-  url: "${DATABASE_URL}"
+  # Connection URL (required for persistent database drivers)
+  url: "` + urlPlaceholder + `"
   
-  # Database schema (postgres only)
+  # Database schema (PostgreSQL) or database name (MongoDB)
   schema: "` + cfg.Database.Schema + `"
   
-  # Directory for SQL migrations
+  # Directory for SQL migrations (PostgreSQL only)
   migrations_dir: "` + cfg.Database.MigrationsDir + `"
 
 # Event store table names

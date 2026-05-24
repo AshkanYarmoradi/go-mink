@@ -6644,6 +6644,21 @@ func TestSchemaGenerate_WithOutput(t *testing.T) {
 	assert.FileExists(t, outFile)
 }
 
+func TestGenerateFallbackSchema_MongoDB(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Project.Name = "mongo-app"
+	cfg.Database.Driver = "mongodb"
+	cfg.Database.Schema = "mink_mongo"
+	cfg.EventStore.TableName = "event_log"
+	cfg.EventStore.OutboxTableName = "outbox_messages"
+
+	schema := generateFallbackSchema(cfg)
+
+	assert.Contains(t, schema, `use("mink_mongo");`)
+	assert.Contains(t, schema, `db.createCollection("event_log");`)
+	assert.Contains(t, schema, `db.outbox_messages.createIndex`)
+}
+
 // TestGetAllMigrations_EmptyDir_PG tests getAllMigrations with empty dir
 func TestGetAllMigrations_EmptyDir_PG(t *testing.T) {
 	env := setupTestEnv(t, "mink-all-mig-empty-*")

@@ -344,6 +344,47 @@ query := mink.NewQuery().
 orders, err := repo.Find(ctx, query.Build())
 ```
 
+### MongoDB Repository
+
+MongoDB read models use the same `ReadModelRepository[T]` interface and the same `mink` struct tags as PostgreSQL:
+
+```go
+import "go-mink.dev/adapters/mongodb"
+
+type OrderSummary struct {
+    OrderID     string    `mink:"order_id,pk"`
+    CustomerID  string    `mink:"customer_id,index"`
+    Email       string    `mink:"email,unique"`
+    Status      string    `mink:"status"`
+    TotalAmount float64   `mink:"total_amount"`
+    CreatedAt   time.Time `mink:"created_at"`
+}
+
+adapter, err := mongodb.NewAdapter(
+    "mongodb://localhost:27017/mink?replicaSet=rs0",
+    mongodb.WithDatabase("mink"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer adapter.Close()
+
+repo, err := mongodb.NewMongoRepositoryFromAdapter[OrderSummary](adapter,
+    mongodb.WithReadModelCollection("order_summaries"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+orders, err := repo.Find(ctx, mink.NewQuery().
+    Where("status", mink.FilterOpEq, "pending").
+    OrderByDesc("created_at").
+    WithLimit(10).
+    Build())
+```
+
+For MongoDB, `pk` is stored as MongoDB `_id` and also preserved under the tagged field name. `index` and `unique` create MongoDB indexes. `nullable`, `default`, and `type=` are accepted for compatibility with PostgreSQL-tagged models, but they are no-ops for MongoDB.
+
 #### Supported Struct Tags
 
 | Tag | Description |

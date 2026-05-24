@@ -37,7 +37,8 @@ This command will:
 Examples:
   mink init                    # Initialize in current directory
   mink init my-project         # Initialize in a new directory
-  mink init --driver=postgres  # Use PostgreSQL driver`,
+  mink init --driver=postgres  # Use PostgreSQL driver
+  mink init --driver=mongodb   # Use MongoDB driver`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Determine target directory
@@ -110,6 +111,7 @@ Examples:
 							Description("Select the database driver to use").
 							Options(
 								huh.NewOption("PostgreSQL (recommended for production)", "postgres"),
+								huh.NewOption("MongoDB", "mongodb"),
 								huh.NewOption("In-Memory (for testing only)", "memory"),
 							).
 							Value(&cfg.Database.Driver),
@@ -196,7 +198,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Project name")
 	cmd.Flags().StringVarP(&module, "module", "m", "", "Go module path")
-	cmd.Flags().StringVarP(&driver, "driver", "d", "", "Database driver (postgres, memory)")
+	cmd.Flags().StringVarP(&driver, "driver", "d", "", "Database driver (postgres, mongodb, memory)")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Run in non-interactive mode")
 
 	return cmd
@@ -240,6 +242,22 @@ func nextSteps(cfg *config.Config) string {
 		steps = append(steps,
 			fmt.Sprintf("%d. The event store schema will be created automatically", stepNum),
 			"   when you first use the PostgreSQL adapter.",
+			"",
+		)
+		stepNum++
+	}
+
+	if cfg.Database.Driver == "mongodb" || cfg.Database.Driver == "mongo" {
+		steps = append(steps,
+			fmt.Sprintf("%d. Set your MongoDB URL:", stepNum),
+			"   "+styles.Code.Render("export MONGODB_URL=\"mongodb://localhost:27017/mink\""),
+			"",
+		)
+		stepNum++
+
+		steps = append(steps,
+			fmt.Sprintf("%d. The MongoDB collections and indexes will be created automatically", stepNum),
+			"   when you first initialize the MongoDB adapter.",
 			"",
 		)
 		stepNum++

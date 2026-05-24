@@ -30,7 +30,7 @@
 
 go-mink includes everything you need to build production event-sourced systems in Go:
 
-- **Event Store** with optimistic concurrency, PostgreSQL & in-memory adapters
+- **Event Store** with optimistic concurrency, PostgreSQL, MongoDB & in-memory adapters
 - **Command Bus** with middleware pipeline (validation, idempotency, correlation, recovery)
 - **Projection Engine** with inline, async, and live projections
 - **Saga / Process Manager** with compensation handling
@@ -62,6 +62,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 |---------|--------|-------------|
 | 🎯 **Event Store** | ✅ | Append-only event storage with optimistic concurrency |
 | 🔌 **PostgreSQL Adapter** | ✅ | Production-ready PostgreSQL support |
+| 🍃 **MongoDB Adapter** | ✅ | Event store, optional stores, subscriptions, and read models |
 | 🧪 **Memory Adapter** | ✅ | In-memory adapter for testing |
 | 🧱 **Aggregates** | ✅ | Base implementation with event application |
 | 📋 **Command Bus** | ✅ | Full CQRS with command handlers and middleware |
@@ -442,6 +443,7 @@ See [full benchmark results](docs/benchmarks.md) for detailed throughput, latenc
 ```bash
 go get go-mink.dev
 go get go-mink.dev/adapters/postgres
+go get go-mink.dev/adapters/mongodb
 ```
 
 ## Documentation

@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -270,7 +271,13 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 	// Try atomic append+outbox if adapter supports it
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(prelimMessages) > 0 {
 		_, err := appender.AppendWithOutbox(ctx, streamID, records, config.expectedVersion, prelimMessages)
-		return err
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, adapters.ErrOutboxAtomicityUnsupported) {
+			return err
+		}
+		es.logger.Warn("Outbox messages scheduled non-atomically; adapter cannot provide atomic outbox in its current configuration")
 	}
 
 	// Fallback: separate operations
@@ -280,7 +287,9 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 	}
 
 	if len(prelimMessages) > 0 {
-		es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
+		if _, ok := es.store.adapter.(adapters.OutboxAppender); !ok {
+			es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
+		}
 		if err := es.outbox.Schedule(ctx, prelimMessages); err != nil {
 			es.logger.Error("Failed to schedule outbox messages", "error", err)
 			return fmt.Errorf("mink: events appended but outbox scheduling failed: %w", err)
@@ -329,21 +338,33 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 	// Try atomic append+outbox
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(outboxMessages) > 0 {
 		_, err := appender.AppendWithOutbox(ctx, streamID, records, expectedVersion, outboxMessages)
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := es.store.adapter.Append(ctx, streamID, records, expectedVersion)
-		if err != nil {
-			return err
-		}
-
-		if len(outboxMessages) > 0 {
-			es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
-			if err := es.outbox.Schedule(ctx, outboxMessages); err != nil {
-				es.logger.Error("Failed to schedule outbox messages", "error", err)
-				return fmt.Errorf("mink: events appended but outbox scheduling failed: %w", err)
+		if err == nil {
+			// Update aggregate version
+			if setter, ok := agg.(VersionSetter); ok {
+				setter.SetVersion(expectedVersion + int64(len(events)))
 			}
+
+			agg.ClearUncommittedEvents()
+			return nil
+		}
+		if !errors.Is(err, adapters.ErrOutboxAtomicityUnsupported) {
+			return err
+		}
+		es.logger.Warn("Outbox messages scheduled non-atomically; adapter cannot provide atomic outbox in its current configuration")
+	}
+
+	_, err := es.store.adapter.Append(ctx, streamID, records, expectedVersion)
+	if err != nil {
+		return err
+	}
+
+	if len(outboxMessages) > 0 {
+		if _, ok := es.store.adapter.(adapters.OutboxAppender); !ok {
+			es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
+		}
+		if err := es.outbox.Schedule(ctx, outboxMessages); err != nil {
+			es.logger.Error("Failed to schedule outbox messages", "error", err)
+			return fmt.Errorf("mink: events appended but outbox scheduling failed: %w", err)
 		}
 	}
 

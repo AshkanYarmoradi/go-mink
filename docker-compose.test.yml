@@ -63,22 +63,44 @@ services:
     tmpfs:
       - /tmp/kraft-combined-logs
 
+  mongodb:
+    image: mongo:7
+    container_name: mink-test-mongodb
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: mink_test
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval \"try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}).ok }\"",
+        ]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+    tmpfs:
+      - /data/db
+
+  mongodb-standalone:
+    image: mongo:7
+    container_name: mink-test-mongodb-standalone
+    environment:
+      MONGO_INITDB_DATABASE: mink_test
+    ports:
+      - "27018:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    tmpfs:
+      - /data/db
+
   # Future adapters - uncomment when needed:
-  #
-  # mongodb:
-  #   image: mongo:7
-  #   container_name: mink-test-mongodb
-  #   environment:
-  #     MONGO_INITDB_DATABASE: mink_test
-  #   ports:
-  #     - "27017:27017"
-  #   healthcheck:
-  #     test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-  #     interval: 2s
-  #     timeout: 5s
-  #     retries: 15
-  #   tmpfs:
-  #     - /data/db
   #
   # redis:
   #   image: redis:7-alpine

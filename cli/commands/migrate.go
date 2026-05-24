@@ -59,6 +59,9 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				return nil
 			}
 			defer env.Close()
+			if isMongoDriver(env.Config.Database.Driver) {
+				return fmt.Errorf("MongoDB adapter does not use SQL migrations; collections and indexes are created by adapter.Initialize")
+			}
 
 			// Show spinner while connecting (skip if --non-interactive)
 			if !nonInteractive {
@@ -151,6 +154,9 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 				return nil
 			}
 			defer env.Close()
+			if isMongoDriver(env.Config.Database.Driver) {
+				return fmt.Errorf("MongoDB adapter does not use SQL migrations; collections and indexes are created by adapter.Initialize")
+			}
 
 			applied, err := getAppliedMigrations(ctx, env.Adapter, env.MigrationsDir)
 			if err != nil {
@@ -295,6 +301,9 @@ func newMigrateCreateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if isMongoDriver(cfg.Database.Driver) {
+				return fmt.Errorf("MongoDB adapter does not use SQL migration files")
+			}
 
 			migrationsDir := filepath.Join(cwd, cfg.Database.MigrationsDir)
 			if err := os.MkdirAll(migrationsDir, 0755); err != nil {
@@ -433,4 +442,8 @@ func sanitizeName(name string) string {
 	name = strings.ReplaceAll(name, " ", "_")
 	name = strings.ReplaceAll(name, "-", "_")
 	return name
+}
+
+func isMongoDriver(driver string) bool {
+	return driver == "mongodb" || driver == "mongo"
 }

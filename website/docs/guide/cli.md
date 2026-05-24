@@ -87,14 +87,15 @@ Welcome to Mink!
 ? Go module path: github.com/mycompany/minkshop
 ? Database driver:
   > postgres
+    mongodb
     memory
 
 Created mink.yaml
 Created migrations directory
 
 Next Steps:
-  1. Set DATABASE_URL environment variable
-  2. Run 'mink migrate up' to create schema
+  1. Set DATABASE_URL or MONGODB_URL environment variable
+  2. Run 'mink migrate up' for PostgreSQL, or let MongoDB Initialize create collections/indexes
   3. Generate your first aggregate with 'mink generate aggregate'
 
 # Non-interactive mode
@@ -110,7 +111,7 @@ $ mink init my-project
 |------|-------------|
 | `--name` | Project name |
 | `--module` | Go module path (auto-detected from go.mod) |
-| `--driver` | Database driver: `postgres` or `memory` |
+| `--driver` | Database driver: `postgres`, `mongodb`, or `memory` |
 | `--non-interactive` | Skip interactive prompts |
 
 **Generated `mink.yaml`:**
@@ -124,7 +125,7 @@ project:
 database:
   driver: postgres
   url: ${DATABASE_URL}
-  schema: mink
+  schema: mink  # PostgreSQL schema; MongoDB database name
   migrations_dir: migrations
 
 event_store:
@@ -335,6 +336,8 @@ func (h *CreateOrderHandler) Handle(ctx context.Context, cmd CreateOrder) error 
 ### `mink migrate`
 
 Database schema migration management.
+
+SQL migrations are PostgreSQL-only. MongoDB collections and indexes are created by `adapter.Initialize()`, and `mink schema generate` prints a `mongosh` setup script for external review or provisioning.
 
 #### Create Migration
 
@@ -617,6 +620,8 @@ CREATE SCHEMA IF NOT EXISTS "mink";
 -- outbox, and idempotency tables using schema-qualified names.
 ```
 
+For MongoDB configs, `mink schema generate` emits a `mongosh` script with `createCollection`, indexes, TTL configuration for idempotency expiration, and global-position counter initialization.
+
 ---
 
 ### `mink version`
@@ -653,9 +658,9 @@ project:
   module: github.com/mycompany/minkshop
 
 database:
-  driver: postgres           # postgres or memory
+  driver: postgres           # postgres, mongodb, or memory
   url: ${DATABASE_URL}       # Environment variable expansion
-  schema: mink
+  schema: mink               # PostgreSQL schema; MongoDB database name
   migrations_dir: migrations
 
 event_store:
@@ -675,11 +680,13 @@ generation:
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
+| `MONGODB_URL` | MongoDB connection string |
 | `MINK_CONFIG` | Path to config file (default: `./mink.yaml`) |
 
 **Example DATABASE_URL:**
 ```bash
 export DATABASE_URL="postgres://user:password@localhost:5432/mydb?sslmode=disable"
+export MONGODB_URL="mongodb://localhost:27017/mink?replicaSet=rs0"
 ```
 
 ---
@@ -691,7 +698,7 @@ The CLI tool has comprehensive test coverage (84.9%):
 | Category | Tests | Description |
 |----------|-------|-------------|
 | Unit Tests | ~200 | Core logic, helpers, validation |
-| Integration Tests | 67 | PostgreSQL operations |
+| Integration Tests | 67+ | PostgreSQL and MongoDB operations |
 | E2E Tests | 4 | Complete workflows |
 
 ### Running Tests
@@ -700,7 +707,7 @@ The CLI tool has comprehensive test coverage (84.9%):
 # Unit tests only
 go test -short ./cli/...
 
-# All tests (requires PostgreSQL)
+# All tests (requires PostgreSQL and MongoDB)
 docker-compose -f docker-compose.test.yml up -d
 go test ./cli/...
 
@@ -745,6 +752,12 @@ go generate ./...
 
 ```bash
 export DATABASE_URL="postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+```
+
+### "MONGODB_URL not set"
+
+```bash
+export MONGODB_URL="mongodb://localhost:27017/mink?replicaSet=rs0"
 ```
 
 ### "mink.yaml not found"

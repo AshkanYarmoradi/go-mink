@@ -40,6 +40,10 @@ var (
 
 	// ErrOutboxMessageNotFound indicates the requested outbox message does not exist.
 	ErrOutboxMessageNotFound = errors.New("mink: outbox message not found")
+
+	// ErrOutboxAtomicityUnsupported indicates an adapter cannot atomically append events
+	// and schedule outbox messages in its current configuration.
+	ErrOutboxAtomicityUnsupported = errors.New("mink: outbox atomicity unsupported")
 )
 
 // SagaNotFoundError provides detailed information about a missing saga.

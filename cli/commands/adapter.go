@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go-mink.dev/adapters"
 	"go-mink.dev/adapters/memory"
+	"go-mink.dev/adapters/mongodb"
 	"go-mink.dev/adapters/postgres"
 	"go-mink.dev/cli/config"
 )
@@ -31,15 +33,28 @@ type AdapterFactory struct {
 
 // NewAdapterFactory creates a new adapter factory.
 func NewAdapterFactory(cfg *config.Config) (*AdapterFactory, error) {
+	isPersistentDriver := cfg.Database.Driver != "memory"
+	rawURL := cfg.Database.URL
 	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if cfg.Database.Driver != "memory" && (dbURL == "" || dbURL == "${DATABASE_URL}") {
-		return nil, fmt.Errorf("DATABASE_URL environment variable is not set")
+	if isPersistentDriver && (dbURL == "" || unresolvedEnvRef(rawURL, dbURL)) {
+		return nil, fmt.Errorf("%s environment variable is not set", envNameFromRef(rawURL))
 	}
 
 	return &AdapterFactory{
 		config: cfg,
 		dbURL:  dbURL,
 	}, nil
+}
+
+func unresolvedEnvRef(rawURL, expandedURL string) bool {
+	return rawURL == expandedURL && strings.HasPrefix(rawURL, "${") && strings.HasSuffix(rawURL, "}")
+}
+
+func envNameFromRef(rawURL string) string {
+	if strings.HasPrefix(rawURL, "${") && strings.HasSuffix(rawURL, "}") {
+		return strings.TrimSuffix(strings.TrimPrefix(rawURL, "${"), "}")
+	}
+	return "DATABASE_URL"
 }
 
 // CreateAdapter creates the appropriate adapter based on the driver configuration.
@@ -67,6 +82,31 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 		if err := adapter.Ping(pingCtx); err != nil {
 			_ = adapter.Close()
 			return nil, fmt.Errorf("failed to connect to postgres: %w", err)
+		}
+
+		return adapter, nil
+
+	case "mongodb", "mongo":
+		names := mongodb.CollectionNames{
+			Events:    f.config.EventStore.TableName,
+			Snapshots: f.config.EventStore.SnapshotTableName,
+			Outbox:    f.config.EventStore.OutboxTableName,
+		}
+		adapter, err := mongodb.NewAdapter(
+			f.dbURL,
+			mongodb.WithDatabase(f.config.Database.Schema),
+			mongodb.WithCollectionNames(names),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create mongodb adapter: %w", err)
+		}
+
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		if err := adapter.Ping(pingCtx); err != nil {
+			_ = adapter.Close()
+			return nil, fmt.Errorf("failed to connect to mongodb: %w", err)
 		}
 
 		return adapter, nil

@@ -79,7 +79,7 @@ Traditional CRUD:                     Event Sourcing:
 ### Primary Goals
 
 1. **Zero Boilerplate**: Write business logic, not infrastructure
-2. **Pluggable Storage**: PostgreSQL today, MongoDB tomorrow
+2. **Pluggable Storage**: PostgreSQL, MongoDB, and in-memory adapters
 3. **Automatic Projections**: Define once, update automatically
 4. **Developer Experience**: CLI tools, testing utilities, clear errors
 5. **Production Ready**: Battle-tested patterns, observability built-in

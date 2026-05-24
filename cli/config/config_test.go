@@ -36,6 +36,14 @@ func TestConfig_Validate(t *testing.T) {
 			wantErrors: 0,
 		},
 		{
+			name: "valid mongodb driver",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+			},
+			wantErrors: 0,
+		},
+		{
 			name:       "missing project name",
 			modify:     func(c *Config) { c.Project.Name = ""; c.Database.URL = "postgres://localhost/db" },
 			wantErrors: 1,
@@ -166,6 +174,20 @@ func TestGenerateYAML(t *testing.T) {
 	assert.Contains(t, yaml, "postgres")
 	assert.Contains(t, yaml, "events")
 	assert.Contains(t, yaml, "# Mink Configuration File")
+}
+
+func TestGenerateYAML_MongoDB(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Project.Name = "mongo-app"
+	cfg.Project.Module = "github.com/test/mongo"
+	cfg.Database.Driver = "mongodb"
+
+	yaml := GenerateYAML(cfg)
+
+	assert.Contains(t, yaml, "mongo-app")
+	assert.Contains(t, yaml, "mongodb")
+	assert.Contains(t, yaml, "${MONGODB_URL}")
+	assert.Contains(t, yaml, `schema: "mink"`)
 }
 
 func TestLoadFile_NotFound(t *testing.T) {

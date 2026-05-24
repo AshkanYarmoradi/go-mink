@@ -983,6 +983,22 @@ if err := outboxStore.Initialize(ctx); err != nil {
 
 The PostgreSQL implementation uses `SELECT ... FOR UPDATE SKIP LOCKED` for concurrent-safe message claiming.
 
+**MongoDB** (production with transactions):
+```go
+import "go-mink.dev/adapters/mongodb"
+
+adapter, err := mongodb.NewAdapter(
+    "mongodb://localhost:27017/mink?replicaSet=rs0",
+    mongodb.WithTransactionMode(mongodb.TransactionModeRequired),
+)
+if err != nil {
+    log.Fatal(err)
+}
+outboxStore := mongodb.NewOutboxStoreFromAdapter(adapter)
+```
+
+MongoDB uses polling and atomic event+outbox writes when transactions are active. In standalone mode the adapter reports `adapters.ErrOutboxAtomicityUnsupported` so `EventStoreWithOutbox` can use its non-atomic fallback path.
+
 **In-Memory** (testing):
 ```go
 import "go-mink.dev/adapters/memory"
@@ -990,17 +1006,19 @@ import "go-mink.dev/adapters/memory"
 outboxStore := memory.NewOutboxStore()
 ```
 
-### Atomic Append with Outbox (PostgreSQL)
+### Atomic Append with Outbox
 
-The PostgreSQL adapter implements `OutboxAppender` for atomic event+outbox writes:
+The PostgreSQL adapter and MongoDB adapter with active transactions implement `OutboxAppender` for atomic event+outbox writes:
 
 ```go
-// When using PostgreSQL, events and outbox messages are written
-// in the same database transaction automatically.
+// When using PostgreSQL or transaction-backed MongoDB, events and
+// outbox messages are written in the same database transaction.
 // No messages are published if the event append fails, and vice versa.
 
 // The EventStoreWithOutbox detects this automatically:
 // - PostgreSQL adapter: atomic (same transaction)
+// - MongoDB adapter with transactions: atomic (same transaction)
+// - MongoDB standalone: non-atomic fallback after unsupported signal
 // - Memory adapter: non-atomic fallback (separate calls, logged warning)
 ```
 
