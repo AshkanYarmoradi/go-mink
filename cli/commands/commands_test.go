@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go-mink.dev/adapters"
+	"go-mink.dev/adapters/mongodb"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/ui"
 )
@@ -6642,6 +6643,111 @@ func TestSchemaGenerate_WithOutput(t *testing.T) {
 	err := cmd.Execute()
 	assert.NoError(t, err)
 	assert.FileExists(t, outFile)
+}
+
+func TestGenerateFallbackSchema_MongoDB(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Project.Name = "mongo-app"
+	cfg.Database.Driver = "mongodb"
+	cfg.Database.Schema = "mink_mongo"
+	cfg.EventStore.TableName = "event_log"
+	cfg.EventStore.OutboxTableName = "outbox_messages"
+
+	schema := generateFallbackSchema(cfg)
+
+	assert.Contains(t, schema, `use("mink_mongo");`)
+	assert.Contains(t, schema, `db.createCollection("event_log");`)
+	assert.Contains(t, schema, `db.outbox_messages.createIndex`)
+}
+
+func TestParseMongoTransactionMode(t *testing.T) {
+	tests := []struct {
+		value string
+		want  mongodb.TransactionMode
+		err   bool
+	}{
+		{value: "", want: mongodb.TransactionModeAuto},
+		{value: "auto", want: mongodb.TransactionModeAuto},
+		{value: "required", want: mongodb.TransactionModeRequired},
+		{value: "disabled", want: mongodb.TransactionModeDisabled},
+		{value: "strict", err: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseMongoTransactionMode(tt.value)
+			if tt.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseMongoSubscriptionMode(t *testing.T) {
+	tests := []struct {
+		value string
+		want  mongodb.SubscriptionMode
+		err   bool
+	}{
+		{value: "", want: mongodb.SubscriptionModeAuto},
+		{value: "auto", want: mongodb.SubscriptionModeAuto},
+		{value: "polling", want: mongodb.SubscriptionModePolling},
+		{value: "change_stream", want: mongodb.SubscriptionModeChangeStream},
+		{value: "listen_notify", err: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseMongoSubscriptionMode(tt.value)
+			if tt.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseMongoConcernOptions(t *testing.T) {
+	t.Run("write concern", func(t *testing.T) {
+		for _, value := range []string{"", "majority", "w1", "1", "unacknowledged", "0"} {
+			got, err := parseMongoWriteConcern(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoWriteConcern("journaled")
+		require.Error(t, err)
+	})
+
+	t.Run("read concern", func(t *testing.T) {
+		for _, value := range []string{"", "local", "majority", "snapshot", "linearizable", "available"} {
+			got, err := parseMongoReadConcern(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoReadConcern("eventual")
+		require.Error(t, err)
+	})
+
+	t.Run("read preference", func(t *testing.T) {
+		for _, value := range []string{"", "primary", "primary_preferred", "primaryPreferred", "secondary", "secondary_preferred", "secondaryPreferred", "nearest"} {
+			got, err := parseMongoReadPreference(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoReadPreference("follower")
+		require.Error(t, err)
+	})
 }
 
 // TestGetAllMigrations_EmptyDir_PG tests getAllMigrations with empty dir

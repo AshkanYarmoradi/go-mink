@@ -36,6 +36,64 @@ func TestConfig_Validate(t *testing.T) {
 			wantErrors: 0,
 		},
 		{
+			name: "valid mongodb driver",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.TransactionMode = "required"
+				c.Database.SubscriptionMode = "change_stream"
+				c.Database.WriteConcern = "majority"
+				c.Database.ReadConcern = "majority"
+				c.Database.ReadPreference = "primary"
+			},
+			wantErrors: 0,
+		},
+		{
+			name: "invalid mongodb transaction mode",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.TransactionMode = "strict"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb subscription mode",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.SubscriptionMode = "listen_notify"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb write concern",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.WriteConcern = "journaled"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb read concern",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.ReadConcern = "eventual"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb read preference",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.ReadPreference = "follower"
+			},
+			wantErrors: 1,
+		},
+		{
 			name:       "missing project name",
 			modify:     func(c *Config) { c.Project.Name = ""; c.Database.URL = "postgres://localhost/db" },
 			wantErrors: 1,
@@ -166,6 +224,26 @@ func TestGenerateYAML(t *testing.T) {
 	assert.Contains(t, yaml, "postgres")
 	assert.Contains(t, yaml, "events")
 	assert.Contains(t, yaml, "# Mink Configuration File")
+}
+
+func TestGenerateYAML_MongoDB(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Project.Name = "mongo-app"
+	cfg.Project.Module = "github.com/test/mongo"
+	cfg.Database.Driver = "mongodb"
+
+	yaml := GenerateYAML(cfg)
+
+	assert.Contains(t, yaml, "mongo-app")
+	assert.Contains(t, yaml, "mongodb")
+	assert.Contains(t, yaml, "${MONGODB_URL}")
+	assert.Contains(t, yaml, `schema: "mink"`)
+	assert.Contains(t, yaml, `transaction_mode: "auto"`)
+	assert.Contains(t, yaml, `subscription_mode: "auto"`)
+	assert.Contains(t, yaml, `# transaction_mode: "required"`)
+	assert.Contains(t, yaml, `# write_concern: "majority"`)
+	assert.Contains(t, yaml, `# read_concern: "majority"`)
+	assert.Contains(t, yaml, `# read_preference: "primary"`)
 }
 
 func TestLoadFile_NotFound(t *testing.T) {

@@ -25,7 +25,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 ### Core Event Store
 - Event store with append-only storage and optimistic concurrency
-- PostgreSQL adapter (production) and in-memory adapter (testing)
+- PostgreSQL and MongoDB adapters (production) and in-memory adapter (testing)
 - JSON serialization with event registry
 - Stream management with version constants (`AnyVersion`, `NoStream`, `StreamExists`)
 
@@ -38,7 +38,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `CommandBus` with middleware pipeline
 - Type-safe generic handlers (`NewGenericHandler`, `NewAggregateHandler`)
 - Built-in middleware: Validation, Recovery, Logging, Metrics, Timeout, Retry, Correlation ID, Causation ID, Tenant, Idempotency
-- Idempotency store (PostgreSQL and in-memory)
+- Idempotency store (PostgreSQL, MongoDB, and in-memory)
 
 ### Projection Engine & Read Models
 - Inline, async, and live projections
@@ -51,14 +51,14 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `Saga` interface and `SagaBase` implementation
 - `SagaManager` for orchestration with event correlation and idempotency
 - Compensation handling for rollback workflows
-- `SagaStore` with PostgreSQL and in-memory implementations
+- `SagaStore` with PostgreSQL, MongoDB, and in-memory implementations
 
 ### Outbox Pattern
-- `OutboxStore` interface with PostgreSQL and in-memory implementations
+- `OutboxStore` interface with PostgreSQL, MongoDB, and in-memory implementations
 - `EventStoreWithOutbox` wrapper with automatic routing
 - `OutboxProcessor` background worker with polling, retry, and dead-letter handling
 - Built-in publishers: Webhook, Kafka, SNS
-- Atomic event+outbox writes (PostgreSQL)
+- Atomic event+outbox writes (PostgreSQL, MongoDB with transactions)
 - Prometheus metrics integration
 
 ### Event Versioning & Upcasting
@@ -104,7 +104,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - Event assertions and diffing (`testing/assertions`)
 - Projection test helpers (`testing/projections`)
 - Saga test fixtures (`testing/sagas`)
-- PostgreSQL test containers (`testing/containers`)
+- PostgreSQL test containers (`testing/containers`) and MongoDB integration coverage via `TEST_MONGODB_URL`
 
 ---
 
@@ -121,7 +121,8 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 - [ ] Multi-tenancy strategies (shared table, schema-per-tenant, database-per-tenant)
 - [ ] Snapshot store interface and adapters (PostgreSQL, Redis)
-- [ ] Additional adapters: MongoDB event store, Redis read models
+- [x] MongoDB event store, read models, transactional projections, and resumable subscriptions
+- [ ] Additional adapters: Redis read models
 - [ ] Performance optimization: connection pooling, batch loading, benchmarking suite
 
 ### Future
@@ -173,7 +174,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 |------|------------|--------|
 | Documentation | Easy | High |
 | Test coverage | Easy | High |
-| MongoDB adapter | Medium | High |
+| ~~MongoDB adapter~~ | ~~Medium~~ | ~~Done~~ |
 | Redis adapter | Medium | Medium |
 | Performance benchmarks | Medium | Medium |
 | ~~Data export~~ | ~~Medium~~ | ~~Done~~ |

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go-mink.dev/adapters"
 )
 
 // ProjectionEngine manages the lifecycle of projections.
@@ -103,6 +105,10 @@ type AsyncOptions struct {
 	// If false, starts from the last checkpoint.
 	// Default: false
 	StartFromBeginning bool
+
+	// TransactionMode controls whether projection updates and checkpoints are committed atomically.
+	// Default: ProjectionTransactionDisabled
+	TransactionMode ProjectionTransactionMode
 }
 
 // DefaultAsyncOptions returns the default async projection options.
@@ -114,6 +120,7 @@ func DefaultAsyncOptions() AsyncOptions {
 		RetryPolicy:        ExponentialBackoffRetry(3, 100*time.Millisecond, 10*time.Second),
 		MaxRetries:         3,
 		StartFromBeginning: false,
+		TransactionMode:    ProjectionTransactionDisabled,
 	}
 }
 
@@ -770,35 +777,77 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		}
 	}
 
-	if len(filteredEvents) == 0 {
-		// Update checkpoint and position even if no events were handled
-		newPosition := events[len(events)-1].GlobalPosition
-		if e.checkpointStore != nil {
-			if err := e.checkpointStore.SetCheckpoint(ctx, worker.projection.Name(), newPosition); err != nil {
-				e.logger.Error("Failed to save checkpoint", "projection", worker.projection.Name(), "error", err)
-			} else {
-				e.metrics.RecordCheckpoint(worker.projection.Name(), newPosition)
+	newPosition := events[len(events)-1].GlobalPosition
+
+	err = e.runProjectionTransaction(ctx, worker, func(txCtx context.Context) error {
+		if len(filteredEvents) > 0 {
+			if err := e.applyAsyncProjectionEvents(txCtx, worker, filteredEvents, &currentEvent); err != nil {
+				return err
 			}
 		}
-
-		worker.stateMu.Lock()
-		worker.lastPosition = newPosition
-		worker.lastProcessedAt = time.Now()
-		worker.stateMu.Unlock()
+		if e.checkpointStore != nil {
+			if err := e.checkpointStore.SetCheckpoint(txCtx, worker.projection.Name(), newPosition); err != nil {
+				e.logger.Error("Failed to save checkpoint", "projection", worker.projection.Name(), "error", err)
+				if worker.options.TransactionMode == ProjectionTransactionDisabled {
+					return nil
+				}
+				return err
+			}
+			e.metrics.RecordCheckpoint(worker.projection.Name(), newPosition)
+		}
 		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	// Try batch processing first
-	start := time.Now()
-	if len(filteredEvents) > 0 {
-		currentEvent = &filteredEvents[0]
+	worker.stateMu.Lock()
+	worker.lastPosition = newPosition
+	worker.lastProcessedAt = time.Now()
+	worker.stateMu.Unlock()
+
+	return nil
+}
+
+func (e *ProjectionEngine) runProjectionTransaction(ctx context.Context, worker *asyncProjectionWorker, fn func(context.Context) error) error {
+	switch worker.options.TransactionMode {
+	case ProjectionTransactionDisabled:
+		return fn(ctx)
+	case ProjectionTransactionAuto, ProjectionTransactionRequired:
+	default:
+		return fmt.Errorf("invalid projection transaction mode %d", worker.options.TransactionMode)
 	}
-	err = worker.projection.ApplyBatch(ctx, filteredEvents)
+
+	if e.store == nil || e.store.adapter == nil {
+		if worker.options.TransactionMode == ProjectionTransactionRequired {
+			return adapters.ErrProjectionTransactionsUnsupported
+		}
+		return fn(ctx)
+	}
+
+	txAdapter, ok := e.store.adapter.(adapters.ProjectionTransactionAdapter)
+	if !ok {
+		if worker.options.TransactionMode == ProjectionTransactionRequired {
+			return adapters.ErrProjectionTransactionsUnsupported
+		}
+		return fn(ctx)
+	}
+
+	err := txAdapter.RunProjectionTransaction(ctx, worker.projection.Name(), fn)
+	if errors.Is(err, adapters.ErrProjectionTransactionsUnsupported) && worker.options.TransactionMode == ProjectionTransactionAuto {
+		return fn(ctx)
+	}
+	return err
+}
+
+func (e *ProjectionEngine) applyAsyncProjectionEvents(ctx context.Context, worker *asyncProjectionWorker, events []StoredEvent, currentEvent **StoredEvent) error {
+	start := time.Now()
+	*currentEvent = &events[0]
+	err := worker.projection.ApplyBatch(ctx, events)
 	if errors.Is(err, ErrNotImplemented) {
-		// Fall back to sequential processing
-		for i := range filteredEvents {
-			event := filteredEvents[i]
-			currentEvent = &filteredEvents[i]
+		for i := range events {
+			event := events[i]
+			*currentEvent = &events[i]
 			eventStart := time.Now()
 			if err := worker.projection.Apply(ctx, event); err != nil {
 				e.metrics.RecordEventProcessed(worker.projection.Name(), event.Type, time.Since(eventStart), false)
@@ -807,29 +856,14 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 			e.metrics.RecordEventProcessed(worker.projection.Name(), event.Type, time.Since(eventStart), true)
 			atomic.AddUint64(&worker.eventsProcessed, 1)
 		}
-	} else if err != nil {
-		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), false)
+		return nil
+	}
+	if err != nil {
+		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(events), time.Since(start), false)
 		return err
-	} else {
-		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), true)
-		atomic.AddUint64(&worker.eventsProcessed, uint64(len(filteredEvents)))
 	}
-
-	// Update checkpoint
-	newPosition := events[len(events)-1].GlobalPosition
-	if e.checkpointStore != nil {
-		if err := e.checkpointStore.SetCheckpoint(ctx, worker.projection.Name(), newPosition); err != nil {
-			e.logger.Error("Failed to save checkpoint", "projection", worker.projection.Name(), "error", err)
-		} else {
-			e.metrics.RecordCheckpoint(worker.projection.Name(), newPosition)
-		}
-	}
-
-	worker.stateMu.Lock()
-	worker.lastPosition = newPosition
-	worker.lastProcessedAt = time.Now()
-	worker.stateMu.Unlock()
-
+	e.metrics.RecordBatchProcessed(worker.projection.Name(), len(events), time.Since(start), true)
+	atomic.AddUint64(&worker.eventsProcessed, uint64(len(events)))
 	return nil
 }
 

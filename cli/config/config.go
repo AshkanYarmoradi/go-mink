@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,7 +41,7 @@ type ProjectConfig struct {
 
 // DatabaseConfig contains database connection settings
 type DatabaseConfig struct {
-	// Driver is the database driver (postgres, memory)
+	// Driver is the database driver (postgres, mongodb, memory)
 	Driver string `yaml:"driver"`
 
 	// URL is the database connection string
@@ -51,6 +52,21 @@ type DatabaseConfig struct {
 
 	// MigrationsDir is the directory for migration files
 	MigrationsDir string `yaml:"migrations_dir"`
+
+	// TransactionMode controls MongoDB transaction usage (auto, required, disabled)
+	TransactionMode string `yaml:"transaction_mode,omitempty"`
+
+	// SubscriptionMode controls MongoDB subscriptions (auto, polling, change_stream)
+	SubscriptionMode string `yaml:"subscription_mode,omitempty"`
+
+	// WriteConcern controls MongoDB write durability (majority, w1, unacknowledged)
+	WriteConcern string `yaml:"write_concern,omitempty"`
+
+	// ReadConcern controls MongoDB read consistency (local, majority, snapshot, linearizable, available)
+	ReadConcern string `yaml:"read_concern,omitempty"`
+
+	// ReadPreference controls MongoDB read routing (primary, primary_preferred, secondary, secondary_preferred, nearest)
+	ReadPreference string `yaml:"read_preference,omitempty"`
 }
 
 // EventStoreConfig contains event store settings
@@ -193,12 +209,32 @@ func (c *Config) Validate() []string {
 		errors = append(errors, "database.driver is required")
 	}
 
-	if c.Database.Driver != "postgres" && c.Database.Driver != "memory" {
-		errors = append(errors, "database.driver must be 'postgres' or 'memory'")
+	driver := strings.ToLower(c.Database.Driver)
+	isPersistentDriver := driver == "postgres" || driver == "postgresql" || isMongoDriver(driver)
+	if !isPersistentDriver && driver != "memory" {
+		errors = append(errors, "database.driver must be 'postgres', 'mongodb', or 'memory'")
 	}
 
-	if c.Database.Driver == "postgres" && c.Database.URL == "" {
-		errors = append(errors, "database.url is required for postgres driver")
+	if isPersistentDriver && c.Database.URL == "" {
+		errors = append(errors, "database.url is required for persistent database drivers")
+	}
+
+	if isMongoDriver(c.Database.Driver) {
+		if !validMongoMode(c.Database.TransactionMode, "auto", "required", "disabled") {
+			errors = append(errors, "database.transaction_mode must be 'auto', 'required', or 'disabled'")
+		}
+		if !validMongoMode(c.Database.SubscriptionMode, "auto", "polling", "change_stream") {
+			errors = append(errors, "database.subscription_mode must be 'auto', 'polling', or 'change_stream'")
+		}
+		if !validMongoMode(c.Database.WriteConcern, "majority", "w1", "1", "unacknowledged", "0") {
+			errors = append(errors, "database.write_concern must be 'majority', 'w1', or 'unacknowledged'")
+		}
+		if !validMongoMode(c.Database.ReadConcern, "local", "majority", "snapshot", "linearizable", "available") {
+			errors = append(errors, "database.read_concern must be 'local', 'majority', 'snapshot', 'linearizable', or 'available'")
+		}
+		if !validMongoMode(c.Database.ReadPreference, "primary", "primary_preferred", "primarypreferred", "secondary", "secondary_preferred", "secondarypreferred", "nearest") {
+			errors = append(errors, "database.read_preference must be 'primary', 'primary_preferred', 'secondary_preferred', 'secondary', or 'nearest'")
+		}
 	}
 
 	return errors
@@ -206,6 +242,32 @@ func (c *Config) Validate() []string {
 
 // GenerateYAML generates YAML content with comments
 func GenerateYAML(cfg *Config) string {
+	urlPlaceholder := "${DATABASE_URL}"
+	mongoOptions := ""
+	if isMongoDriver(cfg.Database.Driver) {
+		urlPlaceholder = "${MONGODB_URL}"
+		transactionMode := cfg.Database.TransactionMode
+		if transactionMode == "" {
+			transactionMode = "auto"
+		}
+		subscriptionMode := cfg.Database.SubscriptionMode
+		if subscriptionMode == "" {
+			subscriptionMode = "auto"
+		}
+		mongoOptions = `
+  # MongoDB transaction mode: auto, required, or disabled
+  transaction_mode: "` + transactionMode + `"
+
+  # MongoDB subscription mode: auto, polling, or change_stream
+  subscription_mode: "` + subscriptionMode + `"
+
+  # Production MongoDB recommendation:
+  # transaction_mode: "required"
+  # write_concern: "majority"
+  # read_concern: "majority"
+  # read_preference: "primary"
+`
+	}
 	return `# Mink Configuration File
 # This file configures the mink CLI and code generation
 
@@ -224,16 +286,16 @@ project:
 
 # Database configuration
 database:
-  # Driver: postgres or memory
+  # Driver: postgres, mongodb, or memory
   driver: "` + cfg.Database.Driver + `"
   
-  # Connection URL (required for postgres)
-  url: "${DATABASE_URL}"
+  # Connection URL (required for persistent database drivers)
+  url: "` + urlPlaceholder + `"
   
-  # Database schema (postgres only)
+  # Database schema (PostgreSQL) or database name (MongoDB)
   schema: "` + cfg.Database.Schema + `"
-  
-  # Directory for SQL migrations
+  ` + mongoOptions + `
+  # Directory for SQL migrations (PostgreSQL only)
   migrations_dir: "` + cfg.Database.MigrationsDir + `"
 
 # Event store table names
@@ -249,4 +311,22 @@ generation:
   projection_package: "` + cfg.Generation.ProjectionPackage + `"
   command_package: "` + cfg.Generation.CommandPackage + `"
 `
+}
+
+func isMongoDriver(driver string) bool {
+	normalized := strings.ToLower(driver)
+	return normalized == "mongodb" || normalized == "mongo"
+}
+
+func validMongoMode(value string, allowed ...string) bool {
+	if value == "" {
+		return true
+	}
+	normalized := strings.ToLower(value)
+	for _, item := range allowed {
+		if normalized == item {
+			return true
+		}
+	}
+	return false
 }

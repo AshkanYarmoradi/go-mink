@@ -217,57 +217,86 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 ## MongoDB Adapter
 
 ```go
-package mongodb
+package main
 
 import (
-    "go.mongodb.org/mongo-driver/mongo"
-    "go-mink.dev"
+    "context"
+
+    mink "go-mink.dev"
+    "go-mink.dev/adapters/mongodb"
+    "go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+    "go.mongodb.org/mongo-driver/v2/mongo/readpref"
+    "go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
-type MongoAdapter struct {
-    client   *mongo.Client
-    database string
-}
+func main() {
+    ctx := context.Background()
 
-func NewAdapter(uri, database string) (*MongoAdapter, error) {
-    client, err := mongo.Connect(context.Background(),
-        options.Client().ApplyURI(uri))
+    adapter, err := mongodb.NewAdapter(
+        "mongodb://localhost:27017/mink?replicaSet=rs0",
+        mongodb.WithDatabase("mink"),
+        mongodb.WithTransactionMode(mongodb.TransactionModeRequired),
+        mongodb.WithSubscriptionMode(mongodb.SubscriptionModeAuto),
+        mongodb.WithWriteConcern(writeconcern.Majority()),
+        mongodb.WithReadConcern(readconcern.Majority()),
+        mongodb.WithReadPreference(readpref.Primary()),
+    )
     if err != nil {
-        return nil, err
+        panic(err)
+    }
+    defer adapter.Close()
+
+    if err := adapter.Initialize(ctx); err != nil {
+        panic(err)
     }
 
-    return &MongoAdapter{
-        client:   client,
-        database: database,
-    }, nil
-}
-
-// MongoDB-specific: Flexible document queries
-func (a *MongoAdapter) Query(ctx context.Context, collection string,
-    query QuerySpec) ([][]byte, error) {
-
-    coll := a.client.Database(a.database).Collection(collection)
-
-    filter := buildMongoFilter(query.Filters)
-    opts := options.Find().
-        SetSort(buildMongoSort(query.OrderBy)).
-        SetLimit(int64(query.Limit)).
-        SetSkip(int64(query.Offset))
-
-    cursor, err := coll.Find(ctx, filter, opts)
-    if err != nil {
-        return nil, err
-    }
-    defer cursor.Close(ctx)
-
-    var results [][]byte
-    for cursor.Next(ctx) {
-        results = append(results, cursor.Current)
-    }
-
-    return results, cursor.Err()
+    store := mink.New(adapter)
+    _ = store
 }
 ```
+
+The MongoDB adapter uses the official v2 driver (`go.mongodb.org/mongo-driver/v2/...`) and stores serialized event payloads as BSON binary so JSON, MessagePack, Protocol Buffers, or custom serializers remain storage-independent. Event metadata is stored as a BSON document for filtering and diagnostics.
+
+MongoDB supports the same core adapter interfaces as PostgreSQL: event append/load, hybrid change-stream subscriptions with polling fallback, snapshots, checkpoints, stream/projection CLI queries, diagnostics, migration metadata, schema generation, idempotency, saga storage, outbox storage, generic read-model repositories, and adapter-backed projection transactions.
+
+### Transaction Modes
+
+| Mode | Behavior |
+|------|----------|
+| `TransactionModeAuto` | Probe transactions during initialization; use them when available, otherwise use standalone best-effort writes |
+| `TransactionModeRequired` | Fail initialization when transactions are unavailable |
+| `TransactionModeDisabled` | Always use standalone best-effort writes |
+
+Use `TransactionModeRequired` in production with a replica set or sharded cluster. Standalone MongoDB mode is intended for local development; optimistic stream concurrency is preserved, but cross-collection atomicity is not guaranteed.
+
+`EventStoreWithOutbox` writes event+outbox records atomically only when MongoDB transactions are active. Without transactions the adapter returns `adapters.ErrOutboxAtomicityUnsupported` before writing, and the wrapper falls back to its existing non-atomic scheduling path.
+
+### Subscription Modes
+
+| Mode | Behavior |
+|------|----------|
+| `SubscriptionModeAuto` | Uses change streams as a low-latency wake-up signal when available, then falls back to polling |
+| `SubscriptionModePolling` | Uses ordered polling only |
+| `SubscriptionModeChangeStream` | Requires change streams and returns an error if they cannot start |
+
+Ordered delivery still comes from `LoadFromPosition`/`Load`; change streams only wake the subscription loop sooner. For long-running workers, set `SubscriptionOptions.ResumeTokenKey` so MongoDB stores the latest change-stream resume token in `mink_resume_tokens` and resumes future watches with `resumeAfter`.
+
+```go
+events, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{
+    ResumeTokenKey: "orders-projection",
+})
+```
+
+### Production Notes
+
+For production MongoDB deployments, prefer:
+
+- `TransactionModeRequired`
+- `writeconcern.Majority()`
+- `readconcern.Majority()`
+- `readpref.Primary()`
+
+`mink schema generate` intentionally does not auto-shard MongoDB collections. The core event collection has unique indexes on `{ stream_id, version }` and `{ global_position }`; MongoDB requires unique indexes on sharded collections to include the shard key as the index key or prefix. Shard read-model collections by each model's access pattern instead of copying the event-store layout.
 
 ## Redis Adapter
 

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"go-mink.dev/adapters/mongodb"
 	"go-mink.dev/adapters/postgres"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
@@ -125,9 +126,20 @@ func generateSchemaFromAdapter(ctx context.Context, cfg *config.Config) (string,
 	), nil
 }
 
-// generateFallbackSchema generates a basic PostgreSQL schema when adapter is not available.
+// generateFallbackSchema generates an adapter-specific schema when adapter is not available.
 // This is used when DATABASE_URL is not set but user still wants to see the schema.
 func generateFallbackSchema(cfg *config.Config) string {
+	if cfg.Database.Driver == "mongodb" || cfg.Database.Driver == "mongo" {
+		return mongodb.GenerateSchema(
+			cfg.Project.Name,
+			cfg.Database.Schema,
+			mongodb.CollectionNames{
+				Events:    cfg.EventStore.TableName,
+				Snapshots: cfg.EventStore.SnapshotTableName,
+				Outbox:    cfg.EventStore.OutboxTableName,
+			},
+		)
+	}
 	return postgres.GenerateSchema(
 		cfg.Project.Name,
 		cfg.Database.Schema,

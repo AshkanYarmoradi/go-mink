@@ -40,6 +40,14 @@ var (
 
 	// ErrOutboxMessageNotFound indicates the requested outbox message does not exist.
 	ErrOutboxMessageNotFound = errors.New("mink: outbox message not found")
+
+	// ErrOutboxAtomicityUnsupported indicates an adapter cannot atomically append events
+	// and schedule outbox messages in its current configuration.
+	ErrOutboxAtomicityUnsupported = errors.New("mink: outbox atomicity unsupported")
+
+	// ErrProjectionTransactionsUnsupported indicates an adapter cannot atomically process
+	// a projection update and checkpoint in its current configuration.
+	ErrProjectionTransactionsUnsupported = errors.New("mink: projection transactions unsupported")
 )
 
 // SagaNotFoundError provides detailed information about a missing saga.
@@ -194,6 +202,13 @@ type SubscriptionOptions struct {
 	// OnError is called when an error occurs during subscription.
 	// If nil, errors may be logged or silently retried depending on the adapter.
 	OnError func(err error)
+
+	// ResumeTokenKey enables adapter-specific persistent wake-up resume tokens.
+	// It does not replace ordered projection checkpoints.
+	ResumeTokenKey string
+
+	// ResetResumeToken deletes any stored resume token before subscribing.
+	ResetResumeToken bool
 }
 
 // SubscriptionAdapter provides event subscription capabilities.
@@ -261,6 +276,14 @@ type Transaction interface {
 
 	// Adapter returns an adapter that operates within this transaction.
 	Adapter() EventStoreAdapter
+}
+
+// ProjectionTransactionAdapter provides atomic projection processing support.
+// Adapters may optionally implement this for processing read model updates and
+// projection checkpoints in a single backend transaction.
+type ProjectionTransactionAdapter interface {
+	// RunProjectionTransaction runs fn inside a projection transaction.
+	RunProjectionTransaction(ctx context.Context, projectionName string, fn func(context.Context) error) error
 }
 
 // CheckpointAdapter manages projection checkpoints.
@@ -482,6 +505,12 @@ type DiagnosticInfo struct {
 
 	// Message provides additional status information.
 	Message string
+
+	// Details contains adapter-specific diagnostic key/value details.
+	Details map[string]string
+
+	// Warnings contains adapter-specific configuration or schema warnings.
+	Warnings []string
 }
 
 // SchemaCheckResult contains information about the event store schema.

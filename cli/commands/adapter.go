@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go-mink.dev/adapters"
 	"go-mink.dev/adapters/memory"
+	"go-mink.dev/adapters/mongodb"
 	"go-mink.dev/adapters/postgres"
 	"go-mink.dev/cli/config"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // CLIAdapter combines all adapter interfaces needed by CLI commands.
@@ -31,15 +36,28 @@ type AdapterFactory struct {
 
 // NewAdapterFactory creates a new adapter factory.
 func NewAdapterFactory(cfg *config.Config) (*AdapterFactory, error) {
+	isPersistentDriver := cfg.Database.Driver != "memory"
+	rawURL := cfg.Database.URL
 	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if cfg.Database.Driver != "memory" && (dbURL == "" || dbURL == "${DATABASE_URL}") {
-		return nil, fmt.Errorf("DATABASE_URL environment variable is not set")
+	if isPersistentDriver && (dbURL == "" || unresolvedEnvRef(rawURL, dbURL)) {
+		return nil, fmt.Errorf("%s environment variable is not set", envNameFromRef(rawURL))
 	}
 
 	return &AdapterFactory{
 		config: cfg,
 		dbURL:  dbURL,
 	}, nil
+}
+
+func unresolvedEnvRef(rawURL, expandedURL string) bool {
+	return rawURL == expandedURL && strings.HasPrefix(rawURL, "${") && strings.HasSuffix(rawURL, "}")
+}
+
+func envNameFromRef(rawURL string) string {
+	if strings.HasPrefix(rawURL, "${") && strings.HasSuffix(rawURL, "}") {
+		return strings.TrimSuffix(strings.TrimPrefix(rawURL, "${"), "}")
+	}
+	return "DATABASE_URL"
 }
 
 // CreateAdapter creates the appropriate adapter based on the driver configuration.
@@ -71,11 +89,140 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 
 		return adapter, nil
 
+	case "mongodb", "mongo":
+		names := mongodb.CollectionNames{
+			Events:    f.config.EventStore.TableName,
+			Snapshots: f.config.EventStore.SnapshotTableName,
+			Outbox:    f.config.EventStore.OutboxTableName,
+		}
+		transactionMode, err := parseMongoTransactionMode(f.config.Database.TransactionMode)
+		if err != nil {
+			return nil, err
+		}
+		subscriptionMode, err := parseMongoSubscriptionMode(f.config.Database.SubscriptionMode)
+		if err != nil {
+			return nil, err
+		}
+		writeConcern, err := parseMongoWriteConcern(f.config.Database.WriteConcern)
+		if err != nil {
+			return nil, err
+		}
+		readConcern, err := parseMongoReadConcern(f.config.Database.ReadConcern)
+		if err != nil {
+			return nil, err
+		}
+		readPreference, err := parseMongoReadPreference(f.config.Database.ReadPreference)
+		if err != nil {
+			return nil, err
+		}
+		adapter, err := mongodb.NewAdapter(
+			f.dbURL,
+			mongodb.WithDatabase(f.config.Database.Schema),
+			mongodb.WithCollectionNames(names),
+			mongodb.WithTransactionMode(transactionMode),
+			mongodb.WithSubscriptionMode(subscriptionMode),
+			mongodb.WithWriteConcern(writeConcern),
+			mongodb.WithReadConcern(readConcern),
+			mongodb.WithReadPreference(readPreference),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create mongodb adapter: %w", err)
+		}
+
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		if err := adapter.Ping(pingCtx); err != nil {
+			_ = adapter.Close()
+			return nil, fmt.Errorf("failed to connect to mongodb: %w", err)
+		}
+
+		return adapter, nil
+
 	case "memory":
 		return memory.NewAdapter(), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %s", f.config.Database.Driver)
+	}
+}
+
+func parseMongoTransactionMode(value string) (mongodb.TransactionMode, error) {
+	switch strings.ToLower(value) {
+	case "", "auto":
+		return mongodb.TransactionModeAuto, nil
+	case "required":
+		return mongodb.TransactionModeRequired, nil
+	case "disabled":
+		return mongodb.TransactionModeDisabled, nil
+	default:
+		return mongodb.TransactionModeAuto, fmt.Errorf("database.transaction_mode must be 'auto', 'required', or 'disabled'")
+	}
+}
+
+func parseMongoSubscriptionMode(value string) (mongodb.SubscriptionMode, error) {
+	switch strings.ToLower(value) {
+	case "", "auto":
+		return mongodb.SubscriptionModeAuto, nil
+	case "polling":
+		return mongodb.SubscriptionModePolling, nil
+	case "change_stream":
+		return mongodb.SubscriptionModeChangeStream, nil
+	default:
+		return mongodb.SubscriptionModeAuto, fmt.Errorf("database.subscription_mode must be 'auto', 'polling', or 'change_stream'")
+	}
+}
+
+func parseMongoWriteConcern(value string) (*writeconcern.WriteConcern, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "majority":
+		return writeconcern.Majority(), nil
+	case "w1", "1":
+		return writeconcern.W1(), nil
+	case "unacknowledged", "0":
+		return writeconcern.Unacknowledged(), nil
+	default:
+		return nil, fmt.Errorf("database.write_concern must be 'majority', 'w1', or 'unacknowledged'")
+	}
+}
+
+func parseMongoReadConcern(value string) (*readconcern.ReadConcern, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "local":
+		return readconcern.Local(), nil
+	case "majority":
+		return readconcern.Majority(), nil
+	case "snapshot":
+		return readconcern.Snapshot(), nil
+	case "linearizable":
+		return readconcern.Linearizable(), nil
+	case "available":
+		return readconcern.Available(), nil
+	default:
+		return nil, fmt.Errorf("database.read_concern must be 'local', 'majority', 'snapshot', 'linearizable', or 'available'")
+	}
+}
+
+func parseMongoReadPreference(value string) (*readpref.ReadPref, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "primary":
+		return readpref.Primary(), nil
+	case "primary_preferred", "primarypreferred":
+		return readpref.PrimaryPreferred(), nil
+	case "secondary":
+		return readpref.Secondary(), nil
+	case "secondary_preferred", "secondarypreferred":
+		return readpref.SecondaryPreferred(), nil
+	case "nearest":
+		return readpref.Nearest(), nil
+	default:
+		return nil, fmt.Errorf("database.read_preference must be 'primary', 'primary_preferred', 'secondary', 'secondary_preferred', or 'nearest'")
 	}
 }
 
