@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"go-mink.dev/adapters"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
@@ -189,7 +192,31 @@ func checkDatabaseConnection() CheckResult {
 	if !info.Connected {
 		return newCheckResult(name, StatusError, info.Message).withRecommendation("Verify database credentials")
 	}
-	return newCheckResult(name, StatusOK, info.Message)
+	status := StatusOK
+	if len(info.Warnings) > 0 {
+		status = StatusWarning
+	}
+	return newCheckResult(name, status, diagnosticMessage(info))
+}
+
+func diagnosticMessage(diag *adapters.DiagnosticInfo) string {
+	parts := []string{diag.Message}
+	if len(diag.Details) > 0 {
+		keys := make([]string, 0, len(diag.Details))
+		for key := range diag.Details {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		details := make([]string, 0, len(keys))
+		for _, key := range keys {
+			details = append(details, key+"="+diag.Details[key])
+		}
+		parts = append(parts, strings.Join(details, ", "))
+	}
+	if len(diag.Warnings) > 0 {
+		parts = append(parts, "warnings: "+strings.Join(diag.Warnings, "; "))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func checkEventStoreSchema() CheckResult {

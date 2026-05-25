@@ -54,6 +54,18 @@ type LiveProjection interface {
 	IsTransient() bool
 }
 
+// ProjectionTransactionMode controls atomic async projection processing.
+type ProjectionTransactionMode int
+
+const (
+	// ProjectionTransactionDisabled processes projections and checkpoints without adapter transactions.
+	ProjectionTransactionDisabled ProjectionTransactionMode = iota
+	// ProjectionTransactionAuto uses adapter transactions when available and falls back otherwise.
+	ProjectionTransactionAuto
+	// ProjectionTransactionRequired requires adapter transaction support for async projections.
+	ProjectionTransactionRequired
+)
+
 // ProjectionState represents the current state of a projection.
 type ProjectionState string
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
 	"go-mink.dev/adapters/memory"
 )
 
@@ -24,6 +25,46 @@ func newTestEngineWithStore() (*ProjectionEngine, *EventStore, *testCheckpointSt
 	checkpoint := newTestCheckpointStore()
 	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
 	return engine, store, checkpoint
+}
+
+type projectionTxContextKey struct{}
+
+type projectionTxTestAdapter struct {
+	*memory.MemoryAdapter
+
+	mu          sync.Mutex
+	calls       int
+	unsupported bool
+}
+
+func newProjectionTxTestEngine(unsupported bool) (*ProjectionEngine, *EventStore, *testCheckpointStore, *projectionTxTestAdapter) {
+	adapter := &projectionTxTestAdapter{
+		MemoryAdapter: memory.NewAdapter(),
+		unsupported:   unsupported,
+	}
+	store := New(adapter)
+	store.RegisterEvents(&ProjectionTestEvent{})
+	checkpoint := newTestCheckpointStore()
+	engine := NewProjectionEngine(store, WithCheckpointStore(checkpoint))
+	return engine, store, checkpoint, adapter
+}
+
+func (a *projectionTxTestAdapter) RunProjectionTransaction(ctx context.Context, projectionName string, fn func(context.Context) error) error {
+	a.mu.Lock()
+	a.calls++
+	unsupported := a.unsupported
+	a.mu.Unlock()
+
+	if unsupported {
+		return adapters.ErrProjectionTransactionsUnsupported
+	}
+	return fn(context.WithValue(ctx, projectionTxContextKey{}, true))
+}
+
+func (a *projectionTxTestAdapter) transactionCalls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
 }
 
 // fastAsyncOpts returns default AsyncOptions tuned for fast tests:
@@ -749,6 +790,46 @@ type ProjectionTestEvent struct {
 	OrderID string
 }
 
+type contextCheckingAsyncProjection struct {
+	*testAsyncProjection
+
+	mu    sync.Mutex
+	sawTx bool
+}
+
+func newContextCheckingAsyncProjection(name string, handledEvents ...string) *contextCheckingAsyncProjection {
+	return &contextCheckingAsyncProjection{
+		testAsyncProjection: newTestAsyncProjection(name, handledEvents...),
+	}
+}
+
+func (p *contextCheckingAsyncProjection) Apply(ctx context.Context, event StoredEvent) error {
+	if ctx.Value(projectionTxContextKey{}) == true {
+		p.mu.Lock()
+		p.sawTx = true
+		p.mu.Unlock()
+	}
+	return p.testAsyncProjection.Apply(ctx, event)
+}
+
+func (p *contextCheckingAsyncProjection) sawTransactionContext() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sawTx
+}
+
+type panickingAsyncProjection struct {
+	AsyncProjectionBase
+}
+
+func newPanickingAsyncProjection(name string, handledEvents ...string) *panickingAsyncProjection {
+	return &panickingAsyncProjection{AsyncProjectionBase: NewAsyncProjectionBase(name, handledEvents...)}
+}
+
+func (p *panickingAsyncProjection) Apply(ctx context.Context, event StoredEvent) error {
+	panic("projection boom")
+}
+
 func TestProjectionEngine_AsyncWorker(t *testing.T) {
 	engine, store, checkpoint := newTestEngineWithStore()
 
@@ -821,7 +902,118 @@ func TestAsyncOptions_Defaults(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, opts.PollInterval)
 	assert.Equal(t, 3, opts.MaxRetries)
 	assert.False(t, opts.StartFromBeginning)
+	assert.Equal(t, ProjectionTransactionDisabled, opts.TransactionMode)
 	assert.NotNil(t, opts.RetryPolicy)
+}
+
+func TestProjectionEngine_ProjectionTransactionModes(t *testing.T) {
+	t.Run("disabled does not use transaction adapter", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(false)
+		projection := newContextCheckingAsyncProjection("TxDisabled", "ProjectionTestEvent")
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionDisabled
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-disabled", []interface{}{&ProjectionTestEvent{OrderID: "tx-disabled"}}))
+
+		err := engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxDisabled"])
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, txAdapter.transactionCalls())
+		assert.False(t, projection.sawTransactionContext())
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxDisabled")
+		assert.Greater(t, pos, uint64(0))
+	})
+
+	t.Run("required commits apply and checkpoint in transaction", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(false)
+		projection := newContextCheckingAsyncProjection("TxRequired", "ProjectionTestEvent")
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-required", []interface{}{&ProjectionTestEvent{OrderID: "tx-required"}}))
+
+		err := engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxRequired"])
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, txAdapter.transactionCalls())
+		assert.True(t, projection.sawTransactionContext())
+		assert.Len(t, projection.Events(), 1)
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxRequired")
+		assert.Greater(t, pos, uint64(0))
+	})
+
+	t.Run("auto falls back when transaction adapter reports unsupported", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(true)
+		projection := newContextCheckingAsyncProjection("TxAutoFallback", "ProjectionTestEvent")
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionAuto
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-auto", []interface{}{&ProjectionTestEvent{OrderID: "tx-auto"}}))
+
+		err := engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxAutoFallback"])
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, txAdapter.transactionCalls())
+		assert.False(t, projection.sawTransactionContext())
+		assert.Len(t, projection.Events(), 1)
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxAutoFallback")
+		assert.Greater(t, pos, uint64(0))
+	})
+
+	t.Run("required returns unsupported without applying", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(true)
+		projection := newContextCheckingAsyncProjection("TxRequiredUnsupported", "ProjectionTestEvent")
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-unsupported", []interface{}{&ProjectionTestEvent{OrderID: "tx-unsupported"}}))
+
+		err := engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxRequiredUnsupported"])
+
+		require.ErrorIs(t, err, adapters.ErrProjectionTransactionsUnsupported)
+		assert.Equal(t, 1, txAdapter.transactionCalls())
+		assert.Empty(t, projection.Events())
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxRequiredUnsupported")
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("projection errors do not update checkpoint", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(false)
+		projection := newContextCheckingAsyncProjection("TxRollback", "ProjectionTestEvent")
+		projection.SetError(assert.AnError)
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-rollback", []interface{}{&ProjectionTestEvent{OrderID: "tx-rollback"}}))
+
+		err := engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxRollback"])
+
+		require.Error(t, err)
+		assert.Equal(t, 1, txAdapter.transactionCalls())
+		assert.Empty(t, projection.Events())
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxRollback")
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("panic is recovered", func(t *testing.T) {
+		engine, store, checkpoint, txAdapter := newProjectionTxTestEngine(false)
+		projection := newPanickingAsyncProjection("TxPanic", "ProjectionTestEvent")
+		opts := fastAsyncOpts()
+		opts.TransactionMode = ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		require.NoError(t, store.Append(context.Background(), "Order-tx-panic", []interface{}{&ProjectionTestEvent{OrderID: "tx-panic"}}))
+
+		var err error
+		assert.NotPanics(t, func() {
+			err = engine.processAsyncBatch(context.Background(), engine.asyncProjections["TxPanic"])
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "panic processing event")
+		assert.Equal(t, 1, txAdapter.transactionCalls())
+		pos, _ := checkpoint.GetCheckpoint(context.Background(), "TxPanic")
+		assert.Equal(t, uint64(0), pos)
+	})
 }
 
 // --- Retry Policy Tests ---

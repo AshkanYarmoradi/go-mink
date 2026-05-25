@@ -385,6 +385,23 @@ orders, err := repo.Find(ctx, mink.NewQuery().
 
 For MongoDB, `pk` is stored as MongoDB `_id` and also preserved under the tagged field name. `index` and `unique` create MongoDB indexes. `nullable`, `default`, and `type=` are accepted for compatibility with PostgreSQL-tagged models, but they are no-ops for MongoDB.
 
+MongoDB repositories also support session-scoped transactions. Use `RunTransaction` for read-model writes that must commit together, or `WithSessionContext` when a higher-level MongoDB transaction is already active:
+
+```go
+err := repo.RunTransaction(ctx, func(txCtx context.Context, tx *mongodb.TxRepository[OrderSummary]) error {
+    if err := tx.Upsert(txCtx, &OrderSummary{
+        OrderID:    "order-1",
+        CustomerID: "cust-123",
+        Status:     "paid",
+    }); err != nil {
+        return err
+    }
+    return tx.Delete(txCtx, "stale-order")
+})
+```
+
+Async projections can opt into generic transactional commits by setting `AsyncOptions.TransactionMode` to `ProjectionTransactionAuto` or `ProjectionTransactionRequired`. When the adapter supports projection transactions, projection updates and checkpoint persistence commit in the same database transaction.
+
 #### Supported Struct Tags
 
 | Tag | Description |

@@ -13,6 +13,9 @@ import (
 	"go-mink.dev/adapters/mongodb"
 	"go-mink.dev/adapters/postgres"
 	"go-mink.dev/cli/config"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // CLIAdapter combines all adapter interfaces needed by CLI commands.
@@ -100,12 +103,27 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 		if err != nil {
 			return nil, err
 		}
+		writeConcern, err := parseMongoWriteConcern(f.config.Database.WriteConcern)
+		if err != nil {
+			return nil, err
+		}
+		readConcern, err := parseMongoReadConcern(f.config.Database.ReadConcern)
+		if err != nil {
+			return nil, err
+		}
+		readPreference, err := parseMongoReadPreference(f.config.Database.ReadPreference)
+		if err != nil {
+			return nil, err
+		}
 		adapter, err := mongodb.NewAdapter(
 			f.dbURL,
 			mongodb.WithDatabase(f.config.Database.Schema),
 			mongodb.WithCollectionNames(names),
 			mongodb.WithTransactionMode(transactionMode),
 			mongodb.WithSubscriptionMode(subscriptionMode),
+			mongodb.WithWriteConcern(writeConcern),
+			mongodb.WithReadConcern(readConcern),
+			mongodb.WithReadPreference(readPreference),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create mongodb adapter: %w", err)
@@ -152,6 +170,59 @@ func parseMongoSubscriptionMode(value string) (mongodb.SubscriptionMode, error) 
 		return mongodb.SubscriptionModeChangeStream, nil
 	default:
 		return mongodb.SubscriptionModeAuto, fmt.Errorf("database.subscription_mode must be 'auto', 'polling', or 'change_stream'")
+	}
+}
+
+func parseMongoWriteConcern(value string) (*writeconcern.WriteConcern, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "majority":
+		return writeconcern.Majority(), nil
+	case "w1", "1":
+		return writeconcern.W1(), nil
+	case "unacknowledged", "0":
+		return writeconcern.Unacknowledged(), nil
+	default:
+		return nil, fmt.Errorf("database.write_concern must be 'majority', 'w1', or 'unacknowledged'")
+	}
+}
+
+func parseMongoReadConcern(value string) (*readconcern.ReadConcern, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "local":
+		return readconcern.Local(), nil
+	case "majority":
+		return readconcern.Majority(), nil
+	case "snapshot":
+		return readconcern.Snapshot(), nil
+	case "linearizable":
+		return readconcern.Linearizable(), nil
+	case "available":
+		return readconcern.Available(), nil
+	default:
+		return nil, fmt.Errorf("database.read_concern must be 'local', 'majority', 'snapshot', 'linearizable', or 'available'")
+	}
+}
+
+func parseMongoReadPreference(value string) (*readpref.ReadPref, error) {
+	switch strings.ToLower(value) {
+	case "":
+		return nil, nil
+	case "primary":
+		return readpref.Primary(), nil
+	case "primary_preferred", "primarypreferred":
+		return readpref.PrimaryPreferred(), nil
+	case "secondary":
+		return readpref.Secondary(), nil
+	case "secondary_preferred", "secondarypreferred":
+		return readpref.SecondaryPreferred(), nil
+	case "nearest":
+		return readpref.Nearest(), nil
+	default:
+		return nil, fmt.Errorf("database.read_preference must be 'primary', 'primary_preferred', 'secondary', 'secondary_preferred', or 'nearest'")
 	}
 }
 

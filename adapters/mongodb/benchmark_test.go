@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -27,6 +28,31 @@ func benchmarkMongoURL() string {
 
 func benchmarkDatabase() string {
 	return fmt.Sprintf("bench_%d", time.Now().UnixNano())
+}
+
+func newBenchmarkAdapter(b *testing.B, opts ...Option) (*MongoAdapter, context.Context) {
+	b.Helper()
+	if testing.Short() {
+		b.Skip("Skipping integration benchmark in short mode")
+	}
+	if benchmarkMongoURL() == "" {
+		b.Skip("TEST_MONGODB_URL not set")
+	}
+
+	ctx := context.Background()
+	all := append([]Option{WithDatabase(benchmarkDatabase())}, opts...)
+	adapter, err := NewAdapter(benchmarkMongoURL(), all...)
+	if err != nil {
+		b.Fatalf("failed to create adapter: %v", err)
+	}
+	b.Cleanup(func() {
+		_ = adapter.Database().Drop(context.Background())
+		_ = adapter.Close()
+	})
+	if err := adapter.Initialize(ctx); err != nil {
+		b.Fatalf("failed to initialize adapter: %v", err)
+	}
+	return adapter, ctx
 }
 
 func newBenchmarkFactory() benchmarks.AdapterBenchmarkFactory {
@@ -65,26 +91,7 @@ func BenchmarkAdapter(b *testing.B) {
 }
 
 func BenchmarkReadModelRepository(b *testing.B) {
-	if testing.Short() {
-		b.Skip("Skipping integration benchmark in short mode")
-	}
-	if benchmarkMongoURL() == "" {
-		b.Skip("TEST_MONGODB_URL not set")
-	}
-
-	ctx := context.Background()
-	adapter, err := NewAdapter(benchmarkMongoURL(), WithDatabase(benchmarkDatabase()))
-	if err != nil {
-		b.Fatalf("failed to create adapter: %v", err)
-	}
-	defer func() {
-		_ = adapter.Database().Drop(context.Background())
-		_ = adapter.Close()
-	}()
-	if err := adapter.Initialize(ctx); err != nil {
-		b.Fatalf("failed to initialize adapter: %v", err)
-	}
-
+	adapter, ctx := newBenchmarkAdapter(b)
 	repo, err := NewMongoRepositoryFromAdapter[benchmarkOrderSummary](adapter, WithReadModelCollection("order_summaries"))
 	if err != nil {
 		b.Fatalf("failed to create repository: %v", err)
@@ -130,6 +137,128 @@ func BenchmarkReadModelRepository(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkAppendTransactionModes(b *testing.B) {
+	tests := []struct {
+		name string
+		mode TransactionMode
+	}{
+		{name: "transactions_required", mode: TransactionModeRequired},
+		{name: "transactions_disabled", mode: TransactionModeDisabled},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			adapter, ctx := newBenchmarkAdapter(b, WithTransactionMode(tt.mode))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, err := adapter.Append(ctx, fmt.Sprintf("order-%s-%d", tt.name, i), []adapters.EventRecord{{
+					Type: "OrderCreated",
+					Data: []byte(`{"status":"created"}`),
+				}}, NoStream)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReadModelTransactions(b *testing.B) {
+	adapter, ctx := newBenchmarkAdapter(b, WithTransactionMode(TransactionModeRequired))
+	repo, err := NewMongoRepositoryFromAdapter[benchmarkOrderSummary](adapter, WithReadModelCollection("tx_order_summaries"))
+	if err != nil {
+		b.Fatalf("failed to create repository: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := repo.RunTransaction(ctx, func(txCtx context.Context, tx *TxRepository[benchmarkOrderSummary]) error {
+			return tx.Upsert(txCtx, &benchmarkOrderSummary{
+				ID:          uuid.NewString(),
+				CustomerID:  fmt.Sprintf("customer-%d", i%100),
+				Status:      "pending",
+				TotalAmount: float64(i),
+				UpdatedAt:   time.Now().UTC(),
+			})
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkProjectionTransactions(b *testing.B) {
+	adapter, ctx := newBenchmarkAdapter(b, WithTransactionMode(TransactionModeRequired))
+	repo, err := NewMongoRepositoryFromAdapter[benchmarkOrderSummary](adapter, WithReadModelCollection("projection_order_summaries"))
+	if err != nil {
+		b.Fatalf("failed to create repository: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := adapter.RunProjectionTransaction(ctx, "benchmark-projection", func(txCtx context.Context) error {
+			if err := repo.Upsert(txCtx, &benchmarkOrderSummary{
+				ID:          uuid.NewString(),
+				CustomerID:  fmt.Sprintf("customer-%d", i%100),
+				Status:      "projected",
+				TotalAmount: float64(i),
+				UpdatedAt:   time.Now().UTC(),
+			}); err != nil {
+				return err
+			}
+			return adapter.SetCheckpoint(txCtx, "benchmark-projection", uint64(i+1))
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSubscriptionWakeLatency(b *testing.B) {
+	adapter, ctx := newBenchmarkAdapter(
+		b,
+		WithTransactionMode(TransactionModeRequired),
+		WithSubscriptionMode(SubscriptionModeChangeStream),
+	)
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, err := adapter.SubscribeAll(subCtx, 0, adapters.SubscriptionOptions{
+		ResumeTokenKey: "benchmark-wake-latency",
+		OnError: func(err error) {
+			if err != nil && !errors.Is(err, context.Canceled) {
+				b.Logf("subscription wake benchmark error: %v", err)
+			}
+		},
+	})
+	if err != nil {
+		b.Fatalf("failed to subscribe: %v", err)
+	}
+
+	var totalWake time.Duration
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		_, err := adapter.Append(ctx, fmt.Sprintf("wake-%d", i), []adapters.EventRecord{{
+			Type: "WakeEvent",
+			Data: []byte(`{}`),
+		}}, NoStream)
+		if err != nil {
+			b.Fatal(err)
+		}
+		select {
+		case <-ch:
+			totalWake += time.Since(start)
+		case <-time.After(10 * time.Second):
+			b.Fatal("timed out waiting for subscription wake")
+		}
+	}
+	b.StopTimer()
+	if b.N > 0 {
+		b.ReportMetric(float64(totalWake.Microseconds())/float64(b.N), "wake_us/op")
+	}
 }
 
 func TestAdapterScale(t *testing.T) {

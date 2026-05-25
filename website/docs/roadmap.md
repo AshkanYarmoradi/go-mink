@@ -121,7 +121,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 - [ ] Multi-tenancy strategies (shared table, schema-per-tenant, database-per-tenant)
 - [ ] Snapshot store interface and adapters (PostgreSQL, Redis)
-- [x] MongoDB event store and read models
+- [x] MongoDB event store, read models, transactional projections, and resumable subscriptions
 - [ ] Additional adapters: Redis read models
 - [ ] Performance optimization: connection pooling, batch loading, benchmarking suite
 

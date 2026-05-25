@@ -42,6 +42,9 @@ func TestConfig_Validate(t *testing.T) {
 				c.Database.URL = "mongodb://localhost:27017/mink"
 				c.Database.TransactionMode = "required"
 				c.Database.SubscriptionMode = "change_stream"
+				c.Database.WriteConcern = "majority"
+				c.Database.ReadConcern = "majority"
+				c.Database.ReadPreference = "primary"
 			},
 			wantErrors: 0,
 		},
@@ -60,6 +63,33 @@ func TestConfig_Validate(t *testing.T) {
 				c.Database.Driver = "mongodb"
 				c.Database.URL = "mongodb://localhost:27017/mink"
 				c.Database.SubscriptionMode = "listen_notify"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb write concern",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.WriteConcern = "journaled"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb read concern",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.ReadConcern = "eventual"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb read preference",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.ReadPreference = "follower"
 			},
 			wantErrors: 1,
 		},
@@ -210,6 +240,10 @@ func TestGenerateYAML_MongoDB(t *testing.T) {
 	assert.Contains(t, yaml, `schema: "mink"`)
 	assert.Contains(t, yaml, `transaction_mode: "auto"`)
 	assert.Contains(t, yaml, `subscription_mode: "auto"`)
+	assert.Contains(t, yaml, `# transaction_mode: "required"`)
+	assert.Contains(t, yaml, `# write_concern: "majority"`)
+	assert.Contains(t, yaml, `# read_concern: "majority"`)
+	assert.Contains(t, yaml, `# read_preference: "primary"`)
 }
 
 func TestLoadFile_NotFound(t *testing.T) {

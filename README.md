@@ -62,7 +62,7 @@ go-mink aims to eliminate the boilerplate code typically required when implement
 |---------|--------|-------------|
 | 🎯 **Event Store** | ✅ | Append-only event storage with optimistic concurrency |
 | 🔌 **PostgreSQL Adapter** | ✅ | Production-ready PostgreSQL support |
-| 🍃 **MongoDB Adapter** | ✅ | Event store, optional stores, subscriptions, and read models |
+| 🍃 **MongoDB Adapter** | ✅ | Event store, optional stores, resumable subscriptions, and read models |
 | 🧪 **Memory Adapter** | ✅ | In-memory adapter for testing |
 | 🧱 **Aggregates** | ✅ | Base implementation with event application |
 | 📋 **Command Bus** | ✅ | Full CQRS with command handlers and middleware |
@@ -434,6 +434,7 @@ Run benchmarks locally:
 ```bash
 make benchmark-adapters      # Memory adapter (no infra)
 make benchmark-adapters-pg   # PostgreSQL adapter (needs infra)
+TEST_MONGODB_URL="mongodb://localhost:27017/mink_test?replicaSet=rs0" go test -run='^$' -bench=. ./adapters/mongodb
 ```
 
 See [full benchmark results](docs/benchmarks.md) for detailed throughput, latency percentiles, and instructions for adding benchmarks to new adapters.

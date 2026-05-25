@@ -14,6 +14,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 const (
@@ -66,29 +69,31 @@ const (
 
 // CollectionNames contains MongoDB collection names used by the adapter.
 type CollectionNames struct {
-	Streams     string
-	Events      string
-	Snapshots   string
-	Checkpoints string
-	Migrations  string
-	Idempotency string
-	Outbox      string
-	Sagas       string
-	Counters    string
+	Streams      string
+	Events       string
+	Snapshots    string
+	Checkpoints  string
+	Migrations   string
+	Idempotency  string
+	Outbox       string
+	Sagas        string
+	Counters     string
+	ResumeTokens string
 }
 
 // DefaultCollectionNames returns the default MongoDB collection names.
 func DefaultCollectionNames() CollectionNames {
 	return CollectionNames{
-		Streams:     "streams",
-		Events:      "events",
-		Snapshots:   "snapshots",
-		Checkpoints: "checkpoints",
-		Migrations:  "migrations",
-		Idempotency: "mink_idempotency",
-		Outbox:      "mink_outbox",
-		Sagas:       "mink_sagas",
-		Counters:    "counters",
+		Streams:      "streams",
+		Events:       "events",
+		Snapshots:    "snapshots",
+		Checkpoints:  "checkpoints",
+		Migrations:   "migrations",
+		Idempotency:  "mink_idempotency",
+		Outbox:       "mink_outbox",
+		Sagas:        "mink_sagas",
+		Counters:     "counters",
+		ResumeTokens: "mink_resume_tokens",
 	}
 }
 
@@ -100,6 +105,11 @@ type MongoAdapter struct {
 	collections        CollectionNames
 	transactionMode    TransactionMode
 	subscriptionMode   SubscriptionMode
+	writeConcern       *writeconcern.WriteConcern
+	readConcern        *readconcern.ReadConcern
+	readPreference     *readpref.ReadPref
+	transactionOptions []options.Lister[options.TransactionOptions]
+	resumeTokenStore   *ResumeTokenStore
 	transactionsActive bool
 	ownsClient         bool
 	closed             bool
@@ -148,6 +158,41 @@ func WithSubscriptionMode(mode SubscriptionMode) Option {
 	}
 }
 
+// WithWriteConcern sets the MongoDB write concern used by adapter collections.
+func WithWriteConcern(wc *writeconcern.WriteConcern) Option {
+	return func(a *MongoAdapter) {
+		a.writeConcern = wc
+	}
+}
+
+// WithReadConcern sets the MongoDB read concern used by adapter collections.
+func WithReadConcern(rc *readconcern.ReadConcern) Option {
+	return func(a *MongoAdapter) {
+		a.readConcern = rc
+	}
+}
+
+// WithReadPreference sets the MongoDB read preference used by adapter collections.
+func WithReadPreference(rp *readpref.ReadPref) Option {
+	return func(a *MongoAdapter) {
+		a.readPreference = rp
+	}
+}
+
+// WithTransactionOptions sets the MongoDB transaction options used by adapter transactions.
+func WithTransactionOptions(opts ...options.Lister[options.TransactionOptions]) Option {
+	return func(a *MongoAdapter) {
+		a.transactionOptions = append([]options.Lister[options.TransactionOptions]{}, opts...)
+	}
+}
+
+// WithResumeTokenStore sets the persistent change-stream resume token store.
+func WithResumeTokenStore(store *ResumeTokenStore) Option {
+	return func(a *MongoAdapter) {
+		a.resumeTokenStore = store
+	}
+}
+
 // NewAdapter creates a new MongoDB event store adapter.
 func NewAdapter(uri string, opts ...Option) (*MongoAdapter, error) {
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetAppName("go-mink"))
@@ -192,19 +237,23 @@ func initAdapter(client *mongo.Client, ownsClient bool, opts []Option) (*MongoAd
 		return nil, err
 	}
 
-	adapter.db = client.Database(adapter.database)
+	adapter.db = client.Database(adapter.database, adapter.databaseOptions())
+	if adapter.resumeTokenStore == nil {
+		adapter.resumeTokenStore = NewResumeTokenStoreFromAdapter(adapter)
+	}
 	return adapter, nil
 }
 
 var (
-	_ adapters.EventStoreAdapter   = (*MongoAdapter)(nil)
-	_ adapters.SubscriptionAdapter = (*MongoAdapter)(nil)
-	_ adapters.SnapshotAdapter     = (*MongoAdapter)(nil)
-	_ adapters.CheckpointAdapter   = (*MongoAdapter)(nil)
-	_ adapters.HealthChecker       = (*MongoAdapter)(nil)
-	_ adapters.Migrator            = (*MongoAdapter)(nil)
-	_ mink.CheckpointStore         = (*MongoAdapter)(nil)
-	_ adapters.OutboxAppender      = (*MongoAdapter)(nil)
+	_ adapters.EventStoreAdapter            = (*MongoAdapter)(nil)
+	_ adapters.SubscriptionAdapter          = (*MongoAdapter)(nil)
+	_ adapters.SnapshotAdapter              = (*MongoAdapter)(nil)
+	_ adapters.CheckpointAdapter            = (*MongoAdapter)(nil)
+	_ adapters.HealthChecker                = (*MongoAdapter)(nil)
+	_ adapters.Migrator                     = (*MongoAdapter)(nil)
+	_ adapters.ProjectionTransactionAdapter = (*MongoAdapter)(nil)
+	_ mink.CheckpointStore                  = (*MongoAdapter)(nil)
+	_ adapters.OutboxAppender               = (*MongoAdapter)(nil)
 )
 
 type metadataDoc struct {
@@ -244,6 +293,20 @@ func (a *MongoAdapter) collection(name string) *mongo.Collection {
 	return a.db.Collection(name)
 }
 
+func (a *MongoAdapter) databaseOptions() *options.DatabaseOptionsBuilder {
+	opts := options.Database()
+	if a.writeConcern != nil {
+		opts.SetWriteConcern(a.writeConcern)
+	}
+	if a.readConcern != nil {
+		opts.SetReadConcern(a.readConcern)
+	}
+	if a.readPreference != nil {
+		opts.SetReadPreference(a.readPreference)
+	}
+	return opts
+}
+
 func (a *MongoAdapter) streams() *mongo.Collection   { return a.collection(a.collections.Streams) }
 func (a *MongoAdapter) events() *mongo.Collection    { return a.collection(a.collections.Events) }
 func (a *MongoAdapter) snapshots() *mongo.Collection { return a.collection(a.collections.Snapshots) }
@@ -257,6 +320,9 @@ func (a *MongoAdapter) idempotency() *mongo.Collection {
 func (a *MongoAdapter) outbox() *mongo.Collection   { return a.collection(a.collections.Outbox) }
 func (a *MongoAdapter) sagas() *mongo.Collection    { return a.collection(a.collections.Sagas) }
 func (a *MongoAdapter) counters() *mongo.Collection { return a.collection(a.collections.Counters) }
+func (a *MongoAdapter) resumeTokens() *mongo.Collection {
+	return a.collection(a.collections.ResumeTokens)
+}
 
 // Database returns the underlying MongoDB database handle.
 func (a *MongoAdapter) Database() *mongo.Database {
@@ -283,6 +349,21 @@ func (a *MongoAdapter) SubscriptionMode() SubscriptionMode {
 	return a.subscriptionMode
 }
 
+// WriteConcern returns the configured MongoDB write concern.
+func (a *MongoAdapter) WriteConcern() *writeconcern.WriteConcern {
+	return a.writeConcern
+}
+
+// ReadConcern returns the configured MongoDB read concern.
+func (a *MongoAdapter) ReadConcern() *readconcern.ReadConcern {
+	return a.readConcern
+}
+
+// ReadPreference returns the configured MongoDB read preference.
+func (a *MongoAdapter) ReadPreference() *readpref.ReadPref {
+	return a.readPreference
+}
+
 // Initialize creates indexes and detects transaction support.
 func (a *MongoAdapter) Initialize(ctx context.Context) error {
 	if a.closed {
@@ -297,7 +378,10 @@ func (a *MongoAdapter) Initialize(ctx context.Context) error {
 	if err := a.createIndexes(ctx); err != nil {
 		return err
 	}
-	return a.initializeCounter(ctx)
+	if err := a.initializeCounter(ctx); err != nil {
+		return err
+	}
+	return NewResumeTokenStoreFromAdapter(a).Initialize(ctx)
 }
 
 // Migrate runs MongoDB collection/index setup.
@@ -353,33 +437,51 @@ func (a *MongoAdapter) validateAppend(streamID string, events []adapters.EventRe
 }
 
 func (a *MongoAdapter) appendInTransaction(ctx context.Context, streamID string, records []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
-	session, err := a.client.StartSession()
-	if err != nil {
-		return nil, fmt.Errorf("mink/mongodb: failed to start session: %w", err)
-	}
-	defer session.EndSession(ctx)
-
 	var stored []adapters.StoredEvent
-	err = mongo.WithSession(ctx, session, func(sc context.Context) error {
-		if err := session.StartTransaction(); err != nil {
-			return err
-		}
-
-		stored, err = a.appendCore(sc, streamID, records, expectedVersion, outboxMessages)
-		if err != nil {
-			_ = session.AbortTransaction(context.Background())
-			return err
-		}
-
-		if err := session.CommitTransaction(sc); err != nil {
-			return fmt.Errorf("mink/mongodb: failed to commit transaction: %w", err)
-		}
-		return nil
+	err := a.runTransaction(ctx, func(sc context.Context) error {
+		var appendErr error
+		stored, appendErr = a.appendCore(sc, streamID, records, expectedVersion, outboxMessages)
+		return appendErr
 	})
 	if err != nil {
 		return nil, err
 	}
 	return stored, nil
+}
+
+// RunProjectionTransaction runs projection updates and checkpoints in one MongoDB transaction.
+func (a *MongoAdapter) RunProjectionTransaction(ctx context.Context, projectionName string, fn func(context.Context) error) error {
+	if !a.transactionsActive {
+		return adapters.ErrProjectionTransactionsUnsupported
+	}
+	if fn == nil {
+		return fmt.Errorf("mink/mongodb: projection transaction callback is nil")
+	}
+	return a.runTransaction(ctx, func(sc context.Context) (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("mink/mongodb: projection transaction %q panicked: %v", projectionName, recovered)
+			}
+		}()
+		return fn(sc)
+	})
+}
+
+func (a *MongoAdapter) runTransaction(ctx context.Context, fn func(context.Context) error) error {
+	session, err := a.client.StartSession()
+	if err != nil {
+		return fmt.Errorf("mink/mongodb: failed to start session: %w", err)
+	}
+	defer session.EndSession(ctx)
+
+	_, err = session.WithTransaction(ctx, func(sc context.Context) (any, error) {
+		return nil, fn(sc)
+	}, a.effectiveTransactionOptions()...)
+	return err
+}
+
+func (a *MongoAdapter) effectiveTransactionOptions() []options.Lister[options.TransactionOptions] {
+	return transactionOptionsWithConcerns(a.writeConcern, a.readConcern, a.readPreference, a.transactionOptions)
 }
 
 func (a *MongoAdapter) appendCore(ctx context.Context, streamID string, records []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
@@ -702,6 +804,11 @@ func (a *MongoAdapter) resolveTransactionMode(ctx context.Context) error {
 }
 
 func (a *MongoAdapter) probeTransactions(ctx context.Context) error {
+	kind := a.deploymentKind(ctx)
+	if kind == "standalone" {
+		return fmt.Errorf("transactions require a replica set or sharded cluster")
+	}
+
 	session, err := a.client.StartSession()
 	if err != nil {
 		return err
@@ -709,16 +816,35 @@ func (a *MongoAdapter) probeTransactions(ctx context.Context) error {
 	defer session.EndSession(ctx)
 
 	return mongo.WithSession(ctx, session, func(sc context.Context) error {
-		if err := session.StartTransaction(); err != nil {
-			return err
-		}
-		err := a.db.RunCommand(sc, bson.D{{Key: "ping", Value: 1}}).Err()
-		if err != nil {
-			_ = session.AbortTransaction(context.Background())
+		if err := session.StartTransaction(a.effectiveTransactionOptions()...); err != nil {
 			return err
 		}
 		return session.AbortTransaction(sc)
 	})
+}
+
+func transactionOptionsWithConcerns(
+	wc *writeconcern.WriteConcern,
+	rc *readconcern.ReadConcern,
+	rp *readpref.ReadPref,
+	explicit []options.Lister[options.TransactionOptions],
+) []options.Lister[options.TransactionOptions] {
+	var opts []options.Lister[options.TransactionOptions]
+	if wc != nil || rc != nil || rp != nil {
+		builder := options.Transaction()
+		if wc != nil {
+			builder.SetWriteConcern(wc)
+		}
+		if rc != nil {
+			builder.SetReadConcern(rc)
+		}
+		if rp != nil {
+			builder.SetReadPreference(rp)
+		}
+		opts = append(opts, builder)
+	}
+	opts = append(opts, explicit...)
+	return opts
 }
 
 func (a *MongoAdapter) initializeCounter(ctx context.Context) error {
@@ -768,6 +894,9 @@ func (a *MongoAdapter) createIndexes(ctx context.Context) error {
 			{Keys: bson.D{{Key: "status", Value: 1}}, Options: options.Index().SetName("idx_sagas_status")},
 			{Keys: bson.D{{Key: "type", Value: 1}, {Key: "status", Value: 1}}, Options: options.Index().SetName("idx_sagas_type_status")},
 		},
+		a.resumeTokens(): {
+			{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("idx_resume_tokens_updated_at")},
+		},
 	}
 
 	for coll, models := range indexes {
@@ -780,15 +909,16 @@ func (a *MongoAdapter) createIndexes(ctx context.Context) error {
 
 func validateCollectionNames(names CollectionNames) error {
 	values := map[string]string{
-		"streams":     names.Streams,
-		"events":      names.Events,
-		"snapshots":   names.Snapshots,
-		"checkpoints": names.Checkpoints,
-		"migrations":  names.Migrations,
-		"idempotency": names.Idempotency,
-		"outbox":      names.Outbox,
-		"sagas":       names.Sagas,
-		"counters":    names.Counters,
+		"streams":       names.Streams,
+		"events":        names.Events,
+		"snapshots":     names.Snapshots,
+		"checkpoints":   names.Checkpoints,
+		"migrations":    names.Migrations,
+		"idempotency":   names.Idempotency,
+		"outbox":        names.Outbox,
+		"sagas":         names.Sagas,
+		"counters":      names.Counters,
+		"resume tokens": names.ResumeTokens,
 	}
 	for kind, value := range values {
 		if err := validateName(value, kind+" collection"); err != nil {
@@ -836,19 +966,23 @@ func mergeCollectionNames(base, override CollectionNames) CollectionNames {
 	if override.Counters != "" {
 		base.Counters = override.Counters
 	}
+	if override.ResumeTokens != "" {
+		base.ResumeTokens = override.ResumeTokens
+	}
 	return base
 }
 
 func prefixCollections(names CollectionNames, prefix string) CollectionNames {
 	return CollectionNames{
-		Streams:     prefix + names.Streams,
-		Events:      prefix + names.Events,
-		Snapshots:   prefix + names.Snapshots,
-		Checkpoints: prefix + names.Checkpoints,
-		Migrations:  prefix + names.Migrations,
-		Idempotency: prefix + names.Idempotency,
-		Outbox:      prefix + names.Outbox,
-		Sagas:       prefix + names.Sagas,
-		Counters:    prefix + names.Counters,
+		Streams:      prefix + names.Streams,
+		Events:       prefix + names.Events,
+		Snapshots:    prefix + names.Snapshots,
+		Checkpoints:  prefix + names.Checkpoints,
+		Migrations:   prefix + names.Migrations,
+		Idempotency:  prefix + names.Idempotency,
+		Outbox:       prefix + names.Outbox,
+		Sagas:        prefix + names.Sagas,
+		Counters:     prefix + names.Counters,
+		ResumeTokens: prefix + names.ResumeTokens,
 	}
 }

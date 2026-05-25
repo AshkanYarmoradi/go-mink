@@ -45,6 +45,7 @@ use(%q);
 		names.Outbox,
 		names.Sagas,
 		names.Counters,
+		names.ResumeTokens,
 	} {
 		fmt.Fprintf(&b, "db.createCollection(%q);\n", name)
 	}
@@ -75,7 +76,15 @@ db.%s.createIndex({ type: 1 }, { name: "idx_sagas_type" });
 db.%s.createIndex({ status: 1 }, { name: "idx_sagas_status" });
 db.%s.createIndex({ type: 1, status: 1 }, { name: "idx_sagas_type_status" });
 
+db.%s.createIndex({ updated_at: -1 }, { name: "idx_resume_tokens_updated_at" });
+
 db.%s.updateOne({ _id: "global_position" }, { $setOnInsert: { value: NumberLong(0) } }, { upsert: true });
+
+// Sharding note:
+// Do not auto-shard these event-store collections from generated schema alone.
+// The events collection uses unique indexes on { stream_id, version } and
+// { global_position }; MongoDB requires unique indexes on sharded collections
+// to use the shard key as the index key or as a prefix.
 `,
 		names.Streams, names.Streams,
 		names.Events, names.Events, names.Events, names.Events, names.Events,
@@ -84,6 +93,7 @@ db.%s.updateOne({ _id: "global_position" }, { $setOnInsert: { value: NumberLong(
 		names.Idempotency, names.Idempotency,
 		names.Outbox, names.Outbox,
 		names.Sagas, names.Sagas, names.Sagas, names.Sagas,
+		names.ResumeTokens,
 		names.Counters,
 	)
 

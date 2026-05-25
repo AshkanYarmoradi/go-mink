@@ -58,6 +58,15 @@ type DatabaseConfig struct {
 
 	// SubscriptionMode controls MongoDB subscriptions (auto, polling, change_stream)
 	SubscriptionMode string `yaml:"subscription_mode,omitempty"`
+
+	// WriteConcern controls MongoDB write durability (majority, w1, unacknowledged)
+	WriteConcern string `yaml:"write_concern,omitempty"`
+
+	// ReadConcern controls MongoDB read consistency (local, majority, snapshot, linearizable, available)
+	ReadConcern string `yaml:"read_concern,omitempty"`
+
+	// ReadPreference controls MongoDB read routing (primary, primary_preferred, secondary, secondary_preferred, nearest)
+	ReadPreference string `yaml:"read_preference,omitempty"`
 }
 
 // EventStoreConfig contains event store settings
@@ -217,6 +226,15 @@ func (c *Config) Validate() []string {
 		if !validMongoMode(c.Database.SubscriptionMode, "auto", "polling", "change_stream") {
 			errors = append(errors, "database.subscription_mode must be 'auto', 'polling', or 'change_stream'")
 		}
+		if !validMongoMode(c.Database.WriteConcern, "majority", "w1", "1", "unacknowledged", "0") {
+			errors = append(errors, "database.write_concern must be 'majority', 'w1', or 'unacknowledged'")
+		}
+		if !validMongoMode(c.Database.ReadConcern, "local", "majority", "snapshot", "linearizable", "available") {
+			errors = append(errors, "database.read_concern must be 'local', 'majority', 'snapshot', 'linearizable', or 'available'")
+		}
+		if !validMongoMode(c.Database.ReadPreference, "primary", "primary_preferred", "primarypreferred", "secondary", "secondary_preferred", "secondarypreferred", "nearest") {
+			errors = append(errors, "database.read_preference must be 'primary', 'primary_preferred', 'secondary_preferred', 'secondary', or 'nearest'")
+		}
 	}
 
 	return errors
@@ -242,6 +260,12 @@ func GenerateYAML(cfg *Config) string {
 
   # MongoDB subscription mode: auto, polling, or change_stream
   subscription_mode: "` + subscriptionMode + `"
+
+  # Production MongoDB recommendation:
+  # transaction_mode: "required"
+  # write_concern: "majority"
+  # read_concern: "majority"
+  # read_preference: "primary"
 `
 	}
 	return `# Mink Configuration File

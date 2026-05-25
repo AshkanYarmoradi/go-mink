@@ -6712,6 +6712,44 @@ func TestParseMongoSubscriptionMode(t *testing.T) {
 	}
 }
 
+func TestParseMongoConcernOptions(t *testing.T) {
+	t.Run("write concern", func(t *testing.T) {
+		for _, value := range []string{"", "majority", "w1", "1", "unacknowledged", "0"} {
+			got, err := parseMongoWriteConcern(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoWriteConcern("journaled")
+		require.Error(t, err)
+	})
+
+	t.Run("read concern", func(t *testing.T) {
+		for _, value := range []string{"", "local", "majority", "snapshot", "linearizable", "available"} {
+			got, err := parseMongoReadConcern(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoReadConcern("eventual")
+		require.Error(t, err)
+	})
+
+	t.Run("read preference", func(t *testing.T) {
+		for _, value := range []string{"", "primary", "primary_preferred", "primaryPreferred", "secondary", "secondary_preferred", "secondaryPreferred", "nearest"} {
+			got, err := parseMongoReadPreference(value)
+			require.NoError(t, err)
+			if value != "" {
+				assert.NotNil(t, got)
+			}
+		}
+		_, err := parseMongoReadPreference("follower")
+		require.Error(t, err)
+	})
+}
+
 // TestGetAllMigrations_EmptyDir_PG tests getAllMigrations with empty dir
 func TestGetAllMigrations_EmptyDir_PG(t *testing.T) {
 	env := setupTestEnv(t, "mink-all-mig-empty-*")

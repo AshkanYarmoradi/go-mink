@@ -195,6 +195,42 @@ jobs:
           path: benchmark-postgres-results.txt
           retention-days: 30
 
+  benchmark-mongodb:
+    name: Benchmark (MongoDB)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start MongoDB replica set
+        run: docker compose -f docker-compose.test.yml up -d --wait mongodb
+
+      - name: Run MongoDB adapter benchmarks
+        env:
+          TEST_MONGODB_URL: mongodb://localhost:27017/mink_test?replicaSet=rs0
+        run: go test -run='^$' -bench=. -benchmem -benchtime=3s -count=1 ./adapters/mongodb/ 2>&1 | tee benchmark-mongodb-results.txt
+
+      - name: Stop MongoDB
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-mongodb-results
+          path: benchmark-mongodb-results.txt
+          retention-days: 30
+
   build:
     name: Build (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}

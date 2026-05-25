@@ -997,7 +997,7 @@ if err != nil {
 outboxStore := mongodb.NewOutboxStoreFromAdapter(adapter)
 ```
 
-MongoDB uses polling and atomic event+outbox writes when transactions are active. In standalone mode the adapter reports `adapters.ErrOutboxAtomicityUnsupported` so `EventStoreWithOutbox` can use its non-atomic fallback path.
+MongoDB uses ordered polling with optional change-stream wakeups, and atomic event+outbox writes when transactions are active. In standalone mode the adapter reports `adapters.ErrOutboxAtomicityUnsupported` so `EventStoreWithOutbox` can use its non-atomic fallback path.
 
 **In-Memory** (testing):
 ```go

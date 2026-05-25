@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 	mink "go-mink.dev"
 	"go-mink.dev/adapters"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 func newIntegrationAdapter(t *testing.T, envVar string, opts ...Option) (*MongoAdapter, context.Context) {
@@ -51,6 +55,20 @@ func waitForSubscriptionEvent(t *testing.T, ch <-chan adapters.StoredEvent) adap
 		t.Fatal("timed out waiting for subscription event")
 		return adapters.StoredEvent{}
 	}
+}
+
+func waitForResumeToken(t *testing.T, ctx context.Context, store *ResumeTokenStore, key string) bson.Raw {
+	t.Helper()
+	var token bson.Raw
+	require.Eventually(t, func() bool {
+		loaded, err := store.Load(ctx, key)
+		if err != nil || len(loaded) == 0 {
+			return false
+		}
+		token = loaded
+		return true
+	}, 5*time.Second, 50*time.Millisecond)
+	return token
 }
 
 func TestMongoAdapterIntegration_EventStoreLifecycle(t *testing.T) {
@@ -191,6 +209,66 @@ func TestMongoAdapterIntegration_ChangeStreamSubscriptions(t *testing.T) {
 	assert.Equal(t, "order-1", waitForSubscriptionEvent(t, categoryCh).StreamID)
 }
 
+func TestMongoAdapterIntegration_ResumableChangeStreamSubscriptions(t *testing.T) {
+	adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL", WithSubscriptionMode(SubscriptionModeChangeStream))
+	tokenStore := NewResumeTokenStoreFromAdapter(adapter)
+
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	allCh, err := adapter.SubscribeAll(firstCtx, 0, adapters.SubscriptionOptions{ResumeTokenKey: "all"})
+	require.NoError(t, err)
+	streamCh, err := adapter.SubscribeStream(firstCtx, "order-1", 0, adapters.SubscriptionOptions{ResumeTokenKey: "stream"})
+	require.NoError(t, err)
+	categoryCh, err := adapter.SubscribeCategory(firstCtx, "order", 0, adapters.SubscriptionOptions{ResumeTokenKey: "category"})
+	require.NoError(t, err)
+
+	_, err = adapter.Append(ctx, "order-1", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{"orderId":"order-1"}`)}}, NoStream)
+	require.NoError(t, err)
+
+	allFirst := waitForSubscriptionEvent(t, allCh)
+	streamFirst := waitForSubscriptionEvent(t, streamCh)
+	categoryFirst := waitForSubscriptionEvent(t, categoryCh)
+	require.NotEmpty(t, waitForResumeToken(t, ctx, tokenStore, "all"))
+	require.NotEmpty(t, waitForResumeToken(t, ctx, tokenStore, "stream"))
+	require.NotEmpty(t, waitForResumeToken(t, ctx, tokenStore, "category"))
+	firstCancel()
+
+	secondCtx, secondCancel := context.WithCancel(ctx)
+	defer secondCancel()
+	allCh, err = adapter.SubscribeAll(secondCtx, allFirst.GlobalPosition, adapters.SubscriptionOptions{ResumeTokenKey: "all"})
+	require.NoError(t, err)
+	streamCh, err = adapter.SubscribeStream(secondCtx, "order-1", streamFirst.Version, adapters.SubscriptionOptions{ResumeTokenKey: "stream"})
+	require.NoError(t, err)
+	categoryCh, err = adapter.SubscribeCategory(secondCtx, "order", categoryFirst.GlobalPosition, adapters.SubscriptionOptions{ResumeTokenKey: "category"})
+	require.NoError(t, err)
+
+	_, err = adapter.Append(ctx, "order-1", []adapters.EventRecord{{Type: "OrderPaid", Data: []byte(`{"orderId":"order-1"}`)}}, int64(1))
+	require.NoError(t, err)
+
+	assert.Equal(t, "OrderPaid", waitForSubscriptionEvent(t, allCh).Type)
+	assert.Equal(t, int64(2), waitForSubscriptionEvent(t, streamCh).Version)
+	assert.Equal(t, "OrderPaid", waitForSubscriptionEvent(t, categoryCh).Type)
+}
+
+func TestMongoAdapterIntegration_InvalidResumeTokenFallsBackToFreshWatch(t *testing.T) {
+	adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL", WithSubscriptionMode(SubscriptionModeChangeStream))
+	store := NewResumeTokenStoreFromAdapter(adapter)
+	raw, err := bson.Marshal(bson.M{"_data": "invalid-resume-token"})
+	require.NoError(t, err)
+	require.NoError(t, store.Save(ctx, "invalid", bson.Raw(raw)))
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, err := adapter.SubscribeAll(subCtx, 0, adapters.SubscriptionOptions{ResumeTokenKey: "invalid"})
+	require.NoError(t, err)
+
+	_, err = adapter.Append(ctx, "order-1", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, NoStream)
+	require.NoError(t, err)
+
+	event := waitForSubscriptionEvent(t, ch)
+	assert.Equal(t, "OrderCreated", event.Type)
+	assert.NotEqual(t, bson.Raw(raw), waitForResumeToken(t, ctx, store, "invalid"))
+}
+
 func TestMongoAdapterIntegration_AutoSubscriptionFallbackForStandalone(t *testing.T) {
 	adapter, ctx := newIntegrationAdapter(
 		t,
@@ -290,6 +368,23 @@ func TestMongoAdapterIntegration_OptionalStores(t *testing.T) {
 	require.NoError(t, sagas.Delete(ctx, state.ID))
 }
 
+func TestMongoAdapterIntegration_ResumeTokenStore(t *testing.T) {
+	adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL")
+	store := NewResumeTokenStoreFromAdapter(adapter)
+	raw, err := bson.Marshal(bson.M{"_data": "token-1"})
+	require.NoError(t, err)
+
+	require.NoError(t, store.Save(ctx, "orders", bson.Raw(raw)))
+	loaded, err := store.Load(ctx, "orders")
+	require.NoError(t, err)
+	assert.Equal(t, bson.Raw(raw), loaded)
+
+	require.NoError(t, store.Delete(ctx, "orders"))
+	loaded, err = store.Load(ctx, "orders")
+	require.NoError(t, err)
+	assert.Empty(t, loaded)
+}
+
 func TestMongoRepositoryIntegration_CRUDQueryUpsertDelete(t *testing.T) {
 	adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL")
 	repo, err := NewMongoRepositoryFromAdapter[taggedReadModel](adapter, WithReadModelCollection("crud_models"))
@@ -338,6 +433,141 @@ func TestMongoRepositoryIntegration_CRUDQueryUpsertDelete(t *testing.T) {
 	all, err = repo.GetAll(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, all)
+}
+
+type projectionTxModel struct {
+	ID     string `mink:"id,pk"`
+	Status string `mink:"status,index"`
+}
+
+type mongoProjectionTxProjection struct {
+	mink.AsyncProjectionBase
+
+	repo *MongoRepository[projectionTxModel]
+	fail bool
+}
+
+func newMongoProjectionTxProjection(name string, repo *MongoRepository[projectionTxModel], fail bool) *mongoProjectionTxProjection {
+	return &mongoProjectionTxProjection{
+		AsyncProjectionBase: mink.NewAsyncProjectionBase(name, "ProjectionTxEvent"),
+		repo:                repo,
+		fail:                fail,
+	}
+}
+
+func (p *mongoProjectionTxProjection) Apply(ctx context.Context, event mink.StoredEvent) error {
+	if err := p.repo.Upsert(ctx, &projectionTxModel{ID: event.StreamID, Status: event.Type}); err != nil {
+		return err
+	}
+	if p.fail {
+		return errors.New("projection failure")
+	}
+	return nil
+}
+
+func TestMongoAdapterIntegration_TransactionalProjectionCommitAndRollback(t *testing.T) {
+	t.Run("commit updates read model and checkpoint", func(t *testing.T) {
+		adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL", WithTransactionMode(TransactionModeRequired))
+		store := mink.New(adapter)
+		repo, err := NewMongoRepositoryFromAdapter[projectionTxModel](adapter, WithReadModelCollection("projection_tx_commit"))
+		require.NoError(t, err)
+		engine := mink.NewProjectionEngine(store, mink.WithCheckpointStore(adapter))
+		opts := mink.DefaultAsyncOptions()
+		opts.PollInterval = 20 * time.Millisecond
+		opts.StartFromBeginning = true
+		opts.TransactionMode = mink.ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(newMongoProjectionTxProjection("projection-tx-commit", repo, false), opts))
+
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		require.NoError(t, engine.Start(runCtx))
+		defer func() { _ = engine.Stop(context.Background()) }()
+
+		_, err = adapter.Append(ctx, "projection-commit-1", []adapters.EventRecord{{Type: "ProjectionTxEvent", Data: []byte(`{}`)}}, NoStream)
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			model, err := repo.Get(ctx, "projection-commit-1")
+			if err != nil || model.Status != "ProjectionTxEvent" {
+				return false
+			}
+			checkpoint, err := adapter.GetCheckpoint(ctx, "projection-tx-commit")
+			return err == nil && checkpoint > 0
+		}, 5*time.Second, 50*time.Millisecond)
+	})
+
+	t.Run("rollback keeps read model and checkpoint unchanged", func(t *testing.T) {
+		adapter, ctx := newIntegrationAdapter(t, "TEST_MONGODB_URL", WithTransactionMode(TransactionModeRequired))
+		store := mink.New(adapter)
+		repo, err := NewMongoRepositoryFromAdapter[projectionTxModel](adapter, WithReadModelCollection("projection_tx_rollback"))
+		require.NoError(t, err)
+		engine := mink.NewProjectionEngine(store, mink.WithCheckpointStore(adapter))
+		opts := mink.DefaultAsyncOptions()
+		opts.PollInterval = 20 * time.Millisecond
+		opts.StartFromBeginning = true
+		opts.TransactionMode = mink.ProjectionTransactionRequired
+		require.NoError(t, engine.RegisterAsync(newMongoProjectionTxProjection("projection-tx-rollback", repo, true), opts))
+
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		require.NoError(t, engine.Start(runCtx))
+		defer func() { _ = engine.Stop(context.Background()) }()
+
+		_, err = adapter.Append(ctx, "projection-rollback-1", []adapters.EventRecord{{Type: "ProjectionTxEvent", Data: []byte(`{}`)}}, NoStream)
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			_, err := repo.Get(ctx, "projection-rollback-1")
+			if !errors.Is(err, mink.ErrNotFound) {
+				return false
+			}
+			checkpoint, err := adapter.GetCheckpoint(ctx, "projection-tx-rollback")
+			return err == nil && checkpoint == 0
+		}, 2*time.Second, 50*time.Millisecond)
+	})
+}
+
+func TestMongoAdapterIntegration_ConcernOptionsAndDiagnostics(t *testing.T) {
+	adapter, ctx := newIntegrationAdapter(
+		t,
+		"TEST_MONGODB_URL",
+		WithWriteConcern(writeconcern.Majority()),
+		WithReadConcern(readconcern.Majority()),
+		WithReadPreference(readpref.Primary()),
+	)
+	repo, err := NewMongoRepositoryFromAdapter[taggedReadModel](adapter, WithReadModelCollection("concern_models"))
+	require.NoError(t, err)
+	require.NoError(t, repo.Upsert(ctx, &taggedReadModel{
+		ID:         "concern-1",
+		CustomerID: "customer-1",
+		Email:      "concern@example.com",
+	}))
+	_, err = repo.Get(ctx, "concern-1")
+	require.NoError(t, err)
+
+	info, err := adapter.GetDiagnosticInfo(ctx)
+	require.NoError(t, err)
+	assert.True(t, info.Connected)
+	assert.Equal(t, "replica_set", info.Details["deployment"])
+	assert.Equal(t, "majority", info.Details["write_concern"])
+	assert.Equal(t, "majority", info.Details["read_concern"])
+	assert.NotEmpty(t, info.Details["read_preference"])
+}
+
+func TestMongoAdapterIntegration_DiagnosticsStandalone(t *testing.T) {
+	adapter, ctx := newIntegrationAdapter(
+		t,
+		"TEST_MONGODB_STANDALONE_URL",
+		WithTransactionMode(TransactionModeDisabled),
+		WithSubscriptionMode(SubscriptionModeAuto),
+	)
+
+	info, err := adapter.GetDiagnosticInfo(ctx)
+	require.NoError(t, err)
+	assert.True(t, info.Connected)
+	assert.Equal(t, "standalone", info.Details["deployment"])
+	assert.Equal(t, "false", info.Details["transactions_active"])
+	assert.Equal(t, "false", info.Details["change_streams_available"])
 }
 
 func TestMongoAdapterIntegration_OutboxAtomicityFallbackForStandalone(t *testing.T) {

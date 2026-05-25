@@ -11,6 +11,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 var (
@@ -28,10 +31,14 @@ type MongoRepository[T any] struct {
 }
 
 type mongoRepositoryConfig struct {
-	database    string
-	collection  string
-	idField     string
-	autoMigrate bool
+	database           string
+	collection         string
+	idField            string
+	autoMigrate        bool
+	writeConcern       *writeconcern.WriteConcern
+	readConcern        *readconcern.ReadConcern
+	readPreference     *readpref.ReadPref
+	transactionOptions []options.Lister[options.TransactionOptions]
 }
 
 // MongoRepositoryOption configures a MongoRepository.
@@ -58,6 +65,34 @@ func WithReadModelAutoMigrate(enabled bool) MongoRepositoryOption {
 	}
 }
 
+// WithReadModelWriteConcern sets the repository write concern.
+func WithReadModelWriteConcern(wc *writeconcern.WriteConcern) MongoRepositoryOption {
+	return func(c *mongoRepositoryConfig) {
+		c.writeConcern = wc
+	}
+}
+
+// WithReadModelReadConcern sets the repository read concern.
+func WithReadModelReadConcern(rc *readconcern.ReadConcern) MongoRepositoryOption {
+	return func(c *mongoRepositoryConfig) {
+		c.readConcern = rc
+	}
+}
+
+// WithReadModelReadPreference sets the repository read preference.
+func WithReadModelReadPreference(rp *readpref.ReadPref) MongoRepositoryOption {
+	return func(c *mongoRepositoryConfig) {
+		c.readPreference = rp
+	}
+}
+
+// WithReadModelTransactionOptions sets default transaction options for RunTransaction.
+func WithReadModelTransactionOptions(opts ...options.Lister[options.TransactionOptions]) MongoRepositoryOption {
+	return func(c *mongoRepositoryConfig) {
+		c.transactionOptions = append([]options.Lister[options.TransactionOptions]{}, opts...)
+	}
+}
+
 // NewMongoRepository creates a MongoDB-backed repository for read models.
 func NewMongoRepository[T any](client *mongo.Client, database string, opts ...MongoRepositoryOption) (*MongoRepository[T], error) {
 	if client == nil {
@@ -79,7 +114,7 @@ func NewMongoRepository[T any](client *mongo.Client, database string, opts ...Mo
 
 	repo := &MongoRepository[T]{
 		client: client,
-		db:     client.Database(cfg.database),
+		db:     client.Database(cfg.database, readModelDatabaseOptions(cfg)),
 		config: cfg,
 		model:  info,
 	}
@@ -94,7 +129,13 @@ func NewMongoRepository[T any](client *mongo.Client, database string, opts ...Mo
 
 // NewMongoRepositoryFromAdapter creates a read model repository from an adapter.
 func NewMongoRepositoryFromAdapter[T any](adapter *MongoAdapter, opts ...MongoRepositoryOption) (*MongoRepository[T], error) {
-	all := append([]MongoRepositoryOption{func(c *mongoRepositoryConfig) { c.database = adapter.database }}, opts...)
+	all := append([]MongoRepositoryOption{func(c *mongoRepositoryConfig) {
+		c.database = adapter.database
+		c.writeConcern = adapter.writeConcern
+		c.readConcern = adapter.readConcern
+		c.readPreference = adapter.readPreference
+		c.transactionOptions = append([]options.Lister[options.TransactionOptions]{}, adapter.transactionOptions...)
+	}}, opts...)
 	return NewMongoRepository[T](adapter.client, adapter.database, all...)
 }
 
@@ -277,6 +318,14 @@ func (r *MongoRepository[T]) RunTransaction(ctx context.Context, fn func(context
 	}
 	defer session.EndSession(ctx)
 
+	if len(opts) == 0 {
+		opts = transactionOptionsWithConcerns(
+			r.config.writeConcern,
+			r.config.readConcern,
+			r.config.readPreference,
+			r.config.transactionOptions,
+		)
+	}
 	_, err = session.WithTransaction(ctx, func(sc context.Context) (any, error) {
 		return nil, fn(sc, r.WithSessionContext(sc))
 	}, opts...)
@@ -376,6 +425,20 @@ func (r *MongoRepository[T]) CollectionName() string {
 // DatabaseName returns the MongoDB database name.
 func (r *MongoRepository[T]) DatabaseName() string {
 	return r.config.database
+}
+
+func readModelDatabaseOptions(cfg mongoRepositoryConfig) *options.DatabaseOptionsBuilder {
+	opts := options.Database()
+	if cfg.writeConcern != nil {
+		opts.SetWriteConcern(cfg.writeConcern)
+	}
+	if cfg.readConcern != nil {
+		opts.SetReadConcern(cfg.readConcern)
+	}
+	if cfg.readPreference != nil {
+		opts.SetReadPreference(cfg.readPreference)
+	}
+	return opts
 }
 
 func (r *MongoRepository[T]) scanModels(ctx context.Context, cursor *mongo.Cursor) ([]*T, error) {

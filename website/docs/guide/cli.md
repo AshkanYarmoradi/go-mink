@@ -661,6 +661,11 @@ database:
   driver: postgres           # postgres, mongodb, or memory
   url: ${DATABASE_URL}       # Environment variable expansion
   schema: mink               # PostgreSQL schema; MongoDB database name
+  transaction_mode: auto     # MongoDB: auto, required, or disabled
+  subscription_mode: auto    # MongoDB: auto, polling, or change_stream
+  write_concern: majority    # MongoDB production recommendation
+  read_concern: majority     # MongoDB production recommendation
+  read_preference: primary   # MongoDB production recommendation
   migrations_dir: migrations
 
 event_store:
@@ -688,6 +693,8 @@ generation:
 export DATABASE_URL="postgres://user:password@localhost:5432/mydb?sslmode=disable"
 export MONGODB_URL="mongodb://localhost:27017/mink?replicaSet=rs0"
 ```
+
+For MongoDB production configs, use a replica set or sharded cluster with `transaction_mode: required`, `write_concern: majority`, `read_concern: majority`, and `read_preference: primary`. `subscription_mode: auto` uses change streams when available and falls back to polling; use `change_stream` when you want startup to fail if change streams are unavailable.
 
 ---
 

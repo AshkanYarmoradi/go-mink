@@ -13,6 +13,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 type taggedReadModel struct {
@@ -48,8 +51,47 @@ func TestCollectionNameOptions(t *testing.T) {
 	assert.Equal(t, "custom_events", names.Events)
 	assert.Equal(t, "tenant_snapshots", names.Snapshots)
 	assert.Equal(t, "custom_outbox", names.Outbox)
+	assert.Equal(t, "tenant_mink_resume_tokens", names.ResumeTokens)
 	assert.Equal(t, TransactionModeDisabled, adapter.transactionMode)
 	assert.Equal(t, SubscriptionModePolling, adapter.SubscriptionMode())
+}
+
+func TestMongoProductionOptionsPropagate(t *testing.T) {
+	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
+	require.NoError(t, err)
+	defer func() { _ = client.Disconnect(context.Background()) }()
+
+	wc := writeconcern.Majority()
+	rc := readconcern.Majority()
+	rp := readpref.Primary()
+	txOpts := options.Transaction().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
+
+	adapter, err := NewAdapterWithClient(
+		client,
+		WithDatabase("mink_options"),
+		WithWriteConcern(wc),
+		WithReadConcern(rc),
+		WithReadPreference(rp),
+		WithTransactionOptions(txOpts),
+		WithTransactionMode(TransactionModeDisabled),
+	)
+	require.NoError(t, err)
+
+	assert.Same(t, wc, adapter.WriteConcern())
+	assert.Same(t, rc, adapter.ReadConcern())
+	assert.Same(t, rp, adapter.ReadPreference())
+	assert.Len(t, adapter.transactionOptions, 1)
+
+	repo, err := NewMongoRepositoryFromAdapter[taggedReadModel](
+		adapter,
+		WithReadModelCollection("option_models"),
+		WithReadModelAutoMigrate(false),
+	)
+	require.NoError(t, err)
+	assert.Same(t, wc, repo.config.writeConcern)
+	assert.Same(t, rc, repo.config.readConcern)
+	assert.Same(t, rp, repo.config.readPreference)
+	assert.Len(t, repo.config.transactionOptions, 1)
 }
 
 func TestInvalidCollectionNames(t *testing.T) {
@@ -163,6 +205,28 @@ func TestRunTransactionRequiresCallback(t *testing.T) {
 	assert.Contains(t, err.Error(), "transaction callback is nil")
 }
 
+func TestSubscriptionOptionsMapResumeTokenSettings(t *testing.T) {
+	cfg := newSubscriptionConfig([]adapters.SubscriptionOptions{{
+		BufferSize:       12,
+		PollInterval:     50 * time.Millisecond,
+		ResumeTokenKey:   "orders/all",
+		ResetResumeToken: true,
+	}})
+
+	assert.Equal(t, 12, cfg.bufferSize)
+	assert.Equal(t, 50*time.Millisecond, cfg.pollInterval)
+	assert.Equal(t, "orders/all", cfg.resumeTokenKey)
+	assert.True(t, cfg.resetResumeToken)
+}
+
+func TestResumeTokenStoreValidation(t *testing.T) {
+	store := &ResumeTokenStore{}
+
+	require.Error(t, store.Save(context.Background(), "", bson.Raw{0x01}))
+	require.NoError(t, store.Save(context.Background(), "orders", nil))
+	require.NoError(t, store.Delete(context.Background(), ""))
+}
+
 func TestGenerateSchemaMongoScript(t *testing.T) {
 	schema := GenerateSchema("demo", "mink_demo", CollectionNames{Events: "event_log", Outbox: "outbox_messages"})
 
@@ -170,7 +234,10 @@ func TestGenerateSchemaMongoScript(t *testing.T) {
 	assert.Contains(t, schema, `db.createCollection("event_log");`)
 	assert.Contains(t, schema, `db.event_log.createIndex({ stream_id: 1, version: 1 }, { unique: true, name: "uidx_events_stream_version" });`)
 	assert.Contains(t, schema, `db.outbox_messages.createIndex({ status: 1, scheduled_at: 1 }, { name: "idx_outbox_pending" });`)
+	assert.Contains(t, schema, `db.createCollection("mink_resume_tokens");`)
+	assert.Contains(t, schema, `db.mink_resume_tokens.createIndex({ updated_at: -1 }, { name: "idx_resume_tokens_updated_at" });`)
 	assert.Contains(t, schema, `db.counters.updateOne({ _id: "global_position" }`)
+	assert.Contains(t, schema, `MongoDB requires unique indexes on sharded collections`)
 }
 
 func TestReadModelTagParsing(t *testing.T) {
@@ -258,4 +325,14 @@ func TestReadModelFindOptionsValidatePagination(t *testing.T) {
 	_, err = repo.findOptions(mink.Query{Offset: -1})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "offset must be non-negative")
+}
+
+func TestDiagnosticStringHelpers(t *testing.T) {
+	assert.Equal(t, "auto", transactionModeString(TransactionModeAuto))
+	assert.Equal(t, "change_stream", subscriptionModeString(SubscriptionModeChangeStream))
+	assert.Equal(t, "majority", writeConcernString(writeconcern.Majority()))
+	assert.Equal(t, "majority", readConcernString(readconcern.Majority()))
+	assert.Equal(t, "primary", readPreferenceString(readpref.Primary()))
+	assert.Contains(t, transactionModeString(TransactionMode(99)), "unknown")
+	assert.Contains(t, subscriptionModeString(SubscriptionMode(99)), "unknown")
 }

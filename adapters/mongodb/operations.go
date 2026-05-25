@@ -11,6 +11,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 const (
@@ -432,7 +435,10 @@ func (a *MongoAdapter) ExecuteSQL(ctx context.Context, sql string) error {
 
 // GetDiagnosticInfo returns MongoDB version and connection status.
 func (a *MongoAdapter) GetDiagnosticInfo(ctx context.Context) (*adapters.DiagnosticInfo, error) {
-	info := &adapters.DiagnosticInfo{}
+	info := &adapters.DiagnosticInfo{
+		Details:  map[string]string{},
+		Warnings: []string{},
+	}
 	if err := a.Ping(ctx); err != nil {
 		info.Connected = false
 		info.Message = err.Error()
@@ -447,12 +453,152 @@ func (a *MongoAdapter) GetDiagnosticInfo(ctx context.Context) (*adapters.Diagnos
 		return info, nil
 	}
 	info.Version = "MongoDB " + result.Version
+	deploymentKind := a.deploymentKind(ctx)
+	info.Details["deployment"] = deploymentKind
+	info.Details["transaction_mode"] = transactionModeString(a.transactionMode)
+	info.Details["transactions_active"] = fmt.Sprint(a.transactionsActive)
+	info.Details["transactions_available"] = fmt.Sprint(a.probeTransactions(ctx) == nil)
+	info.Details["subscription_mode"] = subscriptionModeString(a.subscriptionMode)
+	info.Details["change_streams_available"] = fmt.Sprint(a.probeChangeStreams(ctx) == nil)
+	info.Details["write_concern"] = writeConcernString(a.writeConcern)
+	info.Details["read_concern"] = readConcernString(a.readConcern)
+	info.Details["read_preference"] = readPreferenceString(a.readPreference)
+	info.Warnings = append(info.Warnings, a.indexDriftWarnings(ctx)...)
+	info.Warnings = append(info.Warnings, a.shardingWarnings(ctx)...)
+	if a.transactionMode == TransactionModeRequired && !a.transactionsActive {
+		info.Warnings = append(info.Warnings, "transactions are required but not active")
+	}
+	if a.subscriptionMode == SubscriptionModeChangeStream && info.Details["change_streams_available"] != "true" {
+		info.Warnings = append(info.Warnings, "change-stream subscriptions are required but unavailable")
+	}
 	mode := "standalone/best-effort"
 	if a.transactionsActive {
 		mode = "transactions"
 	}
-	info.Message = "Connected successfully (" + mode + ")"
+	info.Message = "Connected successfully (" + mode + ", " + deploymentKind + ")"
 	return info, nil
+}
+
+func (a *MongoAdapter) deploymentKind(ctx context.Context) string {
+	var hello struct {
+		SetName string `bson:"setName"`
+		Msg     string `bson:"msg"`
+	}
+	if err := a.db.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil {
+		return "unknown"
+	}
+	if hello.Msg == "isdbgrid" {
+		return "sharded"
+	}
+	if hello.SetName != "" {
+		return "replica_set"
+	}
+	return "standalone"
+}
+
+func (a *MongoAdapter) probeChangeStreams(ctx context.Context) error {
+	stream, err := a.watchEvents(ctx, bson.M{}, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stream.Close(ctx) }()
+	return probeChangeStream(ctx, stream)
+}
+
+func (a *MongoAdapter) indexDriftWarnings(ctx context.Context) []string {
+	expected := map[*mongo.Collection][]string{
+		a.events():       {"uidx_events_stream_version", "uidx_events_global_position", "idx_events_type", "idx_events_timestamp", "idx_events_stream"},
+		a.streams():      {"idx_streams_category", "idx_streams_updated_at"},
+		a.checkpoints():  {"idx_checkpoints_status", "idx_checkpoints_updated_at"},
+		a.resumeTokens(): {"idx_resume_tokens_updated_at"},
+	}
+	var warnings []string
+	for coll, names := range expected {
+		specs, err := coll.Indexes().ListSpecifications(ctx)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not inspect indexes for %s: %v", coll.Name(), err))
+			continue
+		}
+		present := map[string]bool{}
+		for _, spec := range specs {
+			present[spec.Name] = true
+		}
+		for _, name := range names {
+			if !present[name] {
+				warnings = append(warnings, fmt.Sprintf("missing index %s on %s", name, coll.Name()))
+			}
+		}
+	}
+	return warnings
+}
+
+func (a *MongoAdapter) shardingWarnings(ctx context.Context) []string {
+	var warnings []string
+	for _, collection := range []string{a.collections.Events, a.collections.Streams, a.collections.Checkpoints, a.collections.Outbox, a.collections.Sagas} {
+		var stats struct {
+			Sharded bool `bson:"sharded"`
+		}
+		if err := a.db.RunCommand(ctx, bson.D{{Key: "collStats", Value: collection}}).Decode(&stats); err != nil {
+			continue
+		}
+		if stats.Sharded {
+			warnings = append(warnings, fmt.Sprintf("collection %s is sharded; verify unique indexes include the shard key prefix", collection))
+		}
+	}
+	return warnings
+}
+
+func transactionModeString(mode TransactionMode) string {
+	switch mode {
+	case TransactionModeAuto:
+		return "auto"
+	case TransactionModeRequired:
+		return "required"
+	case TransactionModeDisabled:
+		return "disabled"
+	default:
+		return fmt.Sprintf("unknown(%d)", mode)
+	}
+}
+
+func subscriptionModeString(mode SubscriptionMode) string {
+	switch mode {
+	case SubscriptionModeAuto:
+		return "auto"
+	case SubscriptionModePolling:
+		return "polling"
+	case SubscriptionModeChangeStream:
+		return "change_stream"
+	default:
+		return fmt.Sprintf("unknown(%d)", mode)
+	}
+}
+
+func writeConcernString(wc *writeconcern.WriteConcern) string {
+	if wc == nil {
+		return "default"
+	}
+	if !wc.Acknowledged() {
+		return "unacknowledged"
+	}
+	if wc.W == nil {
+		return "acknowledged"
+	}
+	return fmt.Sprint(wc.W)
+}
+
+func readConcernString(rc *readconcern.ReadConcern) string {
+	if rc == nil {
+		return "default"
+	}
+	return rc.Level
+}
+
+func readPreferenceString(rp *readpref.ReadPref) string {
+	if rp == nil {
+		return "default"
+	}
+	return rp.Mode().String()
 }
 
 // CheckSchema verifies the event store collection exists.
@@ -523,10 +669,13 @@ func projectionInfoFromDoc(doc checkpointDoc) adapters.ProjectionInfo {
 }
 
 type subscriptionConfig struct {
-	bufferSize   int
-	pollInterval time.Duration
-	maxRetries   int
-	onError      func(error)
+	bufferSize       int
+	pollInterval     time.Duration
+	maxRetries       int
+	onError          func(error)
+	resumeTokenKey   string
+	resetResumeToken bool
+	resumeTokenStore *ResumeTokenStore
 }
 
 func newSubscriptionConfig(opts []adapters.SubscriptionOptions) subscriptionConfig {
@@ -543,6 +692,8 @@ func newSubscriptionConfig(opts []adapters.SubscriptionOptions) subscriptionConf
 			cfg.pollInterval = opts[0].PollInterval
 		}
 		cfg.onError = opts[0].OnError
+		cfg.resumeTokenKey = opts[0].ResumeTokenKey
+		cfg.resetResumeToken = opts[0].ResetResumeToken
 	}
 	return cfg
 }
@@ -559,6 +710,9 @@ func startSubscription[P any](
 	loader eventLoader[P],
 	changeFilter bson.M,
 ) error {
+	if cfg.resumeTokenKey != "" {
+		cfg.resumeTokenStore = a.resumeTokenStore
+	}
 	switch a.subscriptionMode {
 	case SubscriptionModePolling:
 		go runPollingLoop(ctx, cfg, ch, label, initial, loader)
@@ -569,7 +723,7 @@ func startSubscription[P any](
 		return fmt.Errorf("mink/mongodb: invalid subscription mode %d", a.subscriptionMode)
 	}
 
-	stream, err := a.watchEvents(ctx, changeFilter)
+	stream, err := a.openChangeStream(ctx, cfg, changeFilter)
 	if err != nil {
 		if a.subscriptionMode == SubscriptionModeChangeStream {
 			close(ch)
@@ -593,7 +747,59 @@ func startSubscription[P any](
 	return nil
 }
 
-func (a *MongoAdapter) watchEvents(ctx context.Context, filter bson.M) (*mongo.ChangeStream, error) {
+func (a *MongoAdapter) openChangeStream(ctx context.Context, cfg subscriptionConfig, filter bson.M) (*mongo.ChangeStream, error) {
+	var token bson.Raw
+	if cfg.resumeTokenKey != "" && cfg.resumeTokenStore != nil {
+		if cfg.resetResumeToken {
+			if err := cfg.resumeTokenStore.Delete(ctx, cfg.resumeTokenKey); err != nil {
+				return nil, err
+			}
+		} else {
+			loaded, err := cfg.resumeTokenStore.Load(ctx, cfg.resumeTokenKey)
+			if err != nil {
+				return nil, err
+			}
+			token = loaded
+		}
+	}
+
+	stream, err := a.watchEvents(ctx, filter, resumeAfterToken(token))
+	if err != nil {
+		if len(token) == 0 || cfg.resumeTokenStore == nil {
+			return nil, err
+		}
+		if deleteErr := cfg.resumeTokenStore.Delete(ctx, cfg.resumeTokenKey); deleteErr != nil {
+			return nil, deleteErr
+		}
+		stream, err = a.watchEvents(ctx, filter, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := probeChangeStream(ctx, stream); err != nil {
+		_ = stream.Close(ctx)
+		if len(token) == 0 || cfg.resumeTokenStore == nil {
+			return nil, err
+		}
+		if deleteErr := cfg.resumeTokenStore.Delete(ctx, cfg.resumeTokenKey); deleteErr != nil {
+			return nil, deleteErr
+		}
+		stream, err = a.watchEvents(ctx, filter, nil)
+		if err != nil {
+			return nil, err
+		}
+		if err := probeChangeStream(ctx, stream); err != nil {
+			_ = stream.Close(ctx)
+			return nil, err
+		}
+	}
+	if err := persistResumeToken(ctx, cfg, stream); err != nil {
+		reportSubscriptionError(cfg, "resume token", err)
+	}
+	return stream, nil
+}
+
+func (a *MongoAdapter) watchEvents(ctx context.Context, filter bson.M, resumeAfter any) (*mongo.ChangeStream, error) {
 	match := bson.D{{Key: "operationType", Value: "insert"}}
 	for key, value := range filter {
 		match = append(match, bson.E{Key: "fullDocument." + key, Value: value})
@@ -601,12 +807,18 @@ func (a *MongoAdapter) watchEvents(ctx context.Context, filter bson.M) (*mongo.C
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: match}},
 	}
-	return a.events().Watch(ctx, pipeline, options.ChangeStream().SetMaxAwaitTime(defaultPollInterval))
+	opts := options.ChangeStream().SetMaxAwaitTime(defaultPollInterval)
+	if resumeAfter != nil {
+		opts.SetResumeAfter(resumeAfter)
+	}
+	return a.events().Watch(ctx, pipeline, opts)
 }
 
-func probeChangeStream(ctx context.Context, stream *mongo.ChangeStream) error {
-	_ = stream.TryNext(ctx)
-	return stream.Err()
+func resumeAfterToken(token bson.Raw) any {
+	if len(token) == 0 {
+		return nil
+	}
+	return token
 }
 
 func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan adapters.StoredEvent, label string, initial P, loader eventLoader[P]) {
@@ -685,6 +897,9 @@ func runChangeStreamLoop[P any](
 
 	for {
 		if stream.TryNext(ctx) {
+			if err := persistResumeToken(ctx, cfg, stream); err != nil {
+				reportSubscriptionError(cfg, label, err)
+			}
 			var keepGoing bool
 			position, keepGoing = drainSubscriptionEvents(ctx, cfg, ch, label, position, loader)
 			if !keepGoing {
@@ -732,6 +947,22 @@ func drainSubscriptionEvents[P any](ctx context.Context, cfg subscriptionConfig,
 		}
 		position = newPosition
 	}
+}
+
+func probeChangeStream(ctx context.Context, stream *mongo.ChangeStream) error {
+	_ = stream.TryNext(ctx)
+	return stream.Err()
+}
+
+func persistResumeToken(ctx context.Context, cfg subscriptionConfig, stream *mongo.ChangeStream) error {
+	if cfg.resumeTokenKey == "" || cfg.resumeTokenStore == nil {
+		return nil
+	}
+	token := stream.ResumeToken()
+	if len(token) == 0 {
+		return nil
+	}
+	return cfg.resumeTokenStore.Save(ctx, cfg.resumeTokenKey, token)
 }
 
 func reportSubscriptionError(cfg subscriptionConfig, label string, err error) {
