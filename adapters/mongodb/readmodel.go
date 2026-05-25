@@ -13,7 +13,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-var _ mink.ReadModelRepository[any] = (*MongoRepository[any])(nil)
+var (
+	_ mink.ReadModelRepository[any] = (*MongoRepository[any])(nil)
+	_ mink.ReadModelRepository[any] = (*TxRepository[any])(nil)
+)
 
 // MongoRepository provides a MongoDB implementation of ReadModelRepository.
 type MongoRepository[T any] struct {
@@ -253,6 +256,116 @@ func (r *MongoRepository[T]) Exists(ctx context.Context, id string) (bool, error
 // GetAll returns all read models.
 func (r *MongoRepository[T]) GetAll(ctx context.Context) ([]*T, error) {
 	return r.Find(ctx, mink.Query{})
+}
+
+// WithSessionContext returns a transaction-scoped repository using the MongoDB session in ctx.
+func (r *MongoRepository[T]) WithSessionContext(ctx context.Context) *TxRepository[T] {
+	return &TxRepository[T]{repo: r, sessionCtx: ctx}
+}
+
+// RunTransaction runs fn inside a MongoDB transaction with a transaction-scoped repository.
+func (r *MongoRepository[T]) RunTransaction(ctx context.Context, fn func(context.Context, *TxRepository[T]) error, opts ...options.Lister[options.TransactionOptions]) error {
+	if fn == nil {
+		return fmt.Errorf("mink/mongodb/readmodel: transaction callback is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	session, err := r.client.StartSession()
+	if err != nil {
+		return fmt.Errorf("mink/mongodb/readmodel: failed to start transaction session: %w", err)
+	}
+	defer session.EndSession(ctx)
+
+	_, err = session.WithTransaction(ctx, func(sc context.Context) (any, error) {
+		return nil, fn(sc, r.WithSessionContext(sc))
+	}, opts...)
+	return err
+}
+
+// TxRepository executes read-model operations with a MongoDB session context.
+type TxRepository[T any] struct {
+	repo       *MongoRepository[T]
+	sessionCtx context.Context
+}
+
+func (tr *TxRepository[T]) contextFor(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if tr == nil || tr.sessionCtx == nil {
+		return ctx
+	}
+	session := mongo.SessionFromContext(tr.sessionCtx)
+	if session == nil {
+		return ctx
+	}
+	return mongo.NewSessionContext(ctx, session)
+}
+
+// Get retrieves a read model by ID within the transaction context.
+func (tr *TxRepository[T]) Get(ctx context.Context, id string) (*T, error) {
+	return tr.repo.Get(tr.contextFor(ctx), id)
+}
+
+// GetMany retrieves multiple read models by ID within the transaction context.
+func (tr *TxRepository[T]) GetMany(ctx context.Context, ids []string) ([]*T, error) {
+	return tr.repo.GetMany(tr.contextFor(ctx), ids)
+}
+
+// Find queries read models within the transaction context.
+func (tr *TxRepository[T]) Find(ctx context.Context, query mink.Query) ([]*T, error) {
+	return tr.repo.Find(tr.contextFor(ctx), query)
+}
+
+// FindOne returns the first matching read model within the transaction context.
+func (tr *TxRepository[T]) FindOne(ctx context.Context, query mink.Query) (*T, error) {
+	return tr.repo.FindOne(tr.contextFor(ctx), query)
+}
+
+// Count returns the number of matching read models within the transaction context.
+func (tr *TxRepository[T]) Count(ctx context.Context, query mink.Query) (int64, error) {
+	return tr.repo.Count(tr.contextFor(ctx), query)
+}
+
+// Insert creates a read model within the transaction context.
+func (tr *TxRepository[T]) Insert(ctx context.Context, model *T) error {
+	return tr.repo.Insert(tr.contextFor(ctx), model)
+}
+
+// Update modifies a read model within the transaction context.
+func (tr *TxRepository[T]) Update(ctx context.Context, id string, updateFn func(*T)) error {
+	return tr.repo.Update(tr.contextFor(ctx), id, updateFn)
+}
+
+// Upsert creates or updates a read model within the transaction context.
+func (tr *TxRepository[T]) Upsert(ctx context.Context, model *T) error {
+	return tr.repo.Upsert(tr.contextFor(ctx), model)
+}
+
+// Delete removes a read model within the transaction context.
+func (tr *TxRepository[T]) Delete(ctx context.Context, id string) error {
+	return tr.repo.Delete(tr.contextFor(ctx), id)
+}
+
+// DeleteMany removes matching read models within the transaction context.
+func (tr *TxRepository[T]) DeleteMany(ctx context.Context, query mink.Query) (int64, error) {
+	return tr.repo.DeleteMany(tr.contextFor(ctx), query)
+}
+
+// Clear removes all read models within the transaction context.
+func (tr *TxRepository[T]) Clear(ctx context.Context) error {
+	return tr.repo.Clear(tr.contextFor(ctx))
+}
+
+// Exists checks if a read model exists within the transaction context.
+func (tr *TxRepository[T]) Exists(ctx context.Context, id string) (bool, error) {
+	return tr.repo.Exists(tr.contextFor(ctx), id)
+}
+
+// GetAll returns all read models within the transaction context.
+func (tr *TxRepository[T]) GetAll(ctx context.Context) ([]*T, error) {
+	return tr.repo.GetAll(tr.contextFor(ctx))
 }
 
 // CollectionName returns the MongoDB collection name.

@@ -38,6 +38,7 @@ func TestCollectionNameOptions(t *testing.T) {
 			Outbox: "custom_outbox",
 		}),
 		WithTransactionMode(TransactionModeDisabled),
+		WithSubscriptionMode(SubscriptionModePolling),
 	)
 	require.NoError(t, err)
 
@@ -48,6 +49,7 @@ func TestCollectionNameOptions(t *testing.T) {
 	assert.Equal(t, "tenant_snapshots", names.Snapshots)
 	assert.Equal(t, "custom_outbox", names.Outbox)
 	assert.Equal(t, TransactionModeDisabled, adapter.transactionMode)
+	assert.Equal(t, SubscriptionModePolling, adapter.SubscriptionMode())
 }
 
 func TestInvalidCollectionNames(t *testing.T) {
@@ -133,6 +135,32 @@ func TestStoredEventConversionPreservesBinaryDataAndMetadata(t *testing.T) {
 	assert.Equal(t, int64(2), stored.Version)
 	assert.Equal(t, uint64(42), stored.GlobalPosition)
 	assert.Equal(t, now, stored.Timestamp)
+}
+
+func TestTxRepositoryUsesSessionContext(t *testing.T) {
+	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
+	require.NoError(t, err)
+	defer func() { _ = client.Disconnect(context.Background()) }()
+
+	session, err := client.StartSession()
+	require.NoError(t, err)
+	defer session.EndSession(context.Background())
+
+	repo := &MongoRepository[taggedReadModel]{client: client}
+	tx := repo.WithSessionContext(mongo.NewSessionContext(context.Background(), session))
+
+	ctx := tx.contextFor(context.Background())
+
+	assert.NotNil(t, mongo.SessionFromContext(ctx))
+}
+
+func TestRunTransactionRequiresCallback(t *testing.T) {
+	repo := &MongoRepository[taggedReadModel]{}
+
+	err := repo.RunTransaction(context.Background(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transaction callback is nil")
 }
 
 func TestGenerateSchemaMongoScript(t *testing.T) {

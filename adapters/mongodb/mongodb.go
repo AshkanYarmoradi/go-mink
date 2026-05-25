@@ -52,6 +52,18 @@ const (
 	TransactionModeDisabled
 )
 
+// SubscriptionMode controls how MongoDB subscriptions are awakened.
+type SubscriptionMode int
+
+const (
+	// SubscriptionModeAuto uses change streams when available and falls back to polling.
+	SubscriptionModeAuto SubscriptionMode = iota
+	// SubscriptionModePolling uses polling only.
+	SubscriptionModePolling
+	// SubscriptionModeChangeStream requires MongoDB change streams.
+	SubscriptionModeChangeStream
+)
+
 // CollectionNames contains MongoDB collection names used by the adapter.
 type CollectionNames struct {
 	Streams     string
@@ -87,6 +99,7 @@ type MongoAdapter struct {
 	database           string
 	collections        CollectionNames
 	transactionMode    TransactionMode
+	subscriptionMode   SubscriptionMode
 	transactionsActive bool
 	ownsClient         bool
 	closed             bool
@@ -128,6 +141,13 @@ func WithTransactionMode(mode TransactionMode) Option {
 	}
 }
 
+// WithSubscriptionMode sets the subscription mode.
+func WithSubscriptionMode(mode SubscriptionMode) Option {
+	return func(a *MongoAdapter) {
+		a.subscriptionMode = mode
+	}
+}
+
 // NewAdapter creates a new MongoDB event store adapter.
 func NewAdapter(uri string, opts ...Option) (*MongoAdapter, error) {
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetAppName("go-mink"))
@@ -153,11 +173,12 @@ func NewAdapterWithClient(client *mongo.Client, opts ...Option) (*MongoAdapter, 
 
 func initAdapter(client *mongo.Client, ownsClient bool, opts []Option) (*MongoAdapter, error) {
 	adapter := &MongoAdapter{
-		client:          client,
-		database:        "mink",
-		collections:     DefaultCollectionNames(),
-		transactionMode: TransactionModeAuto,
-		ownsClient:      ownsClient,
+		client:           client,
+		database:         "mink",
+		collections:      DefaultCollectionNames(),
+		transactionMode:  TransactionModeAuto,
+		subscriptionMode: SubscriptionModeAuto,
+		ownsClient:       ownsClient,
 	}
 
 	for _, opt := range opts {
@@ -255,6 +276,11 @@ func (a *MongoAdapter) CollectionNames() CollectionNames {
 // TransactionsActive reports whether MongoDB transactions are being used.
 func (a *MongoAdapter) TransactionsActive() bool {
 	return a.transactionsActive
+}
+
+// SubscriptionMode returns the configured subscription mode.
+func (a *MongoAdapter) SubscriptionMode() SubscriptionMode {
+	return a.subscriptionMode
 }
 
 // Initialize creates indexes and detects transaction support.

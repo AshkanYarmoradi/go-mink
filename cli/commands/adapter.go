@@ -92,10 +92,20 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 			Snapshots: f.config.EventStore.SnapshotTableName,
 			Outbox:    f.config.EventStore.OutboxTableName,
 		}
+		transactionMode, err := parseMongoTransactionMode(f.config.Database.TransactionMode)
+		if err != nil {
+			return nil, err
+		}
+		subscriptionMode, err := parseMongoSubscriptionMode(f.config.Database.SubscriptionMode)
+		if err != nil {
+			return nil, err
+		}
 		adapter, err := mongodb.NewAdapter(
 			f.dbURL,
 			mongodb.WithDatabase(f.config.Database.Schema),
 			mongodb.WithCollectionNames(names),
+			mongodb.WithTransactionMode(transactionMode),
+			mongodb.WithSubscriptionMode(subscriptionMode),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create mongodb adapter: %w", err)
@@ -116,6 +126,32 @@ func (f *AdapterFactory) CreateAdapter(ctx context.Context) (CLIAdapter, error) 
 
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %s", f.config.Database.Driver)
+	}
+}
+
+func parseMongoTransactionMode(value string) (mongodb.TransactionMode, error) {
+	switch strings.ToLower(value) {
+	case "", "auto":
+		return mongodb.TransactionModeAuto, nil
+	case "required":
+		return mongodb.TransactionModeRequired, nil
+	case "disabled":
+		return mongodb.TransactionModeDisabled, nil
+	default:
+		return mongodb.TransactionModeAuto, fmt.Errorf("database.transaction_mode must be 'auto', 'required', or 'disabled'")
+	}
+}
+
+func parseMongoSubscriptionMode(value string) (mongodb.SubscriptionMode, error) {
+	switch strings.ToLower(value) {
+	case "", "auto":
+		return mongodb.SubscriptionModeAuto, nil
+	case "polling":
+		return mongodb.SubscriptionModePolling, nil
+	case "change_stream":
+		return mongodb.SubscriptionModeChangeStream, nil
+	default:
+		return mongodb.SubscriptionModeAuto, fmt.Errorf("database.subscription_mode must be 'auto', 'polling', or 'change_stream'")
 	}
 }
 

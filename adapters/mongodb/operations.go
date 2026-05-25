@@ -67,7 +67,9 @@ func (a *MongoAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, op
 		}
 		return events, events[len(events)-1].GlobalPosition, nil
 	}
-	go runPollingLoop(ctx, cfg, ch, "SubscribeAll", fromPosition, loader)
+	if err := startSubscription(a, ctx, cfg, ch, "SubscribeAll", fromPosition, loader, bson.M{}); err != nil {
+		return nil, err
+	}
 	return ch, nil
 }
 
@@ -89,7 +91,10 @@ func (a *MongoAdapter) SubscribeStream(ctx context.Context, streamID string, fro
 		}
 		return events, events[len(events)-1].Version, nil
 	}
-	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeStream(%s)", streamID), fromVersion, loader)
+	changeFilter := bson.M{"stream_id": streamID}
+	if err := startSubscription(a, ctx, cfg, ch, fmt.Sprintf("SubscribeStream(%s)", streamID), fromVersion, loader, changeFilter); err != nil {
+		return nil, err
+	}
 	return ch, nil
 }
 
@@ -116,7 +121,10 @@ func (a *MongoAdapter) SubscribeCategory(ctx context.Context, category string, f
 		}
 		return events, events[len(events)-1].GlobalPosition, nil
 	}
-	go runPollingLoop(ctx, cfg, ch, fmt.Sprintf("SubscribeCategory(%s)", category), fromPosition, loader)
+	changeFilter := bson.M{"stream_id": bson.M{"$regex": "^" + regexpQuote(category) + "-"}}
+	if err := startSubscription(a, ctx, cfg, ch, fmt.Sprintf("SubscribeCategory(%s)", category), fromPosition, loader, changeFilter); err != nil {
+		return nil, err
+	}
 	return ch, nil
 }
 
@@ -541,8 +549,72 @@ func newSubscriptionConfig(opts []adapters.SubscriptionOptions) subscriptionConf
 
 type eventLoader[P any] func(context.Context, P) ([]adapters.StoredEvent, P, error)
 
+func startSubscription[P any](
+	a *MongoAdapter,
+	ctx context.Context,
+	cfg subscriptionConfig,
+	ch chan adapters.StoredEvent,
+	label string,
+	initial P,
+	loader eventLoader[P],
+	changeFilter bson.M,
+) error {
+	switch a.subscriptionMode {
+	case SubscriptionModePolling:
+		go runPollingLoop(ctx, cfg, ch, label, initial, loader)
+		return nil
+	case SubscriptionModeAuto, SubscriptionModeChangeStream:
+	default:
+		close(ch)
+		return fmt.Errorf("mink/mongodb: invalid subscription mode %d", a.subscriptionMode)
+	}
+
+	stream, err := a.watchEvents(ctx, changeFilter)
+	if err != nil {
+		if a.subscriptionMode == SubscriptionModeChangeStream {
+			close(ch)
+			return fmt.Errorf("mink/mongodb: failed to start change stream subscription: %w", err)
+		}
+		reportSubscriptionError(cfg, label, fmt.Errorf("change stream unavailable, falling back to polling: %w", err))
+		go runPollingLoop(ctx, cfg, ch, label, initial, loader)
+		return nil
+	}
+	if err := probeChangeStream(ctx, stream); err != nil {
+		_ = stream.Close(ctx)
+		if a.subscriptionMode == SubscriptionModeChangeStream {
+			close(ch)
+			return fmt.Errorf("mink/mongodb: failed to start change stream subscription: %w", err)
+		}
+		reportSubscriptionError(cfg, label, fmt.Errorf("change stream unavailable, falling back to polling: %w", err))
+		go runPollingLoop(ctx, cfg, ch, label, initial, loader)
+		return nil
+	}
+	go runChangeStreamLoop(ctx, cfg, ch, label, initial, loader, stream, a.subscriptionMode == SubscriptionModeAuto)
+	return nil
+}
+
+func (a *MongoAdapter) watchEvents(ctx context.Context, filter bson.M) (*mongo.ChangeStream, error) {
+	match := bson.D{{Key: "operationType", Value: "insert"}}
+	for key, value := range filter {
+		match = append(match, bson.E{Key: "fullDocument." + key, Value: value})
+	}
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: match}},
+	}
+	return a.events().Watch(ctx, pipeline, options.ChangeStream().SetMaxAwaitTime(defaultPollInterval))
+}
+
+func probeChangeStream(ctx context.Context, stream *mongo.ChangeStream) error {
+	_ = stream.TryNext(ctx)
+	return stream.Err()
+}
+
 func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan adapters.StoredEvent, label string, initial P, loader eventLoader[P]) {
 	defer close(ch)
+	_ = runPollingLoopCore(ctx, cfg, ch, label, initial, loader)
+}
+
+func runPollingLoopCore[P any](ctx context.Context, cfg subscriptionConfig, ch chan adapters.StoredEvent, label string, initial P, loader eventLoader[P]) P {
 	ticker := time.NewTicker(cfg.pollInterval)
 	defer ticker.Stop()
 
@@ -551,7 +623,7 @@ func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return position
 		default:
 		}
 
@@ -559,16 +631,12 @@ func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan 
 		if err != nil {
 			consecutiveErrors++
 			if consecutiveErrors >= cfg.maxRetries {
-				if cfg.onError != nil {
-					cfg.onError(err)
-				} else {
-					log.Printf("mink/mongodb: subscription error (%s): %v", label, err)
-				}
+				reportSubscriptionError(cfg, label, err)
 				consecutiveErrors = 0
 			}
 			select {
 			case <-ctx.Done():
-				return
+				return position
 			case <-ticker.C:
 				continue
 			}
@@ -579,7 +647,7 @@ func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan 
 			select {
 			case ch <- event:
 			case <-ctx.Done():
-				return
+				return position
 			}
 		}
 		if len(events) > 0 {
@@ -588,10 +656,90 @@ func runPollingLoop[P any](ctx context.Context, cfg subscriptionConfig, ch chan 
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return position
 		case <-ticker.C:
 		}
 	}
+}
+
+func runChangeStreamLoop[P any](
+	ctx context.Context,
+	cfg subscriptionConfig,
+	ch chan adapters.StoredEvent,
+	label string,
+	initial P,
+	loader eventLoader[P],
+	stream *mongo.ChangeStream,
+	autoFallback bool,
+) {
+	defer close(ch)
+	defer func() { _ = stream.Close(ctx) }()
+
+	position, ok := drainSubscriptionEvents(ctx, cfg, ch, label, initial, loader)
+	if !ok {
+		return
+	}
+
+	ticker := time.NewTicker(cfg.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		if stream.TryNext(ctx) {
+			var keepGoing bool
+			position, keepGoing = drainSubscriptionEvents(ctx, cfg, ch, label, position, loader)
+			if !keepGoing {
+				return
+			}
+			continue
+		}
+		if err := stream.Err(); err != nil {
+			reportSubscriptionError(cfg, label, err)
+			if autoFallback {
+				_ = runPollingLoopCore(ctx, cfg, ch, label, position, loader)
+			}
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var keepGoing bool
+			position, keepGoing = drainSubscriptionEvents(ctx, cfg, ch, label, position, loader)
+			if !keepGoing {
+				return
+			}
+		}
+	}
+}
+
+func drainSubscriptionEvents[P any](ctx context.Context, cfg subscriptionConfig, ch chan adapters.StoredEvent, label string, position P, loader eventLoader[P]) (P, bool) {
+	for {
+		events, newPosition, err := loader(ctx, position)
+		if err != nil {
+			reportSubscriptionError(cfg, label, err)
+			return position, true
+		}
+		for _, event := range events {
+			select {
+			case ch <- event:
+			case <-ctx.Done():
+				return position, false
+			}
+		}
+		if len(events) == 0 {
+			return position, true
+		}
+		position = newPosition
+	}
+}
+
+func reportSubscriptionError(cfg subscriptionConfig, label string, err error) {
+	if cfg.onError != nil {
+		cfg.onError(err)
+		return
+	}
+	log.Printf("mink/mongodb: subscription error (%s): %v", label, err)
 }
 
 func regexpQuote(value string) string {

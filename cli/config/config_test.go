@@ -40,8 +40,28 @@ func TestConfig_Validate(t *testing.T) {
 			modify: func(c *Config) {
 				c.Database.Driver = "mongodb"
 				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.TransactionMode = "required"
+				c.Database.SubscriptionMode = "change_stream"
 			},
 			wantErrors: 0,
+		},
+		{
+			name: "invalid mongodb transaction mode",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.TransactionMode = "strict"
+			},
+			wantErrors: 1,
+		},
+		{
+			name: "invalid mongodb subscription mode",
+			modify: func(c *Config) {
+				c.Database.Driver = "mongodb"
+				c.Database.URL = "mongodb://localhost:27017/mink"
+				c.Database.SubscriptionMode = "listen_notify"
+			},
+			wantErrors: 1,
 		},
 		{
 			name:       "missing project name",
@@ -188,6 +208,8 @@ func TestGenerateYAML_MongoDB(t *testing.T) {
 	assert.Contains(t, yaml, "mongodb")
 	assert.Contains(t, yaml, "${MONGODB_URL}")
 	assert.Contains(t, yaml, `schema: "mink"`)
+	assert.Contains(t, yaml, `transaction_mode: "auto"`)
+	assert.Contains(t, yaml, `subscription_mode: "auto"`)
 }
 
 func TestLoadFile_NotFound(t *testing.T) {
