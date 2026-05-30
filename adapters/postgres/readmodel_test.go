@@ -402,6 +402,31 @@ func TestPostgresRepository_Query(t *testing.T) {
 		assert.Len(t, results, 2)
 	})
 
+	t.Run("Find with CONTAINS substring filter", func(t *testing.T) {
+		// "pending" (statuses for order-1 and order-4) contains the substring "end".
+		query := mink.NewQuery().Where("status", mink.FilterOpContains, "end")
+		results, err := tr.repo.Find(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Len(t, results, 2)
+	})
+
+	t.Run("Find with CONTAINS escapes wildcards", func(t *testing.T) {
+		// No status contains a literal '%', so the wildcard must be escaped and
+		// match nothing rather than matching every row.
+		query := mink.NewQuery().Where("status", mink.FilterOpContains, "%")
+		results, err := tr.repo.Find(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+
+	t.Run("Find with BETWEEN filter (typed slice)", func(t *testing.T) {
+		// total_amount values are 25, 50, 75, 100, 125; inclusive [50,100] -> 3.
+		query := mink.NewQuery().Where("total_amount", mink.FilterOpBetween, []float64{50.0, 100.0})
+		results, err := tr.repo.Find(tr.ctx, query.Build())
+		require.NoError(t, err)
+		assert.Len(t, results, 3)
+	})
+
 	t.Run("Find with ordering", func(t *testing.T) {
 		query := mink.NewQuery().OrderByDesc("item_count")
 		results, err := tr.repo.Find(tr.ctx, query.Build())
@@ -1173,6 +1198,200 @@ func TestToInterfaceSlice(t *testing.T) {
 		result := toInterfaceSlice(nil)
 		assert.Nil(t, result)
 	})
+}
+
+// TestRequireNonEmptySlice verifies how IN / NOT IN filter values are
+// classified: a genuine non-slice yields the "requires a slice value" error,
+// while any empty slice — including a typed nil slice — yields the "non-empty
+// slice" error rather than being misreported as a non-slice.
+func TestRequireNonEmptySlice(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       interface{}
+		wantErr     bool
+		errContains string
+	}{
+		{"non-empty string slice", []string{"a"}, false, ""},
+		{"non-empty interface slice", []interface{}{1, 2}, false, ""},
+		{"non-slice string", "a", true, "requires a slice value"},
+		{"nil value", nil, true, "requires a slice value"},
+		{"empty string slice", []string{}, true, "non-empty slice"},
+		{"typed nil interface slice", []interface{}(nil), true, "non-empty slice"},
+		{"typed nil string slice", []string(nil), true, "non-empty slice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals, err := requireNonEmptySlice(
+				mink.Filter{Field: "status", Op: mink.FilterOpIn, Value: tt.value}, "IN")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotEmpty(t, vals)
+		})
+	}
+}
+
+// TestBuildWhereClause verifies SQL generation for every filter operator
+// without requiring a live database. The repository is constructed with a
+// known column set and schema so buildWhereClause can be exercised directly.
+func TestBuildWhereClause(t *testing.T) {
+	repo := &PostgresRepository[OrderSummary]{
+		columns: []string{"status", "total_amount", "tags"},
+		tableSchema: &TableSchema{
+			Columns: []ColumnType{
+				{Name: "status", SQLType: "TEXT"},
+				{Name: "total_amount", SQLType: "DOUBLE PRECISION"},
+				{Name: "tags", SQLType: "JSONB"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		filters   []mink.Filter
+		wantWhere string
+		wantArgs  []interface{}
+		wantErr   bool
+	}{
+		{
+			name:      "no filters",
+			filters:   nil,
+			wantWhere: "",
+			wantArgs:  nil,
+		},
+		{
+			name:      "equality",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpEq, Value: "pending"}},
+			wantWhere: ` WHERE "status" = $1`,
+			wantArgs:  []interface{}{"pending"},
+		},
+		{
+			name:      "not equal",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpNe, Value: "pending"}},
+			wantWhere: ` WHERE "status" != $1`,
+			wantArgs:  []interface{}{"pending"},
+		},
+		{
+			name:      "like passes pattern through unchanged",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpLike, Value: "p%"}},
+			wantWhere: ` WHERE "status" LIKE $1`,
+			wantArgs:  []interface{}{"p%"},
+		},
+		{
+			name:      "in",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpIn, Value: []string{"a", "b"}}},
+			wantWhere: ` WHERE "status" IN ($1, $2)`,
+			wantArgs:  []interface{}{"a", "b"},
+		},
+		{
+			name:      "not in",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpNotIn, Value: []string{"a", "b"}}},
+			wantWhere: ` WHERE "status" NOT IN ($1, $2)`,
+			wantArgs:  []interface{}{"a", "b"},
+		},
+		{
+			name:      "is null",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpIsNull, Value: nil}},
+			wantWhere: ` WHERE "status" IS NULL`,
+			wantArgs:  nil,
+		},
+		{
+			name:      "is not null",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpIsNotNull, Value: nil}},
+			wantWhere: ` WHERE "status" IS NOT NULL`,
+			wantArgs:  nil,
+		},
+		{
+			name:      "between accepts typed slices",
+			filters:   []mink.Filter{{Field: "total_amount", Op: mink.FilterOpBetween, Value: []float64{10, 20}}},
+			wantWhere: ` WHERE "total_amount" BETWEEN $1 AND $2`,
+			wantArgs:  []interface{}{float64(10), float64(20)},
+		},
+		{
+			name:    "between with wrong bound count returns an error",
+			filters: []mink.Filter{{Field: "total_amount", Op: mink.FilterOpBetween, Value: []int{1, 2, 3}}},
+			wantErr: true,
+		},
+		{
+			name:    "between with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "total_amount", Op: mink.FilterOpBetween, Value: 5}},
+			wantErr: true,
+		},
+		{
+			name:    "in with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpIn, Value: "a"}},
+			wantErr: true,
+		},
+		{
+			name:    "in with empty slice returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpIn, Value: []string{}}},
+			wantErr: true,
+		},
+		{
+			name:    "not in with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpNotIn, Value: "a"}},
+			wantErr: true,
+		},
+		{
+			name:    "not in with empty slice returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpNotIn, Value: []int{}}},
+			wantErr: true,
+		},
+		{
+			name:      "contains on text column does substring match",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpContains, Value: "end"}},
+			wantWhere: ` WHERE "status" LIKE '%' || $1 || '%'`,
+			wantArgs:  []interface{}{"end"},
+		},
+		{
+			name:      "contains escapes like metacharacters",
+			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpContains, Value: "50%_x"}},
+			wantWhere: ` WHERE "status" LIKE '%' || $1 || '%'`,
+			wantArgs:  []interface{}{`50\%\_x`},
+		},
+		{
+			name:      "contains on jsonb column uses containment",
+			filters:   []mink.Filter{{Field: "tags", Op: mink.FilterOpContains, Value: "premium"}},
+			wantWhere: ` WHERE "tags" @> $1::jsonb`,
+			wantArgs:  []interface{}{`"premium"`},
+		},
+		{
+			name:      "unknown field is skipped",
+			filters:   []mink.Filter{{Field: "does_not_exist", Op: mink.FilterOpEq, Value: "x"}},
+			wantWhere: "",
+			wantArgs:  nil,
+		},
+		{
+			name: "multiple filters combine with AND and sequential params",
+			filters: []mink.Filter{
+				{Field: "status", Op: mink.FilterOpEq, Value: "pending"},
+				{Field: "total_amount", Op: mink.FilterOpGt, Value: 100.0},
+			},
+			wantWhere: ` WHERE "status" = $1 AND "total_amount" > $2`,
+			wantArgs:  []interface{}{"pending", 100.0},
+		},
+		{
+			name:    "unsupported operator returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOp("BOGUS"), Value: "x"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			where, args, err := repo.buildWhereClause(tt.filters)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantWhere, where)
+			assert.Equal(t, tt.wantArgs, args)
+		})
+	}
 }
 
 // Benchmark tests

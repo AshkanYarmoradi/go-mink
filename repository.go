@@ -201,7 +201,10 @@ const (
 	// FilterOpIsNotNull matches non-null values.
 	FilterOpIsNotNull FilterOp = "IS NOT NULL"
 
-	// FilterOpContains matches arrays containing a value.
+	// FilterOpContains matches values that contain the given value.
+	// On JSONB columns it tests containment (the stored array or object
+	// contains the value); on text columns it performs a case-sensitive
+	// substring match with the value treated literally.
 	FilterOpContains FilterOp = "CONTAINS"
 
 	// FilterOpBetween matches values between two bounds.
