@@ -275,9 +275,9 @@ type ReadModelRepository[T any] interface {
     Get(ctx context.Context, id string) (*T, error)
     Update(ctx context.Context, id string, fn func(*T)) error
     Delete(ctx context.Context, id string) error
-    Query(ctx context.Context, query Query) ([]*T, error)
+    Find(ctx context.Context, query Query) ([]*T, error)
     FindOne(ctx context.Context, query Query) (*T, error)
-    Count(ctx context.Context, query Query) (int, error)
+    Count(ctx context.Context, query Query) (int64, error)
     Exists(ctx context.Context, id string) (bool, error)
     GetAll(ctx context.Context) ([]*T, error)
     Clear(ctx context.Context) error
@@ -424,36 +424,143 @@ err = repo.Migrate(ctx)
 Fluent query construction:
 
 ```go
-// Build a query
+// Build a query. NewQuery returns a *Query builder; pass query.Build() to the repo.
 query := mink.NewQuery().
-    Where("Status", mink.Eq, "Pending").
-    And("TotalAmount", mink.Gt, 100.0).
-    OrderByDesc("CreatedAt").
-    WithPagination(10, 0)  // limit 10, offset 0
+    Where("status", mink.FilterOpEq, "pending").
+    And("total_amount", mink.FilterOpGt, 100.0).
+    OrderByDesc("created_at").
+    WithPagination(1, 10) // page 1, page size 10
 
 // Execute query
-orders, err := repo.Query(ctx, query)
+orders, err := repo.Find(ctx, query.Build())
 
 // Find single result
-order, err := repo.FindOne(ctx, query)
+order, err := repo.FindOne(ctx, query.Build())
 
 // Count matching records
-count, err := repo.Count(ctx, query)
+count, err := repo.Count(ctx, query.Build())
 ```
 
 ### Filter Operators
 
 ```go
-// Available filter operators
-mink.Eq       // Equal
-mink.NotEq    // Not equal
-mink.Gt       // Greater than
-mink.Gte      // Greater than or equal
-mink.Lt       // Less than
-mink.Lte      // Less than or equal
-mink.In       // In list
-mink.Contains // Contains substring
+// Available filter operators (mink.FilterOp constants)
+mink.FilterOpEq        // =  (equal)
+mink.FilterOpNe        // != (not equal)
+mink.FilterOpGt        // >  (greater than)
+mink.FilterOpGte       // >= (greater than or equal)
+mink.FilterOpLt        // <  (less than)
+mink.FilterOpLte       // <= (less than or equal)
+mink.FilterOpIn        // IN     (value is one of a list/slice)
+mink.FilterOpNotIn     // NOT IN (value is not in a list/slice)
+mink.FilterOpLike      // LIKE   (SQL pattern; caller supplies % / _ wildcards)
+mink.FilterOpContains  // substring match on text, containment (@>) on JSONB
+mink.FilterOpBetween   // BETWEEN (inclusive range; value is a 2-element slice)
+mink.FilterOpIsNull    // IS NULL
+mink.FilterOpIsNotNull // IS NOT NULL
 ```
+
+Examples:
+
+```go
+// IN: status is one of the listed values (accepts []string, []int, etc.)
+mink.NewQuery().Where("status", mink.FilterOpIn, []string{"pending", "shipped"})
+
+// CONTAINS: substring match on a text column ('%' and '_' are escaped, not wildcards)
+mink.NewQuery().Where("name", mink.FilterOpContains, "smith")
+
+// CONTAINS: element/containment match on a JSONB column
+mink.NewQuery().Where("tags", mink.FilterOpContains, "premium")
+
+// BETWEEN: inclusive range
+mink.NewQuery().Where("total_amount", mink.FilterOpBetween, []float64{50, 100})
+
+// IS NULL / IS NOT NULL: the value is ignored
+mink.NewQuery().Where("shipped_at", mink.FilterOpIsNull, nil)
+```
+
+> **Backend support:** the PostgreSQL repository implements every operator
+> above. The in-memory repository (`mink.NewInMemoryRepository`) is a lightweight
+> testing helper that does **not** apply filters — use the PostgreSQL repository
+> (or another database-backed implementation) for real querying.
+
+### Case-insensitive matching
+
+All string operators (`FilterOpEq`, `FilterOpLike`, `FilterOpContains`) are
+**case-sensitive**. There is intentionally no `ILIKE` / case-insensitive
+operator (see the design note below). When you need case-insensitive search,
+make the *column* case-insensitive rather than reaching for a special operator.
+
+**Option 1 — `citext` column (transparent, no query changes).** Declare the
+column as PostgreSQL's case-insensitive text type. `FilterOpEq`,
+`FilterOpLike`, and `FilterOpContains` then match case-insensitively on that
+column automatically.
+
+```go
+type Customer struct {
+    ID   string `mink:"id,pk"`
+    Name string `mink:"name,type=citext"` // case-insensitive column
+}
+```
+
+```sql
+-- run once per database, before the table is created
+CREATE EXTENSION IF NOT EXISTS citext;
+```
+
+```go
+// matches "Smith", "SMITH", "smith"
+mink.NewQuery().Where("name", mink.FilterOpContains, "smith")
+```
+
+Because auto-migration emits `name citext`, the extension must already exist —
+create it first, or use `WithAutoMigrate(false)` and manage the DDL yourself.
+
+**Option 2 — lowercase shadow column (portable, index-friendly).** Keep a
+normalized copy and query it lowercased. Works on any backend and can be
+indexed for fast search.
+
+```go
+type Customer struct {
+    ID        string `mink:"id,pk"`
+    Name      string `mink:"name"`
+    NameLower string `mink:"name_lower,index"` // set to strings.ToLower(Name) in the projection
+}
+
+mink.NewQuery().Where("name_lower", mink.FilterOpContains, strings.ToLower(q))
+```
+
+**Option 3 — raw SQL for a one-off.** A read model is a plain table, so use the
+`*sql.DB` you already have together with `repo.TableName()`:
+
+```go
+rows, err := db.QueryContext(ctx,
+    `SELECT * FROM `+repo.TableName()+` WHERE name ILIKE $1`, "%"+q+"%")
+// note: you scan the rows yourself; the repository's typed scanner is internal
+```
+
+:::note Design note: why there is no `FilterOpILike`
+`FilterOp` is the **backend-neutral** query vocabulary shared by the
+`ReadModelRepository[T]` interface and *every* adapter. `ILIKE` is a
+PostgreSQL-specific keyword. Other engines support case-insensitive matching
+too, but express it at different layers — MongoDB via a `$regex` `i` flag or a
+collation, MySQL/SQL Server/SQLite often via a case-insensitive collation *by
+default* — so there is no shared *operator* to expose, and case-insensitivity is
+fundamentally a property of the **data and its collation**, not of the query
+operator.
+
+Adding `FilterOpILike` to the shared enum would (1) bake a vendor keyword into a
+cross-backend contract, (2) oblige every current and future adapter to emulate
+it faithfully or silently diverge — the exact "silently ignored operator" class
+of bug that motivated implementing `FilterOpContains` — and (3) invite a
+combinatorial explosion of case-insensitive variants (`IContains`, `IEq`,
+`IStartsWith`, …). The operator set is kept small and orthogonal, and
+case-folding is pushed to the schema (`citext`, a lowercased column, or a
+case-insensitive collation) where it belongs. If a portable case-insensitive
+match is ever added, it would be defined by its *semantics* — each adapter
+implementing it natively (PostgreSQL `ILIKE`, others `LOWER(col) LIKE LOWER(?)`)
+with cross-adapter tests — never as the raw `ILIKE` keyword.
+:::
 
 ## Subscription System
 
