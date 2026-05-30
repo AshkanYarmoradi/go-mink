@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI test workflow now triggers on `develop` branch (push and pull request)
 - Stable release workflow uses stable-only tag filter to ignore RC tags when calculating next version
 
+### Fixed
+- **Read model filters (PostgreSQL):** `FilterOpContains` was defined but never handled by the PostgreSQL repository, so a `CONTAINS` filter was silently ignored and the query returned unfiltered rows. It is now implemented as a case-sensitive substring match on text columns (LIKE metacharacters in the value are escaped) and as a JSONB containment check (`@>`) on JSONB columns.
+- `FilterOpBetween` now accepts typed slices (`[]int`, `[]float64`, `[]string`, …) in addition to `[]interface{}`, matching the behavior of `FilterOpIn`.
+- The PostgreSQL repository now returns an error for an unrecognized filter operator instead of silently dropping the condition.
+- Corrected the read-models documentation, which referenced non-existent symbols (`mink.Eq`, `mink.Contains`, `repo.Query`) instead of the real `mink.FilterOp*` constants and `repo.Find`.
+
 ## [1.0.0] - 2026-03-02
 
 First stable release consolidating all features from the development phases.

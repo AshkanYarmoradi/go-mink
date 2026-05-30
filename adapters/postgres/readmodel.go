@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -558,7 +559,10 @@ func (r *PostgresRepository[T]) buildSelectQuery(query mink.Query) (string, []in
 		selectCols[i] = quoteIdentifier(col)
 	}
 
-	whereClause, args := r.buildWhereClause(query.Filters)
+	whereClause, args, err := r.buildWhereClause(query.Filters)
+	if err != nil {
+		return "", nil, err
+	}
 	orderClause := r.buildOrderClause(query.OrderBy)
 	limitClause, err := r.buildLimitClauseWithValidation(query.Limit, query.Offset)
 	if err != nil {
@@ -599,9 +603,14 @@ func buildInClause(quotedCol, keyword string, values []interface{}, paramIdx *in
 }
 
 // buildWhereClause builds the WHERE clause from filters.
-func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string, []interface{}) {
+//
+// Every operator defined by mink.FilterOp is handled. A filter whose field
+// does not resolve to a known column is skipped, but an unrecognized operator
+// returns an error: a query must never silently ignore the caller's intent and
+// return rows it was asked to filter out.
+func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string, []interface{}, error) {
 	if len(filters) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 
 	var conditions []string
@@ -638,18 +647,68 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 		case mink.FilterOpIsNotNull:
 			conditions = append(conditions, fmt.Sprintf("%s IS NOT NULL", quotedCol))
 		case mink.FilterOpBetween:
-			if vals, ok := f.Value.([]interface{}); ok && len(vals) == 2 {
+			if vals := toInterfaceSlice(f.Value); len(vals) == 2 {
 				conditions = append(conditions, fmt.Sprintf("%s BETWEEN $%d AND $%d", quotedCol, paramIdx, paramIdx+1))
 				args = append(args, vals[0], vals[1])
 				paramIdx += 2
 			}
+		case mink.FilterOpContains:
+			cond, arg, err := r.buildContainsCondition(quotedCol, colName, f.Value, paramIdx)
+			if err != nil {
+				return "", nil, err
+			}
+			conditions = append(conditions, cond)
+			args = append(args, arg)
+			paramIdx++
+		default:
+			return "", nil, fmt.Errorf("mink/postgres/readmodel: unsupported filter operator %q on field %q", f.Op, f.Field)
 		}
 	}
 
 	if len(conditions) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
-	return " WHERE " + strings.Join(conditions, " AND "), args
+	return " WHERE " + strings.Join(conditions, " AND "), args, nil
+}
+
+// buildContainsCondition builds a CONTAINS predicate that adapts to how the
+// column stores its data:
+//   - JSONB columns use the containment operator (@>), matching an array or
+//     object that contains the supplied value. The value is JSON-encoded, so a
+//     scalar matches array membership and a slice/map matches sub-containment.
+//   - All other columns use a case-sensitive substring match. The value is
+//     treated literally: LIKE metacharacters (% and _) are escaped so they are
+//     not interpreted as wildcards.
+func (r *PostgresRepository[T]) buildContainsCondition(quotedCol, colName string, value interface{}, paramIdx int) (string, interface{}, error) {
+	if strings.EqualFold(r.columnSQLType(colName), "JSONB") {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return "", nil, fmt.Errorf("mink/postgres/readmodel: cannot encode CONTAINS value for column %q: %w", colName, err)
+		}
+		return fmt.Sprintf("%s @> $%d::jsonb", quotedCol, paramIdx), string(encoded), nil
+	}
+	return fmt.Sprintf("%s LIKE '%%' || $%d || '%%'", quotedCol, paramIdx), escapeLikePattern(fmt.Sprintf("%v", value)), nil
+}
+
+// columnSQLType returns the configured SQL type for a resolved column name,
+// or an empty string if the column is unknown.
+func (r *PostgresRepository[T]) columnSQLType(colName string) string {
+	if r.tableSchema == nil {
+		return ""
+	}
+	for _, col := range r.tableSchema.Columns {
+		if col.Name == colName {
+			return col.SQLType
+		}
+	}
+	return ""
+}
+
+// escapeLikePattern escapes the LIKE metacharacters in s so that the value is
+// matched literally inside a substring (CONTAINS) predicate. PostgreSQL's LIKE
+// uses backslash as the default escape character.
+func escapeLikePattern(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // toInterfaceSlice converts various slice types to []interface{}.
@@ -1302,12 +1361,15 @@ func (r *PostgresRepository[T]) findOneWithExecutor(ctx context.Context, exec db
 func (r *PostgresRepository[T]) countWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) (int64, error) {
 	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
 
-	whereClause, args := r.buildWhereClause(query.Filters)
+	whereClause, args, err := r.buildWhereClause(query.Filters)
+	if err != nil {
+		return 0, err
+	}
 
 	sqlQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s%s`, tableQ, whereClause)
 
 	var count int64
-	err := exec.QueryRowContext(ctx, sqlQuery, args...).Scan(&count)
+	err = exec.QueryRowContext(ctx, sqlQuery, args...).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("mink/postgres/readmodel: count failed: %w", err)
 	}
@@ -1319,7 +1381,10 @@ func (r *PostgresRepository[T]) countWithExecutor(ctx context.Context, exec dbEx
 func (r *PostgresRepository[T]) deleteManyWithExecutor(ctx context.Context, exec dbExecutor, query mink.Query) (int64, error) {
 	tableQ := quoteQualifiedTable(r.config.schema, r.config.tableName)
 
-	whereClause, args := r.buildWhereClause(query.Filters)
+	whereClause, args, err := r.buildWhereClause(query.Filters)
+	if err != nil {
+		return 0, err
+	}
 
 	sqlQuery := fmt.Sprintf(`DELETE FROM %s%s`, tableQ, whereClause)
 
