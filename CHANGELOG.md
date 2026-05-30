@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FilterOpBetween` now accepts typed slices (`[]int`, `[]float64`, `[]string`, …) in addition to `[]interface{}`, matching the behavior of `FilterOpIn`.
 - The PostgreSQL repository now returns an error for an unrecognized filter operator instead of silently dropping the condition.
 - Corrected the read-models documentation, which referenced non-existent symbols (`mink.Eq`, `mink.Contains`, `repo.Query`) instead of the real `mink.FilterOp*` constants and `repo.Find`.
+- **Data race (PostgreSQL adapter):** the `WithHealthCheck` goroutine read the adapter's `closed` flag on every tick while `Close()` wrote it without synchronization. The flag is now an `atomic.Bool`, removing the race flagged by the race detector.
 
 ## [1.0.0] - 2026-03-02
 
