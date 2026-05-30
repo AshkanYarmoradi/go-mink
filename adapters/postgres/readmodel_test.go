@@ -1200,6 +1200,40 @@ func TestToInterfaceSlice(t *testing.T) {
 	})
 }
 
+// TestRequireNonEmptySlice verifies how IN / NOT IN filter values are
+// classified: a genuine non-slice yields the "requires a slice value" error,
+// while any empty slice — including a typed nil slice — yields the "non-empty
+// slice" error rather than being misreported as a non-slice.
+func TestRequireNonEmptySlice(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       interface{}
+		wantErr     bool
+		errContains string
+	}{
+		{"non-empty string slice", []string{"a"}, false, ""},
+		{"non-empty interface slice", []interface{}{1, 2}, false, ""},
+		{"non-slice string", "a", true, "requires a slice value"},
+		{"nil value", nil, true, "requires a slice value"},
+		{"empty string slice", []string{}, true, "non-empty slice"},
+		{"typed nil interface slice", []interface{}(nil), true, "non-empty slice"},
+		{"typed nil string slice", []string(nil), true, "non-empty slice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals, err := requireNonEmptySlice(
+				mink.Filter{Field: "status", Op: mink.FilterOpIn, Value: tt.value}, "IN")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotEmpty(t, vals)
+		})
+	}
+}
+
 // TestBuildWhereClause verifies SQL generation for every filter operator
 // without requiring a live database. The repository is constructed with a
 // known column set and schema so buildWhereClause can be exercised directly.

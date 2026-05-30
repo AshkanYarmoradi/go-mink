@@ -595,17 +595,17 @@ var filterOpToSQL = map[mink.FilterOp]string{
 // slice of arguments. It returns an error when the value is not a slice or is
 // an empty slice: a non-slice would otherwise silently drop the condition
 // (yielding an over-broad query), and an empty slice would emit invalid SQL
-// (IN () / NOT IN ()). The keyword ("IN" or "NOT IN") is only used for the
-// error message.
+// (IN () / NOT IN ()). Slice-ness is checked with reflection so that a typed
+// nil slice (e.g. []interface{}(nil)) is reported as empty rather than as a
+// non-slice. The keyword ("IN" or "NOT IN") is only used for the error message.
 func requireNonEmptySlice(f mink.Filter, keyword string) ([]interface{}, error) {
-	vals := toInterfaceSlice(f.Value)
-	if vals == nil {
+	if reflect.ValueOf(f.Value).Kind() != reflect.Slice {
 		return nil, fmt.Errorf("mink/postgres/readmodel: %s filter on field %q requires a slice value, got %T", keyword, f.Field, f.Value)
 	}
-	if len(vals) == 0 {
-		return nil, fmt.Errorf("mink/postgres/readmodel: %s filter on field %q requires a non-empty slice", keyword, f.Field)
+	if vals := toInterfaceSlice(f.Value); len(vals) > 0 {
+		return vals, nil
 	}
-	return vals, nil
+	return nil, fmt.Errorf("mink/postgres/readmodel: %s filter on field %q requires a non-empty slice", keyword, f.Field)
 }
 
 // buildInClause builds an IN or NOT IN clause from a slice of values.
