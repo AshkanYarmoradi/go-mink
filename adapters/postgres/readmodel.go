@@ -647,11 +647,13 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 		case mink.FilterOpIsNotNull:
 			conditions = append(conditions, fmt.Sprintf("%s IS NOT NULL", quotedCol))
 		case mink.FilterOpBetween:
-			if vals := toInterfaceSlice(f.Value); len(vals) == 2 {
-				conditions = append(conditions, fmt.Sprintf("%s BETWEEN $%d AND $%d", quotedCol, paramIdx, paramIdx+1))
-				args = append(args, vals[0], vals[1])
-				paramIdx += 2
+			vals := toInterfaceSlice(f.Value)
+			if len(vals) != 2 {
+				return "", nil, fmt.Errorf("mink/postgres/readmodel: BETWEEN filter on field %q requires exactly 2 bounds, got %d", f.Field, len(vals))
 			}
+			conditions = append(conditions, fmt.Sprintf("%s BETWEEN $%d AND $%d", quotedCol, paramIdx, paramIdx+1))
+			args = append(args, vals[0], vals[1])
+			paramIdx += 2
 		case mink.FilterOpContains:
 			cond, arg, err := r.buildContainsCondition(quotedCol, colName, f.Value, paramIdx)
 			if err != nil {
