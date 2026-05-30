@@ -1277,6 +1277,16 @@ func TestBuildWhereClause(t *testing.T) {
 			wantArgs:  []interface{}{float64(10), float64(20)},
 		},
 		{
+			name:    "between with wrong bound count returns an error",
+			filters: []mink.Filter{{Field: "total_amount", Op: mink.FilterOpBetween, Value: []int{1, 2, 3}}},
+			wantErr: true,
+		},
+		{
+			name:    "between with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "total_amount", Op: mink.FilterOpBetween, Value: 5}},
+			wantErr: true,
+		},
+		{
 			name:      "contains on text column does substring match",
 			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpContains, Value: "end"}},
 			wantWhere: ` WHERE "status" LIKE '%' || $1 || '%'`,
