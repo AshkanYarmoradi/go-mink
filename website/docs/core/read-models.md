@@ -271,17 +271,21 @@ Generic repository for read model storage:
 ```go
 // Interface definition
 type ReadModelRepository[T any] interface {
-    Insert(ctx context.Context, model *T) error
     Get(ctx context.Context, id string) (*T, error)
-    Update(ctx context.Context, id string, fn func(*T)) error
-    Delete(ctx context.Context, id string) error
+    GetMany(ctx context.Context, ids []string) ([]*T, error)
     Find(ctx context.Context, query Query) ([]*T, error)
     FindOne(ctx context.Context, query Query) (*T, error)
     Count(ctx context.Context, query Query) (int64, error)
-    Exists(ctx context.Context, id string) (bool, error)
-    GetAll(ctx context.Context) ([]*T, error)
+    Insert(ctx context.Context, model *T) error
+    Update(ctx context.Context, id string, fn func(*T)) error
+    Upsert(ctx context.Context, model *T) error
+    Delete(ctx context.Context, id string) error
+    DeleteMany(ctx context.Context, query Query) (int64, error)
     Clear(ctx context.Context) error
 }
+
+// Both the in-memory and PostgreSQL repositories also provide Exists(ctx, id)
+// and GetAll(ctx) helpers beyond the interface above.
 
 // In-memory implementation (great for testing)
 repo := mink.NewInMemoryRepository[OrderSummary](func(o *OrderSummary) string {

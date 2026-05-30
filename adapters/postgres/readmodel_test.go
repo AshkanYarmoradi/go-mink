@@ -1287,6 +1287,26 @@ func TestBuildWhereClause(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "in with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpIn, Value: "a"}},
+			wantErr: true,
+		},
+		{
+			name:    "in with empty slice returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpIn, Value: []string{}}},
+			wantErr: true,
+		},
+		{
+			name:    "not in with non-slice value returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpNotIn, Value: "a"}},
+			wantErr: true,
+		},
+		{
+			name:    "not in with empty slice returns an error",
+			filters: []mink.Filter{{Field: "status", Op: mink.FilterOpNotIn, Value: []int{}}},
+			wantErr: true,
+		},
+		{
 			name:      "contains on text column does substring match",
 			filters:   []mink.Filter{{Field: "status", Op: mink.FilterOpContains, Value: "end"}},
 			wantWhere: ` WHERE "status" LIKE '%' || $1 || '%'`,
