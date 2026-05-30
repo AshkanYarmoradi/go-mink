@@ -135,7 +135,7 @@ func runPollingLoop[P any](
 // LoadFromPosition loads events starting from a global position.
 // This is used by projection engines to catch up on historical events.
 func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -163,7 +163,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 // This uses polling-based subscription with continuous updates.
 // Optional SubscriptionOptions can be provided to configure behavior.
 func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -191,7 +191,7 @@ func (a *PostgresAdapter) SubscribeAll(ctx context.Context, fromPosition uint64,
 // Events are delivered starting from the specified version with continuous polling.
 // Optional SubscriptionOptions can be provided to configure behavior.
 func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -219,7 +219,7 @@ func (a *PostgresAdapter) SubscribeStream(ctx context.Context, streamID string, 
 // Events are delivered starting from the specified global position with continuous polling.
 // Optional SubscriptionOptions can be provided to configure behavior.
 func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 

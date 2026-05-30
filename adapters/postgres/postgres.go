@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -112,7 +113,7 @@ type PostgresAdapter struct {
 	db                *sql.DB
 	schema            string
 	schemaQ           string // Pre-validated and quoted schema identifier
-	closed            bool
+	closed            atomic.Bool
 	healthCheckCancel context.CancelFunc
 }
 
@@ -363,7 +364,7 @@ func (a *PostgresAdapter) MigrationVersion(ctx context.Context) (int, error) {
 
 // Append stores events to the specified stream with optimistic concurrency control.
 func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -395,7 +396,7 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 
 // AppendWithOutbox atomically appends events and schedules outbox messages in a single transaction.
 func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -521,7 +522,7 @@ func (a *PostgresAdapter) appendInTx(ctx context.Context, tx *sql.Tx, streamID s
 
 // Load retrieves all events from a stream starting from the specified version.
 func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion int64) ([]adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -545,7 +546,7 @@ func (a *PostgresAdapter) Load(ctx context.Context, streamID string, fromVersion
 
 // GetStreamInfo returns metadata about a stream.
 func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*adapters.StreamInfo, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -577,7 +578,7 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 
 // GetLastPosition returns the global position of the last stored event.
 func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return 0, ErrAdapterClosed
 	}
 
@@ -602,7 +603,7 @@ func (a *PostgresAdapter) GetLastPosition(ctx context.Context) (uint64, error) {
 
 // Close releases the database connection and stops health checking.
 func (a *PostgresAdapter) Close() error {
-	a.closed = true
+	a.closed.Store(true)
 	if a.healthCheckCancel != nil {
 		a.healthCheckCancel()
 	}
@@ -611,7 +612,7 @@ func (a *PostgresAdapter) Close() error {
 
 // SaveSnapshot stores a snapshot for the given stream.
 func (a *PostgresAdapter) SaveSnapshot(ctx context.Context, streamID string, version int64, data []byte) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -632,7 +633,7 @@ func (a *PostgresAdapter) SaveSnapshot(ctx context.Context, streamID string, ver
 
 // LoadSnapshot retrieves the latest snapshot for the given stream (SnapshotAdapter implementation).
 func (a *PostgresAdapter) LoadSnapshot(ctx context.Context, streamID string) (*adapters.SnapshotRecord, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -659,7 +660,7 @@ func (a *PostgresAdapter) LoadSnapshot(ctx context.Context, streamID string) (*a
 
 // DeleteSnapshot removes the snapshot for the given stream.
 func (a *PostgresAdapter) DeleteSnapshot(ctx context.Context, streamID string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -675,7 +676,7 @@ func (a *PostgresAdapter) DeleteSnapshot(ctx context.Context, streamID string) e
 
 // GetCheckpoint returns the last processed position for a projection.
 func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName string) (uint64, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return 0, ErrAdapterClosed
 	}
 
@@ -705,7 +706,7 @@ func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName stri
 
 // SetCheckpoint stores the last processed position for a projection.
 func (a *PostgresAdapter) SetCheckpoint(ctx context.Context, projectionName string, position uint64) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -726,7 +727,7 @@ func (a *PostgresAdapter) SetCheckpoint(ctx context.Context, projectionName stri
 // DeleteCheckpoint removes the checkpoint for a projection.
 // This implements mink.CheckpointStore interface.
 func (a *PostgresAdapter) DeleteCheckpoint(ctx context.Context, projectionName string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -744,7 +745,7 @@ func (a *PostgresAdapter) DeleteCheckpoint(ctx context.Context, projectionName s
 // GetAllCheckpoints returns checkpoints for all projections.
 // This implements mink.CheckpointStore interface.
 func (a *PostgresAdapter) GetAllCheckpoints(ctx context.Context) (map[string]uint64, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -779,7 +780,7 @@ func (a *PostgresAdapter) GetAllCheckpoints(ctx context.Context) (map[string]uin
 
 // Ping checks database connectivity.
 func (a *PostgresAdapter) Ping(ctx context.Context) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 	return a.db.PingContext(ctx)
@@ -795,7 +796,7 @@ func (a *PostgresAdapter) runHealthCheck(ctx context.Context, interval time.Dura
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if a.closed {
+			if a.closed.Load() {
 				return
 			}
 			// Ping validates the connection and removes stale connections from pool
@@ -841,7 +842,7 @@ var (
 
 // ListStreams returns a list of stream summaries for CLI display.
 func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit int) ([]adapters.StreamSummary, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -889,7 +890,7 @@ func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit 
 
 // GetStreamEvents returns events from a stream with pagination for CLI display.
 func (a *PostgresAdapter) GetStreamEvents(ctx context.Context, streamID string, fromVersion int64, limit int) ([]adapters.StoredEvent, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -911,7 +912,7 @@ func (a *PostgresAdapter) GetStreamEvents(ctx context.Context, streamID string, 
 
 // GetEventStoreStats returns aggregate statistics about the event store.
 func (a *PostgresAdapter) GetEventStoreStats(ctx context.Context) (*adapters.EventStoreStats, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -955,7 +956,7 @@ func (a *PostgresAdapter) GetEventStoreStats(ctx context.Context) (*adapters.Eve
 
 // ListProjections returns all registered projections.
 func (a *PostgresAdapter) ListProjections(ctx context.Context) ([]adapters.ProjectionInfo, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -987,7 +988,7 @@ func (a *PostgresAdapter) ListProjections(ctx context.Context) ([]adapters.Proje
 
 // GetProjection returns information about a specific projection.
 func (a *PostgresAdapter) GetProjection(ctx context.Context, name string) (*adapters.ProjectionInfo, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -1011,7 +1012,7 @@ func (a *PostgresAdapter) GetProjection(ctx context.Context, name string) (*adap
 
 // SetProjectionStatus updates a projection's status.
 func (a *PostgresAdapter) SetProjectionStatus(ctx context.Context, name string, status string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -1035,7 +1036,7 @@ func (a *PostgresAdapter) SetProjectionStatus(ctx context.Context, name string, 
 
 // ResetProjectionCheckpoint resets a projection's position to 0 for rebuild.
 func (a *PostgresAdapter) ResetProjectionCheckpoint(ctx context.Context, name string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -1054,7 +1055,7 @@ func (a *PostgresAdapter) ResetProjectionCheckpoint(ctx context.Context, name st
 
 // GetTotalEventCount returns the highest global position.
 func (a *PostgresAdapter) GetTotalEventCount(ctx context.Context) (int64, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return 0, ErrAdapterClosed
 	}
 
@@ -1066,7 +1067,7 @@ func (a *PostgresAdapter) GetTotalEventCount(ctx context.Context) (int64, error)
 
 // GetAppliedMigrations returns the list of applied migration names.
 func (a *PostgresAdapter) GetAppliedMigrations(ctx context.Context) ([]string, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -1097,7 +1098,7 @@ func (a *PostgresAdapter) GetAppliedMigrations(ctx context.Context) ([]string, e
 
 // RecordMigration marks a migration as applied.
 func (a *PostgresAdapter) RecordMigration(ctx context.Context, name string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -1112,7 +1113,7 @@ func (a *PostgresAdapter) RecordMigration(ctx context.Context, name string) erro
 
 // RemoveMigrationRecord removes a migration record (for rollback).
 func (a *PostgresAdapter) RemoveMigrationRecord(ctx context.Context, name string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -1127,7 +1128,7 @@ func (a *PostgresAdapter) RemoveMigrationRecord(ctx context.Context, name string
 
 // ExecuteSQL runs arbitrary SQL (for applying migrations).
 func (a *PostgresAdapter) ExecuteSQL(ctx context.Context, sql string) error {
-	if a.closed {
+	if a.closed.Load() {
 		return ErrAdapterClosed
 	}
 
@@ -1188,7 +1189,7 @@ func GenerateSchema(projectName, schemaName, tableName, snapshotTableName, outbo
 
 // GetDiagnosticInfo returns database version and connection status.
 func (a *PostgresAdapter) GetDiagnosticInfo(ctx context.Context) (*adapters.DiagnosticInfo, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -1223,7 +1224,7 @@ func (a *PostgresAdapter) GetDiagnosticInfo(ctx context.Context) (*adapters.Diag
 
 // CheckSchema verifies the event store schema exists.
 func (a *PostgresAdapter) CheckSchema(ctx context.Context, tableName string) (*adapters.SchemaCheckResult, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
@@ -1271,7 +1272,7 @@ func (a *PostgresAdapter) CheckSchema(ctx context.Context, tableName string) (*a
 
 // GetProjectionHealth returns projection health status.
 func (a *PostgresAdapter) GetProjectionHealth(ctx context.Context) (*adapters.ProjectionHealthResult, error) {
-	if a.closed {
+	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
 
