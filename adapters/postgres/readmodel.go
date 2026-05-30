@@ -591,6 +591,23 @@ var filterOpToSQL = map[mink.FilterOp]string{
 	mink.FilterOpLike: "LIKE",
 }
 
+// requireNonEmptySlice resolves an IN / NOT IN filter value to a non-empty
+// slice of arguments. It returns an error when the value is not a slice or is
+// an empty slice: a non-slice would otherwise silently drop the condition
+// (yielding an over-broad query), and an empty slice would emit invalid SQL
+// (IN () / NOT IN ()). Slice-ness is checked with reflection so that a typed
+// nil slice (e.g. []interface{}(nil)) is reported as empty rather than as a
+// non-slice. The keyword ("IN" or "NOT IN") is only used for the error message.
+func requireNonEmptySlice(f mink.Filter, keyword string) ([]interface{}, error) {
+	if reflect.ValueOf(f.Value).Kind() != reflect.Slice {
+		return nil, fmt.Errorf("mink/postgres/readmodel: %s filter on field %q requires a slice value, got %T", keyword, f.Field, f.Value)
+	}
+	if vals := toInterfaceSlice(f.Value); len(vals) > 0 {
+		return vals, nil
+	}
+	return nil, fmt.Errorf("mink/postgres/readmodel: %s filter on field %q requires a non-empty slice", keyword, f.Field)
+}
+
 // buildInClause builds an IN or NOT IN clause from a slice of values.
 func buildInClause(quotedCol, keyword string, values []interface{}, paramIdx *int, args *[]interface{}) string {
 	placeholders := make([]string, len(values))
@@ -635,13 +652,17 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 		// Handle special operators
 		switch f.Op {
 		case mink.FilterOpIn:
-			if vals := toInterfaceSlice(f.Value); vals != nil {
-				conditions = append(conditions, buildInClause(quotedCol, "IN", vals, &paramIdx, &args))
+			vals, err := requireNonEmptySlice(f, "IN")
+			if err != nil {
+				return "", nil, err
 			}
+			conditions = append(conditions, buildInClause(quotedCol, "IN", vals, &paramIdx, &args))
 		case mink.FilterOpNotIn:
-			if vals := toInterfaceSlice(f.Value); vals != nil {
-				conditions = append(conditions, buildInClause(quotedCol, "NOT IN", vals, &paramIdx, &args))
+			vals, err := requireNonEmptySlice(f, "NOT IN")
+			if err != nil {
+				return "", nil, err
 			}
+			conditions = append(conditions, buildInClause(quotedCol, "NOT IN", vals, &paramIdx, &args))
 		case mink.FilterOpIsNull:
 			conditions = append(conditions, fmt.Sprintf("%s IS NULL", quotedCol))
 		case mink.FilterOpIsNotNull:
