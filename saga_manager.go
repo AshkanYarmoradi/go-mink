@@ -47,10 +47,32 @@ func WithCommandBus(bus *CommandBus) SagaManagerOption {
 	}
 }
 
-// WithSagaPollInterval sets the polling interval for event subscription.
+// WithSagaPollInterval sets the cadence of the background timeout sweep that
+// detects abandoned sagas (see WithSagaTimeout). It does not affect the primary
+// event subscription, which is push-based.
 func WithSagaPollInterval(d time.Duration) SagaManagerOption {
 	return func(m *SagaManager) {
 		m.pollInterval = d
+	}
+}
+
+// WithSagaTimeout enables timeout handling for long-running sagas. When set to a
+// positive duration, the manager periodically sweeps for Running sagas whose last
+// update is older than the timeout and drives them into compensation. The default
+// (0) disables the sweep. The sweep cadence is controlled by WithSagaSweepInterval.
+func WithSagaTimeout(d time.Duration) SagaManagerOption {
+	return func(m *SagaManager) {
+		m.sagaTimeout = d
+	}
+}
+
+// WithSagaSweepInterval sets how often the abandoned-saga timeout sweep runs (see
+// WithSagaTimeout). Timeout detection tolerates coarse cadence, so this should be
+// well above the per-event poll interval to avoid constant store queries. When
+// unset, the sweep falls back to the poll interval, floored at 1 second.
+func WithSagaSweepInterval(d time.Duration) SagaManagerOption {
+	return func(m *SagaManager) {
+		m.sagaSweepInterval = d
 	}
 }
 
@@ -110,15 +132,18 @@ type SagaManager struct {
 	eventHandlers map[string][]string
 
 	// Configuration
-	pollInterval  time.Duration
-	retryAttempts int
-	retryDelay    time.Duration
+	pollInterval      time.Duration
+	retryAttempts     int
+	retryDelay        time.Duration
+	sagaTimeout       time.Duration
+	sagaSweepInterval time.Duration
 
 	// State
 	mu       sync.RWMutex
 	position uint64
 	running  bool
 	cancel   context.CancelFunc
+	doneCh   chan struct{}
 
 	// sagaLocks provides per-saga ID serialization to prevent concurrent
 	// modification of the same saga instance. This ensures that when multiple
@@ -244,12 +269,15 @@ func (m *SagaManager) Start(ctx context.Context) error {
 
 	ctx, m.cancel = context.WithCancel(ctx)
 	m.running = true
+	m.doneCh = make(chan struct{})
+	doneCh := m.doneCh
 	m.mu.Unlock()
 
 	defer func() {
 		m.mu.Lock()
 		m.running = false
 		m.mu.Unlock()
+		close(doneCh) // signal Stop() that the loop has exited
 	}()
 
 	m.logger.Info("Saga manager started", "position", m.position)
@@ -266,11 +294,31 @@ func (m *SagaManager) Start(ctx context.Context) error {
 		return fmt.Errorf("mink: failed to subscribe: %w", err)
 	}
 
+	// Optionally run a periodic sweep for abandoned/timed-out sagas, on a coarse
+	// cadence (decoupled from the per-event poll interval) so it does not hammer
+	// the saga store.
+	var sweepCh <-chan time.Time
+	if m.sagaTimeout > 0 {
+		sweepEvery := m.sagaSweepInterval
+		if sweepEvery <= 0 {
+			sweepEvery = m.pollInterval
+			if sweepEvery < time.Second {
+				sweepEvery = time.Second
+			}
+		}
+		ticker := time.NewTicker(sweepEvery)
+		defer ticker.Stop()
+		sweepCh = ticker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			m.logger.Info("Saga manager stopped")
 			return ctx.Err()
+
+		case <-sweepCh:
+			m.sweepTimeouts(ctx)
 
 		case event, ok := <-eventCh:
 			if !ok {
@@ -290,6 +338,73 @@ func (m *SagaManager) Start(ctx context.Context) error {
 	}
 }
 
+// sweepTimeouts finds Running sagas that have not been updated within the
+// configured timeout and drives them into compensation. It is a no-op when no
+// timeout is configured.
+//
+// Only Running sagas are swept: an already-Compensating saga is intentionally
+// left alone, because restarting its compensation from scratch would re-dispatch
+// already-executed (and typically non-idempotent) compensation commands.
+func (m *SagaManager) sweepTimeouts(ctx context.Context) {
+	if m.sagaTimeout <= 0 {
+		return
+	}
+
+	m.mu.RLock()
+	sagaTypes := make([]string, 0, len(m.registry))
+	for t := range m.registry {
+		sagaTypes = append(sagaTypes, t)
+	}
+	m.mu.RUnlock()
+
+	cutoff := time.Now().Add(-m.sagaTimeout)
+	for _, sagaType := range sagaTypes {
+		states, err := m.store.FindByType(ctx, sagaType, SagaStatusRunning)
+		if err != nil {
+			m.logger.Error("Saga timeout sweep failed to list sagas", "sagaType", sagaType, "error", err)
+			continue
+		}
+		for _, state := range states {
+			if state.UpdatedAt.After(cutoff) {
+				continue // still fresh
+			}
+			m.timeoutSaga(ctx, sagaType, state)
+		}
+	}
+}
+
+// timeoutSaga compensates a single timed-out saga under its per-saga lock.
+func (m *SagaManager) timeoutSaga(ctx context.Context, sagaType string, state *SagaState) {
+	m.mu.RLock()
+	factory, ok := m.registry[sagaType]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	lock := m.getSagaLock(state.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Reload under the lock to avoid acting on stale state.
+	fresh, err := m.store.Load(ctx, state.ID)
+	if err != nil || fresh == nil || fresh.Status.IsTerminal() {
+		return
+	}
+
+	saga := factory(fresh.ID)
+	if err := m.hydrateSaga(saga, fresh); err != nil {
+		m.logger.Error("Failed to hydrate timed-out saga", "sagaID", fresh.ID, "error", err)
+		return
+	}
+
+	m.logger.Warn("Saga timed out, compensating",
+		"sagaID", saga.SagaID(), "sagaType", sagaType, "age", time.Since(fresh.UpdatedAt))
+	if err := m.handleSagaFailure(ctx, saga, ErrSagaTimedOut); err != nil {
+		m.logger.Error("Failed to compensate timed-out saga", "sagaID", saga.SagaID(), "error", err)
+	}
+}
+
 // adaptEvent converts adapters.StoredEvent to mink.StoredEvent
 func (m *SagaManager) adaptEvent(e adapters.StoredEvent) StoredEvent {
 	return StoredEvent{
@@ -304,13 +419,19 @@ func (m *SagaManager) adaptEvent(e adapters.StoredEvent) StoredEvent {
 	}
 }
 
-// Stop gracefully stops the saga manager.
+// Stop gracefully stops the saga manager and waits for the processing loop to
+// exit, so no event is being processed once Stop returns.
 func (m *SagaManager) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	cancel := m.cancel
+	doneCh := m.doneCh
+	m.mu.Unlock()
 
-	if m.cancel != nil {
-		m.cancel()
+	if cancel != nil {
+		cancel()
+	}
+	if doneCh != nil {
+		<-doneCh // wait for the Start loop to finish
 	}
 }
 
@@ -604,11 +725,14 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		return m.handleSagaFailure(ctx, saga, err)
 	}
 
-	// Execute resulting commands
+	// Execute resulting commands. Advance the current step after each successful
+	// command so CurrentStep reflects completed progress; on failure, the failed
+	// step number passed to Compensate is the count of steps that succeeded.
 	for _, cmd := range commands {
 		if err := m.dispatchCommand(ctx, saga, cmd); err != nil {
 			return m.handleSagaFailure(ctx, saga, err)
 		}
+		saga.SetCurrentStep(saga.CurrentStep() + 1)
 	}
 
 	// Check if saga completed
@@ -736,6 +860,9 @@ func (m *SagaManager) dispatchCommand(ctx context.Context, saga Saga, cmd Comman
 			lastErr = err
 		} else if result.Error != nil {
 			lastErr = result.Error
+		} else {
+			// Unsuccessful result with no error attached.
+			lastErr = ErrCommandUnsuccessful
 		}
 
 		m.logger.Warn("Command dispatch failed, retrying",
@@ -805,6 +932,13 @@ func (m *SagaManager) saveSaga(ctx context.Context, saga Saga, currentEvent *Sto
 	// This ensures retry attempts won't incorrectly skip the event
 	m.processedEvents.Store(sagaID, processedEvents)
 
+	// Once a saga reaches a terminal state it will never be processed again, so
+	// evict its per-saga lock and idempotency cache to bound memory growth.
+	if saga.Status().IsTerminal() {
+		m.processedEvents.Delete(sagaID)
+		m.sagaLocks.Delete(sagaID)
+	}
+
 	return nil
 }
 
@@ -849,6 +983,13 @@ func (m *SagaManager) GetSaga(ctx context.Context, sagaID string) (*SagaState, e
 // FindSagaByCorrelationID finds a saga by its correlation ID.
 func (m *SagaManager) FindSagaByCorrelationID(ctx context.Context, correlationID string) (*SagaState, error) {
 	return m.store.FindByCorrelationID(ctx, correlationID)
+}
+
+// FindSagasByType returns saga states of the given type, optionally filtered by
+// status. This is useful for recovery tooling and dashboards (e.g. listing
+// Running or CompensationFailed sagas that need operator attention).
+func (m *SagaManager) FindSagasByType(ctx context.Context, sagaType string, statuses ...SagaStatus) ([]*SagaState, error) {
+	return m.store.FindByType(ctx, sagaType, statuses...)
 }
 
 // SagaStateToJSON converts saga state to JSON for persistence.

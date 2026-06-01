@@ -149,6 +149,13 @@ Examples:
 				}
 			}
 
+			// Reject an unknown --driver before writing anything to disk. (Full
+			// config validation is deferred — e.g. the postgres URL is supplied at
+			// runtime, not at scaffolding time.)
+			if cfg.Database.Driver != "postgres" && cfg.Database.Driver != "memory" {
+				return fmt.Errorf("invalid --driver %q: must be 'postgres' or 'memory'", cfg.Database.Driver)
+			}
+
 			// Create directories
 			dirs := []string{
 				cfg.Database.MigrationsDir,

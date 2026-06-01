@@ -266,28 +266,226 @@ func TestInMemoryRepository_CountWithFilters(t *testing.T) {
 		assert.Equal(t, int64(3), count)
 	})
 
-	t.Run("count with filters returns total for in-memory", func(t *testing.T) {
-		// In-memory repo doesn't actually filter in Count, just returns total
+	t.Run("count with filters returns matching count", func(t *testing.T) {
 		query := NewQuery().Where("status", FilterOpEq, "active")
 		count, err := repo.Count(ctx, query.Build())
 		require.NoError(t, err)
-		// Returns total count as filtering is not implemented for in-memory
-		assert.Equal(t, int64(3), count)
+		assert.Equal(t, int64(2), count)
 	})
 }
 
 func TestInMemoryRepository_DeleteMany(t *testing.T) {
-	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
 
-	_ = repo.Insert(ctx, &TestReadModel{ID: "1"})
-	_ = repo.Insert(ctx, &TestReadModel{ID: "2"})
-	_ = repo.Insert(ctx, &TestReadModel{ID: "3"})
+	t.Run("empty query deletes all", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "2"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "3"})
 
-	deleted, err := repo.DeleteMany(ctx, Query{})
+		deleted, err := repo.DeleteMany(ctx, Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), deleted)
+		assert.Equal(t, 0, repo.Len())
+	})
+
+	t.Run("filtered query deletes only matches", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1", Status: "stale"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "2", Status: "fresh"})
+		_ = repo.Insert(ctx, &TestReadModel{ID: "3", Status: "stale"})
+
+		deleted, err := repo.DeleteMany(ctx, NewQuery().Where("status", FilterOpEq, "stale").Build())
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), deleted)
+		assert.Equal(t, 1, repo.Len())
+
+		remaining, _ := repo.GetAll(ctx)
+		require.Len(t, remaining, 1)
+		assert.Equal(t, "2", remaining[0].ID)
+	})
+}
+
+func TestInMemoryRepository_FindWithFiltersAndOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+	_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "alice", Count: 30, Status: "active"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "2", Name: "bob", Count: 10, Status: "inactive"})
+	_ = repo.Insert(ctx, &TestReadModel{ID: "3", Name: "carol", Count: 20, Status: "active"})
+
+	t.Run("equality filter", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("status", FilterOpEq, "active").Build())
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+	})
+
+	t.Run("numeric comparison filter", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("count", FilterOpGte, 20).Build())
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+	})
+
+	t.Run("order by ascending", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().OrderByAsc("count").Build())
+		require.NoError(t, err)
+		require.Len(t, got, 3)
+		assert.Equal(t, "2", got[0].ID) // count 10
+		assert.Equal(t, "3", got[1].ID) // count 20
+		assert.Equal(t, "1", got[2].ID) // count 30
+	})
+
+	t.Run("order by descending with limit", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().OrderByDesc("count").WithLimit(1).Build())
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "1", got[0].ID)
+	})
+
+	t.Run("IN filter", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("name", FilterOpIn, []string{"alice", "carol"}).Build())
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+	})
+
+	t.Run("BETWEEN filter", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("count", FilterOpBetween, []int{15, 35}).Build())
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+	})
+
+	t.Run("LIKE filter", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("name", FilterOpLike, "a%").Build())
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "alice", got[0].Name)
+	})
+
+	t.Run("malformed IN returns ErrInvalidQuery", func(t *testing.T) {
+		_, err := repo.Find(ctx, NewQuery().Where("name", FilterOpIn, "notaslice").Build())
+		assert.ErrorIs(t, err, ErrInvalidQuery)
+	})
+
+	t.Run("returned pointers are copies", func(t *testing.T) {
+		got, err := repo.Find(ctx, NewQuery().Where("id", FilterOpEq, "1").Build())
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		got[0].Name = "mutated"
+		fresh, _ := repo.Get(ctx, "1")
+		assert.Equal(t, "alice", fresh.Name)
+	})
+}
+
+type embeddedBase struct {
+	Score int    `json:"score"`
+	Tier  string `json:"tier"`
+}
+
+type embeddingModel struct {
+	embeddedBase
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type embeddedBase2 struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// shadowModel embeds embeddedBase2 (which has Name) and redeclares Name, which
+// shadows the embedded field per Go/JSON promotion.
+type shadowModel struct {
+	embeddedBase2
+	Name string `json:"name"`
+}
+
+func TestInMemoryRepository_QueryEngine(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty IN/NOT IN errors like Postgres", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1", Status: "a"})
+
+		_, err := repo.Find(ctx, NewQuery().Where("status", FilterOpIn, []string{}).Build())
+		assert.ErrorIs(t, err, ErrInvalidQuery, "empty IN must error")
+
+		_, err = repo.Find(ctx, NewQuery().Where("status", FilterOpNotIn, []string{}).Build())
+		assert.ErrorIs(t, err, ErrInvalidQuery, "empty NOT IN must error (must NOT match everything)")
+	})
+
+	t.Run("LIKE matches across newlines", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+		_ = repo.Insert(ctx, &TestReadModel{ID: "1", Name: "line1\nline2"})
+
+		got, err := repo.Find(ctx, NewQuery().Where("name", FilterOpLike, "line1%line2").Build())
+		require.NoError(t, err)
+		assert.Len(t, got, 1, "%% should match across newlines like SQL LIKE")
+
+		got, err = repo.Find(ctx, NewQuery().Where("name", FilterOpLike, "line1_line2").Build())
+		require.NoError(t, err)
+		assert.Len(t, got, 1, "_ should match a newline like SQL LIKE")
+	})
+
+	t.Run("ordering is deterministic when sort field unresolved", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+		for _, id := range []string{"c", "a", "b", "e", "d"} {
+			_ = repo.Insert(ctx, &TestReadModel{ID: id})
+		}
+		// Order by a nonexistent field → must fall back to a stable ID order.
+		var first []string
+		for run := 0; run < 8; run++ {
+			got, err := repo.Find(ctx, NewQuery().OrderByAsc("nope").Build())
+			require.NoError(t, err)
+			ids := make([]string, len(got))
+			for i, g := range got {
+				ids[i] = g.ID
+			}
+			if run == 0 {
+				first = ids
+			} else {
+				assert.Equal(t, first, ids, "order must be deterministic across runs")
+			}
+		}
+		assert.Equal(t, []string{"a", "b", "c", "d", "e"}, first)
+	})
+
+	t.Run("outer field shadows embedded field of the same key", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *shadowModel) string { return m.ID })
+		_ = repo.Insert(ctx, &shadowModel{embeddedBase2: embeddedBase2{ID: "1", Name: "inner"}, Name: "outer"})
+
+		// The outer Name shadows the embedded one, mirroring Go/JSON promotion.
+		got, err := repo.Find(ctx, NewQuery().Where("name", FilterOpEq, "outer").Build())
+		require.NoError(t, err)
+		assert.Len(t, got, 1, "filter must match the shadowing (outer) field value")
+
+		got, err = repo.Find(ctx, NewQuery().Where("name", FilterOpEq, "inner").Build())
+		require.NoError(t, err)
+		assert.Empty(t, got, "filter must NOT match the shadowed (embedded) field value")
+	})
+
+	t.Run("filters resolve promoted (embedded) fields", func(t *testing.T) {
+		repo := NewInMemoryRepository(func(m *embeddingModel) string { return m.ID })
+		_ = repo.Insert(ctx, &embeddingModel{ID: "1", Name: "x", embeddedBase: embeddedBase{Score: 50, Tier: "gold"}})
+		_ = repo.Insert(ctx, &embeddingModel{ID: "2", Name: "y", embeddedBase: embeddedBase{Score: 10, Tier: "silver"}})
+
+		got, err := repo.Find(ctx, NewQuery().Where("score", FilterOpGte, 30).Build())
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "1", got[0].ID)
+
+		got, err = repo.Find(ctx, NewQuery().Where("tier", FilterOpEq, "silver").Build())
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "2", got[0].ID)
+	})
+}
+
+func TestInMemoryRepository_FindForReadModelID(t *testing.T) {
+	ctx := context.Background()
+	repo := NewInMemoryRepositoryFor[TestReadModel]()
+	require.NoError(t, repo.Insert(ctx, &TestReadModel{ID: "x", Name: "X"}))
+	got, err := repo.Get(ctx, "x")
 	require.NoError(t, err)
-	assert.Equal(t, int64(3), deleted)
-	assert.Equal(t, 0, repo.Len())
+	assert.Equal(t, "X", got.Name)
 }
 
 // --- Query Builder Tests ---

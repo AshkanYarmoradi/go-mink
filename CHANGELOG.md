@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Time range filtering via `FromTime` / `ToTime` on `ExportRequest`
   - `ExportError` typed error with `Is(ErrExportFailed)` and `Unwrap()` support
   - `EventStore.ProcessStoredEvent()` — public method exposing the decrypt→upcast→deserialize pipeline
+- **Resilience controls:** `IdempotencyConfig.FailClosed` (fail commands on idempotency-store outage instead of fail-open), `AsyncOptions.OnPoisonEvent` (skip/dead-letter an event that keeps failing instead of faulting the projection), `WithSagaTimeout` (background sweep that compensates abandoned `Running`/`Compensating` sagas), and `ProjectionEngine.Pause`/`Resume`/`Rebuild` for runtime projection control.
 - RC (release candidate) release workflow for `develop` branch (`.github/workflows/rc-release.yml`)
   - Automatic pre-release versioning: `v1.0.4-rc.1`, `v1.0.4-rc.2`, etc.
   - Contextual changelogs (first RC diffs from stable, subsequent RCs diff from previous RC)
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Concurrency control to prevent race conditions on rapid pushes
 
 ### Changed
+- **`adapters.OutboxAppender` interface (breaking, optional interface):** `AppendWithOutbox` now takes the caller-configured `OutboxStore` as a parameter — `AppendWithOutbox(ctx, streamID, events, expectedVersion, outbox OutboxStore, messages)`. The adapter schedules the messages into that store within its transaction/critical section (transactional adapters via `ScheduleInTx`), so the atomic path writes to the same store the caller reads from. Previously the PostgreSQL adapter scheduled into an internally-derived store with the default table name, diverging from a caller that configured a custom outbox table. The in-memory adapter now implements `OutboxAppender` too (schedule-first, so a version conflict or scheduling failure writes neither events nor messages). Custom adapters implementing `OutboxAppender` must update their method signature.
 - CI test workflow now triggers on `develop` branch (push and pull request)
 - Stable release workflow uses stable-only tag filter to ignore RC tags when calculating next version
 

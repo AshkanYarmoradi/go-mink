@@ -3,12 +3,76 @@ package mink
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters/memory"
 )
+
+func TestIdempotencyMiddleware_ConcurrentDuplicates(t *testing.T) {
+	store := memory.NewIdempotencyStore()
+	defer func() { _ = store.Close() }()
+
+	mw := IdempotencyMiddleware(DefaultIdempotencyConfig(store))
+
+	var handlerCalls int32
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		atomic.AddInt32(&handlerCalls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		return NewSuccessResult("agg-1", 1), nil
+	}
+	wrapped := mw(handler)
+
+	const n = 16
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = wrapped(context.Background(), idempotentTestCommand{Value: "v", IdempotencyID: "same-key"})
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&handlerCalls),
+		"handler must run exactly once for concurrent duplicate commands")
+}
+
+func TestIdempotency_ReservationUsesShortLease(t *testing.T) {
+	// Default reservation lease is short (so a crashed handler does not block a
+	// key for the full result TTL).
+	cfg := DefaultIdempotencyConfig(newMockIdempotencyStore())
+	assert.Equal(t, 5*time.Minute, cfg.ReservationTTL)
+	assert.Equal(t, 24*time.Hour, cfg.TTL)
+
+	// A reservation record expires after the (short) reservation TTL, not the TTL.
+	rec := newProcessingRecord("k", "Cmd", cfg.ReservationTTL)
+	assert.True(t, isProcessingRecord(rec))
+	assert.WithinDuration(t, time.Now().Add(cfg.ReservationTTL), rec.ExpiresAt, 2*time.Second)
+}
+
+func TestIdempotencyMiddleware_FailClosed(t *testing.T) {
+	store := newMockIdempotencyStore()
+	store.getErr = errors.New("store down")
+	config := DefaultIdempotencyConfig(store)
+	config.FailClosed = true
+	mw := IdempotencyMiddleware(config)
+
+	handlerCalled := false
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		handlerCalled = true
+		return NewSuccessResult("agg-1", 1), nil
+	}
+
+	result, err := mw(handler)(context.Background(), idempotencyTestCommand{Value: "x"})
+	assert.Error(t, err)
+	assert.True(t, result.IsError())
+	assert.False(t, handlerCalled, "handler must not run when the store is down and FailClosed is set")
+}
 
 // Test command for idempotency tests
 
@@ -73,6 +137,17 @@ func (s *mockIdempotencyStore) Store(ctx context.Context, record *IdempotencyRec
 	return nil
 }
 
+func (s *mockIdempotencyStore) StoreIfAbsent(ctx context.Context, record *IdempotencyRecord) (bool, error) {
+	if s.storeErr != nil {
+		return false, s.storeErr
+	}
+	if _, ok := s.records[record.Key]; ok {
+		return false, nil
+	}
+	s.records[record.Key] = record
+	return true, nil
+}
+
 func (s *mockIdempotencyStore) Get(ctx context.Context, key string) (*IdempotencyRecord, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
@@ -95,6 +170,40 @@ func (s *mockIdempotencyStore) Cleanup(ctx context.Context, olderThan time.Durat
 		}
 	}
 	return count, nil
+}
+
+// storeFailingIdempotencyStore behaves like the base mock but always fails Store,
+// so the reservation (StoreIfAbsent) succeeds while persisting the final record
+// fails — the exact situation that should release the reservation.
+type storeFailingIdempotencyStore struct {
+	*mockIdempotencyStore
+}
+
+func (s *storeFailingIdempotencyStore) Store(ctx context.Context, record *IdempotencyRecord) error {
+	return errors.New("store failed")
+}
+
+func TestIdempotencyMiddleware_StoreFailureReleasesReservation(t *testing.T) {
+	base := newMockIdempotencyStore()
+	store := &storeFailingIdempotencyStore{mockIdempotencyStore: base}
+	config := DefaultIdempotencyConfig(store)
+	mw := IdempotencyMiddleware(config)
+
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		return NewSuccessResult("agg-1", 1), nil
+	}
+
+	cmd := idempotencyTestCommand{Value: "test"}
+	key := GetIdempotencyKey(cmd)
+
+	result, err := mw(handler)(context.Background(), cmd)
+	require.NoError(t, err)
+	assert.True(t, result.IsSuccess())
+
+	// Persisting the result failed; the processing reservation must have been
+	// released so a later retry isn't rejected as "command in progress".
+	_, exists := base.records[key]
+	assert.False(t, exists, "stale reservation should be removed when Store fails")
 }
 
 func TestIdempotencyRecord(t *testing.T) {

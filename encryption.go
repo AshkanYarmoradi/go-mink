@@ -24,6 +24,14 @@ const (
 // It uses envelope encryption: a data encryption key (DEK) is generated per event,
 // encrypted with the master key, and stored in metadata. Individual fields are
 // encrypted locally with the DEK for performance.
+//
+// Integrity model: each field's ciphertext is bound (via AES-GCM AAD) to its
+// stream ID and field name, so it cannot be relocated to a different stream/field
+// and still decrypt. Event metadata itself (correlation/causation/tenant IDs and
+// the $encryption_* markers) is NOT authenticated by the library — tampering with
+// it causes decryption to fail closed (never a plaintext leak), but guaranteeing
+// metadata integrity is the storage layer's responsibility (the event store is
+// append-only and access-controlled).
 type FieldEncryptionConfig struct {
 	provider          encryption.Provider
 	fields            map[string][]string                                        // eventType → field paths
@@ -110,7 +118,7 @@ func (c *FieldEncryptionConfig) resolveKeyID(metadata Metadata) string {
 // encryptFields encrypts the configured fields in the serialized event data.
 // It uses envelope encryption: generates a DEK, encrypts fields with it, and
 // stores the encrypted DEK in metadata.
-func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, eventType string, data []byte, metadata Metadata) ([]byte, Metadata, error) {
+func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, streamID, eventType string, data []byte, metadata Metadata) ([]byte, Metadata, error) {
 	fieldPaths := c.fields[eventType]
 	if len(fieldPaths) == 0 {
 		return data, metadata, nil
@@ -141,7 +149,7 @@ func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, eventType str
 	// Encrypt each field
 	var encryptedFieldNames []string
 	for _, fieldPath := range fieldPaths {
-		encrypted, err := encryptJSONField(jsonData, fieldPath, dk.Plaintext)
+		encrypted, err := encryptJSONField(jsonData, fieldPath, streamID, dk.Plaintext)
 		if err != nil {
 			return nil, metadata, encryption.NewEncryptionError(keyID, fieldPath, err)
 		}
@@ -171,7 +179,7 @@ func (c *FieldEncryptionConfig) encryptFields(ctx context.Context, eventType str
 }
 
 // decryptFields decrypts fields in the serialized event data using the DEK from metadata.
-func (c *FieldEncryptionConfig) decryptFields(ctx context.Context, eventType string, data []byte, metadata Metadata) ([]byte, error) {
+func (c *FieldEncryptionConfig) decryptFields(ctx context.Context, streamID, eventType string, data []byte, metadata Metadata) ([]byte, error) {
 	if !IsEncrypted(metadata) {
 		return data, nil
 	}
@@ -181,6 +189,15 @@ func (c *FieldEncryptionConfig) decryptFields(ctx context.Context, eventType str
 	}
 
 	keyID := GetEncryptionKeyID(metadata)
+
+	// Algorithm agility: honor the algorithm recorded at encryption time.
+	// Absent key means a legacy event written before the algorithm was stamped;
+	// those are always AES-256-GCM, so default to it for backward compatibility.
+	// A present-but-unsupported value must NOT be silently decrypted with the
+	// hardcoded algorithm — fail closed instead.
+	if alg := GetEncryptionAlgorithm(metadata); alg != "" && alg != encryptionAlgorithm {
+		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("unsupported algorithm %q (only %q is supported)", alg, encryptionAlgorithm))
+	}
 	encryptedDEK, err := base64.StdEncoding.DecodeString(metadata.Custom[encryptedDEKKey])
 	if err != nil {
 		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("failed to decode encrypted DEK: %w", err))
@@ -214,7 +231,7 @@ func (c *FieldEncryptionConfig) decryptFields(ctx context.Context, eventType str
 
 	// Decrypt each field
 	for _, fieldPath := range fieldNames {
-		if err := decryptJSONField(jsonData, fieldPath, dekPlaintext); err != nil {
+		if err := decryptJSONField(jsonData, fieldPath, streamID, dekPlaintext); err != nil {
 			return nil, encryption.NewDecryptionError(keyID, fieldPath, err)
 		}
 	}
@@ -254,6 +271,17 @@ func GetEncryptionKeyID(m Metadata) string {
 	return m.Custom[encryptionKeyIDKey]
 }
 
+// GetEncryptionAlgorithm extracts the encryption algorithm recorded in event
+// metadata. It returns an empty string for legacy events written before the
+// algorithm was stamped; callers should treat an empty value as the default
+// AES-256-GCM algorithm.
+func GetEncryptionAlgorithm(m Metadata) string {
+	if m.Custom == nil {
+		return ""
+	}
+	return m.Custom[encryptionAlgorithmKey]
+}
+
 // IsEncrypted reports whether the event has encrypted fields.
 func IsEncrypted(m Metadata) bool {
 	if m.Custom == nil {
@@ -265,10 +293,30 @@ func IsEncrypted(m Metadata) bool {
 
 // JSON field encryption helpers
 
+// fieldAAD builds the AES-GCM additional authenticated data for a field, binding
+// the ciphertext to its stream and full field path so it cannot be relocated to a
+// different stream (or, within an event, a different field — including a sibling
+// nested field that shares the same leaf name) and still decrypt. An empty
+// streamID yields the legacy field-path-only AAD for backward compatibility.
+func fieldAAD(streamID, fieldPath string) []byte {
+	if streamID == "" {
+		return []byte(fieldPath)
+	}
+	return []byte(streamID + "\x00" + fieldPath)
+}
+
 // encryptJSONField encrypts a single field in a JSON object using AES-256-GCM.
 // The field value is replaced with a base64-encoded ciphertext string.
 // Returns true if the field was found and encrypted, false if not found.
-func encryptJSONField(data map[string]interface{}, fieldPath string, key []byte) (bool, error) {
+func encryptJSONField(data map[string]interface{}, fieldPath, streamID string, key []byte) (bool, error) {
+	return encryptJSONFieldWithPath(data, fieldPath, fieldPath, streamID, key)
+}
+
+// encryptJSONFieldWithPath walks fieldPath into nested objects and encrypts the
+// leaf value, binding the ciphertext to fullPath (the complete dotted path from
+// the event root) so it cannot be relocated to a different field and still
+// decrypt. fullPath stays constant across the recursion while fieldPath shrinks.
+func encryptJSONFieldWithPath(data map[string]interface{}, fieldPath, fullPath, streamID string, key []byte) (bool, error) {
 	parts := strings.SplitN(fieldPath, ".", 2)
 
 	if len(parts) == 1 {
@@ -284,7 +332,7 @@ func encryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return false, fmt.Errorf("failed to marshal field value: %w", err)
 		}
 
-		ciphertext, err := encryption.AESGCMEncrypt(key, plaintext, []byte(fieldPath))
+		ciphertext, err := encryption.AESGCMEncrypt(key, plaintext, fieldAAD(streamID, fullPath))
 		if err != nil {
 			return false, err
 		}
@@ -304,11 +352,18 @@ func encryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 		return false, nil
 	}
 
-	return encryptJSONField(childMap, parts[1], key)
+	return encryptJSONFieldWithPath(childMap, parts[1], fullPath, streamID, key)
 }
 
 // decryptJSONField decrypts a single field in a JSON object.
-func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte) error {
+func decryptJSONField(data map[string]interface{}, fieldPath, streamID string, key []byte) error {
+	return decryptJSONFieldWithPath(data, fieldPath, fieldPath, streamID, key)
+}
+
+// decryptJSONFieldWithPath mirrors encryptJSONFieldWithPath, walking into nested
+// objects and decrypting the leaf using full-path-bound AAD (with backward-
+// compatible fallbacks for events written by earlier versions).
+func decryptJSONFieldWithPath(data map[string]interface{}, fieldPath, fullPath, streamID string, key []byte) error {
 	parts := strings.SplitN(fieldPath, ".", 2)
 
 	if len(parts) == 1 {
@@ -327,7 +382,7 @@ func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 			return fmt.Errorf("failed to decode field: %w", err)
 		}
 
-		plaintext, err := encryption.AESGCMDecrypt(key, ciphertext, []byte(fieldPath))
+		plaintext, err := decryptFieldValue(key, ciphertext, streamID, fullPath, parts[0])
 		if err != nil {
 			return err
 		}
@@ -353,5 +408,37 @@ func decryptJSONField(data map[string]interface{}, fieldPath string, key []byte)
 		return nil
 	}
 
-	return decryptJSONField(childMap, parts[1], key)
+	return decryptJSONFieldWithPath(childMap, parts[1], fullPath, streamID, key)
+}
+
+// decryptFieldValue decrypts a field's ciphertext using the current AAD (stream +
+// full field path) and falls back to AAD formats used by earlier versions so that
+// events written before full-path binding still decrypt. Candidates are tried in
+// order and de-duplicated; for a top-level field they reduce to exactly the prior
+// behavior (stream+name, then name-only).
+func decryptFieldValue(key, ciphertext []byte, streamID, fullPath, leaf string) ([]byte, error) {
+	candidates := [][]byte{
+		fieldAAD(streamID, fullPath), // current: stream + full path
+		fieldAAD(streamID, leaf),     // earlier: stream + leaf segment only
+		[]byte(fullPath),             // no stream binding: full path
+		[]byte(leaf),                 // legacy: leaf segment only
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	var firstErr error
+	for _, aad := range candidates {
+		if _, dup := seen[string(aad)]; dup {
+			continue
+		}
+		seen[string(aad)] = struct{}{}
+
+		plaintext, err := encryption.AESGCMDecrypt(key, ciphertext, aad)
+		if err == nil {
+			return plaintext, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
 }

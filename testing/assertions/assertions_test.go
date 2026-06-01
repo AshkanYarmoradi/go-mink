@@ -163,6 +163,19 @@ func TestAssertEventData(t *testing.T) {
 		})
 		assert.True(t, mt.failed)
 	})
+
+	t.Run("matches a pointer-emitted event against a value expectation", func(t *testing.T) {
+		event := &TestOrderCreated{OrderID: "123", CustomerID: "cust-456"}
+		AssertEventData(t, event, TestOrderCreated{OrderID: "123", CustomerID: "cust-456"})
+	})
+}
+
+func TestAssertContainsEvent_NormalizesPointerVsValue(t *testing.T) {
+	events := []interface{}{
+		TestOrderCreated{OrderID: "1"},
+		&TestItemAdded{OrderID: "123", SKU: "SKU-1", Quantity: 2, Price: 10.0},
+	}
+	AssertContainsEvent(t, events, TestItemAdded{OrderID: "123", SKU: "SKU-1", Quantity: 2, Price: 10.0})
 }
 
 // =============================================================================

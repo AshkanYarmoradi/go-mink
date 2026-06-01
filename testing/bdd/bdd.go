@@ -6,6 +6,7 @@ package bdd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -75,11 +76,39 @@ func (f *TestFixture) Then(expectedEvents ...interface{}) {
 	}
 
 	for i, expected := range expectedEvents {
-		if !reflect.DeepEqual(uncommitted[i], expected) {
-			f.t.Errorf("Event %d mismatch:\nExpected: %+v\nActual: %+v",
-				i, expected, uncommitted[i])
+		if !eventsEqual(uncommitted[i], expected) {
+			f.t.Errorf("Event %d mismatch:\nExpected: %s\nActual: %s",
+				i, describeEvent(expected), describeEvent(uncommitted[i]))
 		}
 	}
+}
+
+// eventsEqual compares two events for BDD assertions while tolerating a
+// pointer-vs-value mismatch. Aggregates often emit events as pointers
+// (&OrderCreated{...}) while tests pass values (OrderCreated{...}), or vice
+// versa; a raw reflect.DeepEqual on those would always fail even though the
+// underlying data is identical. We normalize by dereferencing any non-nil
+// pointers before the deep comparison. A nil pointer is never equal to a value.
+func eventsEqual(a, b interface{}) bool {
+	return reflect.DeepEqual(normalizeEvent(a), normalizeEvent(b))
+}
+
+// normalizeEvent dereferences a non-nil pointer to its element value so that
+// pointer and value forms of the same event compare equal. Non-pointer values
+// and nil pointers are returned unchanged.
+func normalizeEvent(v interface{}) interface{} {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		return rv.Elem().Interface()
+	}
+	return v
+}
+
+// describeEvent renders an event for failure messages, making the concrete type
+// explicit (including whether it was a pointer) so a pointer-vs-value mismatch
+// that survives normalization is obvious rather than looking identical.
+func describeEvent(v interface{}) string {
+	return fmt.Sprintf("%T%+v", v, v)
 }
 
 // ThenError asserts that the command produced the expected error.

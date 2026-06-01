@@ -315,10 +315,7 @@ func (s *Serializer) Deserialize(data []byte, eventType string) (interface{}, er
 	return v.Elem().Interface(), nil
 }
 
-// =============================================================================
-// Interface Compliance
-// =============================================================================
-
-// Ensure Serializer implements the mink.Serializer interface at compile time.
-// This is commented out to avoid circular dependencies.
-// var _ mink.Serializer = (*Serializer)(nil)
+// The compile-time assertion that *Serializer satisfies mink.Serializer lives in
+// the external test package (protobuf_serializer_check_test.go, package
+// protobuf_test) so importing the root mink package for the check cannot create
+// an import cycle.

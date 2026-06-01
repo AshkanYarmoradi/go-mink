@@ -147,6 +147,9 @@ func (r *ProjectionRebuilder) RebuildAsync(ctx context.Context, projection Async
 		options = opts[0]
 	}
 
+	if err := r.clearReadModel(ctx, projection, options); err != nil {
+		return err
+	}
 	return r.rebuild(ctx, projection.Name(), func(ctx context.Context, events []StoredEvent) error {
 		return r.processAsyncBatch(ctx, projection, events)
 	}, options)
@@ -159,9 +162,30 @@ func (r *ProjectionRebuilder) RebuildInline(ctx context.Context, projection Inli
 		options = opts[0]
 	}
 
+	if err := r.clearReadModel(ctx, projection, options); err != nil {
+		return err
+	}
 	return r.rebuild(ctx, projection.Name(), func(ctx context.Context, events []StoredEvent) error {
 		return r.processInlineBatch(ctx, projection, events)
 	}, options)
+}
+
+// clearReadModel clears the projection's read model before a rebuild when
+// RebuildOptions.ClearReadModel is set and the projection implements Clearable,
+// so a rebuild starts from scratch instead of appending to stale state.
+func (r *ProjectionRebuilder) clearReadModel(ctx context.Context, projection Projection, options RebuildOptions) error {
+	if !options.ClearReadModel {
+		return nil
+	}
+	clearable, ok := projection.(Clearable)
+	if !ok {
+		return nil
+	}
+	r.logger.Info("Clearing read model before rebuild", "projection", projection.Name())
+	if err := clearable.Clear(ctx); err != nil {
+		return fmt.Errorf("mink: failed to clear read model before rebuild: %w", err)
+	}
+	return nil
 }
 
 // rebuild performs the actual rebuild logic.
@@ -180,10 +204,14 @@ func (r *ProjectionRebuilder) rebuild(ctx context.Context, projectionName string
 	var totalEvents uint64
 	adapter := r.store.Adapter()
 	if pos, err := adapter.GetLastPosition(ctx); err == nil {
+		// Determine the upper bound (head, or ToPosition if it caps the head),
+		// then guard against unsigned underflow when FromPosition exceeds it.
+		upper := pos
 		if options.ToPosition > 0 && options.ToPosition < pos {
-			totalEvents = options.ToPosition - options.FromPosition
-		} else {
-			totalEvents = pos - options.FromPosition
+			upper = options.ToPosition
+		}
+		if upper > options.FromPosition {
+			totalEvents = upper - options.FromPosition
 		}
 	}
 
@@ -243,9 +271,13 @@ func (r *ProjectionRebuilder) rebuild(ctx context.Context, projectionName string
 			return fmt.Errorf("failed to process batch: %w", err)
 		}
 
-		// Update position
+		// Update position.
+		// LoadEventsFromPosition is exclusive (loads events with GlobalPosition >
+		// fromPosition), so the next batch must start from the last processed
+		// position itself — adding 1 here would skip the event at
+		// lastEvent.GlobalPosition+1 at every batch boundary.
 		lastEvent := events[len(events)-1]
-		currentPosition = lastEvent.GlobalPosition + 1
+		currentPosition = lastEvent.GlobalPosition
 		processedEvents += uint64(len(events))
 
 		// Save checkpoint periodically

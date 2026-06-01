@@ -252,6 +252,7 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	var consecutiveErrors int
 	for {
 		select {
 		case <-ctx.Done():
@@ -262,13 +263,31 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 		case <-ticker.C:
 			events, err := subAdapter.LoadFromPosition(ctx, s.getPosition(), 100)
 			if err != nil {
-				// Retry on error unless configured not to
+				// Retry on error unless configured not to.
 				if !s.opts.RetryOnError {
 					s.setErr(err)
 					return
 				}
+				// Give up after MaxRetries consecutive failures (0 = retry forever).
+				consecutiveErrors++
+				if s.opts.MaxRetries > 0 && consecutiveErrors >= s.opts.MaxRetries {
+					s.setErr(err)
+					return
+				}
+				// Back off for RetryInterval before the next attempt.
+				if s.opts.RetryInterval > 0 {
+					select {
+					case <-ctx.Done():
+						s.setErr(ctx.Err())
+						return
+					case <-s.stopCh:
+						return
+					case <-time.After(s.opts.RetryInterval):
+					}
+				}
 				continue
 			}
+			consecutiveErrors = 0
 
 			for _, event := range events {
 				if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
@@ -497,4 +516,192 @@ func (w *adaptersSubscriptionAdapter) LoadFromPosition(ctx context.Context, from
 		result[i] = convertStoredEventFromAdapter(e)
 	}
 	return result, nil
+}
+
+// =============================================================================
+// EventSubscriber implementation on EventStore
+// =============================================================================
+
+// Compile-time check that EventStore satisfies EventSubscriber.
+var _ EventSubscriber = (*EventStore)(nil)
+
+// defaultSubscriptionPollInterval is the poll cadence used by the EventStore
+// EventSubscriber convenience methods.
+const defaultSubscriptionPollInterval = 100 * time.Millisecond
+
+// streamVersionFilter matches events from a single stream at or after a version.
+type streamVersionFilter struct {
+	streamID    string
+	fromVersion int64
+}
+
+// Matches reports whether the event belongs to the stream and is after
+// fromVersion (exclusive), matching the exclusive semantics of Load and the
+// adapter-native stream subscriptions.
+func (f *streamVersionFilter) Matches(event StoredEvent) bool {
+	return event.StreamID == f.streamID && event.Version > f.fromVersion
+}
+
+// SubscribeAll subscribes to all events starting from the given global position.
+// It returns a started catch-up subscription backed by the store's adapter.
+func (s *EventStore) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...SubscriptionOptions) (Subscription, error) {
+	return s.subscribe(ctx, fromPosition, nil, opts)
+}
+
+// SubscribeStream subscribes to events from a single stream with version greater
+// than fromVersion (exclusive, consistent with Load). When the adapter implements
+// SubscriptionAdapter it delegates to the adapter-native per-stream subscription;
+// otherwise it falls back to a catch-up subscription filtered by stream.
+func (s *EventStore) SubscribeStream(ctx context.Context, streamID string, fromVersion int64, opts ...SubscriptionOptions) (Subscription, error) {
+	if streamID == "" {
+		return nil, ErrEmptyStreamID
+	}
+	// Prefer the adapter's native per-stream subscription (which queries by
+	// stream_id) over the generic catch-up path, which would replay the entire
+	// global log filtered by stream — O(total events) to start one stream.
+	if sa, ok := s.adapter.(adapters.SubscriptionAdapter); ok {
+		adapterOpts := toAdapterSubscriptionOptions(opts)
+		return s.subscribeViaAdapter(ctx, opts, func(subCtx context.Context) (<-chan adapters.StoredEvent, error) {
+			return sa.SubscribeStream(subCtx, streamID, fromVersion, adapterOpts...)
+		})
+	}
+	return s.subscribe(ctx, 0, &streamVersionFilter{streamID: streamID, fromVersion: fromVersion}, opts)
+}
+
+// adapterSubscription adapts an adapter-provided event channel into a Subscription.
+type adapterSubscription struct {
+	eventCh   chan StoredEvent
+	cancel    context.CancelFunc
+	errMu     sync.RWMutex
+	err       error
+	closeOnce sync.Once
+}
+
+// Events returns the channel for receiving events.
+func (s *adapterSubscription) Events() <-chan StoredEvent { return s.eventCh }
+
+// Close stops the subscription.
+func (s *adapterSubscription) Close() error {
+	s.closeOnce.Do(func() { s.cancel() })
+	return nil
+}
+
+// Err returns any error that caused the subscription to close.
+func (s *adapterSubscription) Err() error {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.err
+}
+
+func (s *adapterSubscription) setErr(err error) {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	if s.err == nil {
+		s.err = err
+	}
+}
+
+// subscribeViaAdapter starts an adapter-native subscription and bridges its
+// channel (converting events and applying any caller Filter) into a Subscription.
+// Close cancels the subscription's context, which closes the adapter channel.
+func (s *EventStore) subscribeViaAdapter(ctx context.Context, opts []SubscriptionOptions, start func(context.Context) (<-chan adapters.StoredEvent, error)) (Subscription, error) {
+	options := DefaultSubscriptionOptions()
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	adapterCh, err := start(subCtx)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	sub := &adapterSubscription{
+		eventCh: make(chan StoredEvent, options.BufferSize),
+		cancel:  cancel,
+	}
+
+	// reportStop records why the bridge stopped. A parent-context cancellation is
+	// an external stop worth surfacing via Err(); a consumer Close() (which cancels
+	// only subCtx) is a clean shutdown that must leave Err() nil.
+	reportStop := func() {
+		if ctx.Err() != nil {
+			sub.setErr(ctx.Err())
+		}
+	}
+
+	go func() {
+		defer close(sub.eventCh)
+		for {
+			select {
+			case <-subCtx.Done():
+				reportStop()
+				return
+			case e, ok := <-adapterCh:
+				if !ok {
+					// The adapter closed its channel. If the parent context was
+					// canceled, surface that; otherwise it's a clean end.
+					reportStop()
+					return
+				}
+				event := convertStoredEventFromAdapter(e)
+				if options.Filter != nil && !options.Filter.Matches(event) {
+					continue
+				}
+				select {
+				case sub.eventCh <- event:
+				case <-subCtx.Done():
+					reportStop()
+					return
+				}
+			}
+		}
+	}()
+
+	return sub, nil
+}
+
+// toAdapterSubscriptionOptions translates caller subscription options into the
+// adapter-level options so adapter-native subscriptions honor settings such as the
+// channel buffer size. It returns nil when no options were supplied, letting the
+// adapter apply its own defaults.
+func toAdapterSubscriptionOptions(opts []SubscriptionOptions) []adapters.SubscriptionOptions {
+	if len(opts) == 0 {
+		return nil
+	}
+	return []adapters.SubscriptionOptions{{
+		BufferSize: opts[0].BufferSize,
+	}}
+}
+
+// SubscribeCategory subscribes to events from all streams in a category, starting
+// from the given global position.
+func (s *EventStore) SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (Subscription, error) {
+	return s.subscribe(ctx, fromPosition, NewCategoryFilter(category), opts)
+}
+
+// subscribe assembles options (combining the structural filter with any caller
+// filter) and starts a catch-up subscription.
+func (s *EventStore) subscribe(ctx context.Context, fromPosition uint64, filter EventFilter, opts []SubscriptionOptions) (Subscription, error) {
+	options := DefaultSubscriptionOptions()
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	if filter != nil {
+		if options.Filter != nil {
+			options.Filter = NewCompositeFilter(filter, options.Filter)
+		} else {
+			options.Filter = filter
+		}
+	}
+
+	sub, err := NewCatchupSubscription(s, fromPosition, options)
+	if err != nil {
+		return nil, err
+	}
+	if err := sub.Start(ctx, defaultSubscriptionPollInterval); err != nil {
+		return nil, err
+	}
+	return sub, nil
 }

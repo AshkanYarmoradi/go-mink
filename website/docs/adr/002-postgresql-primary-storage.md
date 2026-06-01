@@ -32,43 +32,74 @@ We will use **PostgreSQL** as the primary storage backend with a custom schema o
 
 ### Schema Design
 
-```sql
-CREATE TABLE mink_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    stream_id VARCHAR(255) NOT NULL,
-    version BIGINT NOT NULL,
-    type VARCHAR(255) NOT NULL,
-    data JSONB NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    global_position BIGSERIAL,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
+The adapter uses a **two-table design**: a `streams` table that tracks the
+current version (and category) of each stream, plus an `events` table that
+stores the immutable event records. The `events` table uses `global_position`
+(a `BIGSERIAL`) as its **primary key**, which gives both a compact row identity
+and a total global ordering for catch-up subscriptions. The unique
+`(stream_id, version)` constraint enforces optimistic concurrency. The schema is
+configurable via `WithSchema`; the core table names are `streams` and `events`.
 
-    CONSTRAINT unique_stream_version UNIQUE (stream_id, version)
+```sql
+CREATE TABLE streams (
+    id              BIGSERIAL PRIMARY KEY,
+    stream_id       VARCHAR(500) NOT NULL UNIQUE,
+    category        VARCHAR(250) NOT NULL,
+    version         BIGINT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_events_stream_id ON mink_events(stream_id);
-CREATE INDEX idx_events_global_position ON mink_events(global_position);
-CREATE INDEX idx_events_type ON mink_events(type);
-CREATE INDEX idx_events_timestamp ON mink_events(timestamp);
+CREATE INDEX idx_streams_category ON streams (category);
+
+CREATE TABLE events (
+    global_position BIGSERIAL PRIMARY KEY,
+    stream_id       VARCHAR(500) NOT NULL,
+    version         BIGINT NOT NULL,
+    event_id        UUID NOT NULL DEFAULT gen_random_uuid(),
+    event_type      VARCHAR(500) NOT NULL,
+    data            JSONB NOT NULL,
+    metadata        JSONB,
+    timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stream_id, version)
+);
+
+CREATE INDEX idx_events_stream ON events (stream_id, version);
+CREATE INDEX idx_events_type ON events (event_type);
+CREATE INDEX idx_events_timestamp ON events (timestamp);
 ```
+
+The adapter also creates `snapshots` and `checkpoints` tables as part of the
+core schema. Outbox, idempotency, and saga tables are created separately by
+their respective sub-stores.
 
 ### Key Features Used
 
-1. **JSONB**: Flexible event data storage with indexing
-2. **BIGSERIAL**: Global ordering via `global_position`
-3. **UNIQUE Constraint**: Optimistic concurrency via `(stream_id, version)`
-4. **LISTEN/NOTIFY**: Real-time subscriptions
+1. **JSONB**: Flexible event `data`/`metadata` storage with indexing
+2. **BIGSERIAL primary key**: Global ordering and row identity via `global_position`
+3. **UNIQUE Constraint**: Optimistic concurrency via `(stream_id, version)` on `events`
+4. **`streams` table**: Authoritative current version per stream for fast version checks
+5. **Polling subscriptions**: Catch-up via `global_position` (see below)
 
 ### Concurrency Control
 
+Appends run inside a transaction that checks the stream's current version in the
+`streams` table, inserts the new rows into `events`, and updates the stream
+version — all atomically. A mismatch between the expected version and the
+stored version aborts the transaction with a concurrency conflict:
+
 ```sql
--- Atomic append with version check
-INSERT INTO mink_events (stream_id, version, type, data, metadata)
-SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4
-FROM mink_events
-WHERE stream_id = $1
-HAVING COALESCE(MAX(version), 0) = $5
-RETURNING *;
+-- Inside a single transaction:
+-- 1. Read and lock the current version.
+SELECT version FROM streams WHERE stream_id = $1 FOR UPDATE;
+
+-- 2. If it matches the expected version, insert the new event(s).
+INSERT INTO events (stream_id, version, event_type, data, metadata)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING global_position;
+
+-- 3. Bump the stream's version.
+UPDATE streams SET version = $2, updated_at = NOW() WHERE stream_id = $1;
 ```
 
 ## Consequences
@@ -172,7 +203,7 @@ For reliable subscriptions, we use polling with checkpoints rather than LISTEN/N
 ```go
 func (s *Subscriber) Poll(ctx context.Context, fromPosition uint64) ([]StoredEvent, error) {
     return s.db.Query(ctx, `
-        SELECT * FROM mink_events
+        SELECT * FROM events
         WHERE global_position > $1
         ORDER BY global_position
         LIMIT 100

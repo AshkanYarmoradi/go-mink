@@ -34,7 +34,7 @@ Examples:
 	cmd.AddCommand(newMigrateStatusCommand())
 	cmd.AddCommand(newMigrateCreateCommand())
 
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 func newMigrateUpCommand() *cobra.Command {
@@ -75,50 +75,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				}
 			}
 
-			// Get pending migrations
-			pending, err := getPendingMigrations(ctx, env.Adapter, env.MigrationsDir)
-			if err != nil {
-				return err
-			}
-
-			if len(pending) == 0 {
-				fmt.Println(styles.FormatSuccess("Database is up to date"))
-				return nil
-			}
-
-			if steps > 0 && steps < len(pending) {
-				pending = pending[:steps]
-			}
-
-			fmt.Printf("\n%s Applying %d migration(s)...\n\n", styles.IconPending, len(pending))
-
-			for _, m := range pending {
-				fmt.Printf("  %s Applying %s... ", styles.IconPending, m.Name)
-
-				content, err := os.ReadFile(m.Path)
-				if err != nil {
-					fmt.Println(styles.ErrorStyle.Render("FAILED"))
-					return fmt.Errorf("failed to read migration: %w", err)
-				}
-
-				// Execute migration using adapter
-				if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
-					fmt.Println(styles.ErrorStyle.Render("FAILED"))
-					return fmt.Errorf("migration failed: %w", err)
-				}
-
-				// Record migration using adapter
-				if err := env.Adapter.RecordMigration(ctx, m.Name); err != nil {
-					fmt.Println(styles.WarningStyle.Render("WARNING"))
-					fmt.Printf("    %s\n", styles.FormatWarning("Migration applied but not recorded"))
-				} else {
-					fmt.Println(styles.SuccessStyle.Render("OK"))
-				}
-			}
-
-			fmt.Println()
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Applied %d migration(s)", len(pending))))
-			return nil
+			return runMigrateUp(ctx, env, steps)
 		},
 	}
 
@@ -126,6 +83,62 @@ By default, applies all pending migrations. Use --steps to limit.`,
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive elements (for scripting)")
 
 	return cmd
+}
+
+// runMigrateUp applies pending migrations from env.MigrationsDir using the
+// adapter. If steps > 0, at most that many migrations are applied. It is
+// separated from the cobra closure so the apply/record logic is unit-testable.
+//
+// A RecordMigration failure is fatal: the migration SQL was already executed,
+// so a failure to record leaves the recorded state inconsistent with the
+// database. Applying further migrations could re-run non-idempotent SQL on the
+// next invocation, so this returns an error and stops immediately.
+func runMigrateUp(ctx context.Context, env *MigrationEnv, steps int) error {
+	pending, err := getPendingMigrations(ctx, env.Adapter, env.MigrationsDir)
+	if err != nil {
+		return err
+	}
+
+	if len(pending) == 0 {
+		fmt.Println(styles.FormatSuccess("Database is up to date"))
+		return nil
+	}
+
+	if steps > 0 && steps < len(pending) {
+		pending = pending[:steps]
+	}
+
+	fmt.Printf("\n%s Applying %d migration(s)...\n\n", styles.IconPending, len(pending))
+
+	for _, m := range pending {
+		fmt.Printf("  %s Applying %s... ", styles.IconPending, m.Name)
+
+		content, err := os.ReadFile(m.Path)
+		if err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("failed to read migration: %w", err)
+		}
+
+		// Execute migration using adapter
+		if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("migration failed: %w", err)
+		}
+
+		// Record migration using adapter. A failure here is fatal (see the
+		// function doc): stop and surface the error so the operator knows the
+		// recorded state is inconsistent.
+		if err := env.Adapter.RecordMigration(ctx, m.Name); err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("migration %q applied but failed to record (recorded state is now inconsistent; "+
+				"reconcile the migrations table before retrying): %w", m.Name, err)
+		}
+		fmt.Println(styles.SuccessStyle.Render("OK"))
+	}
+
+	fmt.Println()
+	fmt.Println(styles.FormatSuccess(fmt.Sprintf("Applied %d migration(s)", len(pending))))
+	return nil
 }
 
 func newMigrateDownCommand() *cobra.Command {

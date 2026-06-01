@@ -470,7 +470,9 @@ func TestSagaStore_Save_NewSagaWithNonZeroVersion(t *testing.T) {
 	store := NewSagaStore()
 	ctx := context.Background()
 
-	// Trying to save a "new" saga with version > 0 should fail
+	// Reject-on-missing contract: saving a saga that does not exist with a
+	// non-zero version must be rejected with SagaNotFoundError (it is treated as
+	// an update of a saga that should already exist), not silently created.
 	state := &adapters.SagaState{
 		ID:        "saga-nonzero",
 		Type:      "Test",
@@ -480,8 +482,16 @@ func TestSagaStore_Save_NewSagaWithNonZeroVersion(t *testing.T) {
 
 	err := store.Save(ctx, state)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, adapters.ErrSagaNotFound)
+
+	// The rejected Save must not have created the saga, and must not have
+	// mutated the caller's version.
+	assert.Equal(t, int64(5), state.Version, "version must be untouched on rejected save")
+	assert.Equal(t, 0, store.Count(), "rejected save must not create the saga")
+
+	_, loadErr := store.Load(ctx, "saga-nonzero")
+	assert.ErrorIs(t, loadErr, adapters.ErrSagaNotFound)
 }
 
 func TestSagaStore_Save_ContextCanceled(t *testing.T) {

@@ -53,6 +53,10 @@ func NewIdempotencyStore(db *sql.DB, opts ...IdempotencyStoreOption) *Idempotenc
 }
 
 // NewIdempotencyStoreFromAdapter creates a new IdempotencyStore using an existing PostgresAdapter's connection.
+//
+// The returned store does not share the adapter's migrations: PostgresAdapter.Migrate
+// does NOT create the idempotency table. Callers must invoke Initialize(ctx) on the
+// returned IdempotencyStore to create its table before use.
 func NewIdempotencyStoreFromAdapter(adapter *PostgresAdapter, opts ...IdempotencyStoreOption) *IdempotencyStore {
 	// Start with adapter's schema as default
 	allOpts := []IdempotencyStoreOption{
@@ -169,6 +173,50 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 	}
 
 	return nil
+}
+
+// StoreIfAbsent atomically inserts the record only if no live (non-expired)
+// record exists for its key, overwriting an expired one. Returns true if stored.
+func (s *IdempotencyStore) StoreIfAbsent(ctx context.Context, record *adapters.IdempotencyRecord) (bool, error) {
+	tableQ := s.fullTableName()
+	query := `
+		INSERT INTO ` + tableQ + ` (key, command_type, error, success, processed_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (key) DO UPDATE SET
+			command_type = EXCLUDED.command_type,
+			aggregate_id = NULL,
+			version = NULL,
+			response = NULL,
+			error = EXCLUDED.error,
+			success = EXCLUDED.success,
+			processed_at = EXCLUDED.processed_at,
+			expires_at = EXCLUDED.expires_at
+		WHERE ` + tableQ + `.expires_at <= NOW()
+	`
+
+	var nullableError interface{}
+	if record.Error != "" {
+		nullableError = record.Error
+	}
+
+	result, err := s.db.ExecContext(ctx, query,
+		record.Key,
+		record.CommandType,
+		nullableError,
+		record.Success,
+		record.ProcessedAt,
+		record.ExpiresAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mink/postgres/idempotency: failed to store-if-absent: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mink/postgres/idempotency: failed to get rows affected: %w", err)
+	}
+
+	return affected > 0, nil
 }
 
 // Get retrieves an idempotency record by key.

@@ -181,6 +181,31 @@ func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, 
 	return count, nil
 }
 
+// ReclaimStale resets messages stuck in OutboxProcessing whose last attempt is
+// older than olderThan back to pending, recovering messages orphaned when a
+// processor crashes between claiming and marking a message.
+func (s *OutboxStore) ReclaimStale(ctx context.Context, olderThan time.Duration) (int64, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().Add(-olderThan)
+	var count int64
+	for _, msg := range s.messages {
+		if msg.Status == adapters.OutboxProcessing && msg.LastAttemptAt != nil && msg.LastAttemptAt.Before(cutoff) {
+			msg.Status = adapters.OutboxPending
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // MoveToDeadLetter transitions messages that exceeded per-message max_attempts or global maxAttempts to dead letter.
 func (s *OutboxStore) MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error) {
 	select {

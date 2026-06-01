@@ -14,6 +14,17 @@ import (
 	"go-mink.dev/adapters"
 )
 
+// kafkaWriter is the subset of the kafka-go *Writer API used by the publisher.
+// It exists as a seam so Publish/getWriter/Close can be unit-tested with a fake
+// writer without a real broker. The real *kafkago.Writer satisfies it.
+type kafkaWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
+	Close() error
+}
+
+// writerFactory creates a writer for the given topic.
+type writerFactory func(topic string) kafkaWriter
+
 // Publisher publishes outbox messages to Kafka topics.
 // Destination format: "kafka:topic-name"
 type Publisher struct {
@@ -22,7 +33,11 @@ type Publisher struct {
 	batchTimeout time.Duration
 	transport    kafkago.RoundTripper
 	mu           sync.RWMutex
-	writers      map[string]*kafkago.Writer
+	writers      map[string]kafkaWriter
+	// newWriter creates a writer for a topic. Defaults to building a real
+	// kafka-go writer; tests override it to inject a fake. Unexported so the
+	// public API stays backward compatible.
+	newWriter writerFactory
 }
 
 // Option configures a Kafka Publisher.
@@ -55,11 +70,27 @@ func New(opts ...Option) *Publisher {
 		brokers:      []string{"localhost:9092"},
 		balancer:     &kafkago.LeastBytes{},
 		batchTimeout: 10 * time.Millisecond,
-		writers:      make(map[string]*kafkago.Writer),
+		writers:      make(map[string]kafkaWriter),
 	}
 
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Default factory builds a real kafka-go writer. Set after applying options
+	// so it reads the final broker/balancer/transport configuration. Tests
+	// override p.newWriter to inject a fake writer.
+	if p.newWriter == nil {
+		p.newWriter = func(topic string) kafkaWriter {
+			return &kafkago.Writer{
+				Addr:                   kafkago.TCP(p.brokers...),
+				Topic:                  topic,
+				Balancer:               p.balancer,
+				BatchTimeout:           p.batchTimeout,
+				Transport:              p.transport,
+				AllowAutoTopicCreation: true,
+			}
+		}
 	}
 
 	return p
@@ -110,22 +141,25 @@ func (p *Publisher) Publish(ctx context.Context, messages []*adapters.OutboxMess
 	return errors.Join(errs...)
 }
 
-// Close closes all Kafka writers.
+// Close closes all Kafka writers. Every writer is closed regardless of
+// individual failures; errors are collected and returned as a joined error so a
+// single failing writer cannot leak the remaining ones.
 func (p *Publisher) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	var errs []error
 	for topic, w := range p.writers {
 		if err := w.Close(); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("kafka: failed to close writer for topic %s: %w", topic, err))
 		}
 		delete(p.writers, topic)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // getWriter returns or creates a Kafka writer for the given topic.
-func (p *Publisher) getWriter(topic string) *kafkago.Writer {
+func (p *Publisher) getWriter(topic string) kafkaWriter {
 	p.mu.RLock()
 	if w, ok := p.writers[topic]; ok {
 		p.mu.RUnlock()
@@ -141,15 +175,7 @@ func (p *Publisher) getWriter(topic string) *kafkago.Writer {
 		return w
 	}
 
-	w := &kafkago.Writer{
-		Addr:                   kafkago.TCP(p.brokers...),
-		Topic:                  topic,
-		Balancer:               p.balancer,
-		BatchTimeout:           p.batchTimeout,
-		Transport:              p.transport,
-		AllowAutoTopicCreation: true,
-	}
-
+	w := p.newWriter(topic)
 	p.writers[topic] = w
 	return w
 }

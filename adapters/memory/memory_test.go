@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,6 +244,138 @@ func TestMemoryAdapter_Append(t *testing.T) {
 	})
 }
 
+// scheduleFailingOutboxStore is an OutboxStore whose Schedule always fails,
+// used to verify AppendWithOutbox atomicity.
+type scheduleFailingOutboxStore struct {
+	*OutboxStore
+	err error
+}
+
+func (s *scheduleFailingOutboxStore) Schedule(ctx context.Context, messages []*adapters.OutboxMessage) error {
+	return s.err
+}
+
+func TestMemoryAdapter_AppendWithOutbox(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("appends events and schedules into the provided store", func(t *testing.T) {
+		adapter := NewAdapter()
+		store := NewOutboxStore()
+		events := []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{"orderId":"123"}`)},
+			{Type: "ItemAdded", Data: []byte(`{"sku":"A"}`)},
+		}
+		messages := []*adapters.OutboxMessage{
+			{AggregateID: "Order-123", EventType: "OrderCreated", Destination: "kafka:orders", Payload: []byte(`{"orderId":"123"}`)},
+		}
+
+		stored, err := adapter.AppendWithOutbox(ctx, "Order-123", events, mink.NoStream, store, messages)
+		require.NoError(t, err)
+		require.Len(t, stored, 2)
+
+		loaded, err := adapter.Load(ctx, "Order-123", 0)
+		require.NoError(t, err)
+		require.Len(t, loaded, 2)
+
+		// Messages landed in the caller-provided store (not a private one).
+		assert.Equal(t, 1, store.Count())
+		pending, err := store.FetchPending(ctx, 10)
+		require.NoError(t, err)
+		require.Len(t, pending, 1)
+		assert.Equal(t, "kafka:orders", pending[0].Destination)
+	})
+
+	t.Run("version conflict writes neither events nor messages", func(t *testing.T) {
+		adapter := NewAdapter()
+		store := NewOutboxStore()
+		_, err := adapter.Append(ctx, "Order-123", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, mink.NoStream)
+		require.NoError(t, err)
+
+		messages := []*adapters.OutboxMessage{{AggregateID: "Order-123", EventType: "ItemAdded", Destination: "kafka:orders", Payload: []byte(`{}`)}}
+		_, err = adapter.AppendWithOutbox(ctx, "Order-123", []adapters.EventRecord{{Type: "ItemAdded", Data: []byte(`{}`)}}, mink.NoStream, store, messages)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict))
+
+		loaded, _ := adapter.Load(ctx, "Order-123", 0)
+		assert.Len(t, loaded, 1)
+		assert.Equal(t, 0, store.Count())
+	})
+
+	t.Run("schedule failure writes neither events nor messages", func(t *testing.T) {
+		adapter := NewAdapter()
+		store := &scheduleFailingOutboxStore{OutboxStore: NewOutboxStore(), err: errors.New("schedule boom")}
+		events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+		messages := []*adapters.OutboxMessage{{AggregateID: "Order-1", EventType: "OrderCreated", Destination: "kafka:orders", Payload: []byte(`{}`)}}
+
+		_, err := adapter.AppendWithOutbox(ctx, "Order-1", events, mink.NoStream, store, messages)
+		require.Error(t, err)
+
+		// Schedule-first means a scheduling failure leaves no events behind.
+		loaded, _ := adapter.Load(ctx, "Order-1", 0)
+		assert.Empty(t, loaded, "no events should be appended when scheduling fails")
+		pos, _ := adapter.GetLastPosition(ctx)
+		assert.Equal(t, uint64(0), pos)
+	})
+
+	t.Run("no messages still appends events", func(t *testing.T) {
+		adapter := NewAdapter()
+		store := NewOutboxStore()
+		stored, err := adapter.AppendWithOutbox(ctx, "Order-1", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, mink.NoStream, store, nil)
+		require.NoError(t, err)
+		require.Len(t, stored, 1)
+		assert.Equal(t, 0, store.Count())
+	})
+}
+
+func TestMemoryAdapter_Migrator(t *testing.T) {
+	t.Run("Migrate is a no-op and succeeds", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		err := adapter.Migrate(ctx)
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("MigrationVersion returns 1 when usable", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		version, err := adapter.MigrationVersion(ctx)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, version)
+	})
+
+	t.Run("Migrate returns error on closed adapter", func(t *testing.T) {
+		adapter := NewAdapter()
+		_ = adapter.Close()
+
+		err := adapter.Migrate(context.Background())
+
+		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+	})
+
+	t.Run("MigrationVersion returns error on closed adapter", func(t *testing.T) {
+		adapter := NewAdapter()
+		_ = adapter.Close()
+
+		_, err := adapter.MigrationVersion(context.Background())
+
+		assert.ErrorIs(t, err, adapters.ErrAdapterClosed)
+	})
+
+	t.Run("Migrate respects context cancellation", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := adapter.Migrate(ctx)
+
+		assert.Error(t, err)
+	})
+}
+
 func TestMemoryAdapter_Load(t *testing.T) {
 	t.Run("load empty stream returns empty slice", func(t *testing.T) {
 		adapter := NewAdapter()
@@ -420,6 +553,36 @@ func TestMemoryAdapter_Snapshots(t *testing.T) {
 		assert.Equal(t, "Order-123", snapshot.StreamID)
 		assert.Equal(t, int64(5), snapshot.Version)
 		assert.Equal(t, data, snapshot.Data)
+	})
+
+	t.Run("stored snapshot is isolated from caller buffer mutation", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx := context.Background()
+
+		data := []byte(`{"state":"original"}`)
+		err := adapter.SaveSnapshot(ctx, "Order-123", 5, data)
+		require.NoError(t, err)
+
+		// Mutate the caller's buffer after saving. The stored snapshot must not
+		// change (SaveSnapshot copies the data).
+		for i := range data {
+			data[i] = 'X'
+		}
+
+		snapshot, err := adapter.LoadSnapshot(ctx, "Order-123")
+		require.NoError(t, err)
+		require.NotNil(t, snapshot)
+		assert.Equal(t, []byte(`{"state":"original"}`), snapshot.Data)
+
+		// Mutating a loaded snapshot's data must not affect a subsequent load
+		// (LoadSnapshot returns a copy).
+		for i := range snapshot.Data {
+			snapshot.Data[i] = 'Y'
+		}
+		reloaded, err := adapter.LoadSnapshot(ctx, "Order-123")
+		require.NoError(t, err)
+		require.NotNil(t, reloaded)
+		assert.Equal(t, []byte(`{"state":"original"}`), reloaded.Data)
 	})
 
 	t.Run("load non-existent snapshot", func(t *testing.T) {
@@ -632,6 +795,94 @@ func TestMemoryAdapter_Subscriptions(t *testing.T) {
 
 		assert.Len(t, received, 2)
 	})
+
+	t.Run("dropped live event invokes OnError", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var mu sync.Mutex
+		var dropErrs []error
+		onError := func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			dropErrs = append(dropErrs, err)
+		}
+
+		// Buffer of 1 so the second un-drained live event must be dropped.
+		ch, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{
+			BufferSize: 1,
+			OnError:    onError,
+		})
+		require.NoError(t, err)
+
+		// First append fills the single-slot buffer. notifySubscribers runs
+		// synchronously under Append, so by the time these calls return the
+		// delivery outcome is already decided.
+		_, err = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.NoStream)
+		require.NoError(t, err)
+
+		// Second append cannot be buffered (channel full, not drained) and is
+		// dropped, which must invoke OnError.
+		_, err = adapter.Append(ctx, "Order-1", []adapters.EventRecord{
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, 1)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, dropErrs, 1, "expected exactly one dropped-event notification")
+		var dropErr *SubscriptionDropError
+		require.ErrorAs(t, dropErrs[0], &dropErr)
+		assert.Equal(t, "Order-1", dropErr.StreamID)
+		assert.Equal(t, uint64(2), dropErr.GlobalPosition)
+
+		// The buffered (first) event is still deliverable.
+		select {
+		case event := <-ch:
+			assert.Equal(t, "OrderCreated", event.Type)
+		default:
+			t.Fatal("expected the first event to be buffered")
+		}
+	})
+
+	t.Run("OnError may re-enter the adapter without deadlocking", func(t *testing.T) {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var reentryPos uint64
+		var called int32
+		onError := func(err error) {
+			// Re-enter the adapter (the docs suggest checkpoint catch-up via
+			// LoadFromPosition / GetLastPosition). This must not deadlock.
+			pos, _ := adapter.GetLastPosition(context.Background())
+			atomic.StoreUint64(&reentryPos, pos)
+			atomic.AddInt32(&called, 1)
+		}
+
+		_, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{BufferSize: 1, OnError: onError})
+		require.NoError(t, err)
+
+		// Run the appends (which trigger the drop + re-entrant OnError) on a
+		// watched goroutine so a deadlock surfaces as a timeout, not a hang.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}, mink.NoStream)
+			_, _ = adapter.Append(ctx, "Order-1", []adapters.EventRecord{{Type: "ItemAdded", Data: []byte(`{}`)}}, 1)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("deadlock: Append did not return after a re-entrant OnError callback")
+		}
+		assert.Equal(t, int32(1), atomic.LoadInt32(&called))
+		assert.Equal(t, uint64(2), atomic.LoadUint64(&reentryPos), "re-entrant GetLastPosition should see both appends")
+	})
 }
 
 func TestExtractCategory(t *testing.T) {
@@ -796,6 +1047,73 @@ func TestMemoryAdapter_SubscribeCategory_ContextCancellation(t *testing.T) {
 
 	_, err := adapter.SubscribeCategory(ctx, "Order", 0)
 	assert.Error(t, err)
+}
+
+func TestMemoryAdapter_SubscribeAll_CloseClosesChannel(t *testing.T) {
+	adapter := NewAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := adapter.SubscribeAll(ctx, 0)
+	require.NoError(t, err)
+
+	// Closing the adapter must close the subscriber channel exactly once,
+	// without panicking on a double close.
+	require.NotPanics(t, func() {
+		err := adapter.Close()
+		require.NoError(t, err)
+	})
+
+	// Draining the channel must observe it closed (receive returns the zero
+	// value with ok == false). A second Close must also be safe.
+	select {
+	case _, ok := <-ch:
+		assert.False(t, ok, "subscriber channel should be closed after Close")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the subscriber channel to close")
+	}
+
+	// Cancelling the context now races removeSubscriber against the already
+	// completed Close; this must not double-close the channel or panic.
+	require.NotPanics(t, func() {
+		cancel()
+		// Give the cancellation goroutine a chance to run.
+		time.Sleep(20 * time.Millisecond)
+	})
+}
+
+func TestMemoryAdapter_SubscribeAll_ContextCancelledDuringReplay(t *testing.T) {
+	adapter := NewAdapter()
+	bg := context.Background()
+
+	// Buffer many more historical events than the subscription buffer so the
+	// historical replay loop in SubscribeAll cannot drain into the channel and
+	// must observe the cancelled context.
+	for i := 0; i < 50; i++ {
+		_, err := adapter.Append(bg, "Order-1", []adapters.EventRecord{
+			{Type: "OrderCreated", Data: []byte(`{}`)},
+		}, mink.AnyVersion)
+		require.NoError(t, err)
+	}
+
+	ctx, cancel := context.WithCancel(bg)
+	cancel() // cancel before subscribing so the replay loop returns cleanly
+
+	ch, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{BufferSize: 1})
+
+	// Clean return: a context error and no channel handed back.
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, ch)
+
+	// The aborted subscription must not have been registered as a live
+	// subscriber, so a subsequent append delivers to no one and does not panic.
+	require.NotPanics(t, func() {
+		_, appendErr := adapter.Append(bg, "Order-1", []adapters.EventRecord{
+			{Type: "ItemAdded", Data: []byte(`{}`)},
+		}, mink.AnyVersion)
+		require.NoError(t, appendErr)
+	})
 }
 
 func TestMemoryAdapter_LoadFromPosition(t *testing.T) {
@@ -1037,11 +1355,6 @@ func TestMemoryAdapter_ClosedAdapterErrors(t *testing.T) {
 // ============================================================================
 
 func TestMemoryAdapter_GetAppliedMigrations(t *testing.T) {
-	// Clean up migrations between tests
-	memoryMigrationsMu.Lock()
-	memoryMigrations = make(map[string]*migrationRecord)
-	memoryMigrationsMu.Unlock()
-
 	t.Run("returns empty when no migrations", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1066,11 +1379,6 @@ func TestMemoryAdapter_GetAppliedMigrations(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, migrations, 3)
 		assert.Equal(t, []string{"001_migration", "002_migration", "003_migration"}, migrations)
-
-		// Clean up
-		memoryMigrationsMu.Lock()
-		memoryMigrations = make(map[string]*migrationRecord)
-		memoryMigrationsMu.Unlock()
 	})
 
 	t.Run("respects context cancellation", func(t *testing.T) {
@@ -1085,11 +1393,6 @@ func TestMemoryAdapter_GetAppliedMigrations(t *testing.T) {
 }
 
 func TestMemoryAdapter_RecordMigration(t *testing.T) {
-	// Clean up migrations between tests
-	memoryMigrationsMu.Lock()
-	memoryMigrations = make(map[string]*migrationRecord)
-	memoryMigrationsMu.Unlock()
-
 	t.Run("records migration successfully", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1102,11 +1405,6 @@ func TestMemoryAdapter_RecordMigration(t *testing.T) {
 		migrations, err := adapter.GetAppliedMigrations(ctx)
 		require.NoError(t, err)
 		assert.Contains(t, migrations, "001_initial")
-
-		// Clean up
-		memoryMigrationsMu.Lock()
-		memoryMigrations = make(map[string]*migrationRecord)
-		memoryMigrationsMu.Unlock()
 	})
 
 	t.Run("respects context cancellation", func(t *testing.T) {
@@ -1121,11 +1419,6 @@ func TestMemoryAdapter_RecordMigration(t *testing.T) {
 }
 
 func TestMemoryAdapter_RemoveMigrationRecord(t *testing.T) {
-	// Clean up migrations between tests
-	memoryMigrationsMu.Lock()
-	memoryMigrations = make(map[string]*migrationRecord)
-	memoryMigrationsMu.Unlock()
-
 	t.Run("removes existing migration", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1226,11 +1519,6 @@ func TestMemoryAdapter_CheckSchema(t *testing.T) {
 }
 
 func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
-	// Clean up projections between tests
-	memoryProjectionsMu.Lock()
-	memoryProjections = make(map[string]*projectionInfo)
-	memoryProjectionsMu.Unlock()
-
 	t.Run("returns health with no projections", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1247,14 +1535,7 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 		ctx := context.Background()
 
 		// Register a projection that's up to date
-		memoryProjectionsMu.Lock()
-		memoryProjections["test-projection"] = &projectionInfo{
-			name:      "test-projection",
-			position:  0,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "test-projection", 0, "running")
 
 		result, err := adapter.GetProjectionHealth(ctx)
 
@@ -1262,11 +1543,6 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 		assert.Equal(t, int64(1), result.TotalProjections)
 		assert.Equal(t, int64(0), result.ProjectionsBehind)
 		assert.Contains(t, result.Message, "all up to date")
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
 
 	t.Run("returns health with projections behind", func(t *testing.T) {
@@ -1279,14 +1555,7 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 		}, mink.NoStream)
 
 		// Register a projection that's behind
-		memoryProjectionsMu.Lock()
-		memoryProjections["test-projection"] = &projectionInfo{
-			name:      "test-projection",
-			position:  0,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "test-projection", 0, "running")
 
 		result, err := adapter.GetProjectionHealth(ctx)
 
@@ -1294,12 +1563,21 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 		assert.Equal(t, int64(1), result.TotalProjections)
 		assert.Equal(t, int64(1), result.ProjectionsBehind)
 		assert.Contains(t, result.Message, "behind")
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
+}
+
+// registerTestProjection is a test helper that registers a projection directly
+// in the adapter's per-instance projection map (there is no public API to
+// register a projection in the memory adapter).
+func registerTestProjection(a *MemoryAdapter, name string, position int64, status string) {
+	a.projectionsMu.Lock()
+	defer a.projectionsMu.Unlock()
+	a.projections[name] = &projectionInfo{
+		name:      name,
+		position:  position,
+		status:    status,
+		updatedAt: time.Now(),
+	}
 }
 
 // ============================================================================
@@ -1307,11 +1585,6 @@ func TestMemoryAdapter_GetProjectionHealth(t *testing.T) {
 // ============================================================================
 
 func TestMemoryAdapter_ListProjections(t *testing.T) {
-	// Clean up projections between tests
-	memoryProjectionsMu.Lock()
-	memoryProjections = make(map[string]*projectionInfo)
-	memoryProjectionsMu.Unlock()
-
 	t.Run("returns empty when no projections", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1327,39 +1600,17 @@ func TestMemoryAdapter_ListProjections(t *testing.T) {
 		ctx := context.Background()
 
 		// Register projections
-		memoryProjectionsMu.Lock()
-		memoryProjections["projection-1"] = &projectionInfo{
-			name:      "projection-1",
-			position:  10,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjections["projection-2"] = &projectionInfo{
-			name:      "projection-2",
-			position:  5,
-			status:    "stopped",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "projection-1", 10, "running")
+		registerTestProjection(adapter, "projection-2", 5, "stopped")
 
 		projections, err := adapter.ListProjections(ctx)
 
 		require.NoError(t, err)
 		assert.Len(t, projections, 2)
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
 }
 
 func TestMemoryAdapter_GetProjection(t *testing.T) {
-	// Clean up projections between tests
-	memoryProjectionsMu.Lock()
-	memoryProjections = make(map[string]*projectionInfo)
-	memoryProjectionsMu.Unlock()
-
 	t.Run("returns nil for non-existent projection", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1375,14 +1626,7 @@ func TestMemoryAdapter_GetProjection(t *testing.T) {
 		ctx := context.Background()
 
 		// Register projection
-		memoryProjectionsMu.Lock()
-		memoryProjections["test-projection"] = &projectionInfo{
-			name:      "test-projection",
-			position:  42,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "test-projection", 42, "running")
 
 		projection, err := adapter.GetProjection(ctx, "test-projection")
 
@@ -1391,33 +1635,16 @@ func TestMemoryAdapter_GetProjection(t *testing.T) {
 		assert.Equal(t, "test-projection", projection.Name)
 		assert.Equal(t, int64(42), projection.Position)
 		assert.Equal(t, "running", projection.Status)
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
 }
 
 func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
-	// Clean up projections between tests
-	memoryProjectionsMu.Lock()
-	memoryProjections = make(map[string]*projectionInfo)
-	memoryProjectionsMu.Unlock()
-
 	t.Run("sets status for existing projection", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
 
 		// Register projection
-		memoryProjectionsMu.Lock()
-		memoryProjections["test-projection"] = &projectionInfo{
-			name:      "test-projection",
-			position:  0,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "test-projection", 0, "running")
 
 		err := adapter.SetProjectionStatus(ctx, "test-projection", "stopped")
 
@@ -1426,11 +1653,6 @@ func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
 		// Verify status changed
 		projection, _ := adapter.GetProjection(ctx, "test-projection")
 		assert.Equal(t, "stopped", projection.Status)
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
 
 	t.Run("returns error for non-existent projection", func(t *testing.T) {
@@ -1444,11 +1666,6 @@ func TestMemoryAdapter_SetProjectionStatus(t *testing.T) {
 }
 
 func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
-	// Clean up projections between tests
-	memoryProjectionsMu.Lock()
-	memoryProjections = make(map[string]*projectionInfo)
-	memoryProjectionsMu.Unlock()
-
 	t.Run("resets checkpoint for projection", func(t *testing.T) {
 		adapter := NewAdapter()
 		ctx := context.Background()
@@ -1457,14 +1674,7 @@ func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
 		_ = adapter.SetCheckpoint(ctx, "test-projection", 100)
 
 		// Register projection
-		memoryProjectionsMu.Lock()
-		memoryProjections["test-projection"] = &projectionInfo{
-			name:      "test-projection",
-			position:  100,
-			status:    "running",
-			updatedAt: time.Now(),
-		}
-		memoryProjectionsMu.Unlock()
+		registerTestProjection(adapter, "test-projection", 100, "running")
 
 		err := adapter.ResetProjectionCheckpoint(ctx, "test-projection")
 
@@ -1473,11 +1683,6 @@ func TestMemoryAdapter_ResetProjectionCheckpoint(t *testing.T) {
 		// Verify checkpoint reset
 		checkpoint, _ := adapter.GetCheckpoint(ctx, "test-projection")
 		assert.Equal(t, uint64(0), checkpoint)
-
-		// Clean up
-		memoryProjectionsMu.Lock()
-		memoryProjections = make(map[string]*projectionInfo)
-		memoryProjectionsMu.Unlock()
 	})
 }
 

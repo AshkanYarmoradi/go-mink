@@ -253,7 +253,7 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
-		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+		if err := es.store.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
 
@@ -267,9 +267,10 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 	// Build outbox messages with Transform/Filter applied
 	prelimMessages := es.buildOutboxMessagesFromRecords(streamID, records)
 
-	// Try atomic append+outbox if adapter supports it
+	// Try atomic append+outbox if adapter supports it. The adapter schedules into
+	// our configured outbox store, so the atomic path and es.outbox stay consistent.
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(prelimMessages) > 0 {
-		_, err := appender.AppendWithOutbox(ctx, streamID, records, config.expectedVersion, prelimMessages)
+		_, err := appender.AppendWithOutbox(ctx, streamID, records, config.expectedVersion, es.outbox, prelimMessages)
 		return err
 	}
 
@@ -310,7 +311,7 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
 		}
 
-		if err := es.store.prepareEventData(ctx, &eventData); err != nil {
+		if err := es.store.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
 
@@ -326,9 +327,10 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 	// Build outbox messages with Transform/Filter applied
 	outboxMessages := es.buildOutboxMessagesFromRecords(streamID, records)
 
-	// Try atomic append+outbox
+	// Try atomic append+outbox. The adapter schedules into our configured outbox
+	// store, so the atomic path and es.outbox stay consistent.
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(outboxMessages) > 0 {
-		_, err := appender.AppendWithOutbox(ctx, streamID, records, expectedVersion, outboxMessages)
+		_, err := appender.AppendWithOutbox(ctx, streamID, records, expectedVersion, es.outbox, outboxMessages)
 		if err != nil {
 			return err
 		}

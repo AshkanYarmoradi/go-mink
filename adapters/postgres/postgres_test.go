@@ -1687,3 +1687,115 @@ func TestSubscriptionConfig(t *testing.T) {
 		// No assertion needed - just verify it doesn't panic
 	})
 }
+
+// TestPostgresAdapter_AppendWithOutbox_Atomicity verifies that when the outbox
+// schedule fails mid-transaction, the events inserted earlier in the same
+// transaction are rolled back. Integration test (skips without TEST_DATABASE_URL).
+func TestPostgresAdapter_AppendWithOutbox_Atomicity(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+
+	// The default-schema outbox table must exist for ScheduleInTx to reach the
+	// INSERT (and then fail on the invalid payload rather than a missing table).
+	outbox := NewOutboxStoreFromAdapter(adapter)
+	require.NoError(t, outbox.Initialize(ctx))
+
+	streamID := fmt.Sprintf("Order-atomic-%d", time.Now().UnixNano())
+	events := []adapters.EventRecord{
+		{Type: "OrderCreated", Data: []byte(`{"orderId":"atomic"}`)},
+	}
+
+	// Payload is NOT valid JSON; the outbox `payload JSONB NOT NULL` column will
+	// reject it, causing ScheduleInTx to fail after the events were inserted.
+	badMessages := []*adapters.OutboxMessage{
+		{
+			AggregateID: "atomic",
+			EventType:   "OrderCreated",
+			Destination: "webhook:https://example.test",
+			Payload:     []byte("this-is-not-json"),
+		},
+	}
+
+	_, err := adapter.AppendWithOutbox(ctx, streamID, events, mink.NoStream, outbox, badMessages)
+	require.Error(t, err, "AppendWithOutbox should fail when the outbox insert fails")
+
+	// The whole transaction must have rolled back: the stream must not exist and
+	// no events must be readable.
+	loaded, loadErr := adapter.Load(ctx, streamID, 0)
+	require.NoError(t, loadErr)
+	assert.Empty(t, loaded, "events must not be persisted when the outbox insert fails")
+
+	_, infoErr := adapter.GetStreamInfo(ctx, streamID)
+	assert.True(t, errors.Is(infoErr, adapters.ErrStreamNotFound),
+		"stream must not exist after a rolled-back AppendWithOutbox")
+
+	// Also confirm GetLastPosition didn't advance for this stream's events by
+	// verifying a fresh successful append starts cleanly at version 1.
+	good := []*adapters.OutboxMessage{
+		{
+			AggregateID: "atomic",
+			EventType:   "OrderCreated",
+			Destination: "webhook:https://example.test",
+			Payload:     []byte(`{"ok":true}`),
+		},
+	}
+	stored, err := adapter.AppendWithOutbox(ctx, streamID, events, mink.NoStream, outbox, good)
+	require.NoError(t, err, "a subsequent valid AppendWithOutbox should succeed")
+	require.Len(t, stored, 1)
+	assert.Equal(t, int64(1), stored[0].Version,
+		"version should start at 1, proving the earlier failed attempt left no trace")
+}
+
+// TestPostgresAdapter_Append_UniqueViolationMapsToConflict verifies that a unique
+// violation on the event insert path surfaces as ErrConcurrencyConflict even when
+// the FOR UPDATE pre-check is bypassed. We simulate a lost race by inserting an
+// (stream_id, version) row directly, then asking the adapter to append the same
+// version. Integration test (skips without TEST_DATABASE_URL).
+func TestPostgresAdapter_Append_UniqueViolationMapsToConflict(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+	schemaQ := adapter.schemaQ
+
+	streamID := fmt.Sprintf("Order-race-%d", time.Now().UnixNano())
+
+	// Create the stream row at version 0 but pre-insert an event at version 1
+	// WITHOUT bumping streams.version, so the adapter's FOR UPDATE pre-check
+	// still believes the next version is 1 and proceeds to INSERT.
+	_, err := adapter.db.ExecContext(ctx,
+		`INSERT INTO `+schemaQ+`.streams (stream_id, category, version) VALUES ($1, $2, 0)`,
+		streamID, adapters.ExtractCategory(streamID))
+	require.NoError(t, err)
+
+	_, err = adapter.db.ExecContext(ctx,
+		`INSERT INTO `+schemaQ+`.events (stream_id, version, event_type, data, metadata)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		streamID, int64(1), "Seed", []byte(`{}`), []byte(`{}`))
+	require.NoError(t, err)
+
+	// Append expecting version 0 (matches streams.version), which will attempt
+	// to write version 1 and collide with the seeded event row.
+	events := []adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{}`)}}
+	_, err = adapter.Append(ctx, streamID, events, 0)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict),
+		"a unique violation on the event insert must map to ErrConcurrencyConflict, got: %v", err)
+}
+
+// TestPostgresAdapter_GetEventStoreStats_PropagatesError verifies that
+// GetEventStoreStats propagates query errors instead of returning zero-valued
+// stats. Integration test (skips without TEST_DATABASE_URL).
+func TestPostgresAdapter_GetEventStoreStats_PropagatesError(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+
+	// Drop the events table so the first COUNT(*) query fails. GetEventStoreStats
+	// must now return a non-nil error rather than zero-valued stats.
+	eventsTable := quoteQualifiedTable(adapter.schema, "events")
+	_, err := adapter.db.ExecContext(ctx, "DROP TABLE "+eventsTable+" CASCADE")
+	require.NoError(t, err)
+
+	stats, err := adapter.GetEventStoreStats(ctx)
+	require.Error(t, err, "GetEventStoreStats must surface the query failure")
+	assert.Nil(t, stats, "stats must be nil when an underlying query fails")
+}

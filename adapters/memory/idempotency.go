@@ -130,6 +130,20 @@ func (s *IdempotencyStore) Store(ctx context.Context, record *adapters.Idempoten
 	return nil
 }
 
+// StoreIfAbsent atomically stores the record only if no live (non-expired)
+// record exists for its key. An expired record is treated as absent and
+// overwritten. Returns true if the record was stored.
+func (s *IdempotencyStore) StoreIfAbsent(ctx context.Context, record *adapters.IdempotencyRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing, ok := s.records[record.Key]; ok && !existing.IsExpired() {
+		return false, nil
+	}
+	s.records[record.Key] = adapters.CopyIdempotencyRecord(record)
+	return true, nil
+}
+
 // Get retrieves an idempotency record by key.
 // Returns nil if the record doesn't exist or is expired.
 func (s *IdempotencyStore) Get(ctx context.Context, key string) (*adapters.IdempotencyRecord, error) {

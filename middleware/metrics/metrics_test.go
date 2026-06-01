@@ -130,6 +130,32 @@ func TestMetrics_CommandMiddleware(t *testing.T) {
 		assert.Equal(t, float64(1), count)
 	})
 
+	t.Run("counts panicking command as error and leaves no in-flight leak", func(t *testing.T) {
+		m := New(WithNamespace("cmd_panic"), WithMetricsServiceName("test"))
+		registry := prometheus.NewRegistry()
+		_ = m.Register(registry)
+
+		middleware := m.CommandMiddleware()
+		cmd := &minktest.TestCommand{ID: "test-123"}
+
+		handler := middleware(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+			panic("boom")
+		})
+
+		assert.Panics(t, func() {
+			_, _ = handler(context.Background(), cmd)
+		})
+
+		// The panicking command must be visible in the error counters.
+		errCount := testutil.ToFloat64(m.commandsTotal.WithLabelValues("test", "TestCommand", StatusError))
+		assert.Equal(t, float64(1), errCount)
+		panicErrors := testutil.ToFloat64(m.errorsTotal.WithLabelValues("test", "panic"))
+		assert.Equal(t, float64(1), panicErrors)
+		// In-flight gauge must have been decremented despite the panic.
+		inFlight := testutil.ToFloat64(m.commandsInFlight.WithLabelValues("test", "TestCommand"))
+		assert.Equal(t, float64(0), inFlight)
+	})
+
 	t.Run("tracks in-flight commands", func(t *testing.T) {
 		m := New(WithNamespace("cmd_inflight"), WithMetricsServiceName("test"))
 		registry := prometheus.NewRegistry()

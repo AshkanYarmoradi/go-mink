@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -1454,4 +1455,96 @@ func BenchmarkPostgresRepository_Get(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = repo.Get(ctx, "bench-order-1")
 	}
+}
+
+// simpleReadModel is a minimal read model used by the constructor/error-mapping
+// repository tests below.
+type simpleReadModel struct {
+	ID   string `mink:"id,pk"`
+	Name string `mink:"name"`
+}
+
+// TestNewPostgresRepositoryContext verifies that NewPostgresRepositoryContext
+// threads its context into auto-migration: a cancelled context must abort the
+// blocking DDL rather than ignore the cancellation. Integration test (skips
+// without TEST_DATABASE_URL).
+func TestNewPostgresRepositoryContext(t *testing.T) {
+	db := getTestDBWithCleanup(t)
+	schema := newTestSchema()
+	t.Cleanup(func() { cleanupSchema(t, db, schema) })
+
+	t.Run("succeeds with a live context and auto-migrate", func(t *testing.T) {
+		repo, err := NewPostgresRepositoryContext[simpleReadModel](
+			context.Background(), db,
+			WithReadModelSchema(schema),
+			WithTableName("rm_ctx_ok"),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, repo)
+
+		// Table should have been created by the migration.
+		var exists bool
+		require.NoError(t, db.QueryRow(`
+			SELECT EXISTS (
+				SELECT FROM information_schema.tables
+				WHERE table_schema = $1 AND table_name = $2
+			)`, schema, "rm_ctx_ok").Scan(&exists))
+		assert.True(t, exists)
+	})
+
+	t.Run("cancelled context aborts auto-migration", func(t *testing.T) {
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel before the migration runs
+
+		_, err := NewPostgresRepositoryContext[simpleReadModel](
+			cancelledCtx, db,
+			WithReadModelSchema(schema),
+			WithTableName("rm_ctx_cancelled"),
+		)
+		require.Error(t, err, "a cancelled context must cause migration to fail")
+		assert.True(t, errors.Is(err, context.Canceled),
+			"error should wrap context.Canceled, got: %v", err)
+	})
+
+	t.Run("auto-migrate disabled ignores context", func(t *testing.T) {
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		// With auto-migrate off, the cancelled context is never used, so
+		// construction must still succeed.
+		repo, err := NewPostgresRepositoryContext[simpleReadModel](
+			cancelledCtx, db,
+			WithReadModelSchema(schema),
+			WithTableName("rm_ctx_nomigrate"),
+			WithAutoMigrate(false),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, repo)
+	})
+}
+
+// TestPostgresRepository_Insert_DuplicateMapsToAlreadyExists verifies that a
+// read-model Insert maps a unique violation (SQLState 23505) to ErrAlreadyExists
+// rather than a raw driver error. Integration test (skips without TEST_DATABASE_URL).
+func TestPostgresRepository_Insert_DuplicateMapsToAlreadyExists(t *testing.T) {
+	db := getTestDBWithCleanup(t)
+	schema := newTestSchema()
+	t.Cleanup(func() { cleanupSchema(t, db, schema) })
+
+	repo, err := NewPostgresRepository[simpleReadModel](db,
+		WithReadModelSchema(schema),
+		WithTableName("rm_dup"),
+	)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	model := &simpleReadModel{ID: "dup-1", Name: "first"}
+	require.NoError(t, repo.Insert(ctx, model))
+
+	// Second insert with the same PK must surface ErrAlreadyExists (via SQLState
+	// 23505), not a raw driver error.
+	err = repo.Insert(ctx, &simpleReadModel{ID: "dup-1", Name: "second"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mink.ErrAlreadyExists),
+		"duplicate insert must map to mink.ErrAlreadyExists, got: %v", err)
 }

@@ -439,6 +439,36 @@ func TestSagaStateMachineFixture_ExpectTransition(t *testing.T) {
 	})
 }
 
+func TestSagaStateMachineFixture_Run(t *testing.T) {
+	t.Run("passes when the saga follows the expected transitions", func(t *testing.T) {
+		saga := newTestOrderFulfillmentSaga("saga-123")
+		TestSagaStateMachine(t, saga).
+			ExpectTransition(SagaStateNotStarted, SagaStateInProgress, "TestOrderPlaced", "TestRequestPayment").
+			ExpectTransition(SagaStateInProgress, SagaStateCompleted, "TestShipmentScheduled", "").
+			Run(context.Background())
+	})
+
+	t.Run("fails when the resulting state does not match", func(t *testing.T) {
+		mt := runWithMockT(func(m *mockT) {
+			saga := newTestOrderFulfillmentSaga("saga-123")
+			TestSagaStateMachine(m, saga).
+				ExpectTransition(SagaStateNotStarted, SagaStateCompleted, "TestOrderPlaced", "TestRequestPayment").
+				Run(context.Background())
+		})
+		assert.True(t, mt.failed, "Run must fail when the saga lands in a different state")
+	})
+
+	t.Run("fails when the expected command is not emitted", func(t *testing.T) {
+		mt := runWithMockT(func(m *mockT) {
+			saga := newTestOrderFulfillmentSaga("saga-123")
+			TestSagaStateMachine(m, saga).
+				ExpectTransition(SagaStateNotStarted, SagaStateInProgress, "TestOrderPlaced", "TestCancelOrder").
+				Run(context.Background())
+		})
+		assert.True(t, mt.failed, "Run must fail when the expected command is not emitted")
+	})
+}
+
 // =============================================================================
 // Compensation Fixture Tests
 // =============================================================================

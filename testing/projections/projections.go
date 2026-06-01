@@ -6,6 +6,7 @@ package projections
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -27,6 +28,10 @@ type ProjectionTestFixture[T any] struct {
 	adapter    *memory.MemoryAdapter
 	events     []mink.StoredEvent
 	position   uint64
+	// streamVersions tracks the last assigned version per stream so that
+	// versions are monotonic within a stream across multiple GivenEvents /
+	// GivenDomainEvents calls, mirroring how the event store assigns them.
+	streamVersions map[string]int64
 }
 
 // TestProjection creates a new projection test fixture.
@@ -34,14 +39,25 @@ func TestProjection[T any](t TB, projection mink.Projection) *ProjectionTestFixt
 	t.Helper()
 	adapter := memory.NewAdapter()
 	return &ProjectionTestFixture[T]{
-		t:          t,
-		ctx:        context.Background(),
-		projection: projection,
-		repo:       mink.NewInMemoryRepository[T](nil),
-		store:      mink.New(adapter),
-		adapter:    adapter,
-		events:     make([]mink.StoredEvent, 0),
+		t:              t,
+		ctx:            context.Background(),
+		projection:     projection,
+		repo:           mink.NewInMemoryRepository[T](nil),
+		store:          mink.New(adapter),
+		adapter:        adapter,
+		events:         make([]mink.StoredEvent, 0),
+		streamVersions: make(map[string]int64),
 	}
+}
+
+// nextVersion returns the next monotonic version for the given stream ID,
+// advancing the per-stream counter.
+func (f *ProjectionTestFixture[T]) nextVersion(streamID string) int64 {
+	if f.streamVersions == nil {
+		f.streamVersions = make(map[string]int64)
+	}
+	f.streamVersions[streamID]++
+	return f.streamVersions[streamID]
 }
 
 // WithContext sets a custom context.
@@ -63,6 +79,16 @@ func (f *ProjectionTestFixture[T]) GivenEvents(events ...mink.StoredEvent) *Proj
 	for _, event := range events {
 		f.position++
 		event.GlobalPosition = f.position
+		// Default the version when the caller left it at zero, assigning a
+		// monotonic per-stream version so version-sensitive projections see
+		// realistic values. An explicitly-set version is respected (and still
+		// advances the stream's counter so later auto-assigned versions follow
+		// it).
+		if event.Version == 0 {
+			event.Version = f.nextVersion(event.StreamID)
+		} else if event.Version > f.streamVersions[event.StreamID] {
+			f.streamVersions[event.StreamID] = event.Version
+		}
 		if event.Timestamp.IsZero() {
 			event.Timestamp = time.Now()
 		}
@@ -82,7 +108,7 @@ func (f *ProjectionTestFixture[T]) GivenEvents(events ...mink.StoredEvent) *Proj
 func (f *ProjectionTestFixture[T]) GivenDomainEvents(streamID string, domainEvents ...interface{}) *ProjectionTestFixture[T] {
 	f.t.Helper()
 
-	for i, event := range domainEvents {
+	for _, event := range domainEvents {
 		eventType := reflect.TypeOf(event).Name()
 		data, err := json.Marshal(event)
 		if err != nil {
@@ -91,11 +117,14 @@ func (f *ProjectionTestFixture[T]) GivenDomainEvents(streamID string, domainEven
 
 		f.position++
 		storedEvent := mink.StoredEvent{
-			ID:             f.generateID(),
-			StreamID:       streamID,
-			Type:           eventType,
-			Data:           data,
-			Version:        int64(i + 1),
+			ID:       f.generateID(),
+			StreamID: streamID,
+			Type:     eventType,
+			Data:     data,
+			// Use a per-stream monotonic version rather than the loop index so
+			// versions do not collide across multiple GivenDomainEvents calls or
+			// between different streams.
+			Version:        f.nextVersion(streamID),
 			GlobalPosition: f.position,
 			Timestamp:      time.Now(),
 		}
@@ -201,7 +230,9 @@ func (f *ProjectionTestFixture[T]) Events() []mink.StoredEvent {
 }
 
 func (f *ProjectionTestFixture[T]) generateID() string {
-	return "evt-" + time.Now().Format("20060102150405.000000000")
+	// Use the monotonic position counter so events created in the same call get
+	// distinct IDs (time-based IDs collide at sub-microsecond resolution).
+	return fmt.Sprintf("evt-%d", f.position)
 }
 
 // =============================================================================

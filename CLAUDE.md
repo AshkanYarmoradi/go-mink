@@ -232,17 +232,34 @@ First stable release. All core features are complete.
 
 ## PostgreSQL Schema
 
-Events table (auto-created by adapter):
+The adapter auto-creates a **two-table** core schema (`streams` + `events`),
+plus `snapshots` and `checkpoints`. Table names default to `streams`/`events`
+but are configurable. The `events` table's primary key is `global_position`
+(`BIGSERIAL`), which also provides the total global ordering; `(stream_id,
+version)` is the unique optimistic-concurrency constraint. See
+`adapters/postgres/postgres.go` (`eventStoreSchemaStatements`) for the source of
+truth. Outbox, idempotency, and saga tables are created separately by their
+sub-stores' `Initialize`.
+
 ```sql
-CREATE TABLE mink_events (
-    id UUID PRIMARY KEY,
-    stream_id VARCHAR(255) NOT NULL,
-    version BIGINT NOT NULL,
-    type VARCHAR(255) NOT NULL,
-    data JSONB NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    global_position BIGSERIAL,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
+CREATE TABLE streams (
+    id              BIGSERIAL PRIMARY KEY,
+    stream_id       VARCHAR(500) NOT NULL UNIQUE,
+    category        VARCHAR(250) NOT NULL,
+    version         BIGINT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE events (
+    global_position BIGSERIAL PRIMARY KEY,
+    stream_id       VARCHAR(500) NOT NULL,
+    version         BIGINT NOT NULL,
+    event_id        UUID NOT NULL DEFAULT gen_random_uuid(),
+    event_type      VARCHAR(500) NOT NULL,
+    data            JSONB NOT NULL,
+    metadata        JSONB,
+    timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(stream_id, version)
 );
 ```

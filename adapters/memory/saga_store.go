@@ -35,11 +35,25 @@ func NewSagaStore() *SagaStore {
 //     ConcurrencyError.
 //
 // After a successful save, state.Version is incremented to reflect the new version.
+//
+// Reject-on-missing contract: a Version > 0 save against a missing saga is
+// rejected with SagaNotFoundError rather than silently creating the saga. This
+// is intentional and is the stricter of the two possible behaviors: a non-zero
+// version is a claim that a prior version already exists, so creating one here
+// would mask a lost-write or an out-of-order Save. Callers that mean to create
+// a saga must start from Version 0. Note this is intentionally stricter than the
+// PostgreSQL adapter, whose upsert-style Save may create the row in this case;
+// code that must behave identically across adapters should always create with
+// Version 0 first.
 func (s *SagaStore) Save(ctx context.Context, state *adapters.SagaState) error {
 	if state == nil {
 		return adapters.ErrNilAggregate
 	}
 
+	// Note: there is no dedicated "empty saga ID" sentinel in the adapters
+	// package, so ErrEmptyStreamID is reused here (and throughout this store)
+	// to signal a missing required saga identifier — the saga ID is the saga's
+	// stream identifier. This matches the PostgreSQL saga store's validation.
 	if state.ID == "" {
 		return adapters.ErrEmptyStreamID
 	}
@@ -116,6 +130,7 @@ func (s *SagaStore) Save(ctx context.Context, state *adapters.SagaState) error {
 
 // Load retrieves a saga state by ID.
 func (s *SagaStore) Load(ctx context.Context, sagaID string) (*adapters.SagaState, error) {
+	// ErrEmptyStreamID is reused for a missing saga ID; see Save for rationale.
 	if sagaID == "" {
 		return nil, adapters.ErrEmptyStreamID
 	}
@@ -141,6 +156,7 @@ func (s *SagaStore) Load(ctx context.Context, sagaID string) (*adapters.SagaStat
 
 // FindByCorrelationID finds a saga by its correlation ID.
 func (s *SagaStore) FindByCorrelationID(ctx context.Context, correlationID string) (*adapters.SagaState, error) {
+	// ErrEmptyStreamID is reused for a missing correlation ID; see Save for rationale.
 	if correlationID == "" {
 		return nil, adapters.ErrEmptyStreamID
 	}
@@ -174,6 +190,7 @@ func (s *SagaStore) FindByCorrelationID(ctx context.Context, correlationID strin
 
 // FindByType finds all sagas of a given type with the specified statuses.
 func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ...adapters.SagaStatus) ([]*adapters.SagaState, error) {
+	// ErrEmptyStreamID is reused for a missing saga type; see Save for rationale.
 	if sagaType == "" {
 		return nil, adapters.ErrEmptyStreamID
 	}
@@ -210,6 +227,7 @@ func (s *SagaStore) FindByType(ctx context.Context, sagaType string, statuses ..
 
 // Delete removes a saga state.
 func (s *SagaStore) Delete(ctx context.Context, sagaID string) error {
+	// ErrEmptyStreamID is reused for a missing saga ID; see Save for rationale.
 	if sagaID == "" {
 		return adapters.ErrEmptyStreamID
 	}

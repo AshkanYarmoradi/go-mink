@@ -508,3 +508,39 @@ func TestCommandBus_WithHandlerTimeout(t *testing.T) {
 		assert.True(t, result.IsError())
 	})
 }
+
+func TestCommandBus_CloseDrainsInFlight(t *testing.T) {
+	bus := NewCommandBus()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var completed atomic.Bool
+
+	bus.RegisterFunc("CreateOrder", func(ctx context.Context, cmd Command) (CommandResult, error) {
+		close(started)
+		<-release
+		completed.Store(true)
+		return NewSuccessResult("order-1", 1), nil
+	})
+
+	go func() { _, _ = bus.Dispatch(context.Background(), busTestCreateOrder{CustomerID: "c1"}) }()
+	<-started
+
+	closeReturned := make(chan struct{})
+	go func() { _ = bus.Close(); close(closeReturned) }()
+
+	// Close must block while the handler is still running.
+	select {
+	case <-closeReturned:
+		t.Fatal("Close returned before the in-flight dispatch completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after the dispatch completed")
+	}
+	assert.True(t, completed.Load(), "handler should have completed before Close returned")
+}

@@ -247,6 +247,29 @@ engine.ProcessInlineProjections(ctx, events)
 engine.NotifyLiveProjections(ctx, events)
 ```
 
+### Poison-event handling
+
+By default an async projection that keeps failing on the same event exhausts its
+retry budget and stops in the `Faulted` state, blocking all later events. Set
+`AsyncOptions.OnPoisonEvent` to skip (dead-letter) the offending event and keep
+the projection moving. Return `nil` to advance past the event; return an error to
+stop the worker.
+
+```go
+engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
+    BatchSize:   100,
+    Workers:     4,
+    MaxRetries:  3,
+    OnPoisonEvent: func(ctx context.Context, event mink.StoredEvent, cause error) error {
+        // Record it for later inspection, then skip so the projection continues.
+        log.Printf("dead-lettering poison event %s@%d: %v",
+            event.Type, event.GlobalPosition, cause)
+        deadLetter.Save(ctx, event, cause)
+        return nil // returning a non-nil error would stop the worker instead
+    },
+})
+```
+
 ### Projection Status
 
 Monitor projection health:
@@ -261,6 +284,35 @@ fmt.Printf("State: %s, Position: %d, Lag: %d\n",
 statuses := engine.GetAllStatuses()
 for name, status := range statuses {
     fmt.Printf("%s: %s (error: %v)\n", name, status.State, status.LastError)
+}
+```
+
+### Pausing, Resuming, and Rebuilding
+
+Async and live projections can be paused and resumed at runtime without
+stopping the whole engine — useful for maintenance or for taking a consistent
+snapshot before a rebuild. `Rebuild` resets a single async projection's
+checkpoint and replays the event log from the beginning, then resumes from the
+rebuilt position. All three return `mink.ErrProjectionNotFound` for an unknown
+name.
+
+```go
+// Temporarily stop an async/live projection (it stays registered and alive).
+if err := engine.Pause("Analytics"); err != nil {
+    log.Fatal(err)
+}
+
+// ... do maintenance, deploy a new read-model schema, etc. ...
+
+// Resume processing from where it left off.
+if err := engine.Resume("Analytics"); err != nil {
+    log.Fatal(err)
+}
+
+// Replay the whole log into one projection. For a consistent rebuild the
+// projection should be quiescent first (engine stopped, or projection paused).
+if err := engine.Rebuild(ctx, "Analytics"); err != nil {
+    log.Fatal(err)
 }
 ```
 

@@ -301,6 +301,12 @@ func (a *PostgresAdapter) scanEvents(rows *sql.Rows) ([]adapters.StoredEvent, er
 }
 
 // parseMetadata parses JSON metadata into the Metadata struct.
+//
+// It first decodes the library's own shape (string custom values). Metadata not
+// written by this library — e.g. a custom object with non-string values — is
+// handled by a tolerant fallback that stringifies custom values rather than
+// failing the whole Load. Only genuinely-invalid (unparseable) JSON is surfaced
+// as an error, so one odd row does not silently drop fields nor block a batch.
 func parseMetadata(data []byte, m *adapters.Metadata) error {
 	if len(data) == 0 || string(data) == "{}" {
 		return nil
@@ -313,17 +319,40 @@ func parseMetadata(data []byte, m *adapters.Metadata) error {
 		TenantID      string            `json:"tenantId"`
 		Custom        map[string]string `json:"custom"`
 	}
-
-	if err := json.Unmarshal(data, &meta); err != nil {
-		// Ignore unmarshal errors - metadata may have different structure
+	if err := json.Unmarshal(data, &meta); err == nil {
+		m.CorrelationID = meta.CorrelationID
+		m.CausationID = meta.CausationID
+		m.UserID = meta.UserID
+		m.TenantID = meta.TenantID
+		m.Custom = meta.Custom
 		return nil
 	}
 
-	m.CorrelationID = meta.CorrelationID
-	m.CausationID = meta.CausationID
-	m.UserID = meta.UserID
-	m.TenantID = meta.TenantID
-	m.Custom = meta.Custom
-
+	// Tolerant fallback: decode custom values as arbitrary JSON and stringify them.
+	var loose struct {
+		CorrelationID string                 `json:"correlationId"`
+		CausationID   string                 `json:"causationId"`
+		UserID        string                 `json:"userId"`
+		TenantID      string                 `json:"tenantId"`
+		Custom        map[string]interface{} `json:"custom"`
+	}
+	if err := json.Unmarshal(data, &loose); err != nil {
+		return fmt.Errorf("mink/postgres: failed to unmarshal event metadata: %w", err)
+	}
+	m.CorrelationID = loose.CorrelationID
+	m.CausationID = loose.CausationID
+	m.UserID = loose.UserID
+	m.TenantID = loose.TenantID
+	if len(loose.Custom) > 0 {
+		m.Custom = make(map[string]string, len(loose.Custom))
+		for k, v := range loose.Custom {
+			if s, ok := v.(string); ok {
+				m.Custom[k] = s
+				continue
+			}
+			b, _ := json.Marshal(v)
+			m.Custom[k] = string(b)
+		}
+	}
 	return nil
 }

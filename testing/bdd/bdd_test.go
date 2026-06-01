@@ -464,6 +464,89 @@ func TestFixture_ThenNoEvents(t *testing.T) {
 }
 
 // =============================================================================
+// Pointer-vs-Value Normalization Tests
+// =============================================================================
+
+// PointerEventOrder is a test aggregate that emits its events as POINTERS,
+// exercising the pointer-vs-value normalization in Then.
+type PointerEventOrder struct {
+	mink.AggregateBase
+	Status string
+}
+
+func NewPointerEventOrder(id string) *PointerEventOrder {
+	return &PointerEventOrder{AggregateBase: mink.NewAggregateBase(id, "PointerEventOrder")}
+}
+
+func (o *PointerEventOrder) Create(customerID string) error {
+	// Note: applied as a pointer, not a value.
+	o.Apply(&TestOrderCreated{OrderID: o.AggregateID(), CustomerID: customerID})
+	o.Status = "Created"
+	return nil
+}
+
+func (o *PointerEventOrder) ApplyEvent(event interface{}) error {
+	o.IncrementVersion()
+	return nil
+}
+
+func TestFixture_Then_NormalizesPointerVsValue(t *testing.T) {
+	t.Run("pointer-emitted event matches value expectation", func(t *testing.T) {
+		order := NewPointerEventOrder("order-123")
+
+		// Aggregate emits &TestOrderCreated{...}; the test asserts the value
+		// form TestOrderCreated{...}. These must be treated as equal.
+		Given(t, order).
+			When(func() error { return order.Create("cust-123") }).
+			Then(TestOrderCreated{OrderID: "order-123", CustomerID: "cust-123"})
+	})
+
+	t.Run("value-emitted event matches pointer expectation", func(t *testing.T) {
+		order := NewTestOrder("order-123")
+
+		// Aggregate emits TestOrderCreated{...} (value); the test asserts the
+		// pointer form. Normalization makes them equal.
+		Given(t, order).
+			When(func() error { return order.Create("cust-123") }).
+			Then(&TestOrderCreated{OrderID: "order-123", CustomerID: "cust-123"})
+	})
+
+	t.Run("still fails on genuine data mismatch across pointer/value", func(t *testing.T) {
+		mt := runWithMockT(func(m *mockT) {
+			order := NewPointerEventOrder("order-123")
+			Given(m, order).
+				When(func() error { return order.Create("cust-123") }).
+				Then(TestOrderCreated{OrderID: "order-123", CustomerID: "different"})
+		})
+		assert.True(t, mt.failed)
+	})
+}
+
+func TestEventsEqual(t *testing.T) {
+	value := TestOrderCreated{OrderID: "o1", CustomerID: "c1"}
+	ptr := &TestOrderCreated{OrderID: "o1", CustomerID: "c1"}
+	other := TestOrderCreated{OrderID: "o1", CustomerID: "c2"}
+
+	assert.True(t, eventsEqual(value, value), "value vs value")
+	assert.True(t, eventsEqual(ptr, ptr), "pointer vs pointer")
+	assert.True(t, eventsEqual(value, ptr), "value vs pointer normalizes")
+	assert.True(t, eventsEqual(ptr, value), "pointer vs value normalizes")
+	assert.False(t, eventsEqual(value, other), "differing data is unequal")
+	assert.False(t, eventsEqual(ptr, &other), "differing data is unequal (pointers)")
+
+	// A typed nil pointer must not equal a zero value.
+	var nilPtr *TestOrderCreated
+	assert.False(t, eventsEqual(nilPtr, TestOrderCreated{}), "nil pointer is not a zero value")
+
+	// A nil interface value must be handled without panicking (reflect.ValueOf(nil)
+	// has Kind Invalid; normalizeEvent returns it unchanged rather than
+	// dereferencing) and must only ever equal another nil interface.
+	assert.True(t, eventsEqual(nil, nil), "nil interface equals nil interface")
+	assert.False(t, eventsEqual(nil, value), "nil interface is not a value")
+	assert.False(t, eventsEqual(value, nil), "value is not a nil interface")
+}
+
+// =============================================================================
 // Command Test Fixture Tests
 // =============================================================================
 

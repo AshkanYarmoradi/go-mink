@@ -66,6 +66,17 @@ func WithCleanupAge(d time.Duration) ProcessorOption {
 	}
 }
 
+// WithProcessingTimeout sets how long a message may remain claimed (in
+// OutboxProcessing) before the maintenance sweep reclaims it back to pending.
+// This recovers messages orphaned by a processor crash. Default: 5 minutes.
+func WithProcessingTimeout(d time.Duration) ProcessorOption {
+	return func(p *OutboxProcessor) {
+		if d > 0 {
+			p.processingTimeout = d
+		}
+	}
+}
+
 // WithPublisher registers a publisher for a given destination prefix.
 func WithPublisher(publisher Publisher) ProcessorOption {
 	return func(p *OutboxProcessor) {
@@ -95,12 +106,13 @@ type OutboxProcessor struct {
 	metrics    OutboxMetrics
 	logger     Logger
 
-	batchSize       int
-	pollInterval    time.Duration
-	maxRetries      int
-	retryBackoff    time.Duration
-	cleanupInterval time.Duration
-	cleanupAge      time.Duration
+	batchSize         int
+	pollInterval      time.Duration
+	maxRetries        int
+	retryBackoff      time.Duration
+	cleanupInterval   time.Duration
+	cleanupAge        time.Duration
+	processingTimeout time.Duration
 
 	running  atomic.Bool
 	stopping atomic.Bool
@@ -111,17 +123,18 @@ type OutboxProcessor struct {
 // NewOutboxProcessor creates a new OutboxProcessor.
 func NewOutboxProcessor(store OutboxStore, opts ...ProcessorOption) *OutboxProcessor {
 	p := &OutboxProcessor{
-		store:           store,
-		publishers:      make(map[string]Publisher),
-		metrics:         &noopOutboxMetrics{},
-		logger:          &noopLogger{},
-		batchSize:       100,
-		pollInterval:    time.Second,
-		maxRetries:      5,
-		retryBackoff:    5 * time.Second,
-		cleanupInterval: time.Hour,
-		cleanupAge:      7 * 24 * time.Hour,
-		stopCh:          make(chan struct{}),
+		store:             store,
+		publishers:        make(map[string]Publisher),
+		metrics:           &noopOutboxMetrics{},
+		logger:            &noopLogger{},
+		batchSize:         100,
+		pollInterval:      time.Second,
+		maxRetries:        5,
+		retryBackoff:      5 * time.Second,
+		cleanupInterval:   time.Hour,
+		cleanupAge:        7 * 24 * time.Hour,
+		processingTimeout: 5 * time.Minute,
+		stopCh:            make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -263,7 +276,7 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 				if err := p.store.MarkFailed(ctx, msg.ID, fmt.Errorf("%w: %s", ErrPublisherNotFound, prefix)); err != nil {
 					p.logger.Error("Failed to mark message as failed", "id", msg.ID, "error", err)
 				}
-				p.metrics.RecordMessageFailed(msg.Destination)
+				p.metrics.RecordMessageFailed(prefix)
 			}
 			continue
 		}
@@ -274,15 +287,15 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 				if markErr := p.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
 					p.logger.Error("Failed to mark message as failed", "id", msg.ID, "error", markErr)
 				}
-				p.metrics.RecordMessageProcessed(msg.Destination, false)
-				p.metrics.RecordMessageFailed(msg.Destination)
+				p.metrics.RecordMessageProcessed(prefix, false)
+				p.metrics.RecordMessageFailed(prefix)
 			}
 		} else {
 			// Mark all messages as completed
 			ids := make([]string, len(msgs))
 			for i, msg := range msgs {
 				ids[i] = msg.ID
-				p.metrics.RecordMessageProcessed(msg.Destination, true)
+				p.metrics.RecordMessageProcessed(prefix, true)
 			}
 			if err := p.store.MarkCompleted(ctx, ids); err != nil {
 				p.logger.Error("Failed to mark messages as completed", "error", err)
@@ -295,8 +308,18 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 	return nil
 }
 
-// runMaintenance performs retry and dead-letter operations.
+// runMaintenance performs reclaim, retry, and dead-letter operations.
 func (p *OutboxProcessor) runMaintenance(ctx context.Context) {
+	// Reclaim messages orphaned in OutboxProcessing by a crashed processor.
+	if p.processingTimeout > 0 {
+		reclaimed, err := p.store.ReclaimStale(ctx, p.processingTimeout)
+		if err != nil {
+			p.logger.Error("Failed to reclaim stale outbox messages", "error", err)
+		} else if reclaimed > 0 {
+			p.logger.Warn("Reclaimed stale outbox messages", "count", reclaimed)
+		}
+	}
+
 	// Retry failed messages that haven't exhausted retries
 	retried, err := p.store.RetryFailed(ctx, p.maxRetries)
 	if err != nil {

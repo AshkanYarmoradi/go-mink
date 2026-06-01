@@ -83,6 +83,14 @@ func (s *e2eMockIdempotencyStore) Store(ctx context.Context, record *Idempotency
 	return nil
 }
 
+func (s *e2eMockIdempotencyStore) StoreIfAbsent(ctx context.Context, record *IdempotencyRecord) (bool, error) {
+	if existing, ok := s.records[record.Key]; ok && !existing.IsExpired() {
+		return false, nil
+	}
+	s.records[record.Key] = record
+	return true, nil
+}
+
 func (s *e2eMockIdempotencyStore) Get(ctx context.Context, key string) (*IdempotencyRecord, error) {
 	return s.records[key], nil
 }

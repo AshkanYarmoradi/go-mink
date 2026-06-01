@@ -177,6 +177,40 @@ func TestProvider_New_WithKey_InvalidLength(t *testing.T) {
 	assert.Contains(t, err.Error(), "32 bytes")
 }
 
+func TestWithKey_LoadsUsableKey(t *testing.T) {
+	key := testKey(t)
+	p := mustNew(t, WithKey("master-1", key))
+	defer func() { _ = p.Close() }()
+
+	ctx := context.Background()
+	ciphertext, err := p.Encrypt(ctx, "master-1", []byte("data"))
+	require.NoError(t, err)
+
+	decrypted, err := p.Decrypt(ctx, "master-1", ciphertext)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("data"), decrypted)
+}
+
+func TestWithKey_NilMapSafe(t *testing.T) {
+	// Applied directly to a zero-value provider (no New), the option must
+	// allocate the key map rather than panic on a nil map write.
+	p := &Provider{}
+	err := WithKey("master-1", testKey(t))(p)
+	require.NoError(t, err)
+	assert.Contains(t, p.keys, "master-1")
+}
+
+func TestWithKey_ClosedProvider(t *testing.T) {
+	key := testKey(t)
+	p := mustNew(t, WithKey("master-1", key))
+	require.NoError(t, p.Close())
+
+	// Mirrors AddKey: applying WithKey to a closed provider must fail closed.
+	err := WithKey("master-2", testKey(t))(p)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrProviderClosed)
+}
+
 func TestProvider_Close(t *testing.T) {
 	key := testKey(t)
 	p := mustNew(t, WithKey("master-1", key))
