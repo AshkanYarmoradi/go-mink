@@ -248,12 +248,13 @@ type IdempotencyStore interface {
 
 // IdempotencyConfig configures idempotency middleware
 type IdempotencyConfig struct {
-    Store        IdempotencyStore     // Required: storage backend
-    TTL          time.Duration        // Result expiration (default: 24h)
-    KeyGenerator func(Command) string // Custom key generator (default: GetIdempotencyKey)
-    StoreErrors  bool                 // Replay stored failures instead of retrying (default: false)
-    FailClosed   bool                 // Fail the command on store outage (default: false = fail-open)
-    SkipCommands []string             // Command types that bypass the idempotency check
+    Store          IdempotencyStore     // Required: storage backend
+    TTL            time.Duration        // Result expiration (default: 24h)
+    ReservationTTL time.Duration        // In-flight reservation lease; bounds how long a duplicate is blocked (default: 5m)
+    KeyGenerator   func(Command) string // Custom key generator (default: GetIdempotencyKey)
+    StoreErrors    bool                 // Replay stored failures instead of retrying (default: false)
+    FailClosed     bool                 // Fail the command on store outage (default: false = fail-open)
+    SkipCommands   []string             // Command types that bypass the idempotency check
 }
 
 func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig
