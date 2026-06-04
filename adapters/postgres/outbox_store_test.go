@@ -90,6 +90,49 @@ func TestPostgresOutboxStore_ScheduleAndFetch(t *testing.T) {
 	assert.Len(t, fetched2, 0)
 }
 
+// TestPostgresOutboxStore_ReclaimStale verifies that a message stuck in the
+// processing state is reclaimed only once it exceeds the staleness threshold, is
+// left alone while still fresh, and becomes fetchable again afterwards without
+// duplication.
+func TestPostgresOutboxStore_ReclaimStale(t *testing.T) {
+	store, ctx := setupOutboxStore(t)
+
+	require.NoError(t, store.Schedule(ctx, []*adapters.OutboxMessage{
+		{AggregateID: "agg-stale", EventType: "E", Destination: "kafka:t", Payload: []byte(`{}`), MaxAttempts: 5},
+	}))
+
+	// FetchPending moves it into Processing and stamps last_attempt_at = now.
+	fetched, err := store.FetchPending(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, fetched, 1)
+	require.Equal(t, adapters.OutboxProcessing, fetched[0].Status)
+
+	// A fresh in-flight message must NOT be reclaimed by a large threshold.
+	reclaimed, err := store.ReclaimStale(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), reclaimed, "a just-fetched message must not be reclaimed")
+
+	// It is still invisible to a normal fetch (still Processing).
+	none, err := store.FetchPending(ctx, 10)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	// Backdate the in-flight message deterministically (avoids sleep-based
+	// flakiness on slow/loaded CI), then it is reclaimed back to pending.
+	_, err = store.db.ExecContext(ctx,
+		"UPDATE "+store.fullTableName()+" SET last_attempt_at = NOW() - make_interval(secs => 3600)")
+	require.NoError(t, err)
+	reclaimed, err = store.ReclaimStale(ctx, time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), reclaimed, "a stale processing message must be reclaimed")
+
+	// And is fetchable again — exactly one row, no duplication.
+	refetched, err := store.FetchPending(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, refetched, 1)
+	assert.Equal(t, "agg-stale", refetched[0].AggregateID)
+}
+
 func TestPostgresOutboxStore_MarkCompletedAndFailed(t *testing.T) {
 	store, ctx := setupOutboxStore(t)
 

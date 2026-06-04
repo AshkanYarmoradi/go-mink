@@ -1746,6 +1746,45 @@ func TestPostgresAdapter_AppendWithOutbox_Atomicity(t *testing.T) {
 		"version should start at 1, proving the earlier failed attempt left no trace")
 }
 
+// TestPostgresAdapter_AppendWithOutbox_VersionConflictRollsBackBoth verifies that
+// an optimistic-concurrency conflict on the event side rolls back the outbox
+// messages too: neither the events nor the outbox rows persist. Integration test
+// (skips without TEST_DATABASE_URL).
+func TestPostgresAdapter_AppendWithOutbox_VersionConflictRollsBackBoth(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+
+	outbox := NewOutboxStoreFromAdapter(adapter)
+	require.NoError(t, outbox.Initialize(ctx))
+
+	streamID := fmt.Sprintf("Order-conflict-%d", time.Now().UnixNano())
+
+	// Seed the stream so it exists at version 1.
+	_, err := adapter.Append(ctx, streamID,
+		[]adapters.EventRecord{{Type: "OrderCreated", Data: []byte(`{"orderId":"c"}`)}}, mink.NoStream)
+	require.NoError(t, err)
+
+	// AppendWithOutbox with expectedVersion=NoStream now conflicts (the stream exists).
+	messages := []*adapters.OutboxMessage{
+		{AggregateID: "c", EventType: "OrderShipped", Destination: "kafka:orders", Payload: []byte(`{"ok":true}`)},
+	}
+	_, err = adapter.AppendWithOutbox(ctx, streamID,
+		[]adapters.EventRecord{{Type: "OrderShipped", Data: []byte(`{}`)}}, mink.NoStream, outbox, messages)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, adapters.ErrConcurrencyConflict),
+		"a version conflict must surface as ErrConcurrencyConflict")
+
+	// The stream must still be at version 1 — the conflicting event was not appended.
+	info, err := adapter.GetStreamInfo(ctx, streamID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), info.Version)
+
+	// And no outbox message was written: both sides rolled back together.
+	pending, err := outbox.FetchPending(ctx, 10)
+	require.NoError(t, err)
+	assert.Empty(t, pending, "the outbox message must roll back with the event-version conflict")
+}
+
 // TestPostgresAdapter_Append_UniqueViolationMapsToConflict verifies that a unique
 // violation on the event insert path surfaces as ErrConcurrencyConflict even when
 // the FOR UPDATE pre-check is bypassed. We simulate a lost race by inserting an
