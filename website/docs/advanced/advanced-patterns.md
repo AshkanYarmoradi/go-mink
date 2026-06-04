@@ -256,12 +256,13 @@ func (c CreateOrder) IdempotencyKey() string {
 ```go
 // IdempotencyConfig controls middleware behavior
 type IdempotencyConfig struct {
-    Store        IdempotencyStore     // Required: storage backend
-    TTL          time.Duration        // Optional: result expiration (default: 24h)
-    KeyGenerator func(Command) string // Optional: custom key generator (default: GetIdempotencyKey)
-    StoreErrors  bool                 // Optional: replay stored failures instead of retrying (default: false)
-    FailClosed   bool                 // Optional: fail the command if the store is down (default: false)
-    SkipCommands []string             // Optional: command types that bypass the idempotency check
+    Store          IdempotencyStore     // Required: storage backend
+    TTL            time.Duration        // Optional: result expiration (default: 24h)
+    ReservationTTL time.Duration        // Optional: in-flight reservation lease, bounds how long a duplicate is blocked (default: 5m)
+    KeyGenerator   func(Command) string // Optional: custom key generator (default: GetIdempotencyKey)
+    StoreErrors    bool                 // Optional: replay stored failures instead of retrying (default: false)
+    FailClosed     bool                 // Optional: fail the command if the store is down (default: false)
+    SkipCommands   []string             // Optional: command types that bypass the idempotency check
 }
 
 // Use default configuration
