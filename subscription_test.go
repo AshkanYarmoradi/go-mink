@@ -11,6 +11,74 @@ import (
 	"go-mink.dev/adapters/memory"
 )
 
+func TestEventStore_SubscribeAll(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, store.Append(ctx, "Order-sub-1", []interface{}{&OrderCreatedEvent{OrderID: "s1"}}))
+
+	sub, err := store.SubscribeAll(ctx, 0)
+	require.NoError(t, err)
+	defer func() { _ = sub.Close() }()
+
+	select {
+	case ev := <-sub.Events():
+		assert.Equal(t, "Order-sub-1", ev.StreamID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscribed event")
+	}
+}
+
+func TestEventStore_SubscribeStream(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, store.Append(ctx, "Order-A", []interface{}{&OrderCreatedEvent{OrderID: "a"}}))
+	require.NoError(t, store.Append(ctx, "Order-B", []interface{}{&OrderCreatedEvent{OrderID: "b"}}))
+
+	sub, err := store.SubscribeStream(ctx, "Order-A", 0)
+	require.NoError(t, err)
+	defer func() { _ = sub.Close() }()
+
+	select {
+	case ev := <-sub.Events():
+		assert.Equal(t, "Order-A", ev.StreamID, "should only deliver the subscribed stream")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stream event")
+	}
+}
+
+func TestEventStore_SubscribeCategory(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	store.RegisterEvents(&OrderCreatedEvent{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, store.Append(ctx, "Order-cat-1", []interface{}{&OrderCreatedEvent{OrderID: "c1"}}))
+	require.NoError(t, store.Append(ctx, "Other-cat-1", []interface{}{&OrderCreatedEvent{OrderID: "o1"}}))
+
+	sub, err := store.SubscribeCategory(ctx, "Order", 0)
+	require.NoError(t, err)
+	defer func() { _ = sub.Close() }()
+
+	select {
+	case ev := <-sub.Events():
+		assert.Equal(t, "Order-cat-1", ev.StreamID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for category event")
+	}
+}
+
 func TestEventTypeFilter(t *testing.T) {
 	filter := NewEventTypeFilter("OrderCreated", "OrderShipped")
 
@@ -930,6 +998,77 @@ func (a *testMinkSubscriptionStoreAdapter) SubscribeStream(_ context.Context, _ 
 
 func (a *testMinkSubscriptionStoreAdapter) SubscribeCategory(_ context.Context, _ string, _ uint64) (<-chan StoredEvent, error) {
 	return nil, nil
+}
+
+// recordingSubscriptionAdapter implements adapters.SubscriptionAdapter and records
+// the options passed to SubscribeStream so a test can assert the EventStore forwards
+// them to the adapter-native subscription.
+type recordingSubscriptionAdapter struct {
+	stubEventStoreAdapter
+	streamOpts []adapters.SubscriptionOptions
+}
+
+func closedAdapterEventChan() <-chan adapters.StoredEvent {
+	ch := make(chan adapters.StoredEvent)
+	close(ch)
+	return ch
+}
+
+func (a *recordingSubscriptionAdapter) LoadFromPosition(_ context.Context, _ uint64, _ int) ([]adapters.StoredEvent, error) {
+	return nil, nil
+}
+
+func (a *recordingSubscriptionAdapter) SubscribeAll(_ context.Context, _ uint64, _ ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	return closedAdapterEventChan(), nil
+}
+
+func (a *recordingSubscriptionAdapter) SubscribeStream(_ context.Context, _ string, _ int64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	a.streamOpts = opts
+	return closedAdapterEventChan(), nil
+}
+
+func (a *recordingSubscriptionAdapter) SubscribeCategory(_ context.Context, _ string, _ uint64, _ ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
+	return closedAdapterEventChan(), nil
+}
+
+// TestEventStore_SubscribeStream_ForwardsOptionsToAdapter verifies the caller's
+// SubscriptionOptions (e.g. BufferSize) reach the adapter-native subscription
+// rather than only the outer bridge channel.
+func TestEventStore_SubscribeStream_ForwardsOptionsToAdapter(t *testing.T) {
+	fake := &recordingSubscriptionAdapter{}
+	store := New(fake)
+
+	sub, err := store.SubscribeStream(context.Background(), "Order-1", 0, SubscriptionOptions{BufferSize: 7})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Close() })
+
+	require.Len(t, fake.streamOpts, 1)
+	assert.Equal(t, 7, fake.streamOpts[0].BufferSize)
+}
+
+func TestEventStore_SubscribeStream_CleanCloseLeavesErrNil(t *testing.T) {
+	store := New(memory.NewAdapter())
+	sub, err := store.SubscribeStream(context.Background(), "Order-1", 0)
+	require.NoError(t, err)
+
+	require.NoError(t, sub.Close())
+	// Draining until Events() closes guarantees the bridge goroutine has exited.
+	for range sub.Events() {
+	}
+	assert.Nil(t, sub.Err(), "a consumer Close() is a clean shutdown")
+}
+
+func TestEventStore_SubscribeStream_ExternalCancelReportsErr(t *testing.T) {
+	store := New(memory.NewAdapter())
+	ctx, cancel := context.WithCancel(context.Background())
+	sub, err := store.SubscribeStream(ctx, "Order-1", 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Close() })
+
+	cancel()
+	for range sub.Events() {
+	}
+	assert.ErrorIs(t, sub.Err(), context.Canceled, "external context cancellation is surfaced")
 }
 
 // --- Tests for Subscription Error Paths ---

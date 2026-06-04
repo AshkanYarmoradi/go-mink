@@ -26,8 +26,9 @@ Examples:
 
 	cmd.AddCommand(newSchemaGenerateCommand())
 	cmd.AddCommand(newSchemaPrintCommand())
+	cmd.AddCommand(newSchemaValidateCommand())
 
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 func newSchemaGenerateCommand() *cobra.Command {
@@ -92,6 +93,49 @@ func newSchemaPrintCommand() *cobra.Command {
 			fmt.Println()
 			fmt.Println(styles.Code.Render(schema))
 
+			return nil
+		},
+	}
+}
+
+// newSchemaValidateCommand validates the event store schema against the
+// configured database using the adapter's CheckSchema capability.
+func newSchemaValidateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Validate the event store schema against the database",
+		Long: `Validate that the event store schema (tables) exists in the configured database.
+
+Requires a configured non-memory driver and a reachable database (DATABASE_URL).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			env, skipReason, err := SetupDiagnosticEnv(ctx)
+			switch skipReason {
+			case DiagnosticSkipNoConfig:
+				return fmt.Errorf("no mink.yaml found; run 'mink init' first")
+			case DiagnosticSkipMemoryDriver:
+				fmt.Println(styles.FormatInfo("Memory driver - schema is in-memory, nothing to validate"))
+				return nil
+			case DiagnosticSkipNoDBURL:
+				return fmt.Errorf("DATABASE_URL is not set; cannot validate schema against the database")
+			}
+			if err != nil {
+				return err
+			}
+			defer env.Close()
+
+			result, err := env.Adapter.CheckSchema(ctx, env.Config.EventStore.TableName)
+			if err != nil {
+				return fmt.Errorf("failed to validate schema: %w", err)
+			}
+
+			if !result.TableExists {
+				fmt.Println(styles.FormatError(result.Message))
+				return fmt.Errorf("event store schema is missing; run 'mink migrate up' to create the tables")
+			}
+
+			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Schema is valid: %s", result.Message)))
 			return nil
 		},
 	}

@@ -296,6 +296,81 @@ func (h *mockCommandHandler) Handle(ctx context.Context, cmd Command) (CommandRe
 	return NewSuccessResult("", 0), nil
 }
 
+func TestSagaManager_TimeoutSweep(t *testing.T) {
+	store := newMockSagaStore()
+	eventStore := New(memory.NewAdapter())
+	manager := NewSagaManager(eventStore, WithSagaStore(store), WithSagaTimeout(time.Minute))
+	manager.RegisterSimple("TestSaga", newTestSaga, "OrderCreated")
+
+	ctx := context.Background()
+	old := time.Now().Add(-2 * time.Minute)
+	require.NoError(t, store.Save(ctx, &SagaState{
+		ID: "TestSaga-1", Type: "TestSaga", CorrelationID: "c1",
+		Status: SagaStatusRunning, StartedAt: old, UpdatedAt: old,
+	}))
+	// A fresh saga should be left alone.
+	require.NoError(t, store.Save(ctx, &SagaState{
+		ID: "TestSaga-2", Type: "TestSaga", CorrelationID: "c2",
+		Status: SagaStatusRunning, StartedAt: time.Now(), UpdatedAt: time.Now(),
+	}))
+	// A stale saga ALREADY compensating must NOT be re-compensated (would
+	// re-dispatch already-executed, non-idempotent compensation commands).
+	require.NoError(t, store.Save(ctx, &SagaState{
+		ID: "TestSaga-3", Type: "TestSaga", CorrelationID: "c3",
+		Status: SagaStatusCompensating, StartedAt: old, UpdatedAt: old,
+	}))
+
+	manager.sweepTimeouts(ctx)
+
+	stale, err := store.Load(ctx, "TestSaga-1")
+	require.NoError(t, err)
+	assert.Equal(t, SagaStatusCompensated, stale.Status, "stale Running saga should be compensated")
+
+	fresh, err := store.Load(ctx, "TestSaga-2")
+	require.NoError(t, err)
+	assert.Equal(t, SagaStatusRunning, fresh.Status, "fresh saga should be untouched")
+
+	comp, err := store.Load(ctx, "TestSaga-3")
+	require.NoError(t, err)
+	assert.Equal(t, SagaStatusCompensating, comp.Status, "already-compensating saga should be left alone")
+}
+
+func TestSagaManager_CompensationContinuesAfterFailure(t *testing.T) {
+	store := newMockSagaStore()
+	eventStore := New(memory.NewAdapter())
+
+	// Command bus: "comp-fail" fails, "comp-ok" succeeds; track invocations.
+	var failCalls, okCalls int32
+	bus := NewCommandBus()
+	bus.Register(&mockCommandHandler{cmdType: "comp-fail", handleFunc: func(_ context.Context, _ Command) (CommandResult, error) {
+		atomic.AddInt32(&failCalls, 1)
+		return NewErrorResult(errors.New("boom")), errors.New("boom")
+	}})
+	bus.Register(&mockCommandHandler{cmdType: "comp-ok", handleFunc: func(_ context.Context, _ Command) (CommandResult, error) {
+		atomic.AddInt32(&okCalls, 1)
+		return NewSuccessResult("", 0), nil
+	}})
+
+	manager := NewSagaManager(eventStore, WithSagaStore(store), WithCommandBus(bus),
+		WithSagaRetryAttempts(1))
+
+	saga := &testSaga{
+		SagaBase: NewSagaBase("TestSaga-comp", "TestSaga"),
+		compensateToRet: []Command{
+			&testCommand{commandType: "comp-fail", valid: true},
+			&testCommand{commandType: "comp-ok", valid: true},
+		},
+	}
+
+	err := manager.handleSagaFailure(context.Background(), saga, errors.New("original failure"))
+	require.NoError(t, err)
+
+	// Both compensation commands must be attempted even though the first fails.
+	assert.Equal(t, int32(1), atomic.LoadInt32(&failCalls))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&okCalls))
+	assert.Equal(t, SagaStatusCompensationFailed, saga.Status())
+}
+
 // ====================================================================
 // SagaManager Option Tests
 // ====================================================================

@@ -248,10 +248,13 @@ type IdempotencyStore interface {
 
 // IdempotencyConfig configures idempotency middleware
 type IdempotencyConfig struct {
-    Store      IdempotencyStore
-    KeyFunc    func(Command) string
-    TTL        time.Duration
-    Serializer func(CommandResult) []byte
+    Store          IdempotencyStore     // Required: storage backend
+    TTL            time.Duration        // Result expiration (default: 24h)
+    ReservationTTL time.Duration        // In-flight reservation lease; bounds how long a duplicate is blocked (default: 5m)
+    KeyGenerator   func(Command) string // Custom key generator (default: GetIdempotencyKey)
+    StoreErrors    bool                 // Replay stored failures instead of retrying (default: false)
+    FailClosed     bool                 // Fail the command on store outage (default: false = fail-open)
+    SkipCommands   []string             // Command types that bypass the idempotency check
 }
 
 func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig
@@ -346,33 +349,33 @@ type AsyncOptions struct {
 ```go
 // Subscribe to event streams
 type Subscription interface {
-    Events() <-chan Event
-    Errors() <-chan error
+    Events() <-chan StoredEvent // Closed when the subscription ends
     Close() error
+    Err() error // Failure reason: nil after a clean Close(); the context error if your context was canceled
 }
 
 func (s *EventStore) SubscribeAll(ctx context.Context,
-    fromPosition uint64) (Subscription, error)
+    fromPosition uint64, opts ...SubscriptionOptions) (Subscription, error)
 
 func (s *EventStore) SubscribeStream(ctx context.Context,
-    streamID string, fromVersion int64) (Subscription, error)
+    streamID string, fromVersion int64, opts ...SubscriptionOptions) (Subscription, error)
 
 func (s *EventStore) SubscribeCategory(ctx context.Context,
-    category string, fromPosition uint64) (Subscription, error)
+    category string, fromPosition uint64, opts ...SubscriptionOptions) (Subscription, error)
 
-// Example usage
-sub, _ := store.SubscribeAll(ctx, 0)
+// Example usage. Errors are not delivered on a channel: range over Events()
+// (which closes when the subscription stops) and then inspect Err().
+sub, err := store.SubscribeAll(ctx, 0)
+if err != nil {
+    log.Fatalf("subscribe: %v", err)
+}
 defer sub.Close()
 
-for {
-    select {
-    case event := <-sub.Events():
-        fmt.Printf("Event: %s\n", event.Type)
-    case err := <-sub.Errors():
-        log.Printf("Error: %v\n", err)
-    case <-ctx.Done():
-        return
-    }
+for event := range sub.Events() {
+    fmt.Printf("Event: %s\n", event.Type)
+}
+if err := sub.Err(); err != nil {
+    log.Printf("Subscription stopped: %v\n", err)
 }
 ```
 

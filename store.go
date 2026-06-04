@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"go-mink.dev/adapters"
 )
@@ -13,8 +14,12 @@ type EventStore struct {
 	adapter    adapters.EventStoreAdapter
 	serializer Serializer
 	logger     Logger
-	upcasters  *UpcasterChain         // nil by default — zero overhead when unused
-	encryption *FieldEncryptionConfig // nil by default — zero overhead when unused
+	// upcasters holds an optional *UpcasterChain. It is an atomic pointer so that
+	// RegisterUpcasters can be called concurrently with Load/Append without a data
+	// race; nil (the default) means zero overhead.
+	upcasters    atomic.Pointer[UpcasterChain]
+	encryption   *FieldEncryptionConfig // nil by default — zero overhead when unused
+	maxEventSize int                    // 0 = unlimited
 }
 
 // Logger defines the logging interface for the event store.
@@ -56,7 +61,17 @@ func WithLogger(l Logger) Option {
 // version during appending.
 func WithUpcasters(chain *UpcasterChain) Option {
 	return func(es *EventStore) {
-		es.upcasters = chain
+		es.upcasters.Store(chain)
+	}
+}
+
+// WithMaxEventSize sets the maximum serialized size, in bytes, of a single
+// event's data. Appending an event whose serialized (and, if configured,
+// encrypted) data exceeds this returns ErrEventTooLarge. The default (0) imposes
+// no limit; set it to bound memory/IO from oversized or malicious payloads.
+func WithMaxEventSize(maxBytes int) Option {
+	return func(es *EventStore) {
+		es.maxEventSize = maxBytes
 	}
 }
 
@@ -143,6 +158,12 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 		opt(config)
 	}
 
+	// Validate the expected version: it must be one of the sentinels
+	// (AnyVersion=-1, StreamExists=-2, NoStream=0) or a non-negative version.
+	if config.expectedVersion < StreamExists {
+		return ErrInvalidVersion
+	}
+
 	// Convert events to EventRecords
 	records := make([]adapters.EventRecord, len(events))
 	for i, event := range events {
@@ -151,7 +172,7 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
-		if err := s.prepareEventData(ctx, &eventData); err != nil {
+		if err := s.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
 
@@ -214,11 +235,18 @@ func (s *EventStore) LoadRaw(ctx context.Context, streamID string, fromVersion i
 }
 
 // SaveAggregate persists uncommitted events from an aggregate.
-// The aggregate's version is used for optimistic concurrency control.
+// The aggregate's current version (agg.Version()) is used as the expected stream
+// version for optimistic concurrency control.
 //
-// After a successful save, if the aggregate implements VersionSetter,
-// the version will be updated to reflect the new stream version.
-// This allows for subsequent modifications without reloading.
+// Invariant: creating uncommitted events (via AggregateBase.Apply) must not change
+// Version(). Version is only advanced by ApplyEvent while replaying stored events
+// during LoadAggregate. If a command mutator also increments the version before
+// save, the expected version will no longer match the stored version and the save
+// will fail with ErrConcurrencyConflict.
+//
+// After a successful save, if the aggregate implements VersionSetter, the version
+// is updated to reflect the new stream version (and OriginalVersion is advanced),
+// allowing subsequent modifications without reloading.
 func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 	if agg == nil {
 		return ErrNilAggregate
@@ -239,7 +267,7 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 			return fmt.Errorf("mink: failed to serialize aggregate event %d: %w", i, err)
 		}
 
-		if err := s.prepareEventData(ctx, &eventData); err != nil {
+		if err := s.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
 
@@ -260,8 +288,12 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 
 	// Update aggregate version after successful save if it implements VersionSetter.
 	// New version = old version + number of events saved.
+	newVersion := expectedVersion + int64(len(events))
 	if setter, ok := agg.(VersionSetter); ok {
-		setter.SetVersion(expectedVersion + int64(len(events)))
+		setter.SetVersion(newVersion)
+	}
+	if ov, ok := agg.(originalVersionSetter); ok {
+		ov.setOriginalVersion(newVersion)
 	}
 
 	// Clear uncommitted events after successful save
@@ -306,8 +338,12 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 
 	// Set the aggregate version if it implements VersionSetter.
 	// This is crucial for optimistic concurrency control in SaveAggregate.
+	loadedVersion := int64(len(storedEvents))
 	if setter, ok := agg.(VersionSetter); ok {
-		setter.SetVersion(int64(len(storedEvents)))
+		setter.SetVersion(loadedVersion)
+	}
+	if ov, ok := agg.(originalVersionSetter); ok {
+		ov.setOriginalVersion(loadedVersion)
 	}
 
 	return nil
@@ -396,8 +432,9 @@ func (s *EventStore) ProcessStoredEvent(ctx context.Context, stored StoredEvent)
 // If no encryption or upcasters are registered, it falls back to the standard
 // DeserializeEvent path with zero overhead.
 func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEvent) (Event, error) {
+	upcasters := s.upcasters.Load()
 	needsDecryption := s.encryption != nil && IsEncrypted(stored.Metadata)
-	needsUpcast := s.upcasters != nil && s.upcasters.HasUpcasters(stored.Type)
+	needsUpcast := upcasters != nil && upcasters.HasUpcasters(stored.Type)
 
 	if !needsDecryption && !needsUpcast {
 		return DeserializeEvent(s.serializer, stored)
@@ -407,7 +444,7 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 
 	// Decrypt before upcasting
 	if needsDecryption {
-		decData, err := s.encryption.decryptFields(ctx, stored.Type, stored.Data, stored.Metadata)
+		decData, err := s.encryption.decryptFields(ctx, stored.StreamID, stored.Type, stored.Data, stored.Metadata)
 		if err != nil {
 			return Event{}, err
 		}
@@ -417,7 +454,7 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 	// Upcast after decryption
 	if needsUpcast {
 		schemaVersion := GetSchemaVersion(stored.Metadata)
-		upcasted, _, err := s.upcasters.Upcast(stored.Type, schemaVersion, eventData, stored.Metadata)
+		upcasted, _, err := upcasters.Upcast(stored.Type, schemaVersion, eventData, stored.Metadata)
 		if err != nil {
 			return Event{}, err
 		}
@@ -434,13 +471,20 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 
 // prepareEventData stamps the schema version and encrypts fields as needed.
 // This is the shared logic used by Append, SaveAggregate, and the outbox wrapper.
-func (s *EventStore) prepareEventData(ctx context.Context, eventData *EventData) error {
-	if s.upcasters != nil {
-		eventData.Metadata = SetSchemaVersion(eventData.Metadata, s.upcasters.LatestVersion(eventData.Type))
+// streamID is bound into the field-encryption AAD so ciphertext cannot be
+// relocated to a different stream.
+func (s *EventStore) prepareEventData(ctx context.Context, streamID string, eventData *EventData) error {
+	if upcasters := s.upcasters.Load(); upcasters != nil {
+		// Stamp the latest schema version, but respect a version the caller has
+		// already set explicitly (e.g. when re-appending an event carried from
+		// elsewhere) rather than clobbering it.
+		if !hasSchemaVersion(eventData.Metadata) {
+			eventData.Metadata = SetSchemaVersion(eventData.Metadata, upcasters.LatestVersion(eventData.Type))
+		}
 	}
 
 	if s.encryption != nil && s.encryption.HasEncryptedFields(eventData.Type) {
-		encData, encMeta, err := s.encryption.encryptFields(ctx, eventData.Type, eventData.Data, eventData.Metadata)
+		encData, encMeta, err := s.encryption.encryptFields(ctx, streamID, eventData.Type, eventData.Data, eventData.Metadata)
 		if err != nil {
 			return err
 		}
@@ -448,17 +492,30 @@ func (s *EventStore) prepareEventData(ctx context.Context, eventData *EventData)
 		eventData.Metadata = encMeta
 	}
 
+	// Enforce the optional max event size on the final (serialized, encrypted) data.
+	if s.maxEventSize > 0 && len(eventData.Data) > s.maxEventSize {
+		return fmt.Errorf("%w: event type %q is %d bytes (limit %d)",
+			ErrEventTooLarge, eventData.Type, len(eventData.Data), s.maxEventSize)
+	}
+
 	return nil
 }
 
 // RegisterUpcasters is a convenience method that registers upcasters with the event store.
 // If no UpcasterChain has been configured, a new one is created automatically.
+// It is safe to call concurrently with Load/Append (the upcaster pointer is atomic
+// and UpcasterChain.Register is internally synchronized).
 func (s *EventStore) RegisterUpcasters(upcasters ...Upcaster) error {
-	if s.upcasters == nil {
-		s.upcasters = NewUpcasterChain()
+	chain := s.upcasters.Load()
+	if chain == nil {
+		chain = NewUpcasterChain()
+		if !s.upcasters.CompareAndSwap(nil, chain) {
+			// Another goroutine installed a chain first; use that one.
+			chain = s.upcasters.Load()
+		}
 	}
 	for _, u := range upcasters {
-		if err := s.upcasters.Register(u); err != nil {
+		if err := chain.Register(u); err != nil {
 			return err
 		}
 	}

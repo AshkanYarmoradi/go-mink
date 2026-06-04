@@ -17,8 +17,21 @@ import (
 
 // promptInput runs an interactive input form and returns the entered value.
 // It only prompts if nonInteractive is false and the current value is empty.
-func promptInput(title, description, placeholder string, value *string, nonInteractive bool) error {
-	if nonInteractive || *value != "" {
+//
+// In non-interactive mode a prompt cannot be shown, so if the value is still
+// empty the caller must have supplied it via flags. requiredFlag names the flag
+// the user should set; when it is non-empty and the value is missing,
+// promptInput returns an error instead of silently leaving the value blank
+// (which previously produced malformed scaffolding). Pass an empty requiredFlag
+// for genuinely optional inputs, where an empty value is acceptable.
+func promptInput(title, description, placeholder string, value *string, nonInteractive bool, requiredFlag string) error {
+	if *value != "" {
+		return nil
+	}
+	if nonInteractive {
+		if requiredFlag != "" {
+			return fmt.Errorf("%s is required in non-interactive mode", requiredFlag)
+		}
 		return nil
 	}
 	form := huh.NewForm(
@@ -61,7 +74,7 @@ Examples:
 	cmd.AddCommand(newGenerateProjectionCommand())
 	cmd.AddCommand(newGenerateCommandCommand())
 
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 func newGenerateAggregateCommand() *cobra.Command {
@@ -89,7 +102,7 @@ Examples:
 			if len(events) == 0 {
 				var eventsInput string
 				if err := promptInput("Events", "Comma-separated list of events (e.g., Created,Updated,Deleted)",
-					"Created,Updated,Deleted", &eventsInput, nonInteractive); err != nil {
+					"Created,Updated,Deleted", &eventsInput, nonInteractive, ""); err != nil {
 					return err
 				}
 				events = parseCommaSeparated(eventsInput)
@@ -199,7 +212,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 			}
 
 			if err := promptInput("Aggregate Name", params.aggregateLabel,
-				"Order", &aggregate, nonInteractive); err != nil {
+				"Order", &aggregate, nonInteractive, "--aggregate"); err != nil {
 				return err
 			}
 
@@ -263,7 +276,7 @@ func newGenerateProjectionCommand() *cobra.Command {
 			if len(events) == 0 {
 				var eventsInput string
 				if err := promptInput("Handled Events", "Comma-separated list of event types this projection handles",
-					"OrderCreated,ItemAdded,OrderShipped", &eventsInput, nonInteractive); err != nil {
+					"OrderCreated,ItemAdded,OrderShipped", &eventsInput, nonInteractive, ""); err != nil {
 					return err
 				}
 				events = parseCommaSeparated(eventsInput)

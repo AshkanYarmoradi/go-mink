@@ -118,8 +118,10 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 
 			span.SetAttributes(attrs...)
 
-			// Extract correlation ID if present
-			if correlationID, ok := ctx.Value(correlationIDContextKey{}).(string); ok {
+			// Extract correlation ID if present. This must read the same context
+			// key that mink.CorrelationIDMiddleware writes — use the public
+			// accessor rather than a private key local to this package.
+			if correlationID := mink.CorrelationIDFromContext(ctx); correlationID != "" {
 				span.SetAttributes(attribute.String("mink.correlation_id", correlationID))
 			}
 
@@ -145,9 +147,6 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 		}
 	}
 }
-
-// correlationIDContextKey is a context key for correlation ID.
-type correlationIDContextKey struct{}
 
 // =============================================================================
 // Event Store Middleware

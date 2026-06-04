@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -554,6 +555,98 @@ func TestSerializer_RoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, extractBytesValue(result))
 	})
+}
+
+// =============================================================================
+// Nested / Repeated field round-trip
+// =============================================================================
+
+// extractStruct returns the *structpb.Struct from a Deserialize result,
+// handling both pointer and value forms.
+func extractStruct(v interface{}) *structpb.Struct {
+	switch typed := v.(type) {
+	case *structpb.Struct:
+		return typed
+	case structpb.Struct:
+		return &typed
+	}
+	return nil
+}
+
+// TestSerializer_RoundTrip_NestedAndRepeated locks in behavior for a real-world
+// protobuf message that contains NESTED messages and a REPEATED field, rather
+// than only the flat scalar wrapper types exercised elsewhere. structpb.Struct
+// ships with the protobuf module (no protoc or extra dependency required): its
+// Fields map holds nested Values, one of which is a ListValue (repeated) that
+// itself contains a nested StructValue.
+func TestSerializer_RoundTrip_NestedAndRepeated(t *testing.T) {
+	s := NewSerializer()
+	require.NoError(t, s.Register("OrderPlaced", &structpb.Struct{}))
+
+	// Build a deeply structured value: top-level fields, a nested object, and a
+	// repeated list whose elements are themselves nested objects.
+	original, err := structpb.NewStruct(map[string]interface{}{
+		"orderId": "order-123",
+		"total":   149.99,
+		"paid":    true,
+		"customer": map[string]interface{}{ // nested message
+			"id":   "cust-456",
+			"name": "Ada Lovelace",
+			"address": map[string]interface{}{ // doubly-nested message
+				"city": "London",
+				"zip":  "EC1",
+			},
+		},
+		"items": []interface{}{ // repeated field
+			map[string]interface{}{"sku": "SKU-1", "qty": float64(2)},
+			map[string]interface{}{"sku": "SKU-2", "qty": float64(1)},
+		},
+		"tags": []interface{}{"priority", "gift"}, // repeated scalars
+	})
+	require.NoError(t, err)
+
+	data, err := s.Serialize(original)
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	result, err := s.Deserialize(data, "OrderPlaced")
+	require.NoError(t, err)
+
+	got := extractStruct(result)
+	require.NotNil(t, got)
+
+	// Top-level scalars preserved.
+	assert.Equal(t, "order-123", got.Fields["orderId"].GetStringValue())
+	assert.InDelta(t, 149.99, got.Fields["total"].GetNumberValue(), 0.0001)
+	assert.True(t, got.Fields["paid"].GetBoolValue())
+
+	// Nested message preserved (including the doubly-nested address).
+	customer := got.Fields["customer"].GetStructValue()
+	require.NotNil(t, customer)
+	assert.Equal(t, "cust-456", customer.Fields["id"].GetStringValue())
+	assert.Equal(t, "Ada Lovelace", customer.Fields["name"].GetStringValue())
+	address := customer.Fields["address"].GetStructValue()
+	require.NotNil(t, address)
+	assert.Equal(t, "London", address.Fields["city"].GetStringValue())
+	assert.Equal(t, "EC1", address.Fields["zip"].GetStringValue())
+
+	// Repeated field of nested messages preserved in order.
+	items := got.Fields["items"].GetListValue()
+	require.NotNil(t, items)
+	require.Len(t, items.Values, 2)
+	assert.Equal(t, "SKU-1", items.Values[0].GetStructValue().Fields["sku"].GetStringValue())
+	assert.InDelta(t, 2, items.Values[0].GetStructValue().Fields["qty"].GetNumberValue(), 0.0001)
+	assert.Equal(t, "SKU-2", items.Values[1].GetStructValue().Fields["sku"].GetStringValue())
+
+	// Repeated scalars preserved in order.
+	tags := got.Fields["tags"].GetListValue()
+	require.NotNil(t, tags)
+	require.Len(t, tags.Values, 2)
+	assert.Equal(t, "priority", tags.Values[0].GetStringValue())
+	assert.Equal(t, "gift", tags.Values[1].GetStringValue())
+
+	// And the whole thing must be byte-for-byte equal via proto semantics.
+	assert.True(t, proto.Equal(original, extractStruct(result)))
 }
 
 // =============================================================================

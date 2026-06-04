@@ -5,6 +5,7 @@ package sagas
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -324,6 +325,67 @@ func (f *SagaStateMachineFixture) ExpectTransition(from, to SagaState, event, co
 // Transitions returns the expected transitions for verification.
 func (f *SagaStateMachineFixture) Transitions() []StateTransition {
 	return f.transitions
+}
+
+// Run drives the saga through the expected transitions in order: for each, it
+// (optionally) asserts the current state matches From, applies a synthetic event
+// of the transition's Event type, asserts the saga emits the expected Command,
+// and asserts it lands in the To state. It fails the test on the first mismatch.
+// This is what makes the fixture actually verify behavior rather than just record
+// expectations.
+func (f *SagaStateMachineFixture) Run(ctx context.Context) *SagaStateMachineFixture {
+	f.t.Helper()
+	for i, tr := range f.transitions {
+		if tr.From != "" {
+			if got := sagaStateString(f.saga.State()); got != string(tr.From) {
+				f.t.Errorf("transition %d (%s): expected from-state %q, got %q", i, tr.Event, tr.From, got)
+				return f
+			}
+		}
+
+		cmds, err := f.saga.HandleEvent(ctx, mink.StoredEvent{Type: tr.Event})
+		if err != nil {
+			f.t.Errorf("transition %d (%s): HandleEvent returned error: %v", i, tr.Event, err)
+			return f
+		}
+
+		if tr.Command != "" && !containsCommandType(cmds, tr.Command) {
+			f.t.Errorf("transition %d (%s): expected command %q, got %v", i, tr.Event, tr.Command, commandTypeNames(cmds))
+			return f
+		}
+
+		if tr.To != "" {
+			if got := sagaStateString(f.saga.State()); got != string(tr.To) {
+				f.t.Errorf("transition %d (%s): expected to-state %q, got %q", i, tr.Event, tr.To, got)
+				return f
+			}
+		}
+	}
+	return f
+}
+
+func sagaStateString(s interface{}) string {
+	if s == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", s)
+}
+
+func containsCommandType(cmds []mink.Command, cmdType string) bool {
+	for _, c := range cmds {
+		if c.CommandType() == cmdType {
+			return true
+		}
+	}
+	return false
+}
+
+func commandTypeNames(cmds []mink.Command) []string {
+	out := make([]string, len(cmds))
+	for i, c := range cmds {
+		out[i] = c.CommandType()
+	}
+	return out
 }
 
 // =============================================================================

@@ -13,6 +13,7 @@ type CommandBus struct {
 	middleware []Middleware
 	closed     atomic.Bool
 	mu         sync.RWMutex
+	inFlight   sync.WaitGroup
 }
 
 // CommandBusOption configures a CommandBus.
@@ -68,15 +69,19 @@ func (b *CommandBus) Use(middleware ...Middleware) {
 
 // Dispatch sends a command through the middleware pipeline to its handler.
 func (b *CommandBus) Dispatch(ctx context.Context, cmd Command) (CommandResult, error) {
-	if b.closed.Load() {
-		return NewErrorResult(ErrCommandBusClosed), ErrCommandBusClosed
-	}
-
 	if cmd == nil {
 		return NewErrorResult(ErrNilCommand), ErrNilCommand
 	}
 
+	// Register this dispatch as in-flight under the lock and re-check closed, so
+	// Close() (which takes the write lock) cannot race past an in-flight command.
 	b.mu.RLock()
+	if b.closed.Load() {
+		b.mu.RUnlock()
+		return NewErrorResult(ErrCommandBusClosed), ErrCommandBusClosed
+	}
+	b.inFlight.Add(1)
+	defer b.inFlight.Done()
 	handler := b.registry.Get(cmd.CommandType())
 	middleware := make([]Middleware, len(b.middleware))
 	copy(middleware, b.middleware)
@@ -161,9 +166,21 @@ func (b *CommandBus) MiddlewareCount() int {
 	return len(b.middleware)
 }
 
-// Close closes the command bus, preventing further dispatch operations.
+// Close closes the command bus, preventing further dispatch operations and
+// blocking until all in-flight dispatches (including those started via
+// DispatchAsync) have completed.
+//
+// Close must not be called from within a command handler: the calling dispatch
+// is itself in-flight, so Close would wait on its own completion and deadlock.
+// Trigger shutdown from outside the handler (e.g. signal a separate goroutine).
 func (b *CommandBus) Close() error {
+	b.mu.Lock()
 	b.closed.Store(true)
+	b.mu.Unlock()
+
+	// Wait for in-flight dispatches to drain. New dispatches are rejected because
+	// they observe closed==true under the read lock.
+	b.inFlight.Wait()
 	return nil
 }
 

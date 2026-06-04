@@ -140,10 +140,10 @@ func StreamID(tenantID, aggregateType, aggregateID string) string {
 
 ```sql
 -- Index for tenant-scoped queries
-CREATE INDEX idx_events_tenant ON mink_events ((metadata->>'tenantId'));
+CREATE INDEX idx_events_tenant ON events ((metadata->>'tenantId'));
 
 -- Partial index for specific tenant (high-volume tenants)
-CREATE INDEX idx_events_tenant_abc ON mink_events (global_position)
+CREATE INDEX idx_events_tenant_abc ON events (global_position)
 WHERE metadata->>'tenantId' = 'tenant-abc';
 ```
 

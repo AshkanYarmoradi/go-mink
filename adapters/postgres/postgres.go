@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -220,6 +221,13 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 }
 
 // Migrate runs database migrations.
+//
+// It creates the core event-store objects only: the schema plus the streams,
+// events, snapshots, and checkpoints tables. It deliberately does NOT create
+// the outbox, idempotency, or saga tables. Callers that use the
+// NewOutboxStoreFromAdapter, NewIdempotencyStoreFromAdapter, or
+// NewSagaStoreFromAdapter sub-stores must call that store's Initialize(ctx)
+// to create its own table.
 func (a *PostgresAdapter) Migrate(ctx context.Context) error {
 	for _, stmt := range eventStoreSchemaStatements(a.schema, "events", "snapshots") {
 		if _, err := a.db.ExecContext(ctx, stmt); err != nil {
@@ -394,8 +402,13 @@ func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []
 	return storedEvents, nil
 }
 
-// AppendWithOutbox atomically appends events and schedules outbox messages in a single transaction.
-func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
+// AppendWithOutbox atomically appends events and schedules outbox messages in a
+// single transaction. The messages are scheduled into the provided outbox store
+// (the one the caller configured) via its ScheduleInTx, so the atomic path writes
+// to the same table the caller reads from. The store must be a *postgres.OutboxStore
+// so it can enrol in this adapter's transaction; a nil or non-PostgreSQL store
+// with messages present is an error (it could not participate in the transaction).
+func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outbox adapters.OutboxStore, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
 	if a.closed.Load() {
 		return nil, ErrAdapterClosed
 	}
@@ -406,6 +419,20 @@ func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string,
 
 	if len(events) == 0 {
 		return nil, ErrNoEvents
+	}
+
+	// Validate the outbox store BEFORE opening the transaction so a misconfigured
+	// store fails fast and cannot leave events committed without their messages.
+	var pgOutbox *OutboxStore
+	if len(outboxMessages) > 0 {
+		if outbox == nil {
+			return nil, adapters.ErrNilOutboxStore
+		}
+		store, ok := outbox.(*OutboxStore)
+		if !ok {
+			return nil, fmt.Errorf("mink/postgres: AppendWithOutbox requires a *postgres.OutboxStore for transactional scheduling, got %T", outbox)
+		}
+		pgOutbox = store
 	}
 
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -419,10 +446,9 @@ func (a *PostgresAdapter) AppendWithOutbox(ctx context.Context, streamID string,
 		return nil, err
 	}
 
-	// Insert outbox messages in the same transaction
-	if len(outboxMessages) > 0 {
-		outboxStore := NewOutboxStoreFromAdapter(a)
-		if err := outboxStore.ScheduleInTx(ctx, tx, outboxMessages); err != nil {
+	// Insert outbox messages in the same transaction, into the caller's store.
+	if pgOutbox != nil {
+		if err := pgOutbox.ScheduleInTx(ctx, tx, outboxMessages); err != nil {
 			return nil, fmt.Errorf("mink/postgres: failed to schedule outbox messages: %w", err)
 		}
 	}
@@ -467,6 +493,12 @@ func (a *PostgresAdapter) appendInTx(ctx context.Context, tx *sql.Tx, streamID s
 			INSERT INTO `+schemaQ+`.streams (stream_id, category, version)
 			VALUES ($1, $2, 0)`, streamID, category)
 		if err != nil {
+			// A unique violation here means a concurrent writer created the
+			// same stream between our FOR UPDATE pre-check (which saw no row)
+			// and this INSERT. Surface it as a concurrency conflict.
+			if mapped := mapPostgresError(err); errors.Is(mapped, adapters.ErrConcurrencyConflict) {
+				return nil, mapped
+			}
 			return nil, fmt.Errorf("mink/postgres: failed to create stream: %w", err)
 		}
 	}
@@ -493,6 +525,12 @@ func (a *PostgresAdapter) appendInTx(ctx context.Context, tx *sql.Tx, streamID s
 		).Scan(&globalPosition, &eventID, &timestamp)
 
 		if err != nil {
+			// A unique violation on (stream_id, version) means a concurrent
+			// writer appended the same version first. Surface it as a
+			// concurrency conflict rather than a raw driver error.
+			if mapped := mapPostgresError(err); errors.Is(mapped, adapters.ErrConcurrencyConflict) {
+				return nil, mapped
+			}
 			return nil, fmt.Errorf("mink/postgres: failed to insert event: %w", err)
 		}
 
@@ -920,13 +958,19 @@ func (a *PostgresAdapter) GetEventStoreStats(ctx context.Context) (*adapters.Eve
 	stats := &adapters.EventStoreStats{}
 
 	// Total events
-	_ = a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+schemaQ+".events").Scan(&stats.TotalEvents)
+	if err := a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+schemaQ+".events").Scan(&stats.TotalEvents); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to count events: %w", err)
+	}
 
 	// Total streams
-	_ = a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+schemaQ+".streams").Scan(&stats.TotalStreams)
+	if err := a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+schemaQ+".streams").Scan(&stats.TotalStreams); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to count streams: %w", err)
+	}
 
 	// Event types
-	_ = a.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT event_type) FROM "+schemaQ+".events").Scan(&stats.EventTypes)
+	if err := a.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT event_type) FROM "+schemaQ+".events").Scan(&stats.EventTypes); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to count event types: %w", err)
+	}
 
 	// Average events per stream
 	if stats.TotalStreams > 0 {
@@ -941,14 +985,19 @@ func (a *PostgresAdapter) GetEventStoreStats(ctx context.Context) (*adapters.Eve
 		ORDER BY count DESC
 		LIMIT 5
 	`)
-	if err == nil {
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var t adapters.EventTypeCount
-			if rows.Scan(&t.Type, &t.Count) == nil {
-				stats.TopEventTypes = append(stats.TopEventTypes, t)
-			}
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to query top event types: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var t adapters.EventTypeCount
+		if err := rows.Scan(&t.Type, &t.Count); err != nil {
+			return nil, fmt.Errorf("mink/postgres: failed to scan event type count: %w", err)
 		}
+		stats.TopEventTypes = append(stats.TopEventTypes, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to iterate top event types: %w", err)
 	}
 
 	return stats, nil

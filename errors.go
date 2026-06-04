@@ -32,6 +32,15 @@ var (
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
 
+	// ErrAggregateTypeNotRegistered indicates no factory is registered for an aggregate type.
+	ErrAggregateTypeNotRegistered = errors.New("mink: aggregate type not registered")
+
+	// ErrCommandUnsuccessful indicates a command returned an unsuccessful result with no error.
+	ErrCommandUnsuccessful = errors.New("mink: command returned unsuccessful result")
+
+	// ErrSagaTimedOut indicates a saga exceeded its configured timeout and was compensated.
+	ErrSagaTimedOut = errors.New("mink: saga timed out")
+
 	// ErrNilStore indicates a nil event store was passed.
 	ErrNilStore = errors.New("mink: nil event store")
 
@@ -40,6 +49,10 @@ var (
 
 	// ErrNoEvents indicates no events were provided for append.
 	ErrNoEvents = adapters.ErrNoEvents
+
+	// ErrEventTooLarge indicates an event's serialized data exceeds the configured
+	// maximum size (see WithMaxEventSize).
+	ErrEventTooLarge = errors.New("mink: event too large")
 
 	// ErrInvalidVersion indicates an invalid version number was provided.
 	ErrInvalidVersion = adapters.ErrInvalidVersion

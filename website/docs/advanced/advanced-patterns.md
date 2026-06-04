@@ -256,10 +256,13 @@ func (c CreateOrder) IdempotencyKey() string {
 ```go
 // IdempotencyConfig controls middleware behavior
 type IdempotencyConfig struct {
-    Store       IdempotencyStore        // Required: storage backend
-    KeyFunc     func(Command) string    // Optional: custom key generator
-    TTL         time.Duration           // Optional: result expiration (default: 24h)
-    Serializer  func(CommandResult) []byte  // Optional: result serializer
+    Store          IdempotencyStore     // Required: storage backend
+    TTL            time.Duration        // Optional: result expiration (default: 24h)
+    ReservationTTL time.Duration        // Optional: in-flight reservation lease, bounds how long a duplicate is blocked (default: 5m)
+    KeyGenerator   func(Command) string // Optional: custom key generator (default: GetIdempotencyKey)
+    StoreErrors    bool                 // Optional: replay stored failures instead of retrying (default: false)
+    FailClosed     bool                 // Optional: fail the command if the store is down (default: false)
+    SkipCommands   []string             // Optional: command types that bypass the idempotency check
 }
 
 // Use default configuration
@@ -270,13 +273,40 @@ bus.Use(mink.IdempotencyMiddleware(config))
 config := mink.IdempotencyConfig{
     Store: store,
     TTL:   1 * time.Hour,
-    KeyFunc: func(cmd mink.Command) string {
+    KeyGenerator: func(cmd mink.Command) string {
         // Custom key generation
         return fmt.Sprintf("%s:%s", cmd.CommandType(), extractKey(cmd))
     },
 }
 bus.Use(mink.IdempotencyMiddleware(config))
 ```
+
+#### Fail-closed on store outage
+
+By default the middleware is **fail-open**: if the idempotency store is
+unavailable, the command still runs (favoring availability over the
+exactly-once guarantee). For commands where a duplicate is worse than a
+rejection (payments, transfers), set `FailClosed: true` so a store outage
+fails the command instead of allowing a possible duplicate:
+
+```go
+config := mink.IdempotencyConfig{
+    Store:      store,
+    TTL:        1 * time.Hour,
+    FailClosed: true, // store error => command fails (no duplicate slips through)
+}
+bus.Use(mink.IdempotencyMiddleware(config))
+```
+
+:::warning Idempotency keys must come from trusted input
+Derive idempotency keys from **authenticated / server-controlled** fields. If
+an attacker can influence the key — for example via
+`mink.IdempotencyKeyFromField` over a user-supplied field — they can collide
+with a victim's key and **suppress or replay** that victim's command. The
+default `mink.GetIdempotencyKey` (which hashes the full serialized command with
+SHA-256 when the command supplies no key of its own) is safe; a client-supplied request ID should be scoped to the authenticated
+caller (e.g. prefix it with the tenant/user ID) before use as a key.
+:::
 
 ### Idempotency Flow
 
@@ -681,6 +711,23 @@ go manager.Start(ctx)
 defer manager.Stop()
 ```
 
+### Timeouts & Abandoned-Saga Compensation
+
+A saga can stall — an awaited event never arrives, or a downstream service goes
+dark. `WithSagaTimeout` enables a background sweep that finds `Running` /
+`Compensating` sagas whose last update is older than the timeout and drives them
+into compensation, so resources are released instead of being held forever. The
+sweep cadence is controlled by `WithSagaPollInterval`; the default timeout of `0`
+disables the sweep entirely (it does not affect the primary, push-based event
+subscription).
+
+```go
+manager := mink.NewSagaManager(sagaStore, subscriptionAdapter, commandBus,
+    mink.WithSagaTimeout(5*time.Minute),    // stalled > 5m -> compensate
+    mink.WithSagaPollInterval(30*time.Second), // sweep cadence
+)
+```
+
 ### Saga Store
 
 ```go
@@ -990,19 +1037,26 @@ import "go-mink.dev/adapters/memory"
 outboxStore := memory.NewOutboxStore()
 ```
 
-### Atomic Append with Outbox (PostgreSQL)
+### Atomic Append with Outbox
 
-The PostgreSQL adapter implements `OutboxAppender` for atomic event+outbox writes:
+Both the PostgreSQL and in-memory adapters implement `OutboxAppender`, so
+`EventStoreWithOutbox` writes events and their outbox messages atomically — the
+events and the messages are committed together, or neither is:
 
 ```go
-// When using PostgreSQL, events and outbox messages are written
-// in the same database transaction automatically.
-// No messages are published if the event append fails, and vice versa.
-
-// The EventStoreWithOutbox detects this automatically:
-// - PostgreSQL adapter: atomic (same transaction)
-// - Memory adapter: non-atomic fallback (separate calls, logged warning)
+// EventStoreWithOutbox detects OutboxAppender automatically and uses the
+// atomic path. Outbox messages are scheduled BEFORE the events are written, so
+// a version conflict or a scheduling failure leaves neither behind:
+// - PostgreSQL adapter: single database transaction
+// - In-memory adapter:  single critical section (schedule-first under one lock)
+//
+// No messages are published if the event append fails, and no events are
+// written if scheduling the outbox messages fails.
 ```
+
+An adapter that does **not** implement `OutboxAppender` falls back to a
+non-atomic path: events are appended first, then outbox messages are scheduled
+separately.
 
 ### Metrics Integration
 

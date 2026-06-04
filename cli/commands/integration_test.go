@@ -993,14 +993,16 @@ func TestGenerateEventCommand_ForceNoAggregate_Integration(t *testing.T) {
 	env.createConfig()
 
 	cmd := NewGenerateCommand()
-	// Use --non-interactive without --aggregate to skip interactive form
+	// --non-interactive without --aggregate must error rather than emit
+	// malformed scaffolding.
 	cmd.SetArgs([]string{"event", "ItemAdded", "--non-interactive"})
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
-	// Event file should still be created even without aggregate
-	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/events/itemadded.go"))
+	// No event file should be created on error.
+	assert.NoFileExists(t, filepath.Join(env.tmpDir, "internal/events/itemadded.go"))
 }
 
 // Test generate projection command with --non-interactive
@@ -1051,12 +1053,15 @@ func TestGenerateCommandCommand_ForceNoAggregate_Integration(t *testing.T) {
 	env.createConfig()
 
 	cmd := NewGenerateCommand()
+	// --non-interactive without --aggregate must error rather than emit
+	// malformed scaffolding.
 	cmd.SetArgs([]string{"command", "UpdateItem", "--non-interactive"})
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
-	assert.FileExists(t, filepath.Join(env.tmpDir, "internal/commands/updateitem.go"))
+	assert.NoFileExists(t, filepath.Join(env.tmpDir, "internal/commands/updateitem.go"))
 }
 
 // Test migrate up command with --non-interactive (skips spinner)

@@ -63,6 +63,32 @@ It provides a complete solution for building event-driven systems.
 	return rootCmd
 }
 
+// requireSubcommand configures a parent command (one that only groups
+// subcommands and has no action of its own) so that a missing or unknown
+// subcommand results in a non-zero exit instead of silently printing help.
+//
+// Without this, cobra's default behavior for a parent command with no RunE is
+// to print help and return nil for both the bare invocation (`mink stream`)
+// and an unknown subcommand (`mink stream bogus`), which is a scripting hazard.
+//
+// `--help`/`-h` is still handled by cobra before Args validation and RunE run,
+// so `mink stream --help` continues to show help and exit 0.
+func requireSubcommand(cmd *cobra.Command) *cobra.Command {
+	// Reject any positional argument: an unknown subcommand is parsed as an
+	// arg here, so NoArgs makes cobra emit "unknown command" and exit non-zero.
+	cmd.Args = cobra.NoArgs
+	// Handle the bare-parent (no args) case: print help to stderr and return an
+	// error so the process exits non-zero. cobra's Help() writes to the command's
+	// out writer (stdout by default), so redirect it to stderr first to keep this
+	// non-zero-exit path from polluting stdout for scripts.
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		c.SetOut(c.ErrOrStderr())
+		_ = c.Help()
+		return fmt.Errorf("%q requires a subcommand; see '%s --help'", c.CommandPath(), c.CommandPath())
+	}
+	return cmd
+}
+
 // Execute runs the root command
 func Execute() error {
 	rootCmd := NewRootCommand()

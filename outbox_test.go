@@ -244,11 +244,17 @@ func newMockOutboxAppenderAdapter() *mockOutboxAppenderAdapter {
 	}
 }
 
-func (m *mockOutboxAppenderAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
+func (m *mockOutboxAppenderAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outbox adapters.OutboxStore, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
 	m.appendWithOutboxCalled = true
 	m.appendedOutboxMsgs = outboxMessages
 	if m.appendWithOutboxErr != nil {
 		return nil, m.appendWithOutboxErr
+	}
+	// Schedule into the caller-provided store, mirroring real adapters.
+	if len(outboxMessages) > 0 && outbox != nil {
+		if err := outbox.Schedule(ctx, outboxMessages); err != nil {
+			return nil, err
+		}
 	}
 	return m.Append(ctx, streamID, events, expectedVersion)
 }
@@ -373,9 +379,8 @@ func TestSaveAggregate_AtomicPath_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "atomic write failed")
 }
 
-func TestSaveAggregate_FallbackScheduleError(t *testing.T) {
+func TestSaveAggregate_AtomicScheduleError(t *testing.T) {
 	env := newOutboxTestEnv(t, "outboxTestOrderCreated", "webhook:https://example.com")
-	logger := &recordingLogger{}
 
 	failStore := &failingOutboxStore{
 		OutboxStore: memory.NewOutboxStore(),
@@ -384,14 +389,21 @@ func TestSaveAggregate_FallbackScheduleError(t *testing.T) {
 	routes := []OutboxRoute{
 		{EventTypes: []string{"outboxTestOrderCreated"}, Destination: "webhook:https://example.com"},
 	}
-	esWithOutbox := NewEventStoreWithOutbox(env.store, failStore, routes, WithOutboxLogger(logger))
+	esWithOutbox := NewEventStoreWithOutbox(env.store, failStore, routes)
 
 	agg := newOutboxTestOrderAggregate("err-1")
 	agg.CreateOrder("err-1")
 
 	err := esWithOutbox.SaveAggregate(env.ctx, agg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "outbox scheduling failed")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schedule failed")
+
+	// Atomicity: the memory adapter schedules into the configured store before
+	// appending, so a failed schedule must leave neither events nor messages.
+	pos, posErr := env.adapter.GetLastPosition(env.ctx)
+	require.NoError(t, posErr)
+	assert.Equal(t, uint64(0), pos, "no events should be persisted when outbox scheduling fails")
+	assert.Equal(t, 0, failStore.Count(), "no outbox messages should be persisted")
 }
 
 // =============================================================================
@@ -463,7 +475,7 @@ func TestBuildOutboxMessages_FilterRejects(t *testing.T) {
 	assert.Empty(t, msgs)
 }
 
-func TestAppend_FallbackScheduleError(t *testing.T) {
+func TestAppend_AtomicScheduleError(t *testing.T) {
 	adapter := memory.NewAdapter()
 	_ = adapter.Initialize(context.Background())
 	store := New(adapter)
@@ -476,14 +488,19 @@ func TestAppend_FallbackScheduleError(t *testing.T) {
 	routes := []OutboxRoute{
 		{EventTypes: []string{"outboxTestOrderCreated"}, Destination: "webhook:https://example.com"},
 	}
-	logger := &recordingLogger{}
-	esWithOutbox := NewEventStoreWithOutbox(store, failStore, routes, WithOutboxLogger(logger))
+	esWithOutbox := NewEventStoreWithOutbox(store, failStore, routes)
 
 	err := esWithOutbox.Append(context.Background(), "Order-1", []interface{}{
 		outboxTestOrderCreated{OrderID: "1"},
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "outbox scheduling failed")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schedule failed")
+
+	// Atomicity: the memory adapter schedules before appending, so a failed
+	// schedule must leave no events persisted.
+	pos, posErr := adapter.GetLastPosition(context.Background())
+	require.NoError(t, posErr)
+	assert.Equal(t, uint64(0), pos, "no events should be persisted when outbox scheduling fails")
 }
 
 // =============================================================================

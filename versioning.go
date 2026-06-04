@@ -139,8 +139,11 @@ func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, m
 			continue
 		}
 		if u.FromVersion() > currentVersion {
-			// Gap — the event is at a version we can't upcast from
-			break
+			// Gap: an upcaster is registered for a higher version, but nothing
+			// bridges currentVersion → u.FromVersion(). Returning the partially
+			// upcasted data here would silently deserialize stale bytes against
+			// the latest struct, so fail loudly instead of corrupting data.
+			return nil, currentVersion, NewSchemaVersionGapError(eventType, currentVersion, u.FromVersion())
 		}
 
 		result, err := u.Upcast(currentData, metadata)
@@ -201,10 +204,25 @@ func GetSchemaVersion(m Metadata) int {
 	if err != nil {
 		return DefaultSchemaVersion
 	}
+	if version < DefaultSchemaVersion {
+		// Treat 0/negative versions (corrupt metadata or pre-versioning data)
+		// as the default so the upcaster chain starts from a valid version.
+		return DefaultSchemaVersion
+	}
 	return version
 }
 
 // SetSchemaVersion returns a copy of Metadata with the schema version set.
 func SetSchemaVersion(m Metadata, version int) Metadata {
 	return m.WithCustom(schemaVersionKey, strconv.Itoa(version))
+}
+
+// hasSchemaVersion reports whether the metadata already carries an explicit
+// schema version (used to avoid clobbering a caller-set version on append).
+func hasSchemaVersion(m Metadata) bool {
+	if m.Custom == nil {
+		return false
+	}
+	_, ok := m.Custom[schemaVersionKey]
+	return ok
 }

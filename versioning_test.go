@@ -537,21 +537,29 @@ func TestUpcasterChain_Validate_EmptyUpcasters(t *testing.T) {
 	}
 }
 
-func TestUpcasterChain_Upcast_GapBreaks(t *testing.T) {
+func TestUpcasterChain_Upcast_GapErrors(t *testing.T) {
 	chain := NewUpcasterChain()
 	_ = chain.Register(newNoopUpcaster("GapEvent", 1, 2))
 	_ = chain.Register(newNoopUpcaster("GapEvent", 3, 4)) // skip v2→v3
 
 	data := []byte(`{"value":1}`)
-	result, version, err := chain.Upcast("GapEvent", 2, data, Metadata{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Starting at v2 there is no v2→v3 upcaster, but v3→v4 exists: this is a gap.
+	// Upcast must surface it instead of silently returning stale v2 data.
+	_, _, err := chain.Upcast("GapEvent", 2, data, Metadata{})
+	if err == nil {
+		t.Fatal("expected a schema version gap error, got nil")
 	}
-	if version != 2 {
-		t.Errorf("expected version 2 (stopped at gap), got %d", version)
+	if !errors.Is(err, ErrSchemaVersionGap) {
+		t.Errorf("expected ErrSchemaVersionGap, got %v", err)
 	}
-	if string(result) != string(data) {
-		t.Errorf("expected data unchanged at gap, got %s", result)
+}
+
+func TestGetSchemaVersion_ClampsInvalidVersions(t *testing.T) {
+	for _, raw := range []string{"0", "-3"} {
+		m := Metadata{Custom: map[string]string{schemaVersionKey: raw}}
+		if v := GetSchemaVersion(m); v != DefaultSchemaVersion {
+			t.Errorf("GetSchemaVersion(%q) = %d, want %d", raw, v, DefaultSchemaVersion)
+		}
 	}
 }
 

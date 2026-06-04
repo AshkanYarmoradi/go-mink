@@ -55,6 +55,10 @@ func NewOutboxStore(db *sql.DB, opts ...OutboxStoreOption) *OutboxStore {
 }
 
 // NewOutboxStoreFromAdapter creates a new OutboxStore using an existing PostgresAdapter's connection.
+//
+// The returned store does not share the adapter's migrations: PostgresAdapter.Migrate
+// does NOT create the outbox table. Callers must invoke Initialize(ctx) on the
+// returned OutboxStore to create its table before use.
 func NewOutboxStoreFromAdapter(adapter *PostgresAdapter, opts ...OutboxStoreOption) *OutboxStore {
 	allOpts := []OutboxStoreOption{
 		WithOutboxSchema(adapter.schema),
@@ -287,6 +291,31 @@ func (s *OutboxStore) RetryFailed(ctx context.Context, maxAttempts int) (int64, 
 	)
 	if err != nil {
 		return 0, fmt.Errorf("mink/postgres/outbox: failed to retry failed messages: %w", err)
+	}
+
+	return result.RowsAffected()
+}
+
+// ReclaimStale resets messages stuck in OutboxProcessing whose last attempt is
+// older than olderThan back to pending, recovering messages orphaned when a
+// processor crashes between claiming and marking a message.
+func (s *OutboxStore) ReclaimStale(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tableQ := s.fullTableName()
+	query := `
+		UPDATE ` + tableQ + ` SET
+			status = $1
+		WHERE status = $2
+		  AND last_attempt_at IS NOT NULL
+		  AND last_attempt_at < NOW() - make_interval(secs => $3)
+	`
+
+	result, err := s.db.ExecContext(ctx, query,
+		int(adapters.OutboxPending),
+		int(adapters.OutboxProcessing),
+		olderThan.Seconds(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/outbox: failed to reclaim stale messages: %w", err)
 	}
 
 	return result.RowsAffected()

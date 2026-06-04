@@ -240,6 +240,41 @@ func TestSchemaRegistry_CheckCompatibility(t *testing.T) {
 			},
 			expect: SchemaBreaking,
 		},
+		{
+			name: "breaking - required field added",
+			v1: SchemaDefinition{
+				Version: 1,
+				Fields: []FieldDefinition{
+					{Name: "order_id", Type: "string", Required: true},
+				},
+			},
+			v2: SchemaDefinition{
+				Version: 2,
+				Fields: []FieldDefinition{
+					{Name: "order_id", Type: "string", Required: true},
+					{Name: "tenant_id", Type: "string", Required: true},
+				},
+			},
+			expect: SchemaBreaking,
+		},
+		{
+			name: "breaking - field becomes required",
+			v1: SchemaDefinition{
+				Version: 1,
+				Fields: []FieldDefinition{
+					{Name: "order_id", Type: "string", Required: true},
+					{Name: "note", Type: "string", Required: false},
+				},
+			},
+			v2: SchemaDefinition{
+				Version: 2,
+				Fields: []FieldDefinition{
+					{Name: "order_id", Type: "string", Required: true},
+					{Name: "note", Type: "string", Required: true},
+				},
+			},
+			expect: SchemaBreaking,
+		},
 	}
 
 	for _, tt := range tests {
@@ -256,6 +291,48 @@ func TestSchemaRegistry_CheckCompatibility(t *testing.T) {
 				t.Errorf("expected %s, got %s", tt.expect, compat)
 			}
 		})
+	}
+}
+
+func TestSchemaRegistry_CheckCompatibility_RejectsReversedVersions(t *testing.T) {
+	r := NewSchemaRegistry()
+	_ = r.Register("E", SchemaDefinition{Version: 1, Fields: []FieldDefinition{{Name: "a", Type: "string"}}})
+	_ = r.Register("E", SchemaDefinition{Version: 2, Fields: []FieldDefinition{{Name: "a", Type: "string"}}})
+
+	if _, err := r.CheckCompatibility("E", 2, 1); err == nil {
+		t.Fatal("expected error for reversed versions, got nil")
+	}
+	if _, err := r.CheckCompatibility("E", 1, 1); err == nil {
+		t.Fatal("expected error for equal versions, got nil")
+	}
+}
+
+func TestSchemaRegistry_RequireBackwardCompatible(t *testing.T) {
+	r := NewSchemaRegistry()
+	_ = r.Register("E", SchemaDefinition{Version: 1, Fields: []FieldDefinition{{Name: "a", Type: "string", Required: true}}})
+	_ = r.Register("E", SchemaDefinition{Version: 2, Fields: []FieldDefinition{
+		{Name: "a", Type: "string", Required: true},
+		{Name: "b", Type: "string", Required: false},
+	}})
+	_ = r.Register("E", SchemaDefinition{Version: 3, Fields: []FieldDefinition{
+		{Name: "a", Type: "string", Required: true},
+		{Name: "b", Type: "string", Required: false},
+		{Name: "c", Type: "string", Required: true}, // newly required → breaking
+	}})
+
+	if err := r.RequireBackwardCompatible("E", 1, 2); err != nil {
+		t.Fatalf("v1→v2 should be backward compatible, got %v", err)
+	}
+	err := r.RequireBackwardCompatible("E", 2, 3)
+	if err == nil {
+		t.Fatal("v2→v3 should be incompatible (new required field)")
+	}
+	if !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("expected ErrIncompatibleSchema, got %v", err)
+	}
+	var ise *IncompatibleSchemaError
+	if !errors.As(err, &ise) {
+		t.Fatalf("expected *IncompatibleSchemaError, got %T", err)
 	}
 }
 

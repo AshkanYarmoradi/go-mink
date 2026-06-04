@@ -195,9 +195,13 @@
 //	func (c CreateOrder) IdempotencyKey() string { return c.RequestID }
 package mink
 
+// Version is the library version. It can be overridden at build time with
+// -ldflags "-X go-mink.dev.version=v1.2.3".
+var version = "1.0.0"
+
 // Version returns the library version string.
 func Version() string {
-	return "1.0.X"
+	return version
 }
 
 // BuildStreamID creates a stream ID from an aggregate type and ID.

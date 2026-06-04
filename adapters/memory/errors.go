@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"strconv"
+
 	"go-mink.dev/adapters"
 )
 
@@ -37,3 +39,24 @@ var NewConcurrencyError = adapters.NewConcurrencyError
 
 // NewStreamNotFoundError is an alias for adapters.NewStreamNotFoundError for backward compatibility.
 var NewStreamNotFoundError = adapters.NewStreamNotFoundError
+
+// SubscriptionDropError reports that a live event could not be delivered to a
+// subscriber because its channel buffer was full and the event was dropped.
+// It is passed to SubscriptionOptions.OnError (when provided) so callers can
+// detect lossy live delivery from the memory adapter. The identifying fields
+// pinpoint the dropped event so the caller may, for example, trigger a
+// checkpoint-based catch-up from GlobalPosition.
+type SubscriptionDropError struct {
+	// StreamID is the stream the dropped event belonged to.
+	StreamID string
+
+	// GlobalPosition is the global position of the dropped event.
+	GlobalPosition uint64
+}
+
+// Error returns the error message.
+func (e *SubscriptionDropError) Error() string {
+	return "mink/memory: dropped live event for stream " + e.StreamID +
+		" at global position " + strconv.FormatUint(e.GlobalPosition, 10) +
+		" (subscriber buffer full)"
+}

@@ -579,6 +579,27 @@ func TestInitCommand_PostgresDriver(t *testing.T) {
 	assert.True(t, config.Exists(env.tmpDir))
 }
 
+func TestInitCommand_InvalidDriver(t *testing.T) {
+	env := setupTestEnv(t, "mink-init-baddriver-*")
+
+	cmd := NewInitCommand()
+	cmd.SetArgs([]string{
+		env.tmpDir,
+		"--non-interactive",
+		"--name", "app",
+		"--module", "github.com/test/app",
+		"--driver", "mysql", // unsupported
+	})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	require.Error(t, err, "init must reject an unsupported driver")
+	assert.Contains(t, err.Error(), "driver")
+	assert.False(t, config.Exists(env.tmpDir), "no config should be written for an invalid driver")
+}
+
 func TestMigrateCommand_CreateSubcommand_Structure(t *testing.T) {
 	cmd := NewMigrateCommand()
 
@@ -1749,17 +1770,21 @@ func TestCommandsRequireDatabaseURL(t *testing.T) {
 	}
 }
 
-// TestGenerateCommandsWithoutConfig tests that generate commands succeed with defaults when no config exists
+// TestGenerateCommandsWithoutConfig tests generate commands in non-interactive
+// mode when no config exists. Subcommands whose only prompt is optional
+// (aggregate/projection events) succeed with defaults; event/command require
+// --aggregate and must error when it is omitted.
 func TestGenerateCommandsWithoutConfig(t *testing.T) {
 	tests := []struct {
 		name       string
 		subcommand string
 		arg        string
+		wantErr    bool
 	}{
-		{"event", "event", "TestEvent"},
-		{"projection", "projection", "TestProj"},
-		{"command", "command", "TestCmd"},
-		{"aggregate", "aggregate", "Order"},
+		{"event", "event", "TestEvent", true},           // requires --aggregate
+		{"projection", "projection", "TestProj", false}, // events optional
+		{"command", "command", "TestCmd", true},         // requires --aggregate
+		{"aggregate", "aggregate", "Order", false},      // events optional
 	}
 
 	for _, tt := range tests {
@@ -1772,7 +1797,12 @@ func TestGenerateCommandsWithoutConfig(t *testing.T) {
 			require.NoError(t, subCmd.Flags().Set("non-interactive", "true"))
 
 			err := subCmd.RunE(subCmd, []string{tt.arg})
-			assert.NoError(t, err)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "--aggregate is required")
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
@@ -2031,7 +2061,8 @@ func TestProjectionListCommand_WithForce(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test generate event with no aggregate and force
+// Test generate event in non-interactive mode without --aggregate: must error
+// rather than emit malformed scaffolding.
 func TestGenerateEventCommand_ForceNoAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-event-force-*")
 	env.createConfig(withModule("github.com/test/project"))
@@ -2039,14 +2070,16 @@ func TestGenerateEventCommand_ForceNoAggregate(t *testing.T) {
 	cmd := NewGenerateCommand()
 	eventCmd, _, _ := cmd.Find([]string{"event"})
 
-	// Set the force flag
+	// Set the non-interactive flag without providing --aggregate.
 	require.NoError(t, eventCmd.Flags().Set("non-interactive", "true"))
 
 	err := eventCmd.RunE(eventCmd, []string{"OrderCreated"})
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 }
 
-// Test generate command with no aggregate and force
+// Test generate command in non-interactive mode without --aggregate: must error
+// rather than emit malformed scaffolding.
 func TestGenerateCommandCommand_ForceNoAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-cmd-force-*")
 	env.createConfig(withModule("github.com/test/project"))
@@ -2054,11 +2087,12 @@ func TestGenerateCommandCommand_ForceNoAggregate(t *testing.T) {
 	cmd := NewGenerateCommand()
 	cmdCmd, _, _ := cmd.Find([]string{"command"})
 
-	// Set the force flag
+	// Set the non-interactive flag without providing --aggregate.
 	require.NoError(t, cmdCmd.Flags().Set("non-interactive", "true"))
 
 	err := cmdCmd.RunE(cmdCmd, []string{"CreateOrder"})
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 }
 
 // Test generate projection with no events and force
@@ -4685,7 +4719,8 @@ func TestNewGenerateEventCommand_Coverage(t *testing.T) {
 	assert.FileExists(t, evtFile)
 }
 
-// TestNewGenerateCommandCommand_Coverage tests command generation without aggregate
+// TestNewGenerateCommandCommand_NoAggregate verifies command generation in
+// non-interactive mode without --aggregate errors and writes nothing.
 func TestNewGenerateCommandCommand_NoAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-cmd-noagg-*")
 	env.createConfig(withModule("test/module"))
@@ -4698,11 +4733,12 @@ func TestNewGenerateCommandCommand_NoAggregate(t *testing.T) {
 	cmd.SetErr(&buf)
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
-	// Verify command file was created
+	// Verify no command file was created.
 	cmdFile := filepath.Join(env.tmpDir, "internal/commands/simplecommand.go")
-	assert.FileExists(t, cmdFile)
+	assert.NoFileExists(t, cmdFile)
 }
 
 // TestNewGenerateAggregateCommand_NoEvents tests aggregate generation without events
@@ -4861,7 +4897,8 @@ func TestGenerateAggregate_ManyEvents(t *testing.T) {
 	assert.FileExists(t, eventsFile)
 }
 
-// TestGenerateEvent_NoAggregate tests event generation without aggregate
+// TestGenerateEvent_NoAggregate_Coverage verifies event generation in
+// non-interactive mode without --aggregate errors and writes nothing.
 func TestGenerateEvent_NoAggregate_Coverage(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-evt-noagg-*")
 	env.createConfig(withModule("test/module"))
@@ -4874,10 +4911,11 @@ func TestGenerateEvent_NoAggregate_Coverage(t *testing.T) {
 	cmd.SetErr(&buf)
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
 	evtFile := filepath.Join(env.tmpDir, "internal/events/standaloneevent.go")
-	assert.FileExists(t, evtFile)
+	assert.NoFileExists(t, evtFile)
 }
 
 // TestGenerateProjection_ManyEvents tests projection with many events
@@ -5749,7 +5787,8 @@ func TestGenerateAggregate_EmptyEvents(t *testing.T) {
 	assert.FileExists(t, aggFile)
 }
 
-// TestGenerateEvent_WithoutAggregate tests event generation without aggregate
+// TestGenerateEvent_WithoutAggregate verifies event generation in
+// non-interactive mode without --aggregate errors and writes nothing.
 func TestGenerateEvent_WithoutAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-event-noagg-*")
 	env.createConfig(withModule("test/module"))
@@ -5762,13 +5801,15 @@ func TestGenerateEvent_WithoutAggregate(t *testing.T) {
 	cmd.SetErr(&buf)
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
 	eventFile := filepath.Join(env.tmpDir, "internal/events/systemevent.go")
-	assert.FileExists(t, eventFile)
+	assert.NoFileExists(t, eventFile)
 }
 
-// TestGenerateCommand_WithoutAggregate tests command generation without aggregate
+// TestGenerateCommand_WithoutAggregate verifies command generation in
+// non-interactive mode without --aggregate errors and writes nothing.
 func TestGenerateCommand_WithoutAggregate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-cmd-noagg-*")
 	env.createConfig(withModule("test/module"))
@@ -5781,10 +5822,11 @@ func TestGenerateCommand_WithoutAggregate(t *testing.T) {
 	cmd.SetErr(&buf)
 
 	err := cmd.Execute()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--aggregate is required")
 
 	cmdFile := filepath.Join(env.tmpDir, "internal/commands/systemcommand.go")
-	assert.FileExists(t, cmdFile)
+	assert.NoFileExists(t, cmdFile)
 }
 
 // TestGenerateProjection_EmptyEvents tests projection generation with no events
@@ -7409,4 +7451,280 @@ func TestFormatMetadata_Custom_Fields(t *testing.T) {
 	result := formatMetadata(metadata)
 	assert.Contains(t, result, "correlationId")
 	assert.Contains(t, result, "test-corr")
+}
+
+// ============================================================================
+// CLI behavior regression tests
+// ============================================================================
+
+// recordFailAdapter is a minimal CLIAdapter used by the migrate-up tests.
+// It embeds the CLIAdapter interface (nil) so only the methods exercised by
+// runMigrateUp need real implementations; any other call would panic, which
+// the tested path does not trigger. RecordMigration always fails to simulate a
+// migration whose SQL applied but whose record write failed.
+type recordFailAdapter struct {
+	CLIAdapter
+	executeCalls int
+	recordCalls  int
+}
+
+func (a *recordFailAdapter) GetAppliedMigrations(ctx context.Context) ([]string, error) {
+	return nil, nil // nothing applied yet -> the single migration file is pending
+}
+
+func (a *recordFailAdapter) ExecuteSQL(ctx context.Context, sql string) error {
+	a.executeCalls++
+	return nil
+}
+
+func (a *recordFailAdapter) RecordMigration(ctx context.Context, name string) error {
+	a.recordCalls++
+	return fmt.Errorf("simulated record failure")
+}
+
+// findSubcommand returns the named direct subcommand of parent, or nil.
+func findSubcommand(parent *cobra.Command, name string) *cobra.Command {
+	for _, sub := range parent.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+	}
+	return nil
+}
+
+// generate event / command must error (non-zero) in non-interactive mode
+// when --aggregate is omitted, instead of emitting malformed scaffolding.
+func TestGenerate_NonInteractive_MissingAggregate_Errors(t *testing.T) {
+	subcommands := []struct {
+		name string
+		args []string
+	}{
+		{"event", []string{"event", "OrderCreated", "--non-interactive"}},
+		{"command", []string{"command", "CreateOrder", "--non-interactive"}},
+	}
+
+	for _, sc := range subcommands {
+		t.Run(sc.name, func(t *testing.T) {
+			env := setupTestEnv(t, "mink-gen-h8-*")
+			env.createConfig(withModule("github.com/test/project"), withDriver("memory"))
+
+			cmd := NewGenerateCommand()
+			err := executeCmd(cmd, sc.args)
+
+			require.Error(t, err, "expected non-zero exit when --aggregate is missing in non-interactive mode")
+			assert.Contains(t, err.Error(), "--aggregate is required")
+
+			// No scaffolding should have been written to the event/command package.
+			for _, dir := range []string{"internal/events", "internal/commands"} {
+				if entries, derr := os.ReadDir(filepath.Join(env.tmpDir, dir)); derr == nil {
+					assert.Empty(t, entries, "no files should be generated on error in %s", dir)
+				}
+			}
+		})
+	}
+}
+
+// generate event / command must succeed (and emit well-formed code) when
+// --aggregate is supplied in non-interactive mode.
+func TestGenerate_NonInteractive_WithAggregate_Succeeds(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-h8-ok-*")
+	env.createConfig(
+		withModule("github.com/test/project"),
+		withDriver("memory"),
+		withEventPackage("internal/events"),
+	)
+
+	cmd := NewGenerateCommand()
+	err := executeCmd(cmd, []string{"event", "OrderShipped", "--aggregate", "Order", "--non-interactive"})
+	require.NoError(t, err)
+
+	content, rerr := os.ReadFile(filepath.Join(env.tmpDir, "internal", "events", "ordershipped.go"))
+	require.NoError(t, rerr)
+	// Well-formed: proper aggregate-derived field and json tag, no garbage.
+	assert.Contains(t, string(content), "OrderID string")
+	assert.Contains(t, string(content), `json:"order_id"`)
+	assert.NotContains(t, string(content), `json:"_id"`)
+}
+
+// generate aggregate has only an optional events prompt, so non-interactive
+// mode without --events must still succeed (events are legitimately optional).
+func TestGenerate_NonInteractive_Aggregate_NoEvents_Succeeds(t *testing.T) {
+	env := setupTestEnv(t, "mink-gen-agg-*")
+	env.createConfig(withModule("github.com/test/project"), withDriver("memory"))
+
+	cmd := NewGenerateCommand()
+	err := executeCmd(cmd, []string{"aggregate", "Order", "--non-interactive"})
+	require.NoError(t, err)
+}
+
+// parent commands must exit non-zero on an unknown subcommand.
+func TestParentCommand_UnknownSubcommand_Errors(t *testing.T) {
+	parents := map[string]func() *cobra.Command{
+		"generate":   NewGenerateCommand,
+		"migrate":    NewMigrateCommand,
+		"projection": NewProjectionCommand,
+		"stream":     NewStreamCommand,
+		"schema":     NewSchemaCommand,
+	}
+
+	for name, newCmd := range parents {
+		t.Run(name, func(t *testing.T) {
+			cmd := newCmd()
+			err := executeCmd(cmd, []string{"boguscmd"})
+			require.Error(t, err, "%s with unknown subcommand should error", name)
+			assert.Contains(t, err.Error(), "unknown command")
+		})
+	}
+}
+
+// parent commands must exit non-zero when invoked with no subcommand.
+func TestParentCommand_NoSubcommand_Errors(t *testing.T) {
+	parents := map[string]func() *cobra.Command{
+		"generate":   NewGenerateCommand,
+		"migrate":    NewMigrateCommand,
+		"projection": NewProjectionCommand,
+		"stream":     NewStreamCommand,
+		"schema":     NewSchemaCommand,
+	}
+
+	for name, newCmd := range parents {
+		t.Run(name, func(t *testing.T) {
+			cmd := newCmd()
+			err := executeCmd(cmd, []string{})
+			require.Error(t, err, "%s with no subcommand should error", name)
+			assert.Contains(t, err.Error(), "requires a subcommand")
+		})
+	}
+}
+
+// `--help` on a parent command must still succeed (exit 0).
+func TestParentCommand_Help_Succeeds(t *testing.T) {
+	parents := map[string]func() *cobra.Command{
+		"generate":   NewGenerateCommand,
+		"migrate":    NewMigrateCommand,
+		"projection": NewProjectionCommand,
+		"stream":     NewStreamCommand,
+		"schema":     NewSchemaCommand,
+	}
+
+	for name, newCmd := range parents {
+		t.Run(name, func(t *testing.T) {
+			cmd := newCmd()
+			err := executeCmd(cmd, []string{"--help"})
+			assert.NoError(t, err, "%s --help should succeed", name)
+		})
+	}
+}
+
+// On the bare-parent (no subcommand) error path, usage must go to stderr, not
+// stdout, so scripts consuming stdout aren't polluted.
+func TestParentCommand_NoSubcommand_UsageGoesToStderr(t *testing.T) {
+	cmd := NewStreamCommand()
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Empty(t, out.String(), "nothing should be written to stdout")
+	assert.Contains(t, errBuf.String(), "Usage", "usage should be written to stderr")
+}
+
+// The "see '... --help'" hint must not duplicate the root command name. When a
+// parent is attached under root, c.CommandPath() already includes "mink".
+func TestParentCommand_NoSubcommand_DoesNotDuplicateRootName(t *testing.T) {
+	root := &cobra.Command{Use: "mink"}
+	root.AddCommand(NewStreamCommand())
+	var out, errBuf bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errBuf)
+	root.SetArgs([]string{"stream"})
+
+	err := root.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "see 'mink stream --help'")
+	assert.NotContains(t, err.Error(), "mink mink")
+}
+
+// `schema validate` subcommand must exist and be wired up.
+func TestSchemaValidate_SubcommandExists(t *testing.T) {
+	cmd := NewSchemaCommand()
+	validateCmd := findSubcommand(cmd, "validate")
+	require.NotNil(t, validateCmd, "schema validate subcommand should exist")
+	assert.Equal(t, "validate", validateCmd.Use)
+	assert.NotEmpty(t, validateCmd.Short)
+}
+
+// `schema validate` on the memory driver reports nothing to validate and
+// exits 0 (no database to check against).
+func TestSchemaValidate_MemoryDriver_Succeeds(t *testing.T) {
+	env := setupTestEnv(t, "mink-schema-validate-mem-*")
+	env.createConfig(withModule("github.com/test/project"), withDriver("memory"))
+
+	cmd := NewSchemaCommand()
+	err := executeCmd(cmd, []string{"validate"})
+	assert.NoError(t, err)
+}
+
+// `schema validate` with a postgres driver but no DATABASE_URL must error
+// (cannot validate against a database that isn't reachable/configured).
+func TestSchemaValidate_PostgresNoDBURL_Errors(t *testing.T) {
+	env := setupTestEnv(t, "mink-schema-validate-nodb-*")
+	env.createConfig(
+		withModule("github.com/test/project"),
+		withDriver("postgres"),
+		withDatabaseURL("${DATABASE_URL}"),
+	)
+	// Ensure DATABASE_URL is not set for this test.
+	t.Setenv("DATABASE_URL", "")
+
+	cmd := NewSchemaCommand()
+	err := executeCmd(cmd, []string{"validate"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DATABASE_URL")
+}
+
+// migrate up must treat a RecordMigration failure as fatal (non-zero exit)
+// and stop, rather than warning and reporting success. Verified via a fake
+// adapter whose RecordMigration always fails.
+func TestMigrateUp_RecordMigrationFailure_IsFatal(t *testing.T) {
+	env := setupTestEnv(t, "mink-migrate-m29-*")
+	migrationsDir := filepath.Join(env.tmpDir, "migrations")
+	require.NoError(t, os.MkdirAll(migrationsDir, 0755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(migrationsDir, "001_init.sql"),
+		[]byte("SELECT 1;"), 0644))
+
+	fake := &recordFailAdapter{}
+	mEnv := &MigrationEnv{
+		Adapter:       fake,
+		Config:        config.DefaultConfig(),
+		Cwd:           env.tmpDir,
+		MigrationsDir: migrationsDir,
+	}
+
+	err := runMigrateUp(context.Background(), mEnv, 0)
+	require.Error(t, err, "RecordMigration failure must be fatal")
+	assert.Contains(t, err.Error(), "failed to record")
+	// SQL was executed, but recording failed, so exactly one execute + one
+	// (failed) record attempt should have occurred.
+	assert.Equal(t, 1, fake.executeCalls)
+	assert.Equal(t, 1, fake.recordCalls)
+}
+
+// MigrationEnv.Close / DiagnosticEnv.Close: nil cleanup must be a safe no-op,
+// and a real cleanup function must be invoked exactly once.
+func TestEnvClose_NilAndRealCleanup(t *testing.T) {
+	// nil cleanup: must not panic.
+	(&MigrationEnv{}).Close()
+	(&DiagnosticEnv{}).Close()
+
+	migClosed := 0
+	(&MigrationEnv{cleanup: func() { migClosed++ }}).Close()
+	assert.Equal(t, 1, migClosed)
+
+	diagClosed := 0
+	(&DiagnosticEnv{cleanup: func() { diagClosed++ }}).Close()
+	assert.Equal(t, 1, diagClosed)
 }

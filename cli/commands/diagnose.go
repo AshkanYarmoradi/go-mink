@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -134,11 +136,29 @@ type DiagnosticCheck struct {
 
 func checkGoVersion() CheckResult {
 	version := runtime.Version()
-	if version < "go1.21" {
+	if major, minor, ok := parseGoMinor(version); ok && (major < 1 || (major == 1 && minor < 21)) {
 		return newCheckResult("Go Version", StatusWarning, version).
 			withRecommendation("Upgrade to Go 1.21 or later for best performance")
 	}
 	return newCheckResult("Go Version", StatusOK, version)
+}
+
+// parseGoMinor extracts the major and minor version from a runtime.Version()
+// string like "go1.25.1" or "go1.21". It avoids lexicographic comparison bugs
+// (e.g. "go1.9" < "go1.21" is false as strings). Returns ok=false for non-release
+// version strings (e.g. "devel ..."), which are treated as OK (not flagged).
+func parseGoMinor(version string) (major, minor int, ok bool) {
+	v := strings.TrimPrefix(version, "go")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 func checkConfiguration() CheckResult {

@@ -37,7 +37,7 @@ Examples:
 	cmd.AddCommand(newProjectionPauseCommand())
 	cmd.AddCommand(newProjectionResumeCommand())
 
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 func newProjectionListCommand() *cobra.Command {
@@ -256,7 +256,7 @@ Examples:
   mink stream list                    # List all streams
   mink stream events order-123        # Show events for a stream
   mink stream export order-123        # Export stream to JSON
-  mink stream replay order-123        # Replay stream events`,
+  mink stream stats                   # Show event store statistics`,
 	}
 
 	cmd.AddCommand(newStreamListCommand())
@@ -264,7 +264,7 @@ Examples:
 	cmd.AddCommand(newStreamExportCommand())
 	cmd.AddCommand(newStreamStatsCommand())
 
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 func newStreamListCommand() *cobra.Command {
@@ -397,9 +397,24 @@ func newStreamExportCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			events, err := adapter.GetStreamEvents(ctx, streamID, 0, 10000)
-			if err != nil {
-				return err
+			// Paginate to exhaustion so large streams are exported fully
+			// (GetStreamEvents is exclusive of fromVersion).
+			const pageSize = 1000
+			var events []adapters.StoredEvent
+			fromVersion := int64(0)
+			for {
+				batch, err := adapter.GetStreamEvents(ctx, streamID, fromVersion, pageSize)
+				if err != nil {
+					return err
+				}
+				if len(batch) == 0 {
+					break
+				}
+				events = append(events, batch...)
+				fromVersion = batch[len(batch)-1].Version
+				if len(batch) < pageSize {
+					break
+				}
 			}
 
 			// Convert to exportable format

@@ -210,6 +210,15 @@ func TestAggregate_Interface(t *testing.T) {
 		var _ Aggregate = (*TestOrder)(nil)
 	})
 
+	t.Run("AggregateBase satisfies AggregateRoot and VersionedAggregate", func(t *testing.T) {
+		var _ AggregateRoot = (*TestOrder)(nil)
+		var _ VersionedAggregate = (*TestOrder)(nil)
+
+		order := NewTestOrder("order-123")
+		assert.Equal(t, "order-123", order.GetID())
+		assert.Equal(t, int64(0), order.OriginalVersion())
+	})
+
 	t.Run("AggregateBase implements core methods", func(t *testing.T) {
 		order := NewTestOrder("order-123")
 
@@ -225,4 +234,28 @@ func TestAggregate_Interface(t *testing.T) {
 		order.ClearUncommittedEvents()
 		assert.Empty(t, order.UncommittedEvents())
 	})
+}
+
+func TestAggregateRegistry(t *testing.T) {
+	reg := NewAggregateRegistry()
+	reg.Register("Order", func(id string) Aggregate { return NewTestOrder(id) })
+
+	agg, err := reg.Create("Order", "order-9")
+	assert.NoError(t, err)
+	assert.Equal(t, "order-9", agg.AggregateID())
+
+	_, err = reg.Create("Unknown", "x")
+	assert.ErrorIs(t, err, ErrAggregateTypeNotRegistered)
+}
+
+func TestReplayEvents(t *testing.T) {
+	order := NewTestOrder("order-replay")
+	applier := func(target interface{}, event interface{}) error {
+		return target.(*TestOrder).ApplyEvent(event)
+	}
+	err := ReplayEvents(applier, order, []interface{}{
+		TestOrderCreated{OrderID: "order-replay", CustomerID: "c1"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "Created", order.Status)
 }

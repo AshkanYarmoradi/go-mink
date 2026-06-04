@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +10,39 @@ import (
 	"github.com/stretchr/testify/require"
 	"go-mink.dev/adapters/memory"
 )
+
+// TestProjectionRebuilder_MultiBatchProcessesEveryEvent guards against the
+// batch-boundary off-by-one: with a batch size smaller than the event count,
+// every event must be processed exactly once (no skips at batch boundaries).
+func TestProjectionRebuilder_MultiBatchProcessesEveryEvent(t *testing.T) {
+	adapter := memory.NewAdapter()
+	store := New(adapter)
+	checkpoint := newTestCheckpointStore()
+	store.RegisterEvents(&OrderCreatedEvent{})
+	ctx := context.Background()
+
+	const total = 7
+	for i := 0; i < total; i++ {
+		require.NoError(t, store.Append(ctx, fmt.Sprintf("Order-mb-%d", i),
+			[]interface{}{&OrderCreatedEvent{OrderID: fmt.Sprintf("mb-%d", i)}}))
+	}
+
+	rebuilder := NewProjectionRebuilder(store, checkpoint, WithRebuilderBatchSize(2))
+	projection := newTestInlineProjection("MultiBatchRebuild")
+
+	require.NoError(t, rebuilder.RebuildInline(ctx, projection))
+
+	events := projection.Events()
+	require.Len(t, events, total, "every event must be processed exactly once across batch boundaries")
+
+	seen := make(map[uint64]int)
+	for _, e := range events {
+		seen[e.GlobalPosition]++
+	}
+	for pos := uint64(1); pos <= total; pos++ {
+		assert.Equal(t, 1, seen[pos], "position %d should be processed exactly once", pos)
+	}
+}
 
 // Test projections, checkpoint store, logger, and metrics are defined in test_helpers_test.go
 

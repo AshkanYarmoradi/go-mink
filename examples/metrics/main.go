@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"time"
@@ -73,7 +74,9 @@ func main() {
 	// Start Prometheus HTTP server in background
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		_ = http.ListenAndServe(":9090", nil)
+		if err := http.ListenAndServe(":9090", nil); err != nil && err != http.ErrServerClosed {
+			log.Printf("metrics server stopped: %v", err)
+		}
 	}()
 
 	// Simulate various event store operations

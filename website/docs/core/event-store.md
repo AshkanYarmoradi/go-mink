@@ -148,7 +148,7 @@ func (s *EventStore) SubscribeToCategory(
 
 ```sql
 -- Event streams table
-CREATE TABLE go-mink_streams (
+CREATE TABLE streams (
     id              BIGSERIAL PRIMARY KEY,
     stream_id       VARCHAR(500) NOT NULL UNIQUE,
     category        VARCHAR(250) NOT NULL,
@@ -157,10 +157,10 @@ CREATE TABLE go-mink_streams (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_streams_category ON go-mink_streams(category);
+CREATE INDEX idx_streams_category ON streams(category);
 
 -- Events table
-CREATE TABLE go-mink_events (
+CREATE TABLE events (
     global_position BIGSERIAL PRIMARY KEY,
     stream_id       VARCHAR(500) NOT NULL,
     version         BIGINT NOT NULL,
@@ -173,71 +173,13 @@ CREATE TABLE go-mink_events (
     UNIQUE(stream_id, version)
 );
 
-CREATE INDEX idx_events_stream ON go-mink_events(stream_id, version);
-CREATE INDEX idx_events_type ON go-mink_events(event_type);
-CREATE INDEX idx_events_timestamp ON go-mink_events(timestamp);
+CREATE INDEX idx_events_stream ON events(stream_id, version);
+CREATE INDEX idx_events_type ON events(event_type);
+CREATE INDEX idx_events_timestamp ON events(timestamp);
 
--- Optimistic concurrency function
-CREATE OR REPLACE FUNCTION go-mink_append_events(
-    p_stream_id VARCHAR(500),
-    p_category VARCHAR(250),
-    p_expected_version BIGINT,
-    p_events JSONB
-) RETURNS TABLE(global_position BIGINT, version BIGINT) AS $$
-DECLARE
-    v_current_version BIGINT;
-    v_event JSONB;
-    v_new_version BIGINT;
-BEGIN
-    -- Lock stream row
-    SELECT version INTO v_current_version
-    FROM go-mink_streams
-    WHERE stream_id = p_stream_id
-    FOR UPDATE;
-
-    -- Handle new stream
-    IF v_current_version IS NULL THEN
-        IF p_expected_version NOT IN (-1, 0) THEN
-            RAISE EXCEPTION 'CONCURRENCY_ERROR: Stream does not exist';
-        END IF;
-
-        INSERT INTO go-mink_streams (stream_id, category, version)
-        VALUES (p_stream_id, p_category, 0);
-        v_current_version := 0;
-    ELSE
-        -- Check expected version
-        IF p_expected_version >= 0 AND v_current_version != p_expected_version THEN
-            RAISE EXCEPTION 'CONCURRENCY_ERROR: Expected %, actual %',
-                p_expected_version, v_current_version;
-        END IF;
-    END IF;
-
-    -- Insert events
-    v_new_version := v_current_version;
-    FOR v_event IN SELECT * FROM jsonb_array_elements(p_events)
-    LOOP
-        v_new_version := v_new_version + 1;
-
-        INSERT INTO go-mink_events (stream_id, version, event_type, data, metadata)
-        VALUES (
-            p_stream_id,
-            v_new_version,
-            v_event->>'type',
-            v_event->'data',
-            v_event->'metadata'
-        )
-        RETURNING go-mink_events.global_position, go-mink_events.version
-        INTO global_position, version;
-
-        RETURN NEXT;
-    END LOOP;
-
-    -- Update stream version
-    UPDATE go-mink_streams
-    SET version = v_new_version, updated_at = NOW()
-    WHERE stream_id = p_stream_id;
-END;
-$$ LANGUAGE plpgsql;
+-- Optimistic concurrency is enforced by the UNIQUE(stream_id, version)
+-- constraint above together with the adapter's append logic; the adapter does
+-- not create a stored procedure.
 ```
 
 ## Serialization

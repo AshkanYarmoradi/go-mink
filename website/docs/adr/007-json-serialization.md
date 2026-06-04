@@ -87,17 +87,17 @@ registry.Register("ItemAdded", ItemAdded{})
 
 ```sql
 -- Query events by content
-SELECT * FROM mink_events
+SELECT * FROM events
 WHERE data->>'customerId' = 'cust-123';
 
 -- Index on JSONB field
 CREATE INDEX idx_events_customer
-ON mink_events ((data->>'customerId'));
+ON events ((data->>'customerId'));
 
 -- Partial index for specific event types
 CREATE INDEX idx_order_events
-ON mink_events (stream_id)
-WHERE type LIKE 'Order%';
+ON events (stream_id)
+WHERE event_type LIKE 'Order%';
 ```
 
 ### Alternative Serializers

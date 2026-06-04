@@ -40,6 +40,10 @@ var (
 
 	// ErrOutboxMessageNotFound indicates the requested outbox message does not exist.
 	ErrOutboxMessageNotFound = errors.New("mink: outbox message not found")
+
+	// ErrNilOutboxStore indicates AppendWithOutbox was given outbox messages but no
+	// OutboxStore to schedule them into.
+	ErrNilOutboxStore = errors.New("mink: nil outbox store")
 )
 
 // SagaNotFoundError provides detailed information about a missing saga.
@@ -296,6 +300,12 @@ type IdempotencyStore interface {
 
 	// Store records that a command was processed.
 	Store(ctx context.Context, record *IdempotencyRecord) error
+
+	// StoreIfAbsent atomically stores the record only if its key is not already
+	// present, returning true if stored and false if the key already existed.
+	// This is the primitive used to reserve a key before processing so concurrent
+	// duplicate commands cannot both execute.
+	StoreIfAbsent(ctx context.Context, record *IdempotencyRecord) (bool, error)
 
 	// Get retrieves the idempotency record for a key.
 	// Returns nil, nil if the key doesn't exist.
@@ -833,6 +843,12 @@ type OutboxStore interface {
 	// RetryFailed resets eligible failed messages (below maxAttempts) to pending.
 	RetryFailed(ctx context.Context, maxAttempts int) (int64, error)
 
+	// ReclaimStale resets messages stuck in OutboxProcessing whose last attempt is
+	// older than olderThan back to OutboxPending. This recovers messages orphaned
+	// when a processor crashes between claiming and marking a message, preserving
+	// at-least-once delivery. Returns the number of messages reclaimed.
+	ReclaimStale(ctx context.Context, olderThan time.Duration) (int64, error)
+
 	// MoveToDeadLetter transitions messages that exceeded maxAttempts to dead letter.
 	MoveToDeadLetter(ctx context.Context, maxAttempts int) (int64, error)
 
@@ -849,8 +865,16 @@ type OutboxStore interface {
 	Close() error
 }
 
-// OutboxAppender is an optional interface for adapters that support
-// atomic event append + outbox schedule in a single transaction.
+// OutboxAppender is an optional interface for adapters that support atomically
+// appending events and scheduling outbox messages in a single transaction (or,
+// for in-process adapters, a single critical section).
+//
+// The outbox parameter is the OutboxStore the caller has configured (e.g. via
+// NewEventStoreWithOutbox). The adapter schedules the messages into THAT store
+// within its transaction — transactional adapters call outbox.ScheduleInTx with
+// their *sql.Tx so the messages land in the same DB transaction as the events.
+// This keeps the atomic path and the caller's configured store consistent (the
+// adapter does not write to a private, possibly-divergent outbox).
 type OutboxAppender interface {
-	AppendWithOutbox(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64, outboxMessages []*OutboxMessage) ([]StoredEvent, error)
+	AppendWithOutbox(ctx context.Context, streamID string, events []EventRecord, expectedVersion int64, outbox OutboxStore, outboxMessages []*OutboxMessage) ([]StoredEvent, error)
 }

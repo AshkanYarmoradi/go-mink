@@ -56,20 +56,22 @@ const (
 ### PostgreSQL Implementation
 
 ```sql
--- Atomic version check and insert
-WITH current_version AS (
-    SELECT COALESCE(MAX(version), 0) as v
-    FROM mink_events
-    WHERE stream_id = $1
-)
-INSERT INTO mink_events (stream_id, version, type, data, metadata)
-SELECT $1, cv.v + generate_series(1, $2),
-       unnest($3::text[]),
-       unnest($4::jsonb[]),
-       unnest($5::jsonb[])
-FROM current_version cv
-WHERE cv.v = $6  -- Expected version check
-RETURNING *;
+-- All within a single transaction (two-table design).
+
+-- 1. Lock the stream row and read its current version.
+--    If no row exists this is a new stream; the expected version must be 0/-1.
+SELECT version FROM streams WHERE stream_id = $1 FOR UPDATE;
+
+-- 2. Concurrency check: the locked version must equal the expected version,
+--    otherwise raise a conflict and roll back.
+
+-- 3. Append the events, numbering them current_version + 1, +2, ...
+INSERT INTO events (stream_id, version, event_type, data, metadata)
+VALUES ($1, $2, $3, $4, $5);
+
+-- 4. Bump the stream's version (inserting the streams row for a new stream).
+UPDATE streams SET version = $new_version, updated_at = NOW()
+WHERE stream_id = $1;
 ```
 
 ### Error Handling

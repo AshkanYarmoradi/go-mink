@@ -84,7 +84,8 @@ type AsyncOptions struct {
 	// Default: 100
 	BatchSize int
 
-	// BatchTimeout is the maximum time to wait for a full batch.
+	// BatchTimeout bounds how long loading and processing a single batch may take.
+	// When > 0 the batch runs under a context with this deadline. 0 disables it.
 	// Default: 1 second
 	BatchTimeout time.Duration
 
@@ -95,9 +96,17 @@ type AsyncOptions struct {
 	// RetryPolicy defines how to handle errors.
 	RetryPolicy RetryPolicy
 
-	// MaxRetries is the maximum number of retries for failed events.
+	// MaxRetries is the maximum number of retries for a failing (poison) event
+	// before the engine gives up on it. It is used when RetryPolicy is nil.
+	// When RetryPolicy is set, its ShouldRetry method governs instead.
 	// Default: 3
 	MaxRetries int
+
+	// OnPoisonEvent, if set, is invoked when an event keeps failing after the
+	// retry budget is exhausted. Returning nil tells the engine to skip the event
+	// (advance past it) and continue; returning an error stops the worker. When
+	// nil, the worker stops in the Faulted state after the retries are exhausted.
+	OnPoisonEvent func(ctx context.Context, event StoredEvent, err error) error
 
 	// StartFromBeginning starts processing from the beginning of the event stream.
 	// If false, starts from the last checkpoint.
@@ -412,6 +421,109 @@ func (e *ProjectionEngine) IsRunning() bool {
 	return e.running.Load()
 }
 
+// Pause pauses a registered async or live projection. A paused async worker stops
+// processing new events (entering ProjectionStatePaused) but stays alive; a paused
+// live projection stops receiving notifications. Returns ErrProjectionNotFound if
+// no projection with the given name is registered.
+func (e *ProjectionEngine) Pause(name string) error {
+	e.asyncMu.RLock()
+	if w, ok := e.asyncProjections[name]; ok {
+		e.asyncMu.RUnlock()
+		w.paused.Store(true)
+		w.setState(ProjectionStatePaused)
+		e.logger.Info("Paused projection", "name", name)
+		return nil
+	}
+	e.asyncMu.RUnlock()
+
+	e.liveMu.RLock()
+	if w, ok := e.liveProjections[name]; ok {
+		e.liveMu.RUnlock()
+		w.setState(ProjectionStatePaused)
+		e.logger.Info("Paused projection", "name", name)
+		return nil
+	}
+	e.liveMu.RUnlock()
+
+	return fmt.Errorf("%w: %s", ErrProjectionNotFound, name)
+}
+
+// Resume resumes a previously paused async or live projection.
+// Returns ErrProjectionNotFound if no projection with the given name is registered.
+func (e *ProjectionEngine) Resume(name string) error {
+	e.asyncMu.RLock()
+	if w, ok := e.asyncProjections[name]; ok {
+		e.asyncMu.RUnlock()
+		w.paused.Store(false)
+		w.setState(ProjectionStateRunning)
+		e.logger.Info("Resumed projection", "name", name)
+		return nil
+	}
+	e.asyncMu.RUnlock()
+
+	e.liveMu.RLock()
+	if w, ok := e.liveProjections[name]; ok {
+		e.liveMu.RUnlock()
+		w.setState(ProjectionStateRunning)
+		e.logger.Info("Resumed projection", "name", name)
+		return nil
+	}
+	e.liveMu.RUnlock()
+
+	return fmt.Errorf("%w: %s", ErrProjectionNotFound, name)
+}
+
+// Rebuild rebuilds a registered async projection from scratch. The worker is
+// paused and marked ProjectionStateRebuilding for the duration; on completion it
+// resumes from the rebuilt checkpoint. For a consistent rebuild the projection
+// should be quiescent (the engine stopped, or the projection already paused).
+// Returns ErrProjectionNotFound if the async projection is not registered.
+func (e *ProjectionEngine) Rebuild(ctx context.Context, name string, opts ...RebuildOptions) error {
+	e.asyncMu.RLock()
+	worker, ok := e.asyncProjections[name]
+	e.asyncMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrProjectionNotFound, name)
+	}
+
+	wasPaused := worker.paused.Swap(true)
+	worker.setState(ProjectionStateRebuilding)
+	defer func() {
+		worker.paused.Store(wasPaused)
+		if wasPaused {
+			worker.setState(ProjectionStatePaused)
+		} else {
+			worker.setState(ProjectionStateRunning)
+		}
+	}()
+
+	// Quiesce the worker: pausing only takes effect at the worker's next tick, so
+	// acquire its processing mutex to wait for any in-flight batch to finish and
+	// to hold exclusive access for the duration of the rebuild. This guarantees
+	// the rebuilder and the worker never call Apply on the same projection
+	// concurrently and never race on the checkpoint.
+	worker.processingMu.Lock()
+	defer worker.processingMu.Unlock()
+
+	rebuilder := NewProjectionRebuilder(e.store, e.checkpointStore,
+		WithRebuilderLogger(e.logger), WithRebuilderMetrics(e.metrics))
+	if err := rebuilder.RebuildAsync(ctx, worker.projection, opts...); err != nil {
+		return err
+	}
+
+	// Resume the worker from the rebuilt checkpoint position.
+	var pos uint64
+	if e.checkpointStore != nil {
+		if p, err := e.checkpointStore.GetCheckpoint(ctx, name); err == nil {
+			pos = p
+		}
+	}
+	worker.stateMu.Lock()
+	worker.lastPosition = pos
+	worker.stateMu.Unlock()
+	return nil
+}
+
 // GetStatus returns the status of a projection by name.
 func (e *ProjectionEngine) GetStatus(name string) (*ProjectionStatus, error) {
 	// Check async projections
@@ -510,33 +622,40 @@ func (e *ProjectionEngine) ProcessInlineProjections(ctx context.Context, events 
 
 // NotifyLiveProjections notifies all live projections of new events.
 func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []StoredEvent) {
+	// Snapshot the live workers under the lock, then release it before any
+	// blocking channel sends. Holding liveMu during a blocking send would stall
+	// Register/Unregister of every live projection behind one slow consumer.
 	e.liveMu.RLock()
-	defer e.liveMu.RUnlock()
-
+	workers := make([]*liveProjectionWorker, 0, len(e.liveProjections))
 	for _, worker := range e.liveProjections {
+		workers = append(workers, worker)
+	}
+	e.liveMu.RUnlock()
+
+	for _, worker := range workers {
 		worker.stateMu.RLock()
 		state := worker.state
 		eventCh := worker.eventCh
 		worker.stateMu.RUnlock()
 
-		if state != ProjectionStateRunning {
+		if state != ProjectionStateRunning || eventCh == nil {
 			continue
 		}
 
-		if eventCh == nil {
-			continue
-		}
-
+	deliver:
 		for _, event := range events {
 			if !shouldHandleEvent(worker.projection, event.Type) {
 				continue
 			}
 
-			// Block until the event is delivered or the context is cancelled.
-			// This avoids silently dropping events, at the cost of applying
-			// backpressure to callers when live projections are slow.
+			// Block until the event is delivered, the worker stops, or the
+			// context is cancelled. Watching the worker's stopCh prevents an
+			// unregistered worker (whose buffer is full and no longer drained)
+			// from wedging the sender indefinitely.
 			select {
 			case eventCh <- event:
+			case <-worker.stopCh:
+				break deliver
 			case <-ctx.Done():
 				e.logger.Warn("Context cancelled while delivering live projection event, dropping event",
 					"projection", worker.projection.Name(),
@@ -559,14 +678,22 @@ type asyncProjectionWorker struct {
 	options    AsyncOptions
 	engine     *ProjectionEngine
 
-	stopCh          chan struct{}
-	closeOnce       sync.Once
-	state           ProjectionState
-	stateMu         sync.RWMutex
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	state     ProjectionState
+	stateMu   sync.RWMutex
+	paused    atomic.Bool
+	// processingMu serializes a worker's batch processing with a concurrent
+	// Rebuild, so the rebuilder never calls Apply on the projection while the
+	// worker is mid-batch (and vice versa).
+	processingMu    sync.Mutex
 	lastPosition    uint64
 	eventsProcessed uint64
 	lastProcessedAt time.Time
 	lastError       error
+	// failedEvent records the event that caused the most recent processing error,
+	// so the poison-event handler can identify and skip it after retries exhaust.
+	failedEvent *StoredEvent
 }
 
 func (w *asyncProjectionWorker) getStatus() *ProjectionStatus {
@@ -610,6 +737,75 @@ func (w *asyncProjectionWorker) clearError() {
 	w.stateMu.Unlock()
 }
 
+func (w *asyncProjectionWorker) setFailedEvent(event *StoredEvent) {
+	w.stateMu.Lock()
+	w.failedEvent = event
+	w.stateMu.Unlock()
+}
+
+func (w *asyncProjectionWorker) clearFailedEvent() {
+	w.stateMu.Lock()
+	w.failedEvent = nil
+	w.stateMu.Unlock()
+}
+
+func (w *asyncProjectionWorker) getFailedEvent() *StoredEvent {
+	w.stateMu.RLock()
+	defer w.stateMu.RUnlock()
+	return w.failedEvent
+}
+
+// shouldRetry reports whether the worker should keep retrying after the given
+// number of consecutive errors. It honors a configured RetryPolicy, falling back
+// to MaxRetries when no policy is set. A non-positive budget means retry forever.
+func (w *asyncProjectionWorker) shouldRetry(consecutiveErrors int, err error) bool {
+	if w.options.RetryPolicy != nil {
+		return w.options.RetryPolicy.ShouldRetry(consecutiveErrors, err)
+	}
+	if w.options.MaxRetries > 0 {
+		return consecutiveErrors < w.options.MaxRetries
+	}
+	return true
+}
+
+// handlePoisonEvent is invoked when the retry budget for a failing event is
+// exhausted. If an OnPoisonEvent handler is configured and chooses to skip
+// (returns nil), the worker advances past the failing event and returns true so
+// the caller can continue. Otherwise it returns false and the worker stops.
+func (e *ProjectionEngine) handlePoisonEvent(ctx context.Context, worker *asyncProjectionWorker, cause error) bool {
+	failed := worker.getFailedEvent()
+	if worker.options.OnPoisonEvent == nil || failed == nil {
+		return false
+	}
+	if err := worker.options.OnPoisonEvent(ctx, *failed, cause); err != nil {
+		e.logger.Error("Poison-event handler requested stop",
+			"projection", worker.projection.Name(),
+			"global_position", failed.GlobalPosition,
+			"error", err,
+		)
+		return false
+	}
+	// Skip the poison event: advance the position past it and persist a checkpoint.
+	e.logger.Warn("Skipping poison event after exhausting retries",
+		"projection", worker.projection.Name(),
+		"event_type", failed.Type,
+		"stream_id", failed.StreamID,
+		"global_position", failed.GlobalPosition,
+		"cause", cause,
+	)
+	worker.stateMu.Lock()
+	worker.lastPosition = failed.GlobalPosition
+	worker.failedEvent = nil
+	worker.stateMu.Unlock()
+	if e.checkpointStore != nil {
+		if err := e.checkpointStore.SetCheckpoint(ctx, worker.projection.Name(), failed.GlobalPosition); err != nil {
+			e.logger.Error("Failed to checkpoint after skipping poison event",
+				"projection", worker.projection.Name(), "error", err)
+		}
+	}
+	return true
+}
+
 // runAsyncWorker runs the background worker for an async projection.
 func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProjectionWorker) {
 	defer e.wg.Done()
@@ -650,7 +846,16 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 			worker.setState(ProjectionStateStopped)
 			return
 		case <-ticker.C:
-			if err := e.processAsyncBatch(ctx, worker); err != nil {
+			// Skip processing while paused, but keep the worker alive.
+			if worker.paused.Load() {
+				worker.setState(ProjectionStatePaused)
+				continue
+			}
+			// Serialize with Rebuild so the rebuilder never applies concurrently.
+			worker.processingMu.Lock()
+			err := e.processAsyncBatch(ctx, worker)
+			worker.processingMu.Unlock()
+			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					worker.setState(ProjectionStateStopped)
 					return
@@ -672,6 +877,23 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 
 				worker.setError(err)
 				e.metrics.RecordError(worker.projection.Name(), err)
+
+				// If the retry budget for this (poison) event is exhausted, either
+				// skip it via the configured handler or stop the worker.
+				if !worker.shouldRetry(consecutiveErrors, err) {
+					if e.handlePoisonEvent(ctx, worker, err) {
+						consecutiveErrors = 0
+						worker.clearError()
+						continue
+					}
+					e.logger.Error("Async projection giving up after exhausting retries",
+						"projection", worker.projection.Name(),
+						"consecutive_errors", consecutiveErrors,
+						"error", err,
+					)
+					worker.setError(err) // remain Faulted
+					return
+				}
 
 				// Compute backoff delay
 				var delay time.Duration
@@ -722,9 +944,11 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 	// Recover from panics in projection Apply/ApplyBatch handlers to prevent
 	// a panicking projection from killing the async worker goroutine.
 	var currentEvent *StoredEvent
+	var batchRange string
 	defer func() {
 		if r := recover(); r != nil {
-			if currentEvent != nil {
+			switch {
+			case currentEvent != nil:
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
 					"event_type", currentEvent.Type,
@@ -734,7 +958,15 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 				)
 				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %v",
 					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, r)
-			} else {
+			case batchRange != "":
+				e.logger.Error("Async projection panicked",
+					"projection", worker.projection.Name(),
+					"batch", batchRange,
+					"panic", r,
+				)
+				retErr = fmt.Errorf("panic processing batch %s in projection %s: %v",
+					batchRange, worker.projection.Name(), r)
+			default:
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
 					"panic", r,
@@ -743,6 +975,14 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 			}
 		}
 	}()
+
+	// Apply an optional per-batch processing deadline so a single batch cannot
+	// block the worker indefinitely.
+	if worker.options.BatchTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, worker.options.BatchTimeout)
+		defer cancel()
+	}
 
 	// Load events from current position
 	// Note: This is a simplified implementation. In production, you'd want
@@ -788,13 +1028,13 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		return nil
 	}
 
-	// Try batch processing first
+	// Try batch processing first. Record the batch's position range for panic
+	// diagnostics instead of mis-attributing a batch failure to its first event.
 	start := time.Now()
-	if len(filteredEvents) > 0 {
-		currentEvent = &filteredEvents[0]
-	}
+	batchRange = fmt.Sprintf("%d-%d", filteredEvents[0].GlobalPosition, filteredEvents[len(filteredEvents)-1].GlobalPosition)
 	err = worker.projection.ApplyBatch(ctx, filteredEvents)
 	if errors.Is(err, ErrNotImplemented) {
+		batchRange = ""
 		// Fall back to sequential processing
 		for i := range filteredEvents {
 			event := filteredEvents[i]
@@ -802,6 +1042,7 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 			eventStart := time.Now()
 			if err := worker.projection.Apply(ctx, event); err != nil {
 				e.metrics.RecordEventProcessed(worker.projection.Name(), event.Type, time.Since(eventStart), false)
+				worker.setFailedEvent(&filteredEvents[i])
 				return fmt.Errorf("failed to apply event: %w", err)
 			}
 			e.metrics.RecordEventProcessed(worker.projection.Name(), event.Type, time.Since(eventStart), true)
@@ -809,11 +1050,17 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		}
 	} else if err != nil {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), false)
+		// ApplyBatch is opaque about which event failed, so on a poison-skip we
+		// advance past the whole loaded batch (its last position) rather than just
+		// the first filtered event — otherwise the batch tail would be reloaded and
+		// reprocessed on every retry cycle.
+		worker.setFailedEvent(&events[len(events)-1])
 		return err
 	} else {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), true)
 		atomic.AddUint64(&worker.eventsProcessed, uint64(len(filteredEvents)))
 	}
+	worker.clearFailedEvent()
 
 	// Update checkpoint
 	newPosition := events[len(events)-1].GlobalPosition
@@ -884,23 +1131,41 @@ func (e *ProjectionEngine) runLiveWorker(ctx context.Context, worker *liveProjec
 	for {
 		select {
 		case <-e.stopCh:
+			e.drainLiveWorker(ctx, worker)
 			worker.setState(ProjectionStateStopped)
 			return
 		case <-worker.stopCh:
+			e.drainLiveWorker(ctx, worker)
 			worker.setState(ProjectionStateStopped)
 			return
 		case <-ctx.Done():
 			worker.setState(ProjectionStateStopped)
 			return
 		case event := <-worker.eventCh:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", r)
-					}
-				}()
-				worker.projection.OnEvent(ctx, event)
-			}()
+			e.deliverLiveEvent(ctx, worker, event)
+		}
+	}
+}
+
+// deliverLiveEvent calls a live projection's OnEvent, recovering from panics.
+func (e *ProjectionEngine) deliverLiveEvent(ctx context.Context, worker *liveProjectionWorker, event StoredEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", r)
+		}
+	}()
+	worker.projection.OnEvent(ctx, event)
+}
+
+// drainLiveWorker best-effort delivers any events still buffered in the worker's
+// channel at graceful stop, so they are not silently dropped.
+func (e *ProjectionEngine) drainLiveWorker(ctx context.Context, worker *liveProjectionWorker) {
+	for {
+		select {
+		case event := <-worker.eventCh:
+			e.deliverLiveEvent(ctx, worker, event)
+		default:
+			return
 		}
 	}
 }

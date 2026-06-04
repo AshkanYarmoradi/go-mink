@@ -1125,6 +1125,35 @@ func TestProjectionEngine_AsyncWorker_NilRetryPolicy(t *testing.T) {
 	_ = engine.Stop(context.Background())
 }
 
+func TestProjectionEngine_AsyncWorker_PoisonEventSkip(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-poison-1", []interface{}{&ProjectionTestEvent{OrderID: "poison"}})
+
+	projection := newTestAsyncProjection("AsyncPoisonSkip", "ProjectionTestEvent")
+	projection.SetError(assert.AnError) // always fails → poison event
+
+	var skipped int32
+	var skippedPos uint64
+	opts := fastAsyncOpts()
+	opts.RetryPolicy = ExponentialBackoffRetry(2, 5*time.Millisecond, 10*time.Millisecond)
+	opts.OnPoisonEvent = func(_ context.Context, event StoredEvent, _ error) error {
+		atomic.AddInt32(&skipped, 1)
+		atomic.StoreUint64(&skippedPos, event.GlobalPosition)
+		return nil // skip and continue
+	}
+	_ = engine.RegisterAsync(projection, opts)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	_ = engine.Start(runCtx)
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+	_ = engine.Stop(context.Background())
+
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&skipped), int32(1), "poison-event handler should have been invoked")
+	assert.Equal(t, uint64(1), atomic.LoadUint64(&skippedPos))
+}
+
 func TestProjectionEngine_AsyncWorker_PanicRecovery(t *testing.T) {
 	engine, store, _ := newTestEngineWithStore()
 	logger := newTestLogger()
@@ -1149,6 +1178,88 @@ func TestProjectionEngine_AsyncWorker_PanicRecovery(t *testing.T) {
 
 	// Logger should have recorded the panic
 	assert.True(t, logger.hasLogMessage("error", "Async projection panicked"), "expected panic log")
+}
+
+func TestProjectionEngine_PauseResume(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	ctx := context.Background()
+	_ = store.Append(ctx, "Order-pr-1", []interface{}{&ProjectionTestEvent{OrderID: "pr1"}})
+
+	projection := newTestAsyncProjection("AsyncPauseResume", "ProjectionTestEvent")
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	_ = engine.Start(runCtx)
+	defer func() { _ = engine.Stop(context.Background()) }()
+
+	require.NoError(t, engine.Pause("AsyncPauseResume"))
+	time.Sleep(80 * time.Millisecond)
+	status, err := engine.GetStatus("AsyncPauseResume")
+	require.NoError(t, err)
+	assert.Equal(t, ProjectionStatePaused, status.State)
+
+	require.NoError(t, engine.Resume("AsyncPauseResume"))
+	time.Sleep(80 * time.Millisecond)
+	status, err = engine.GetStatus("AsyncPauseResume")
+	require.NoError(t, err)
+	assert.Equal(t, ProjectionStateRunning, status.State)
+
+	assert.ErrorIs(t, engine.Pause("missing"), ErrProjectionNotFound)
+	assert.ErrorIs(t, engine.Resume("missing"), ErrProjectionNotFound)
+}
+
+// raceProneProjection has an intentionally unguarded counter so the -race
+// detector flags any concurrent Apply (e.g. a worker racing a Rebuild).
+type raceProneProjection struct {
+	AsyncProjectionBase
+	count int
+}
+
+func (p *raceProneProjection) Apply(ctx context.Context, _ StoredEvent) error {
+	p.count++ // unguarded on purpose
+	time.Sleep(time.Millisecond)
+	return nil
+}
+
+func TestProjectionEngine_RebuildWhileRunningNoRace(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	ctx := context.Background()
+	for i := 0; i < 20; i++ {
+		_ = store.Append(ctx, "Order-rr-"+string(rune('A'+i)), []interface{}{&ProjectionTestEvent{OrderID: "rr"}})
+	}
+
+	proj := &raceProneProjection{AsyncProjectionBase: NewAsyncProjectionBase("RaceRebuild", "ProjectionTestEvent")}
+	_ = engine.RegisterAsync(proj, fastAsyncOpts())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	_ = engine.Start(runCtx)
+
+	time.Sleep(40 * time.Millisecond) // let the worker get busy
+	// Rebuild concurrently with the running worker — must not call Apply
+	// concurrently (would be caught by -race on proj.count).
+	require.NoError(t, engine.Rebuild(ctx, "RaceRebuild"))
+
+	_ = engine.Stop(context.Background()) // joins workers before we read count
+	assert.Greater(t, proj.count, 0)
+}
+
+func TestProjectionEngine_Rebuild(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_ = store.Append(ctx, "Order-rb-"+string(rune('0'+i)), []interface{}{&ProjectionTestEvent{OrderID: "rb"}})
+	}
+
+	projection := newTestAsyncProjection("AsyncRebuild", "ProjectionTestEvent")
+	_ = engine.RegisterAsync(projection, fastAsyncOpts())
+
+	// Rebuild while the engine is not running (projection quiescent).
+	require.NoError(t, engine.Rebuild(ctx, "AsyncRebuild"))
+	assert.GreaterOrEqual(t, len(projection.Events()), 3)
+
+	assert.ErrorIs(t, engine.Rebuild(ctx, "missing"), ErrProjectionNotFound)
 }
 
 func TestProjectionEngine_AsyncWorker_BatchApplySuccess(t *testing.T) {
