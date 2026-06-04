@@ -142,6 +142,28 @@ func newV3Store(adapter adapters.EventStoreAdapter) *mink.EventStore {
 	return store
 }
 
+// TestE2E_Versioning_GappedChainErrorsOnLoad verifies that loading a v1 event
+// through a chain with a gap (missing v1→v2) fails loudly instead of silently
+// deserializing stale data against the latest struct.
+func TestE2E_Versioning_GappedChainErrorsOnLoad(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	storeV1Events(ctx, t, adapter, "ProductCatalog-gap-1", []map[string]interface{}{
+		{"product_id": "prod-1", "name": "Widget", "price": 9.99},
+	}, mink.Metadata{}, mink.NoStream)
+
+	// Chain is missing the v1→v2 upcaster, so a stored v1 event cannot reach v3.
+	chain := mink.NewUpcasterChain()
+	_ = chain.Register(&paV2ToV3{})
+	store := mink.New(adapter, mink.WithUpcasters(chain))
+	store.RegisterEvents(ProductAdded{})
+
+	_, err := store.Load(ctx, "ProductCatalog-gap-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, mink.ErrSchemaVersionGap)
+}
+
 // =============================================================================
 // Test: Full round-trip with memory adapter
 // =============================================================================

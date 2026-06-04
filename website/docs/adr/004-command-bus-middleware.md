@@ -83,6 +83,12 @@ func (b *CommandBus) Dispatch(ctx context.Context, cmd Command) (CommandResult, 
 
 ### Built-in Middleware
 
+> The snippets below are **simplified illustrations** of how each middleware is
+> implemented internally, not the exact public signatures. In particular the
+> real `IdempotencyMiddleware` takes an `IdempotencyConfig` (use
+> `mink.DefaultIdempotencyConfig(store)`), not a bare `IdempotencyStore`. See the
+> "Middleware Order" section below for accurate usage.
+
 ```go
 // Validation
 func ValidationMiddleware() Middleware {
@@ -180,25 +186,36 @@ func IdempotencyMiddleware(store IdempotencyStore) Middleware {
 
 ## Middleware Order
 
-Recommended middleware order:
+Recommended middleware order. Note that the metrics and tracing middleware live
+in their own sub-packages (`middleware/metrics`, `middleware/tracing`), and that
+**correlation ID is set BEFORE tracing** so the correlation ID is available to
+stamp onto spans (and onto every log line and downstream call):
 
 ```go
+import (
+    mink "go-mink.dev"
+    "go-mink.dev/middleware/metrics"
+    "go-mink.dev/middleware/tracing"
+)
+
 bus := mink.NewCommandBus()
 
 // 1. Recovery (outermost - catches panics)
 bus.Use(mink.RecoveryMiddleware())
 
-// 2. Metrics (track all attempts)
-bus.Use(mink.MetricsMiddleware(metrics))
-
-// 3. Tracing (create spans)
-bus.Use(mink.TracingMiddleware(tracer))
-
-// 4. Logging (log all attempts)
-bus.Use(mink.LoggingMiddleware(logger))
-
-// 5. Correlation ID (set correlation)
+// 2. Correlation ID (set correlation FIRST so spans/logs can use it)
 bus.Use(mink.CorrelationIDMiddleware(nil))
+
+// 3. Metrics (track all attempts) — metrics.New(...).CommandMiddleware()
+m := metrics.New(metrics.WithNamespace("myapp"))
+bus.Use(m.CommandMiddleware())
+
+// 4. Tracing (create spans) — tracing.CommandMiddleware(tracing.NewTracer(...))
+tracer := tracing.NewTracer(tracing.WithServiceName("myapp"))
+bus.Use(tracing.CommandMiddleware(tracer))
+
+// 5. Logging (log all attempts)
+bus.Use(mink.LoggingMiddleware(logger))
 
 // 6. Timeout (prevent long-running commands)
 bus.Use(mink.TimeoutMiddleware(30 * time.Second))
@@ -209,12 +226,17 @@ bus.Use(mink.ValidationMiddleware())
 // 8. Authorization (check permissions)
 bus.Use(AuthorizationMiddleware(authService))
 
-// 9. Idempotency (deduplicate)
-bus.Use(mink.IdempotencyMiddleware(store))
+// 9. Idempotency (deduplicate) — takes an IdempotencyConfig, not a bare store
+bus.Use(mink.IdempotencyMiddleware(mink.DefaultIdempotencyConfig(store)))
 
-// 10. Retry (handle transient failures)
-bus.Use(mink.RetryMiddleware(3, 100*time.Millisecond))
+// 10. Retry (handle transient failures) — takes a RetryConfig
+bus.Use(mink.RetryMiddleware(mink.RetryConfig{MaxAttempts: 3, InitialDelay: 100 * time.Millisecond}))
 ```
+
+> Why correlation before tracing? The tracing middleware reads the correlation
+> ID from the context when it opens a span; if tracing ran first, the span would
+> be created before `CorrelationIDMiddleware` populated the context, so the
+> correlation ID could not be attached to the span.
 
 ## Alternatives Considered
 

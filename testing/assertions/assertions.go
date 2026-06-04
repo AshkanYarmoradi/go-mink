@@ -12,6 +12,29 @@ import (
 // TB is an alias for testing.TB interface to allow mocking in tests
 type TB = testing.TB
 
+// eventsEqual compares two events for equality, treating a pointer and the value
+// it points to as equal. Aggregates commonly emit events as pointers (&Event{})
+// while tests pass values (Event{}); this keeps assertions consistent with the
+// bdd package, which normalizes the same way.
+func eventsEqual(a, b interface{}) bool {
+	return reflect.DeepEqual(normalizeEvent(a), normalizeEvent(b))
+}
+
+// normalizeEvent dereferences a non-nil pointer so *Event and Event compare equal.
+func normalizeEvent(e interface{}) interface{} {
+	if e == nil {
+		return nil
+	}
+	v := reflect.ValueOf(e)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		return v.Elem().Interface()
+	}
+	return e
+}
+
 // AssertEventTypes checks that the events have the expected types in order.
 func AssertEventTypes(t TB, events []interface{}, types ...string) {
 	t.Helper()
@@ -28,16 +51,19 @@ func AssertEventTypes(t TB, events []interface{}, types ...string) {
 	}
 }
 
-// AssertEventData checks that a specific event matches the expected data.
+// AssertEventData checks that a specific event matches the expected data. The
+// event is normalized first so a pointer-emitted event (*T) matches a value
+// expectation (T); a genuinely different type still fails.
 func AssertEventData[T any](t TB, event interface{}, expected T) {
 	t.Helper()
 
-	actual, ok := event.(T)
+	actual, ok := normalizeEvent(event).(T)
 	if !ok {
 		t.Fatalf("Event is not of expected type %T, got %T", expected, event)
+		return
 	}
 
-	if !reflect.DeepEqual(actual, expected) {
+	if !eventsEqual(actual, expected) {
 		t.Errorf("Event data mismatch:\nExpected: %+v\nActual: %+v", expected, actual)
 	}
 }
@@ -93,15 +119,15 @@ func AssertEventAtIndex[T any](t TB, events []interface{}, index int, expected T
 	AssertEventData(t, events[index], expected)
 }
 
-// AssertContainsEvent checks that the events contain an event of the expected type and data.
+// AssertContainsEvent checks that the events contain an event matching the
+// expected data, comparing via eventsEqual so a pointer event (*T) matches a
+// value expectation (T) and vice versa.
 func AssertContainsEvent[T any](t TB, events []interface{}, expected T) {
 	t.Helper()
 
 	for _, event := range events {
-		if actual, ok := event.(T); ok {
-			if reflect.DeepEqual(actual, expected) {
-				return
-			}
+		if eventsEqual(event, expected) {
+			return
 		}
 	}
 
@@ -185,7 +211,7 @@ func DiffEvents(expected, actual []interface{}) []EventDiff {
 				Expected: exp,
 				Type:     DiffMissing,
 			})
-		} else if !reflect.DeepEqual(exp, act) {
+		} else if !eventsEqual(exp, act) {
 			diffs = append(diffs, EventDiff{
 				Index:    i,
 				Expected: exp,
@@ -251,7 +277,7 @@ func AssertEventsMatch(t TB, expected, actual []interface{}) {
 	}
 
 	for i, exp := range expected {
-		if !reflect.DeepEqual(exp, actual[i]) {
+		if !eventsEqual(exp, actual[i]) {
 			t.Errorf("Event %d mismatch:\nExpected: %+v\nActual: %+v", i, exp, actual[i])
 		}
 	}
@@ -286,7 +312,7 @@ func MatchEvent[T any](expected T) EventMatcher {
 		if !ok {
 			return false
 		}
-		return reflect.DeepEqual(actual, expected)
+		return eventsEqual(actual, expected)
 	}
 }
 

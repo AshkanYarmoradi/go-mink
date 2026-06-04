@@ -322,6 +322,120 @@ func TestProjectionTestFixture_GivenDomainEvents(t *testing.T) {
 	})
 }
 
+func TestProjectionTestFixture_MonotonicVersions(t *testing.T) {
+	t.Run("GivenDomainEvents versions are monotonic across calls per stream", func(t *testing.T) {
+		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })
+		projection := newTestOrderProjection(repo)
+
+		fixture := TestProjection[TestOrderSummary](t, projection).
+			WithRepository(repo).
+			GivenDomainEvents("Order-order-123",
+				TestOrderCreated{OrderID: "order-123", CustomerID: "cust-456"},
+				TestItemAdded{OrderID: "order-123", SKU: "SKU-1", Quantity: 1, Price: 10.0},
+			).
+			// A second call on the SAME stream must continue versioning at 3,
+			// not reset to 1.
+			GivenDomainEvents("Order-order-123",
+				TestItemAdded{OrderID: "order-123", SKU: "SKU-2", Quantity: 2, Price: 20.0},
+			)
+
+		events := fixture.Events()
+		require.Len(t, events, 3)
+		assert.Equal(t, int64(1), events[0].Version)
+		assert.Equal(t, int64(2), events[1].Version)
+		assert.Equal(t, int64(3), events[2].Version, "version must not reset across calls")
+
+		// Global positions remain monotonic too.
+		assert.Equal(t, uint64(1), events[0].GlobalPosition)
+		assert.Equal(t, uint64(2), events[1].GlobalPosition)
+		assert.Equal(t, uint64(3), events[2].GlobalPosition)
+	})
+
+	t.Run("versions are tracked independently per stream", func(t *testing.T) {
+		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })
+		projection := newTestOrderProjection(repo)
+
+		fixture := TestProjection[TestOrderSummary](t, projection).
+			WithRepository(repo).
+			GivenDomainEvents("Order-order-1",
+				TestOrderCreated{OrderID: "order-1", CustomerID: "cust-1"},
+				TestItemAdded{OrderID: "order-1", SKU: "SKU-1", Quantity: 1, Price: 10.0},
+			).
+			GivenDomainEvents("Order-order-2",
+				TestOrderCreated{OrderID: "order-2", CustomerID: "cust-2"},
+			)
+
+		events := fixture.Events()
+		require.Len(t, events, 3)
+		// Stream 1: versions 1, 2.
+		assert.Equal(t, "Order-order-1", events[0].StreamID)
+		assert.Equal(t, int64(1), events[0].Version)
+		assert.Equal(t, int64(2), events[1].Version)
+		// Stream 2 restarts at version 1.
+		assert.Equal(t, "Order-order-2", events[2].StreamID)
+		assert.Equal(t, int64(1), events[2].Version, "a different stream restarts at version 1")
+		// Global position is still globally monotonic across streams.
+		assert.Equal(t, uint64(3), events[2].GlobalPosition)
+	})
+
+	t.Run("GivenEvents defaults a zero version to a monotonic per-stream value", func(t *testing.T) {
+		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })
+		projection := newTestOrderProjection(repo)
+
+		// Same stream (so versions share a counter) but distinct read-model IDs
+		// so each TestOrderCreated Insert succeeds.
+		mk := func(orderID string) mink.StoredEvent {
+			data, _ := json.Marshal(TestOrderCreated{OrderID: orderID, CustomerID: "c"})
+			return mink.StoredEvent{
+				StreamID: "Order-shared",
+				Type:     "TestOrderCreated",
+				Data:     data,
+				// Version intentionally left at zero.
+			}
+		}
+
+		fixture := TestProjection[TestOrderSummary](t, projection).
+			WithRepository(repo).
+			GivenEvents(mk("order-1")).
+			GivenEvents(mk("order-2"))
+
+		events := fixture.Events()
+		require.Len(t, events, 2)
+		assert.Equal(t, int64(1), events[0].Version, "zero version should be defaulted")
+		assert.Equal(t, int64(2), events[1].Version, "defaulted versions stay monotonic across calls")
+	})
+
+	t.Run("GivenEvents respects an explicitly set version", func(t *testing.T) {
+		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })
+		projection := newTestOrderProjection(repo)
+
+		data1, _ := json.Marshal(TestOrderCreated{OrderID: "order-1", CustomerID: "c"})
+		data2, _ := json.Marshal(TestOrderCreated{OrderID: "order-2", CustomerID: "c"})
+		explicit := mink.StoredEvent{
+			StreamID: "Order-shared",
+			Type:     "TestOrderCreated",
+			Data:     data1,
+			Version:  7,
+		}
+		next := mink.StoredEvent{
+			StreamID: "Order-shared",
+			Type:     "TestOrderCreated",
+			Data:     data2,
+			// zero -> should follow the explicit 7
+		}
+
+		fixture := TestProjection[TestOrderSummary](t, projection).
+			WithRepository(repo).
+			GivenEvents(explicit).
+			GivenEvents(next)
+
+		events := fixture.Events()
+		require.Len(t, events, 2)
+		assert.Equal(t, int64(7), events[0].Version, "explicit version is preserved")
+		assert.Equal(t, int64(8), events[1].Version, "subsequent auto version follows the explicit one")
+	})
+}
+
 func TestProjectionTestFixture_ThenReadModel(t *testing.T) {
 	t.Run("passes when read model matches", func(t *testing.T) {
 		repo := mink.NewInMemoryRepository[TestOrderSummary](func(m *TestOrderSummary) string { return m.ID })

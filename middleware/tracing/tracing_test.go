@@ -163,14 +163,17 @@ func TestCommandMiddleware(t *testing.T) {
 		tracer, exporter := setupTestTracer(t)
 		cmd := &minktest.TestCommand{ID: "test-123"}
 
-		ctx := context.WithValue(context.Background(), correlationIDContextKey{}, "correlation-123")
-
-		middleware := CommandMiddleware(tracer)
-		handler := middleware(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
+		// Wire the real mink.CorrelationIDMiddleware ahead of the tracing
+		// middleware so the correlation ID propagates across packages via the
+		// shared context key (the bug this test guards against was the two
+		// packages using distinct private key types).
+		correlation := mink.CorrelationIDMiddleware(func() string { return "correlation-123" })
+		traced := CommandMiddleware(tracer)
+		handler := correlation(traced(func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
 			return mink.NewSuccessResult("test-123", 1), nil
-		})
+		}))
 
-		_, _ = handler(ctx, cmd)
+		_, _ = handler(context.Background(), cmd)
 
 		spans := exporter.GetSpans()
 		require.Len(t, spans, 1)

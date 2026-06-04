@@ -153,8 +153,18 @@ func (r *SchemaRegistry) GetLatestVersion(eventType string) (int, error) {
 }
 
 // CheckCompatibility determines the compatibility level between two schema versions.
-// It compares the field definitions to classify the change.
+// It compares the field definitions — name, type, and the Required flag — to
+// classify the change. newVersion must be greater than oldVersion.
+//
+// A field added as Required, or an existing field whose Required flag flips from
+// false to true, breaks backward compatibility because data written under the old
+// schema may omit it.
 func (r *SchemaRegistry) CheckCompatibility(eventType string, oldVersion, newVersion int) (SchemaCompatibility, error) {
+	if newVersion <= oldVersion {
+		return SchemaBreaking, fmt.Errorf("mink: newVersion (%d) must be greater than oldVersion (%d)",
+			newVersion, oldVersion)
+	}
+
 	oldSchema, err := r.GetSchema(eventType, oldVersion)
 	if err != nil {
 		return SchemaBreaking, err
@@ -176,24 +186,36 @@ func (r *SchemaRegistry) CheckCompatibility(eventType string, oldVersion, newVer
 	hasAddedFields := false
 	hasRemovedFields := false
 	hasChangedFields := false
+	hasBreakingAddition := false
 
-	// Check for removed or changed fields
+	// Check for removed or changed fields.
 	for name, oldField := range oldFields {
-		if newField, ok := newFields[name]; !ok {
+		newField, ok := newFields[name]
+		if !ok {
 			hasRemovedFields = true
-		} else if oldField.Type != newField.Type {
+			continue
+		}
+		if oldField.Type != newField.Type {
+			hasChangedFields = true
+		}
+		// A field that becomes required breaks old data that may have omitted it.
+		if newField.Required && !oldField.Required {
 			hasChangedFields = true
 		}
 	}
 
-	// Check for added fields
-	for name := range newFields {
+	// Check for added fields.
+	for name, newField := range newFields {
 		if _, ok := oldFields[name]; !ok {
 			hasAddedFields = true
+			if newField.Required {
+				// Old data cannot satisfy a newly-required field.
+				hasBreakingAddition = true
+			}
 		}
 	}
 
-	if hasChangedFields {
+	if hasChangedFields || hasBreakingAddition {
 		return SchemaBreaking, nil
 	}
 	if hasRemovedFields && hasAddedFields {
@@ -206,6 +228,22 @@ func (r *SchemaRegistry) CheckCompatibility(eventType string, oldVersion, newVer
 		return SchemaBackwardCompatible, nil
 	}
 	return SchemaFullyCompatible, nil
+}
+
+// RequireBackwardCompatible returns an *IncompatibleSchemaError if evolving
+// eventType from oldVersion to newVersion is not at least backward compatible
+// (i.e. new code cannot safely read old data). It returns nil when the change is
+// SchemaFullyCompatible or SchemaBackwardCompatible.
+func (r *SchemaRegistry) RequireBackwardCompatible(eventType string, oldVersion, newVersion int) error {
+	compat, err := r.CheckCompatibility(eventType, oldVersion, newVersion)
+	if err != nil {
+		return err
+	}
+	if compat == SchemaFullyCompatible || compat == SchemaBackwardCompatible {
+		return nil
+	}
+	return NewIncompatibleSchemaError(eventType, oldVersion, newVersion, compat,
+		fmt.Sprintf("change is %s, which is not backward compatible", compat))
 }
 
 // RegisteredEventTypes returns a sorted list of event types that have schemas registered.

@@ -617,6 +617,9 @@ func TestEventStore_GetStreamInfo(t *testing.T) {
 		assert.Equal(t, "Order-123", info.StreamID)
 		assert.Equal(t, "Order", info.Category)
 		assert.Equal(t, int64(2), info.Version)
+		assert.Equal(t, int64(2), info.EventCount, "EventCount should be mapped from the adapter")
+		assert.False(t, info.CreatedAt.IsZero(), "CreatedAt should be populated")
+		assert.False(t, info.UpdatedAt.IsZero(), "UpdatedAt should be populated")
 	})
 
 	t.Run("stream not found", func(t *testing.T) {
@@ -847,12 +850,41 @@ func TestEventStore_LoadAggregate_DeserializationError(t *testing.T) {
 	store2 := New(adapter) // New store without registered events
 	order := NewStoreTestOrder("deser-test")
 
-	// This should fail because StoreOrderCreated isn't registered
-	// and the deserialized type won't match what ApplyEvent expects
+	// Contract: loading events whose types are not registered does not panic.
+	// The unregistered event deserializes to a generic map that the aggregate's
+	// ApplyEvent ignores, so the load succeeds but the aggregate state is not
+	// rebuilt — while the version still advances by the number of stored events.
 	err = store2.LoadAggregate(ctx, order)
-	// This might succeed or fail depending on implementation
-	// The important thing is it doesn't panic
-	_ = err
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), order.Version(), "version advances even when state is not rebuilt")
+	assert.Empty(t, order.CustomerID, "state is not rebuilt for unregistered event types")
+}
+
+func TestEventStore_WithMaxEventSize(t *testing.T) {
+	store := New(memory.NewAdapter(), WithMaxEventSize(60))
+	store.RegisterEvents(StoreOrderCreated{})
+	ctx := context.Background()
+
+	// Oversized event is rejected.
+	big := make([]byte, 200)
+	for i := range big {
+		big[i] = 'x'
+	}
+	err := store.Append(ctx, "Order-big", []interface{}{StoreOrderCreated{OrderID: string(big), CustomerID: "c"}})
+	assert.ErrorIs(t, err, ErrEventTooLarge)
+
+	// Small event is accepted.
+	err = store.Append(ctx, "Order-small", []interface{}{StoreOrderCreated{OrderID: "1"}})
+	assert.NoError(t, err)
+}
+
+func TestEventStore_Append_RejectsInvalidExpectedVersion(t *testing.T) {
+	store := New(memory.NewAdapter())
+	err := store.Append(context.Background(), "Order-bad-ver",
+		[]interface{}{StoreOrderCreated{OrderID: "1"}},
+		ExpectVersion(-5), // below StreamExists (-2): invalid
+	)
+	assert.ErrorIs(t, err, ErrInvalidVersion)
 }
 
 func TestEventStore_SerializerAndAdapter_Accessors(t *testing.T) {

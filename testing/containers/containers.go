@@ -1,6 +1,21 @@
-// Package containers provides test container utilities for integration testing.
-// It wraps testcontainers-go to provide easy-to-use database containers
-// for testing event stores and adapters.
+// Package containers provides connection helpers for integration testing
+// against infrastructure that is already running.
+//
+// Despite the package name, it does NOT provision Docker containers. It assumes
+// the test infrastructure (PostgreSQL) has already been started out of band —
+// typically via the repository's docker-compose.test.yml (see `make infra-up`)
+// or by an equivalent service in CI — and provides convenience helpers to
+// connect to it, create/drop isolated test schemas, and wire up an integration
+// test harness. When the expected instance is not reachable, StartPostgres
+// skips the calling test rather than failing it, so unit-only environments stay
+// green.
+//
+// There is intentionally no StartKafka (or other broker) helper here: Kafka
+// integration tests connect directly using the TEST_KAFKA_BROKERS environment
+// variable and skip themselves when it is unset. If you need real
+// container provisioning (lifecycle managed from within the test), add
+// testcontainers-go as a dependency; this package deliberately avoids that
+// dependency to keep the default build lightweight.
 package containers
 
 import (
@@ -115,15 +130,21 @@ func defaultPostgresConfig() *postgresConfig {
 	}
 }
 
-// StartPostgres starts a PostgreSQL test container.
-// It uses the already running Docker container from docker-compose.test.yml
-// in CI environments or can start a new container for local development.
+// StartPostgres connects to an already-running PostgreSQL instance and returns
+// a handle for use in integration tests. It does NOT provision a container:
+// the instance is expected to be running already (for example via
+// docker-compose.test.yml / `make infra-up`, or a CI service). Connection
+// settings default to those in docker-compose.test.yml and can be overridden
+// with PostgresOption values or the documented environment variables.
 //
-// For full testcontainers integration, install testcontainers-go:
-// go get github.com/testcontainers/testcontainers-go
+// If the instance is not reachable within the readiness timeout, the calling
+// test is skipped (t.Skip) rather than failed, so the suite still passes in
+// environments without the infrastructure.
 //
-// This implementation provides a lightweight alternative that works with
-// the existing docker-compose.test.yml setup.
+// There is no StartKafka counterpart: Kafka integration tests connect directly
+// via TEST_KAFKA_BROKERS and skip when it is unset. To provision real
+// containers from within tests, add testcontainers-go; this package avoids that
+// dependency on purpose.
 func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresContainer {
 	t.Helper()
 

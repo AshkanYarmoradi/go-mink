@@ -221,4 +221,13 @@ func TestParseMetadata(t *testing.T) {
 		assert.Equal(t, "tenant-1", m.TenantID)
 		assert.Equal(t, "value", m.Custom["key"])
 	})
+
+	// Malformed metadata must surface an error rather than being silently
+	// discarded (which would hide data corruption and drop correlation fields).
+	t.Run("malformed JSON returns an error instead of dropping data", func(t *testing.T) {
+		var m adapters.Metadata
+		err := parseMetadata([]byte(`{"correlationId": `), &m)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unmarshal event metadata")
+	})
 }

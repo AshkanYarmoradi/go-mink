@@ -27,6 +27,8 @@ var (
 	_ adapters.SnapshotAdapter     = (*MemoryAdapter)(nil)
 	_ adapters.CheckpointAdapter   = (*MemoryAdapter)(nil)
 	_ adapters.HealthChecker       = (*MemoryAdapter)(nil)
+	_ adapters.Migrator            = (*MemoryAdapter)(nil)
+	_ adapters.OutboxAppender      = (*MemoryAdapter)(nil)
 )
 
 // Default values for subscriptions.
@@ -38,6 +40,14 @@ func getBufferSize(opts []adapters.SubscriptionOptions) int {
 		return opts[0].BufferSize
 	}
 	return defaultSubscriptionBuffer
+}
+
+// getOnError extracts the OnError callback from options, or nil if none was set.
+func getOnError(opts []adapters.SubscriptionOptions) func(err error) {
+	if len(opts) > 0 {
+		return opts[0].OnError
+	}
+	return nil
 }
 
 // filterEvents creates a filtered event channel from a source channel.
@@ -71,13 +81,29 @@ type MemoryAdapter struct {
 	closed         bool
 
 	// Subscribers for real-time notifications
-	subscribers   []chan adapters.StoredEvent
+	subscribers   []*subscriber
 	subscribersMu sync.RWMutex
+
+	// CLI-related state (projections and migrations). These are kept per-adapter
+	// instance (rather than package globals) so separate adapters do not leak
+	// state into one another, consistent with the "no global state" rule.
+	projections   map[string]*projectionInfo
+	projectionsMu sync.RWMutex
+	migrations    map[string]*migrationRecord
+	migrationsMu  sync.RWMutex
 }
 
 type streamData struct {
 	info   adapters.StreamInfo
 	events []adapters.StoredEvent
+}
+
+// subscriber pairs a live-delivery channel with the optional OnError callback
+// supplied in SubscriptionOptions, so notifySubscribers can report dropped
+// events to the owner of each subscription.
+type subscriber struct {
+	ch      chan adapters.StoredEvent
+	onError func(err error)
 }
 
 // Option configures a MemoryAdapter.
@@ -90,7 +116,9 @@ func NewAdapter(opts ...Option) *MemoryAdapter {
 		globalEvents: make([]adapters.StoredEvent, 0),
 		snapshots:    make(map[string]*adapters.SnapshotRecord),
 		checkpoints:  make(map[string]uint64),
-		subscribers:  make([]chan adapters.StoredEvent, 0),
+		subscribers:  make([]*subscriber, 0),
+		projections:  make(map[string]*projectionInfo),
+		migrations:   make(map[string]*migrationRecord),
 	}
 
 	for _, opt := range opts {
@@ -105,6 +133,42 @@ func (a *MemoryAdapter) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Migrate runs pending schema migrations. The memory adapter requires no schema,
+// so this is a no-op (it only honors context cancellation and closed state) and
+// exists to satisfy the adapters.Migrator interface for parity with PostgreSQL.
+func (a *MemoryAdapter) Migrate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.closed {
+		return adapters.ErrAdapterClosed
+	}
+
+	return nil
+}
+
+// MigrationVersion returns the current migration version. The memory adapter has
+// no evolving schema, so it reports a constant version of 1 whenever the adapter
+// is usable. This satisfies the adapters.Migrator interface.
+func (a *MemoryAdapter) MigrationVersion(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.closed {
+		return 0, adapters.ErrAdapterClosed
+	}
+
+	return 1, nil
+}
+
 // Append stores events to the specified stream with optimistic concurrency control.
 func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
@@ -112,18 +176,106 @@ func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []ad
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	storedEvents, err := a.appendLocked(streamID, events, expectedVersion)
+	var drops []pendingDrop
+	if err == nil {
+		drops = a.notifySubscribers(storedEvents)
+	}
+	a.mu.Unlock()
 
+	if err != nil {
+		return nil, err
+	}
+	// Fire drop notifications outside the lock so a callback that re-enters the
+	// adapter cannot deadlock the writer.
+	fireDrops(drops)
+	return storedEvents, nil
+}
+
+// AppendWithOutbox atomically appends events and schedules outbox messages into
+// the provided store, all under the adapter's write lock.
+//
+// The append is validated and the messages scheduled BEFORE any events are
+// written, so a version conflict or a scheduling failure leaves neither the
+// events nor the messages — mirroring the single-transaction guarantee of the
+// PostgreSQL adapter. Messages are scheduled into the caller-provided store (the
+// one configured on EventStoreWithOutbox), keeping the atomic path consistent
+// with the store the caller reads from.
+//
+// Scheduling runs while a.mu is held, so the provided store must not call back
+// into this adapter; the in-process memory OutboxStore does not.
+func (a *MemoryAdapter) AppendWithOutbox(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64, outbox adapters.OutboxStore, outboxMessages []*adapters.OutboxMessage) ([]adapters.StoredEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Refuse to silently drop messages when no store was provided (parity with
+	// the PostgreSQL adapter, which also requires a store for the atomic path).
+	if len(outboxMessages) > 0 && outbox == nil {
+		return nil, adapters.ErrNilOutboxStore
+	}
+
+	a.mu.Lock()
+
+	// Validate before any side effects so a scheduling failure writes nothing.
+	if err := a.checkAppendLocked(streamID, events, expectedVersion); err != nil {
+		a.mu.Unlock()
+		return nil, err
+	}
+
+	// Schedule outbox messages first; on failure, no events are appended.
+	if len(outboxMessages) > 0 {
+		if err := outbox.Schedule(ctx, outboxMessages); err != nil {
+			a.mu.Unlock()
+			return nil, err
+		}
+	}
+
+	// Append events. Validation already passed under this same lock.
+	storedEvents, err := a.appendLocked(streamID, events, expectedVersion)
+	if err != nil {
+		a.mu.Unlock()
+		return nil, err
+	}
+
+	drops := a.notifySubscribers(storedEvents)
+	a.mu.Unlock()
+
+	fireDrops(drops) // outside the lock (see Append)
+	return storedEvents, nil
+}
+
+// checkAppendLocked performs the read-only validation for an append (closed
+// state, empty inputs, optimistic-concurrency version check) and assumes a.mu is
+// held. It does not mutate, so callers can validate before performing side
+// effects such as scheduling outbox messages.
+func (a *MemoryAdapter) checkAppendLocked(streamID string, events []adapters.EventRecord, expectedVersion int64) error {
 	if a.closed {
-		return nil, adapters.ErrAdapterClosed
+		return adapters.ErrAdapterClosed
 	}
-
 	if streamID == "" {
-		return nil, adapters.ErrEmptyStreamID
+		return adapters.ErrEmptyStreamID
+	}
+	if len(events) == 0 {
+		return adapters.ErrNoEvents
 	}
 
-	if len(events) == 0 {
-		return nil, adapters.ErrNoEvents
+	stream, exists := a.streams[streamID]
+	currentVersion := int64(0)
+	if exists {
+		currentVersion = stream.info.Version
+	}
+	return adapters.CheckVersion(streamID, expectedVersion, currentVersion, exists)
+}
+
+// appendLocked performs the core append logic and assumes a.mu is already held.
+// It does NOT notify subscribers; the caller is responsible for invoking
+// notifySubscribers after the lock-protected mutation completes. This is shared
+// by Append and AppendWithOutbox so the event+outbox write can be made atomic
+// under a single lock.
+func (a *MemoryAdapter) appendLocked(streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {
+	if err := a.checkAppendLocked(streamID, events, expectedVersion); err != nil {
+		return nil, err
 	}
 
 	// Get or create stream
@@ -131,11 +283,6 @@ func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []ad
 	currentVersion := int64(0)
 	if exists {
 		currentVersion = stream.info.Version
-	}
-
-	// Check expected version
-	if err := adapters.CheckVersion(streamID, expectedVersion, currentVersion, exists); err != nil {
-		return nil, err
 	}
 
 	// Create stream if it doesn't exist
@@ -182,9 +329,6 @@ func (a *MemoryAdapter) Append(ctx context.Context, streamID string, events []ad
 	stream.info.Version = currentVersion
 	stream.info.EventCount = int64(len(stream.events))
 	stream.info.UpdatedAt = now
-
-	// Notify subscribers (non-blocking)
-	a.notifySubscribers(storedEvents)
 
 	return storedEvents, nil
 }
@@ -270,8 +414,8 @@ func (a *MemoryAdapter) Close() error {
 
 	// Close all subscriber channels
 	a.subscribersMu.Lock()
-	for _, ch := range a.subscribers {
-		close(ch)
+	for _, sub := range a.subscribers {
+		close(sub.ch)
 	}
 	a.subscribers = nil
 	a.subscribersMu.Unlock()
@@ -309,6 +453,17 @@ func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint6
 }
 
 // SubscribeAll subscribes to all events across all streams.
+//
+// Live delivery is best-effort and lossy: each subscriber is served by a
+// buffered channel (sized by SubscriptionOptions.BufferSize). Historical events
+// are delivered synchronously while the subscription is being set up, but once
+// the subscription is live, an event is dropped for any subscriber whose buffer
+// is full at the moment of publication (the memory adapter never blocks the
+// writer). When an event is dropped, the subscription's OnError callback (if
+// provided) is invoked so the caller can detect the loss; consumers that must
+// not miss events should drain the channel promptly, use a sufficiently large
+// buffer, or rely on checkpoint-based catch-up via LoadFromPosition rather than
+// purely on live delivery.
 func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, opts ...adapters.SubscriptionOptions) (<-chan adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -340,9 +495,10 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	}
 	a.mu.RUnlock()
 
-	// Register for future events
+	// Register for future events, retaining the OnError callback so dropped
+	// live events can be reported.
 	a.subscribersMu.Lock()
-	a.subscribers = append(a.subscribers, ch)
+	a.subscribers = append(a.subscribers, &subscriber{ch: ch, onError: getOnError(opts)})
 	a.subscribersMu.Unlock()
 
 	// Handle context cancellation
@@ -401,13 +557,27 @@ func (a *MemoryAdapter) SaveSnapshot(ctx context.Context, streamID string, versi
 		return ErrAdapterClosed
 	}
 
+	// Copy the caller's buffer so later mutation of data by the caller cannot
+	// alter the stored snapshot (matching the deep-copy discipline used by the
+	// outbox and idempotency stores).
 	a.snapshots[streamID] = &adapters.SnapshotRecord{
 		StreamID: streamID,
 		Version:  version,
-		Data:     data,
+		Data:     copyBytes(data),
 	}
 
 	return nil
+}
+
+// copyBytes returns a fresh copy of b, or nil if b is nil. It is used to
+// isolate stored byte slices from caller-owned buffers.
+func copyBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	dst := make([]byte, len(b))
+	copy(dst, b)
+	return dst
 }
 
 // LoadSnapshot retrieves the latest snapshot for the given stream.
@@ -428,11 +598,12 @@ func (a *MemoryAdapter) LoadSnapshot(ctx context.Context, streamID string) (*ada
 		return nil, nil
 	}
 
-	// Return a copy
+	// Return a copy, including the payload, so callers cannot mutate the stored
+	// snapshot through the returned slice.
 	return &adapters.SnapshotRecord{
 		StreamID: snapshot.StreamID,
 		Version:  snapshot.Version,
-		Data:     snapshot.Data,
+		Data:     copyBytes(snapshot.Data),
 	}, nil
 }
 
@@ -512,6 +683,14 @@ func (a *MemoryAdapter) Reset() {
 	a.globalPosition = 0
 	a.snapshots = make(map[string]*adapters.SnapshotRecord)
 	a.checkpoints = make(map[string]uint64)
+
+	a.projectionsMu.Lock()
+	a.projections = make(map[string]*projectionInfo)
+	a.projectionsMu.Unlock()
+
+	a.migrationsMu.Lock()
+	a.migrations = make(map[string]*migrationRecord)
+	a.migrationsMu.Unlock()
 }
 
 // EventCount returns the total number of events stored.
@@ -528,29 +707,70 @@ func (a *MemoryAdapter) StreamCount() int {
 	return len(a.streams)
 }
 
-// notifySubscribers sends events to all subscribers.
-func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) {
+// pendingDrop pairs a subscriber's OnError callback with the drop error to
+// report, so callbacks can be invoked AFTER the adapter's locks are released.
+type pendingDrop struct {
+	onError func(error)
+	err     error
+}
+
+// notifySubscribers delivers events to all subscribers without blocking and
+// returns the OnError notifications that must be fired for dropped events.
+//
+// Delivery is best-effort: if a subscriber's channel buffer is full, the event
+// is dropped rather than blocking the writer. The OnError callbacks are NOT
+// invoked here — they are returned so the caller can fire them after releasing
+// a.mu (a callback that re-enters the adapter would otherwise deadlock the
+// writer). See SubscribeAll for the full delivery contract.
+func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) []pendingDrop {
 	a.subscribersMu.RLock()
 	defer a.subscribersMu.RUnlock()
 
-	for _, ch := range a.subscribers {
+	var drops []pendingDrop
+	for _, sub := range a.subscribers {
 		for _, event := range events {
 			select {
-			case ch <- event:
+			case sub.ch <- event:
 			default:
-				// Channel full, skip (non-blocking)
+				// Channel full: drop the event (non-blocking delivery) and
+				// queue an OnError notification if one was provided.
+				if sub.onError != nil {
+					drops = append(drops, pendingDrop{
+						onError: sub.onError,
+						err: &SubscriptionDropError{
+							StreamID:       event.StreamID,
+							GlobalPosition: event.GlobalPosition,
+						},
+					})
+				}
 			}
 		}
+	}
+	return drops
+}
+
+// fireDrops invokes queued OnError callbacks outside the adapter's locks. Each
+// callback is recovered so a panicking/slow callback cannot corrupt the writer.
+func fireDrops(drops []pendingDrop) {
+	for _, d := range drops {
+		func() {
+			defer func() { _ = recover() }()
+			d.onError(d.err)
+		}()
 	}
 }
 
 // removeSubscriber removes a subscriber channel.
+//
+// If the channel is not currently registered (for example because Close already
+// removed and closed all subscribers), this is a no-op, which prevents a
+// double close when ctx cancellation races with Close.
 func (a *MemoryAdapter) removeSubscriber(ch chan adapters.StoredEvent) {
 	a.subscribersMu.Lock()
 	defer a.subscribersMu.Unlock()
 
-	for i, subscriber := range a.subscribers {
-		if subscriber == ch {
+	for i, sub := range a.subscribers {
+		if sub.ch == ch {
 			a.subscribers = append(a.subscribers[:i], a.subscribers[i+1:]...)
 			close(ch)
 			break
@@ -725,10 +945,6 @@ func sortEventTypeCounts(counts []adapters.EventTypeCount) {
 	}
 }
 
-// projections holds projection info for the memory adapter.
-var memoryProjections = make(map[string]*projectionInfo)
-var memoryProjectionsMu sync.RWMutex
-
 // ListProjections returns all registered projections.
 func (a *MemoryAdapter) ListProjections(ctx context.Context) ([]adapters.ProjectionInfo, error) {
 	if err := ctx.Err(); err != nil {
@@ -742,11 +958,11 @@ func (a *MemoryAdapter) ListProjections(ctx context.Context) ([]adapters.Project
 		return nil, adapters.ErrAdapterClosed
 	}
 
-	memoryProjectionsMu.RLock()
-	defer memoryProjectionsMu.RUnlock()
+	a.projectionsMu.RLock()
+	defer a.projectionsMu.RUnlock()
 
 	var projections []adapters.ProjectionInfo
-	for _, p := range memoryProjections {
+	for _, p := range a.projections {
 		projections = append(projections, adapters.ProjectionInfo{
 			Name:      p.name,
 			Position:  p.position,
@@ -771,10 +987,10 @@ func (a *MemoryAdapter) GetProjection(ctx context.Context, name string) (*adapte
 		return nil, adapters.ErrAdapterClosed
 	}
 
-	memoryProjectionsMu.RLock()
-	defer memoryProjectionsMu.RUnlock()
+	a.projectionsMu.RLock()
+	defer a.projectionsMu.RUnlock()
 
-	p, exists := memoryProjections[name]
+	p, exists := a.projections[name]
 	if !exists {
 		return nil, nil
 	}
@@ -800,10 +1016,10 @@ func (a *MemoryAdapter) SetProjectionStatus(ctx context.Context, name string, st
 	}
 	a.mu.RUnlock()
 
-	memoryProjectionsMu.Lock()
-	defer memoryProjectionsMu.Unlock()
+	a.projectionsMu.Lock()
+	defer a.projectionsMu.Unlock()
 
-	p, exists := memoryProjections[name]
+	p, exists := a.projections[name]
 	if !exists {
 		return adapters.ErrStreamNotFound
 	}
@@ -829,10 +1045,10 @@ func (a *MemoryAdapter) ResetProjectionCheckpoint(ctx context.Context, name stri
 
 	a.checkpoints[name] = 0
 
-	memoryProjectionsMu.Lock()
-	defer memoryProjectionsMu.Unlock()
+	a.projectionsMu.Lock()
+	defer a.projectionsMu.Unlock()
 
-	if p, exists := memoryProjections[name]; exists {
+	if p, exists := a.projections[name]; exists {
 		p.position = 0
 		p.updatedAt = time.Now()
 	}
@@ -856,10 +1072,6 @@ func (a *MemoryAdapter) GetTotalEventCount(ctx context.Context) (int64, error) {
 	return int64(a.globalPosition), nil
 }
 
-// migrations holds migration records for the memory adapter.
-var memoryMigrations = make(map[string]*migrationRecord)
-var memoryMigrationsMu sync.RWMutex
-
 // GetAppliedMigrations returns the list of applied migration names.
 func (a *MemoryAdapter) GetAppliedMigrations(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
@@ -873,11 +1085,11 @@ func (a *MemoryAdapter) GetAppliedMigrations(ctx context.Context) ([]string, err
 		return nil, adapters.ErrAdapterClosed
 	}
 
-	memoryMigrationsMu.RLock()
-	defer memoryMigrationsMu.RUnlock()
+	a.migrationsMu.RLock()
+	defer a.migrationsMu.RUnlock()
 
 	var names []string
-	for name := range memoryMigrations {
+	for name := range a.migrations {
 		names = append(names, name)
 	}
 
@@ -911,10 +1123,10 @@ func (a *MemoryAdapter) RecordMigration(ctx context.Context, name string) error 
 	}
 	a.mu.RUnlock()
 
-	memoryMigrationsMu.Lock()
-	defer memoryMigrationsMu.Unlock()
+	a.migrationsMu.Lock()
+	defer a.migrationsMu.Unlock()
 
-	memoryMigrations[name] = &migrationRecord{
+	a.migrations[name] = &migrationRecord{
 		name:      name,
 		appliedAt: time.Now(),
 	}
@@ -935,10 +1147,10 @@ func (a *MemoryAdapter) RemoveMigrationRecord(ctx context.Context, name string) 
 	}
 	a.mu.RUnlock()
 
-	memoryMigrationsMu.Lock()
-	defer memoryMigrationsMu.Unlock()
+	a.migrationsMu.Lock()
+	defer a.migrationsMu.Unlock()
 
-	delete(memoryMigrations, name)
+	delete(a.migrations, name)
 
 	return nil
 }
@@ -1042,18 +1254,18 @@ func (a *MemoryAdapter) GetProjectionHealth(ctx context.Context) (*adapters.Proj
 		return nil, adapters.ErrAdapterClosed
 	}
 
-	memoryProjectionsMu.RLock()
-	defer memoryProjectionsMu.RUnlock()
+	a.projectionsMu.RLock()
+	defer a.projectionsMu.RUnlock()
 
 	result := &adapters.ProjectionHealthResult{
-		TotalProjections: int64(len(memoryProjections)),
+		TotalProjections: int64(len(a.projections)),
 	}
 
 	// Find max position
 	result.MaxPosition = int64(a.globalPosition)
 
 	// Count projections behind
-	for _, p := range memoryProjections {
+	for _, p := range a.projections {
 		if int64(p.position) < result.MaxPosition {
 			result.ProjectionsBehind++
 		}

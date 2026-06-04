@@ -1035,7 +1035,7 @@ scrape_configs:
 
 - [ ] **Database**
   - [ ] Connection pooling configured
-  - [ ] Indexes on `mink_events` table
+  - [ ] Indexes on `events` table
   - [ ] Backup strategy in place
   - [ ] Point-in-time recovery enabled
 

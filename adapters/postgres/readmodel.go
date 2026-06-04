@@ -124,7 +124,24 @@ type PostgresRepository[T any] struct {
 //	    postgres.WithReadModelSchema("projections"),
 //	    postgres.WithTableName("order_summaries"),
 //	)
+//
+// Auto-migration caveat: by default (WithAutoMigrate is true) this constructor
+// runs blocking schema DDL — CREATE SCHEMA/TABLE/INDEX and ALTER TABLE — using
+// context.Background(), so it cannot be cancelled or deadline-bounded by the
+// caller. Production callers that need a cancellable/bounded migration should
+// either use NewPostgresRepositoryContext to thread a context through, or
+// disable auto-migration with WithAutoMigrate(false) and call Migrate(ctx)
+// explicitly with their own context.
 func NewPostgresRepository[T any](db *sql.DB, opts ...ReadModelOption) (*PostgresRepository[T], error) {
+	return NewPostgresRepositoryContext[T](context.Background(), db, opts...)
+}
+
+// NewPostgresRepositoryContext is like NewPostgresRepository but threads the
+// provided context into the auto-migration step (when WithAutoMigrate is
+// enabled, the default). This lets callers bound or cancel the blocking schema
+// DDL that runs at construction. The context is only used for migration; once
+// the repository is returned, per-operation methods take their own context.
+func NewPostgresRepositoryContext[T any](ctx context.Context, db *sql.DB, opts ...ReadModelOption) (*PostgresRepository[T], error) {
 	config := readModelConfig{
 		schema:      "public",
 		idField:     "ID",
@@ -176,7 +193,10 @@ func NewPostgresRepository[T any](db *sql.DB, opts ...ReadModelOption) (*Postgre
 
 	// Auto-migrate if enabled
 	if config.autoMigrate {
-		if err := repo.Migrate(context.Background()); err != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := repo.Migrate(ctx); err != nil {
 			return nil, fmt.Errorf("mink/postgres/readmodel: migration failed: %w", err)
 		}
 	}
@@ -1081,7 +1101,12 @@ func validateSQLLiteral(value, context string) error {
 	// Check for SQL keywords using word boundary matching to avoid false positives
 	// (e.g., "dropbox" should not be rejected)
 	lowerValue := strings.ToLower(value)
-	dangerousKeywords := []string{"drop", "alter", "create", "insert", "update", "delete", "truncate", "exec", "execute"}
+	// Note: "with" is intentionally NOT listed — it appears in legitimate types
+	// such as "timestamp with time zone".
+	dangerousKeywords := []string{
+		"drop", "alter", "create", "insert", "update", "delete", "truncate",
+		"exec", "execute", "select", "union", "grant", "revoke",
+	}
 	for _, keyword := range dangerousKeywords {
 		if containsWord(lowerValue, keyword) {
 			return fmt.Errorf("mink/postgres/readmodel: invalid %s value %q: contains forbidden keyword %q", context, value, keyword)
@@ -1195,8 +1220,10 @@ func (r *PostgresRepository[T]) insertWithExecutor(ctx context.Context, exec dbE
 
 	_, err := exec.ExecContext(ctx, query, values...)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") ||
-			strings.Contains(err.Error(), "unique constraint") {
+		// Detect a PRIMARY KEY / UNIQUE violation via SQLState 23505
+		// (isUniqueViolation also falls back to a string match for non-pgconn
+		// errors) and surface it as the domain-level ErrAlreadyExists.
+		if isUniqueViolation(err) {
 			return mink.ErrAlreadyExists
 		}
 		return fmt.Errorf("mink/postgres/readmodel: insert failed: %w", err)

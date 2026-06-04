@@ -369,7 +369,21 @@ func (m *Metrics) CommandMiddleware() mink.Middleware {
 
 			// Time execution
 			start := time.Now()
+
+			// Ensure a panicking command is still counted (as an error) before the
+			// panic propagates, instead of being invisible to commands_total /
+			// errors_total. The panic is not swallowed — it continues unwinding.
+			panicked := true
+			defer func() {
+				if panicked {
+					m.commandDuration.WithLabelValues(m.serviceName, cmdType).Observe(time.Since(start).Seconds())
+					m.commandsTotal.WithLabelValues(m.serviceName, cmdType, StatusError).Inc()
+					m.errorsTotal.WithLabelValues(m.serviceName, "panic").Inc()
+				}
+			}()
+
 			result, err := next(ctx, cmd)
+			panicked = false
 			duration := time.Since(start)
 
 			// Record metrics

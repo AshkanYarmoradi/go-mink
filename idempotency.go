@@ -121,18 +121,54 @@ type IdempotencyConfig struct {
 	// Default is false.
 	StoreErrors bool
 
+	// FailClosed determines behavior when the idempotency store is unavailable.
+	// If true, a store error fails the command (so a store outage cannot allow
+	// duplicate processing). If false (the default), the command proceeds without
+	// the idempotency guarantee (fail-open).
+	FailClosed bool
+
+	// ReservationTTL bounds how long an in-flight reservation blocks a key before
+	// it self-expires. It should be longer than the slowest handler but much
+	// shorter than TTL, so a process that crashes mid-handler does not block a
+	// legitimate retry of the command for the full result TTL. Default: 5 minutes.
+	ReservationTTL time.Duration
+
 	// SkipCommands is a list of command types to skip idempotency checking.
 	SkipCommands []string
+}
+
+// idempotencyProcessingMarker tags a reservation record that has not yet
+// completed, distinguishing an in-flight reservation from a stored result.
+const idempotencyProcessingMarker = "mink:processing"
+
+// newProcessingRecord builds a reservation record used to claim a key before the
+// handler runs.
+func newProcessingRecord(key, cmdType string, ttl time.Duration) *IdempotencyRecord {
+	now := time.Now()
+	return &IdempotencyRecord{
+		Key:         key,
+		CommandType: cmdType,
+		Success:     false,
+		Error:       idempotencyProcessingMarker,
+		ProcessedAt: now,
+		ExpiresAt:   now.Add(ttl),
+	}
+}
+
+// isProcessingRecord reports whether a record is an in-flight reservation.
+func isProcessingRecord(r *IdempotencyRecord) bool {
+	return r != nil && !r.Success && r.Error == idempotencyProcessingMarker
 }
 
 // DefaultIdempotencyConfig returns a default idempotency configuration.
 func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig {
 	return IdempotencyConfig{
-		Store:        store,
-		TTL:          24 * time.Hour,
-		KeyGenerator: GetIdempotencyKey,
-		StoreErrors:  false,
-		SkipCommands: nil,
+		Store:          store,
+		TTL:            24 * time.Hour,
+		KeyGenerator:   GetIdempotencyKey,
+		StoreErrors:    false,
+		ReservationTTL: 5 * time.Minute,
+		SkipCommands:   nil,
 	}
 }
 
@@ -140,6 +176,9 @@ func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig {
 func IdempotencyMiddleware(config IdempotencyConfig) Middleware {
 	if config.TTL <= 0 {
 		config.TTL = 24 * time.Hour
+	}
+	if config.ReservationTTL <= 0 {
+		config.ReservationTTL = 5 * time.Minute
 	}
 	if config.KeyGenerator == nil {
 		config.KeyGenerator = GetIdempotencyKey
@@ -160,28 +199,65 @@ func IdempotencyMiddleware(config IdempotencyConfig) Middleware {
 			// Generate idempotency key
 			key := config.KeyGenerator(cmd)
 
-			// Check if already processed
+			// Check if already processed.
 			record, err := config.Store.Get(ctx, key)
 			if err != nil {
-				// Store error - continue processing but log
-				// In production, you might want to handle this differently
+				if config.FailClosed {
+					return NewErrorResult(err), err
+				}
+				// Fail open: proceed without the idempotency guarantee.
 				return next(ctx, cmd)
 			}
 
-			if record != nil && !record.IsExpired() {
-				// Already processed
-				return IdempotencyRecordToResult(record), nil
+			if record != nil {
+				switch {
+				case isProcessingRecord(record) && !record.IsExpired():
+					// A concurrent command holds the key and is still in flight.
+					return NewErrorResult(&IdempotencyReplayError{Key: key, Message: "command in progress"}), nil
+				case !record.IsExpired():
+					// Already processed: replay the stored result.
+					return IdempotencyRecordToResult(record), nil
+				default:
+					// Stale record: remove it so the command can be reprocessed.
+					_ = config.Store.Delete(ctx, key)
+				}
+			}
+
+			// Reserve the key before executing so concurrent duplicates cannot
+			// both run the handler.
+			reserved := true
+			reservation := newProcessingRecord(key, cmd.CommandType(), config.ReservationTTL)
+			if ok, serr := config.Store.StoreIfAbsent(ctx, reservation); serr != nil {
+				if config.FailClosed {
+					return NewErrorResult(serr), serr
+				}
+				reserved = false // fail open: proceed without a reservation
+			} else if !ok {
+				// Lost the reservation race.
+				if existing, gerr := config.Store.Get(ctx, key); gerr == nil && existing != nil &&
+					!existing.IsExpired() && !isProcessingRecord(existing) {
+					return IdempotencyRecordToResult(existing), nil
+				}
+				return NewErrorResult(&IdempotencyReplayError{Key: key, Message: "command in progress"}), nil
 			}
 
 			// Process command
 			result, cmdErr := next(ctx, cmd)
 
-			// Store result
+			// Store result, or release the reservation if the result should not be kept.
 			shouldStore := result.IsSuccess() || (config.StoreErrors && cmdErr != nil)
 			if shouldStore {
 				storeRecord := NewIdempotencyRecord(key, cmd.CommandType(), result, config.TTL)
-				// Best effort - don't fail the command if store fails
-				_ = config.Store.Store(ctx, storeRecord)
+				// Best effort - don't fail the command if store fails. If it does fail
+				// while we hold a reservation, release the reservation so the stale
+				// "processing" record doesn't block legitimate retries until the
+				// reservation TTL expires.
+				if serr := config.Store.Store(ctx, storeRecord); serr != nil && reserved {
+					_ = config.Store.Delete(ctx, key)
+				}
+			} else if reserved {
+				// Remove our reservation so the command can be retried.
+				_ = config.Store.Delete(ctx, key)
 			}
 
 			return result, cmdErr

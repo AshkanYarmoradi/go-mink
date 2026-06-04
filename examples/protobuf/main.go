@@ -281,21 +281,23 @@ func demonstrateProjection() {
 			continue
 		}
 
+		// The protobuf serializer returns the message by value (see Deserialize),
+		// so assert the value types — not pointers — and read the field directly
+		// (binding to a variable would copy the message's internal lock).
 		switch e.Type {
 		case "CustomerID":
-			sv := result.(*wrapperspb.StringValue)
-			summary.CustomerID = sv.Value
-			fmt.Printf("   → Event %d: Set CustomerID = %s\n", i+1, sv.Value)
+			customerID := result.(wrapperspb.StringValue).Value
+			summary.CustomerID = customerID
+			fmt.Printf("   → Event %d: Set CustomerID = %s\n", i+1, customerID)
 		case "ItemAdded":
-			iv := result.(*wrapperspb.Int32Value)
+			items := result.(wrapperspb.Int32Value).Value
 			summary.ItemCount++
-			summary.TotalItems += iv.Value
+			summary.TotalItems += items
 			fmt.Printf("   → Event %d: Added %d items (total batches: %d, total items: %d)\n",
-				i+1, iv.Value, summary.ItemCount, summary.TotalItems)
+				i+1, items, summary.ItemCount, summary.TotalItems)
 		case "OrderComplete":
-			bv := result.(*wrapperspb.BoolValue)
-			summary.IsComplete = bv.Value
-			fmt.Printf("   → Event %d: Order complete = %v\n", i+1, bv.Value)
+			summary.IsComplete = result.(wrapperspb.BoolValue).Value
+			fmt.Printf("   → Event %d: Order complete = %v\n", i+1, summary.IsComplete)
 		}
 	}
 

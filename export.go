@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -125,8 +126,9 @@ type ExportedEvent struct {
 	// When Redacted is true, Data is nil.
 	Data interface{}
 
-	// RawData is the serialized event payload after decryption (JSON bytes).
-	// When Redacted is true, RawData contains the original (encrypted) bytes.
+	// RawData is the serialized event payload after decryption and upcasting
+	// (plaintext JSON bytes). When Redacted is true, RawData instead contains the
+	// original (still-encrypted) on-disk bytes.
 	RawData []byte
 
 	// Metadata contains non-PII contextual information about the event.
@@ -364,6 +366,19 @@ func (e *DataExporter) processStoredEvent(ctx context.Context, se StoredEvent) (
 	}
 
 	exported.Data = event.Data
+	// Re-serialize the decrypted/upcasted payload to plaintext JSON (RawData's
+	// documented contract) rather than the on-disk, possibly-encrypted bytes.
+	// json.Marshal handles both typed events and the generic map produced for
+	// unregistered event types (SerializeEvent cannot serialize a bare map). On
+	// the rare marshal failure, clear RawData and log — never leave ciphertext.
+	if raw, err := json.Marshal(event.Data); err == nil {
+		exported.RawData = raw
+	} else {
+		exported.RawData = nil
+		e.logger.Warn("export: failed to re-serialize decrypted payload to JSON",
+			"streamID", se.StreamID, "eventType", se.Type,
+			"position", se.GlobalPosition, "error", err)
+	}
 	return exported, nil
 }
 

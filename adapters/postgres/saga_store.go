@@ -55,6 +55,10 @@ func NewSagaStore(db *sql.DB, opts ...SagaStoreOption) *SagaStore {
 }
 
 // NewSagaStoreFromAdapter creates a new SagaStore using an existing PostgresAdapter's connection.
+//
+// The returned store does not share the adapter's migrations: PostgresAdapter.Migrate
+// does NOT create the saga table. Callers must invoke Initialize(ctx) on the
+// returned SagaStore to create its table before use.
 func NewSagaStoreFromAdapter(adapter *PostgresAdapter, opts ...SagaStoreOption) *SagaStore {
 	// Start with adapter's schema as default
 	allOpts := []SagaStoreOption{
@@ -123,6 +127,13 @@ func (s *SagaStore) Initialize(ctx context.Context) error {
 // The version is incremented atomically by the database (version = version + 1)
 // and returned via RETURNING clause. After a successful save, state.Version is
 // updated with the new version from the database.
+//
+// Note on Version 0 with an existing ID: because the INSERT uses
+// ON CONFLICT (id) DO UPDATE ... WHERE version = $13 and $13 is the supplied
+// Version, calling Save with Version 0 against a saga ID that already exists
+// (whose stored version is >= 1) matches no row in the UPDATE and surfaces as
+// mink.ErrConcurrencyConflict — it is NOT treated as a clean insert. Use the
+// loaded state's Version (>= 1) to update an existing saga.
 func (s *SagaStore) Save(ctx context.Context, state *mink.SagaState) error {
 	if state == nil {
 		return errors.New("mink/postgres/saga: state is nil")

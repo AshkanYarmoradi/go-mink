@@ -31,11 +31,28 @@ type Option func(*Provider) error
 
 // WithKey pre-loads a master key into the provider.
 // The key must be exactly 32 bytes (AES-256).
+//
+// WithKey is normally applied at construction time via New, but it mirrors the
+// guards of AddKey so it remains safe if applied to an already-constructed or
+// closed provider: it takes the write lock, rejects use after Close, and
+// initializes the key map if it has not been allocated yet.
 func WithKey(keyID string, key []byte) Option {
 	return func(p *Provider) error {
 		if len(key) != 32 {
 			return fmt.Errorf("mink/local: key %q must be 32 bytes, got %d", keyID, len(key))
 		}
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.closed {
+			return encryption.ErrProviderClosed
+		}
+
+		if p.keys == nil {
+			p.keys = make(map[string][]byte)
+		}
+
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		p.keys[keyID] = keyCopy
