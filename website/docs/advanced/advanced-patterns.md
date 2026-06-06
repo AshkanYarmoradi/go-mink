@@ -822,6 +822,28 @@ func TestOrderFulfillmentSaga_Compensation(t *testing.T) {
 
 ---
 
+## Audit Logging
+
+Persist an immutable, queryable trail of every command via the audit middleware:
+
+```go
+auditStore := memory.NewAuditStore() // or postgres.NewAuditStoreFromAdapter(adapter)
+bus.Use(mink.AuditMiddleware(mink.DefaultAuditConfig(auditStore)))
+
+// Query the trail (filters AND together; a zero-value query returns all):
+failed := false
+entries, _ := auditStore.Find(ctx, mink.AuditQuery{Actor: "user-42", Success: &failed})
+```
+
+One `AuditEntry` is written per command — both successes and failures — capturing
+the command type, actor, tenant, correlation/causation, aggregate, duration, and
+outcome. Auditing is fail-open by default (a store outage never breaks command
+processing); set `FailClosed` to surface audit-write failures. See the full
+[Audit Logging guide](/docs/advanced/audit-logging) for the actor model, querying,
+retention, and the PostgreSQL schema.
+
+---
+
 ## Outbox Pattern
 
 Reliable event publishing to external systems. The outbox pattern ensures messages are published atomically with events by writing them in the same database transaction, then delivering them asynchronously via a background processor.

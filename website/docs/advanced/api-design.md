@@ -261,6 +261,58 @@ func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig
 func GenerateIdempotencyKey(cmd Command) string
 ```
 
+### Audit Logging
+
+```go
+// AuditStore persists and queries the command audit trail.
+type AuditStore interface {
+    Append(ctx context.Context, entry *AuditEntry) error
+    Find(ctx context.Context, q AuditQuery) ([]*AuditEntry, error) // honors Order/Limit/Offset
+    Count(ctx context.Context, q AuditQuery) (int64, error)        // ignores Limit/Offset
+    Cleanup(ctx context.Context, olderThan time.Duration) (int64, error)
+    Initialize(ctx context.Context) error
+    Close() error
+}
+
+// AuditEntry is one immutable record per dispatched command.
+type AuditEntry struct {
+    ID, CommandType, CommandID, AggregateID            string
+    Actor, TenantID, CorrelationID, CausationID, Error string
+    Version, DurationMs                                int64
+    Timestamp                                          time.Time
+    Success                                            bool
+    Metadata                                           map[string]string
+}
+
+// AuditQuery filters and paginates the trail (zero value = all matching).
+type AuditQuery struct {
+    CommandType, Actor, TenantID, AggregateID string
+    From, To                                  time.Time
+    Success                                   *bool      // nil = both
+    Limit, Offset                             int
+    Order                                     AuditOrder // AuditOrderTimestampDesc (default) | ...Asc
+}
+
+// AuditConfig configures the middleware.
+type AuditConfig struct {
+    Store           AuditStore
+    ActorFunc       ActorFunc // nil -> ActorFromContext
+    SkipCommands    []string
+    FailClosed      bool      // default false = fail-open (auditing never breaks commands)
+    IncludeMetadata bool
+}
+
+func AuditMiddleware(config AuditConfig) Middleware
+func DefaultAuditConfig(store AuditStore) AuditConfig
+
+// Actor context helpers.
+func WithActor(ctx context.Context, actor string) context.Context
+func ActorFromContext(ctx context.Context) string
+```
+
+See the [Audit Logging guide](/docs/advanced/audit-logging) for usage, failure
+semantics, querying, and the PostgreSQL schema.
+
 ### Events
 
 ```go

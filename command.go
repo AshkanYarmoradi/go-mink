@@ -90,6 +90,20 @@ func (c CommandBase) GetMetadata(key string) string {
 	return c.Metadata[key]
 }
 
+// GetMetadataMap returns a defensive copy of the command's metadata map (or nil
+// when empty), so callers cannot mutate CommandBase's internal state. It enables
+// audit logging (via AuditConfig.IncludeMetadata) to capture command metadata.
+func (c CommandBase) GetMetadataMap() map[string]string {
+	if len(c.Metadata) == 0 {
+		return nil
+	}
+	cp := make(map[string]string, len(c.Metadata))
+	for k, v := range c.Metadata {
+		cp[k] = v
+	}
+	return cp
+}
+
 // GetCommandID returns the command ID.
 func (c CommandBase) GetCommandID() string {
 	return c.CommandID

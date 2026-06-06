@@ -337,6 +337,34 @@ func idempotencySchemaStatements(schemaName, tableName string) []string {
 	}
 }
 
+func auditSchemaStatements(schemaName, tableName string) []string {
+	tableQ := quoteQualifiedTable(schemaName, tableName)
+	return []string{
+		`CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			command_type VARCHAR(255) NOT NULL,
+			command_id VARCHAR(255),
+			aggregate_id VARCHAR(255),
+			version BIGINT,
+			actor VARCHAR(255),
+			tenant_id VARCHAR(255),
+			correlation_id VARCHAR(255),
+			causation_id VARCHAR(255),
+			success BOOLEAN NOT NULL,
+			error TEXT,
+			duration_ms BIGINT NOT NULL DEFAULT 0,
+			metadata JSONB
+		)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_timestamp") + ` ON ` + tableQ + ` (timestamp)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_command_type") + ` ON ` + tableQ + ` (command_type)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_actor") + ` ON ` + tableQ + ` (actor)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_tenant_id") + ` ON ` + tableQ + ` (tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_aggregate_id") + ` ON ` + tableQ + ` (aggregate_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_correlation_id") + ` ON ` + tableQ + ` (correlation_id)`,
+	}
+}
+
 func appendSQLStatements(b *strings.Builder, statements []string) {
 	for _, stmt := range statements {
 		b.WriteString(stmt)
@@ -1221,12 +1249,14 @@ func GenerateSchema(projectName, schemaName, tableName, snapshotTableName, outbo
 	appendSQLStatements(&b, outboxSchemaStatements(schemaName, outboxTableName))
 	appendSQLStatements(&b, migrationSchemaStatements(schemaName))
 	appendSQLStatements(&b, idempotencySchemaStatements(schemaName, "mink_idempotency"))
+	appendSQLStatements(&b, auditSchemaStatements(schemaName, "mink_audit"))
 	appendSQLStatements(&b, []string{
 		fmt.Sprintf("COMMENT ON TABLE %s IS 'Mink event store streams'", quoteQualifiedTable(schemaName, "streams")),
 		fmt.Sprintf("COMMENT ON TABLE %s IS 'Mink event store - immutable event log'", quoteQualifiedTable(schemaName, tableName)),
 		fmt.Sprintf("COMMENT ON TABLE %s IS 'Aggregate snapshots for optimization'", quoteQualifiedTable(schemaName, snapshotTableName)),
 		fmt.Sprintf("COMMENT ON TABLE %s IS 'Projection checkpoint positions'", quoteQualifiedTable(schemaName, "checkpoints")),
 		fmt.Sprintf("COMMENT ON TABLE %s IS 'Transactional outbox for reliable messaging'", quoteQualifiedTable(schemaName, outboxTableName)),
+		fmt.Sprintf("COMMENT ON TABLE %s IS 'Mink command audit trail (append-only)'", quoteQualifiedTable(schemaName, "mink_audit")),
 	})
 
 	return b.String()

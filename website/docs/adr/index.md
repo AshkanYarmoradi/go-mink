@@ -31,6 +31,7 @@ Architecture Decision Records (ADRs) capture important architectural decisions m
 | [ADR-008](testing-strategy) | BDD Testing Strategy | Accepted | 2024-04-01 |
 | [ADR-009](error-handling) | Sentinel Errors with Typed Wrappers | Accepted | 2024-01-20 |
 | [ADR-010](multi-tenancy) | Multi-tenancy via Metadata | Accepted | 2024-02-20 |
+| [ADR-011](audit-logging-middleware) | Audit Logging Middleware | Accepted | 2026-06-04 |
 
 ## ADR Template
 

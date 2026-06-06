@@ -141,6 +141,23 @@ func CopyIdempotencyRecord(record *IdempotencyRecord) *IdempotencyRecord {
 	}
 }
 
+// CopyAuditEntry creates a deep copy of an AuditEntry, including its Metadata
+// map. This is used to isolate stored entries from external mutation. A nil
+// Metadata map stays nil in the copy.
+func CopyAuditEntry(entry *AuditEntry) *AuditEntry {
+	if entry == nil {
+		return nil
+	}
+	cp := *entry
+	if entry.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
 // DefaultLimit returns a default limit value if the provided limit is invalid.
 // Used for pagination in LoadFromPosition and similar methods.
 func DefaultLimit(limit, defaultValue int) int {
