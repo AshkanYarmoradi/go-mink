@@ -35,6 +35,9 @@ const (
 	AuditOrderTimestampAsc = adapters.AuditOrderTimestampAsc
 )
 
+// ErrNilAuditEntry is returned by AuditStore.Append when the entry is nil.
+var ErrNilAuditEntry = adapters.ErrNilAuditEntry
+
 // =============================================================================
 // Actor context helpers
 // =============================================================================

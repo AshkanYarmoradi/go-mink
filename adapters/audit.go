@@ -80,6 +80,9 @@ type AuditQuery struct {
 	// AggregateID filters by exact aggregate ID.
 	AggregateID string
 
+	// CorrelationID filters by exact correlation ID (e.g. all commands in one request flow).
+	CorrelationID string
+
 	// From filters entries with Timestamp >= From (inclusive). Zero means no lower bound.
 	From time.Time
 

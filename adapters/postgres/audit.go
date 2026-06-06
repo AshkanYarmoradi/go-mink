@@ -107,6 +107,9 @@ func (s *AuditStore) Close() error {
 
 // Append writes a single audit entry.
 func (s *AuditStore) Append(ctx context.Context, entry *adapters.AuditEntry) error {
+	if entry == nil {
+		return adapters.ErrNilAuditEntry
+	}
 	tableQ := s.fullTableName()
 
 	// Build the column list. The id and timestamp columns have DB defaults, but
@@ -190,6 +193,9 @@ func buildAuditWhere(q adapters.AuditQuery) (string, []interface{}) {
 	}
 	if q.AggregateID != "" {
 		add("aggregate_id = $%d", q.AggregateID)
+	}
+	if q.CorrelationID != "" {
+		add("correlation_id = $%d", q.CorrelationID)
 	}
 	if !q.From.IsZero() {
 		add("timestamp >= $%d", q.From)
