@@ -173,6 +173,11 @@ When `FieldEncryptionConfig` is not set (i.e., `mink.New(adapter)` without `With
 
 ## GDPR Compliance
 
+go-mink combines several features for compliance. **Crypto-shredding** (right to
+erasure) and **data export** (right to access) are covered below, and
+[**Audit Logging**](/docs/advanced/audit-logging) provides the queryable trail of
+*who changed what, when* that many regimes require (e.g. GDPR Article 30).
+
 ### Crypto-Shredding
 
 Make personal data permanently unrecoverable by revoking encryption keys. Since PII fields are encrypted with per-tenant keys, revoking a tenant's key makes all their encrypted data unreadable -- even though the events remain in the store.

@@ -217,6 +217,9 @@ bus.Use(tracing.CommandMiddleware(tracer))
 // 5. Logging (log all attempts)
 bus.Use(mink.LoggingMiddleware(logger))
 
+// 5b. Audit logging (immutable, queryable trail of every command for compliance)
+bus.Use(mink.AuditMiddleware(mink.DefaultAuditConfig(auditStore)))
+
 // 6. Timeout (prevent long-running commands)
 bus.Use(mink.TimeoutMiddleware(30 * time.Second))
 

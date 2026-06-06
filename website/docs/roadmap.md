@@ -113,7 +113,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 ### v1.1.0 -- Data Governance
 
 - [x] Data export (GDPR right to access)
-- [ ] Audit logging middleware
+- [x] Audit logging middleware
 - [ ] Data retention policies with configurable rules
 - [ ] Time-travel queries (load aggregate at timestamp or version)
 
@@ -177,7 +177,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 | Redis adapter | Medium | Medium |
 | Performance benchmarks | Medium | Medium |
 | ~~Data export~~ | ~~Medium~~ | ~~Done~~ |
-| Audit logging | Medium | High |
+| ~~Audit logging~~ | ~~Medium~~ | ~~Done~~ |
 | DynamoDB adapter | Hard | Medium |
 | Snapshot support | Hard | High |
 
