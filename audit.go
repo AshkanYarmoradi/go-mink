@@ -141,6 +141,29 @@ func copyMetadataMap(m map[string]string) map[string]string {
 	return cp
 }
 
+// foldAuditFailure folds an audit-side failure (a store write error, or a nil
+// store under FailClosed) into the command outcome:
+//
+//   - If the command already failed (via err or an error CommandResult), auditErr
+//     is surfaced alongside that failure — joined with the command's error when it
+//     has one — so the command's own failure is preserved and never masked.
+//   - If the command succeeded, there is no prior error to join, so its successful
+//     result is replaced with an error result carrying auditErr: under fail-closed,
+//     an audit failure is itself a command failure.
+func foldAuditFailure(result CommandResult, err, auditErr error) (CommandResult, error) {
+	switch {
+	case err != nil:
+		return result, errors.Join(err, auditErr)
+	case result.IsError():
+		if result.Error != nil {
+			return result, errors.Join(result.Error, auditErr)
+		}
+		return result, auditErr
+	default:
+		return NewErrorResult(auditErr), auditErr
+	}
+}
+
 // AuditMiddleware creates middleware that writes an immutable audit entry for
 // every dispatched command. Both successful and failed executions are audited.
 //
@@ -173,6 +196,24 @@ func AuditMiddleware(config AuditConfig) Middleware {
 	}
 
 	return func(next MiddlewareFunc) MiddlewareFunc {
+		// A nil store can never persist anything, and whether it is nil is fixed at
+		// construction — so decide the policy once here rather than on every
+		// dispatch. Fail-open degenerates to a pass-through (auditing never breaks
+		// command processing); fail-closed surfaces the misconfiguration for every
+		// command that would otherwise be audited.
+		if config.Store == nil {
+			if !config.FailClosed {
+				return next
+			}
+			return func(ctx context.Context, cmd Command) (CommandResult, error) {
+				result, err := next(ctx, cmd)
+				if skipSet[cmd.CommandType()] {
+					return result, err // excluded commands are never audited
+				}
+				return foldAuditFailure(result, err, ErrNilAuditStore)
+			}
+		}
+
 		return func(ctx context.Context, cmd Command) (CommandResult, error) {
 			// Skip auditing for excluded command types.
 			if skipSet[cmd.CommandType()] {
@@ -223,20 +264,7 @@ func AuditMiddleware(config AuditConfig) Middleware {
 			}
 
 			if appendErr := config.Store.Append(ctx, entry); appendErr != nil && config.FailClosed {
-				// Surface the audit-write failure without discarding the command's
-				// result or masking a failure it already reported (via err or via an
-				// error CommandResult with a nil error).
-				switch {
-				case err != nil:
-					return result, errors.Join(err, appendErr)
-				case result.IsError():
-					if result.Error != nil {
-						return result, errors.Join(result.Error, appendErr)
-					}
-					return result, appendErr
-				default:
-					return NewErrorResult(appendErr), appendErr
-				}
+				return foldAuditFailure(result, err, appendErr)
 			}
 
 			return result, err

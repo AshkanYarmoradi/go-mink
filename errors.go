@@ -44,6 +44,10 @@ var (
 	// ErrNilStore indicates a nil event store was passed.
 	ErrNilStore = errors.New("mink: nil event store")
 
+	// ErrNilAuditStore indicates the audit middleware was configured with a nil
+	// Store. It is surfaced (only) when the middleware is fail-closed.
+	ErrNilAuditStore = errors.New("mink: nil audit store")
+
 	// ErrEmptyStreamID indicates an empty stream ID was provided.
 	ErrEmptyStreamID = adapters.ErrEmptyStreamID
 
