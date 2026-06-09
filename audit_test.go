@@ -389,6 +389,69 @@ func TestAuditMiddleware_FailClosed_PreservesErrorResult(t *testing.T) {
 	require.ErrorIs(t, err, appendErr)
 }
 
+func TestAuditMiddleware_NilStore_FailOpen(t *testing.T) {
+	// A nil store must not panic; fail-open returns the command outcome unchanged.
+	mw := AuditMiddleware(DefaultAuditConfig(nil))
+
+	result, err := mw(okHandler("agg-1", 1))(context.Background(), auditTestCommand{Type: "C"})
+	require.NoError(t, err)
+	assert.True(t, result.IsSuccess())
+	assert.Equal(t, "agg-1", result.AggregateID)
+}
+
+func TestAuditMiddleware_NilStore_FailOpen_PreservesHandlerError(t *testing.T) {
+	mw := AuditMiddleware(DefaultAuditConfig(nil))
+
+	handlerErr := errors.New("handler failed")
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		return NewErrorResult(handlerErr), handlerErr
+	}
+	_, err := mw(handler)(context.Background(), auditTestCommand{Type: "C"})
+	// Fail-open: the missing store is ignored; the handler error survives unwrapped.
+	require.ErrorIs(t, err, handlerErr)
+	require.NotErrorIs(t, err, ErrNilAuditStore)
+}
+
+func TestAuditMiddleware_NilStore_FailClosed(t *testing.T) {
+	cfg := DefaultAuditConfig(nil)
+	cfg.FailClosed = true
+	mw := AuditMiddleware(cfg)
+
+	result, err := mw(okHandler("agg-1", 1))(context.Background(), auditTestCommand{Type: "C"})
+	// Fail-closed: a nil store is surfaced as a misconfiguration error.
+	require.ErrorIs(t, err, ErrNilAuditStore)
+	assert.True(t, result.IsError())
+}
+
+func TestAuditMiddleware_NilStore_FailClosed_PreservesHandlerError(t *testing.T) {
+	cfg := DefaultAuditConfig(nil)
+	cfg.FailClosed = true
+	mw := AuditMiddleware(cfg)
+
+	handlerErr := errors.New("handler failed")
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		return NewErrorResult(handlerErr), handlerErr
+	}
+	_, err := mw(handler)(context.Background(), auditTestCommand{Type: "C"})
+	// The nil-store error is surfaced but must not mask the handler error.
+	require.ErrorIs(t, err, handlerErr)
+	require.ErrorIs(t, err, ErrNilAuditStore)
+}
+
+func TestAuditMiddleware_NilStore_FailClosed_SkippedCommand(t *testing.T) {
+	// A skipped command is never audited, so a nil store must not fail it even
+	// under fail-closed.
+	cfg := DefaultAuditConfig(nil)
+	cfg.FailClosed = true
+	cfg.SkipCommands = []string{"Skipped"}
+	mw := AuditMiddleware(cfg)
+
+	result, err := mw(okHandler("agg-1", 1))(context.Background(), auditTestCommand{Type: "Skipped"})
+	require.NoError(t, err)
+	assert.True(t, result.IsSuccess())
+	assert.Equal(t, "agg-1", result.AggregateID)
+}
+
 func TestAuditMiddleware_PanicDownstreamStillAudited(t *testing.T) {
 	// The audit middleware wraps the recovery middleware, so when a downstream
 	// handler panics, recovery converts it into an error result *before* the

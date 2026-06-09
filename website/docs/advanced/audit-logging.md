@@ -148,6 +148,10 @@ what happens if that write fails:
 - **Fail-closed** (`FailClosed: true`) — a store error is surfaced as the command
   result/error, so callers can react (e.g. reject the request for compliance).
 
+A nil `Store` follows the same policy rather than panicking the pipeline: fail-open
+returns the command outcome unchanged, while fail-closed surfaces
+`mink.ErrNilAuditStore` (joined with any error the command itself reported).
+
 :::warning Auditing is not transactional
 Because the audit entry is written *after* the command, `FailClosed` surfaces the
 audit-write failure but **the command's side effect has already happened**. Use
