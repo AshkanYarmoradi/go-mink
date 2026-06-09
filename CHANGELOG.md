@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Audit Logging Middleware** — `AuditMiddleware` writes an immutable, queryable audit trail of every command (who/what/when/outcome) for compliance and forensics
+  - `AuditStore` interface (`Append`/`Find`/`Count`/`Cleanup`/`Initialize`/`Close`) with in-memory and PostgreSQL implementations (append-only `mink_audit` table)
+  - `AuditConfig` with `SkipCommands`, `IncludeMetadata`, and `FailClosed` (default fail-open, so auditing never breaks command processing); `DefaultAuditConfig(store)`
+  - Actor capture via `WithActor`/`ActorFromContext` or a custom `ActorFunc`
+  - `AuditQuery` filters by command type, actor, tenant, aggregate, time range, and success, with ordering and pagination
 - **GDPR Data Export** — `DataExporter` for right to access / right to data portability (Article 15 & 20)
   - `NewDataExporter()` with `WithExportBatchSize()` and `WithExportLogger()` options
   - `Export()` — collects all matching events into an `ExportResult`

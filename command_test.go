@@ -146,6 +146,21 @@ func TestCommandBase(t *testing.T) {
 		assert.Empty(t, base.GetMetadata("missing"))
 	})
 
+	t.Run("GetMetadataMap returns a defensive copy", func(t *testing.T) {
+		base := CommandBase{}.WithMetadata("key", "value")
+		m := base.GetMetadataMap()
+		assert.Equal(t, "value", m["key"])
+		m["key"] = "mutated"
+		m["new"] = "x"
+		// Mutating the returned copy must not affect the command's state.
+		assert.Equal(t, "value", base.GetMetadata("key"))
+		assert.Empty(t, base.GetMetadata("new"))
+	})
+
+	t.Run("GetMetadataMap is nil when empty", func(t *testing.T) {
+		assert.Nil(t, CommandBase{}.GetMetadataMap())
+	})
+
 	t.Run("chained builders", func(t *testing.T) {
 		base := CommandBase{}.
 			WithCommandID("cmd-1").

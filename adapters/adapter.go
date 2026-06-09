@@ -44,6 +44,9 @@ var (
 	// ErrNilOutboxStore indicates AppendWithOutbox was given outbox messages but no
 	// OutboxStore to schedule them into.
 	ErrNilOutboxStore = errors.New("mink: nil outbox store")
+
+	// ErrNilAuditEntry is returned by AuditStore.Append when the entry is nil.
+	ErrNilAuditEntry = errors.New("mink: nil audit entry")
 )
 
 // SagaNotFoundError provides detailed information about a missing saga.

@@ -86,6 +86,17 @@ mink.RecoveryMiddleware()  // Catches panics, returns clean errors
 mink.LoggingMiddleware(logger)
 ```
 
+### Audit Logging
+
+Write an immutable, queryable trail of every command — who did what, when, and with
+what outcome — for compliance and forensics. See the
+[Audit Logging guide](/docs/advanced/audit-logging).
+
+```go
+auditStore := memory.NewAuditStore() // postgres.NewAuditStoreFromAdapter(adapter) in production
+bus.Use(mink.AuditMiddleware(mink.DefaultAuditConfig(auditStore)))
+```
+
 ### Retry with Backoff
 
 ```go

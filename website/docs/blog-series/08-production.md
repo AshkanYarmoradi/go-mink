@@ -153,6 +153,7 @@ psql -c "TRUNCATE order_list"
 - [ ] Metrics exposed
 - [ ] Health check endpoints
 - [ ] Backup strategy
+- [ ] Audit logging enabled (immutable compliance trail of every command)
 
 ### Monitoring
 
