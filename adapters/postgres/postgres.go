@@ -337,6 +337,18 @@ func idempotencySchemaStatements(schemaName, tableName string) []string {
 	}
 }
 
+// boundedIndexName returns base unchanged when it already fits PostgreSQL's
+// 63-character identifier limit, and otherwise falls back to safeIndexName
+// (truncate + hash). Keeping short names bare preserves the original, stable
+// identifiers so re-running Initialize never creates a second, redundant set of
+// indexes; only oversized names (from long custom table names) are rewritten.
+func boundedIndexName(schema, base string) string {
+	if len(base) <= 63 {
+		return base
+	}
+	return safeIndexName(schema, base)
+}
+
 func auditSchemaStatements(schemaName, tableName string) []string {
 	tableQ := quoteQualifiedTable(schemaName, tableName)
 	return []string{
@@ -356,12 +368,12 @@ func auditSchemaStatements(schemaName, tableName string) []string {
 			duration_ms BIGINT NOT NULL DEFAULT 0,
 			metadata JSONB
 		)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_timestamp") + ` ON ` + tableQ + ` (timestamp)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_command_type") + ` ON ` + tableQ + ` (command_type)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_actor") + ` ON ` + tableQ + ` (actor)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_tenant_id") + ` ON ` + tableQ + ` (tenant_id)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_aggregate_id") + ` ON ` + tableQ + ` (aggregate_id)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+tableName+"_correlation_id") + ` ON ` + tableQ + ` (correlation_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_timestamp")) + ` ON ` + tableQ + ` (timestamp)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_command_type")) + ` ON ` + tableQ + ` (command_type)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_actor")) + ` ON ` + tableQ + ` (actor)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_tenant_id")) + ` ON ` + tableQ + ` (tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_aggregate_id")) + ` ON ` + tableQ + ` (aggregate_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(schemaName, "idx_"+tableName+"_correlation_id")) + ` ON ` + tableQ + ` (correlation_id)`,
 	}
 }
 

@@ -50,26 +50,33 @@ func (s *failingAuditStore) Append(ctx context.Context, entry *adapters.AuditEnt
 
 // fixedConfig returns a config with a deterministic clock and ID generator.
 //
-// AuditMiddleware calls now() three times per command, in order:
-//  1. start (captured before the handler runs)
-//  2. entry.Timestamp (after the handler returns)
-//  3. the end time used to compute DurationMs
+// AuditMiddleware calls now() twice per command, in order:
+//  1. start — captured immediately before the handler runs
+//  2. end   — captured immediately after the handler returns; used for both
+//     entry.Timestamp and DurationMs
 //
-// The clock below returns base, base+1500ms, base+1500ms, so Timestamp is
-// base+1500ms and DurationMs is 1500.
-func fixedConfig(store AuditStore) AuditConfig {
+// The clock below returns base, then base+1500ms, so Timestamp is base+1500ms
+// and DurationMs is 1500.
+func fixedConfig(t *testing.T, store AuditStore) AuditConfig {
+	t.Helper()
 	cfg := DefaultAuditConfig(store)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	times := []time.Time{
 		base,
 		base.Add(1500 * time.Millisecond),
-		base.Add(1500 * time.Millisecond),
 	}
 	calls := 0
 	cfg.now = func() time.Time {
-		t := times[calls%len(times)]
+		if calls >= len(times) {
+			// Fail fast instead of wrapping: the middleware must read the clock
+			// exactly twice (start, end), and a regression that reads it more
+			// often should break the test rather than be masked.
+			t.Fatalf("now() called more than %d times", len(times))
+			return time.Time{} // unreachable: t.Fatalf ends the test goroutine
+		}
+		ts := times[calls]
 		calls++
-		return t
+		return ts
 	}
 	cfg.idgen = func() string { return "fixed-id" }
 	return cfg
@@ -85,7 +92,7 @@ func okHandler(aggID string, version int64) MiddlewareFunc {
 
 func TestAuditMiddleware_RecordsSuccess(t *testing.T) {
 	store := memory.NewAuditStore()
-	cfg := fixedConfig(store)
+	cfg := fixedConfig(t, store)
 	mw := AuditMiddleware(cfg)
 
 	ctx := WithActor(context.Background(), "alice")
@@ -111,6 +118,38 @@ func TestAuditMiddleware_RecordsSuccess(t *testing.T) {
 	assert.Empty(t, e.Error)
 	assert.Equal(t, int64(1500), e.DurationMs)
 	assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 1, 500000000, time.UTC), e.Timestamp)
+}
+
+func TestAuditMiddleware_DurationUsesSingleEndReading(t *testing.T) {
+	// now() must be read exactly twice — start and end — with end reused for both
+	// Timestamp and DurationMs, so DurationMs measures only handler execution time
+	// and never drifts past Timestamp (independent of entry-building cost).
+	store := memory.NewAuditStore()
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	var calls int
+	cfg := DefaultAuditConfig(store)
+	cfg.now = func() time.Time {
+		defer func() { calls++ }()
+		switch calls {
+		case 0:
+			return base // start
+		case 1:
+			return base.Add(2 * time.Second) // end
+		default:
+			return base.Add(time.Hour) // any extra reading would be a regression
+		}
+	}
+	cfg.idgen = func() string { return "id" }
+
+	_, err := AuditMiddleware(cfg)(okHandler("agg", 1))(context.Background(), auditTestCommand{Type: "C"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "now() must be read exactly twice (start, end)")
+
+	entries, ferr := store.Find(context.Background(), AuditQuery{})
+	require.NoError(t, ferr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, base.Add(2*time.Second), entries[0].Timestamp)
+	assert.Equal(t, int64(2000), entries[0].DurationMs)
 }
 
 func TestAuditMiddleware_RecordsHandlerError(t *testing.T) {

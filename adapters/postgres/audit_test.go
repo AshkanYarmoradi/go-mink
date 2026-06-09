@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,4 +368,56 @@ func TestAuditSchemaStatements(t *testing.T) {
 	assert.Contains(t, stmts[0], "metadata JSONB")
 	// One table + six indexes.
 	assert.Len(t, stmts, 7)
+
+	// Short index names keep their original, stable, bare identifiers (no schema
+	// prefix), so re-running Initialize never creates a second, redundant set.
+	joined := strings.Join(stmts, "\n")
+	assert.Contains(t, joined, `"idx_mink_audit_timestamp"`)
+	assert.Contains(t, joined, `"idx_mink_audit_correlation_id"`)
+	// The schema-prefix marker only appears if an index name was rewritten via
+	// safeIndexName; short names must keep their bare identifiers.
+	assert.NotContains(t, joined, "public_idx")
+}
+
+func TestAuditSchemaStatements_IndexNamesWithinLimit(t *testing.T) {
+	// A long custom audit table name (via WithAuditTable) must not produce index
+	// identifiers exceeding PostgreSQL's 63-character limit, which would otherwise
+	// make Initialize/GenerateSchema fail even though the table name validates.
+	indexName := regexp.MustCompile(`CREATE INDEX IF NOT EXISTS "([^"]+)"`)
+	stmts := auditSchemaStatements("public", strings.Repeat("a", 60))
+
+	var checked int
+	for _, s := range stmts {
+		m := indexName.FindStringSubmatch(s)
+		if m == nil {
+			continue
+		}
+		checked++
+		assert.LessOrEqualf(t, len(m[1]), 63, "index name %q exceeds 63 chars (%d)", m[1], len(m[1]))
+	}
+	assert.Equal(t, 6, checked, "expected all six audit indexes to be length-checked")
+}
+
+func TestAuditStore_Initialize_LongTableName(t *testing.T) {
+	// Regression: a long (but valid) custom table name produces raw index names
+	// well over Postgres's 63-char limit. Initialize must still succeed because
+	// the index names are passed through safeIndexName.
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	connStr := os.Getenv("TEST_DATABASE_URL")
+	if connStr == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	adapter, err := NewAdapter(connStr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	// 61-char table name: valid (<=63), but "idx_<table>_correlation_id" is ~80.
+	longTable := "mink_audit_" + strings.Repeat("x", 50)
+	require.LessOrEqual(t, len(longTable), 63)
+
+	store := NewAuditStore(adapter.db, WithAuditTable(longTable))
+	require.NoError(t, store.Initialize(context.Background()))
 }
