@@ -222,10 +222,11 @@ func AuditMiddleware(config AuditConfig) Middleware {
 
 			start := config.now()
 			result, err := next(ctx, cmd)
+			end := config.now()
 
 			entry := &AuditEntry{
 				ID:            config.idgen(),
-				Timestamp:     config.now(),
+				Timestamp:     end,
 				CommandType:   cmd.CommandType(),
 				AggregateID:   result.AggregateID,
 				Version:       result.Version,
@@ -235,7 +236,9 @@ func AuditMiddleware(config AuditConfig) Middleware {
 				CausationID:   CausationIDFromContext(ctx),
 				Success:       err == nil && result.IsSuccess(),
 			}
-			entry.DurationMs = config.now().Sub(start).Milliseconds()
+			// DurationMs reflects only handler execution time (start→end) and shares
+			// the same end reading as Timestamp, so the two never drift.
+			entry.DurationMs = end.Sub(start).Milliseconds()
 
 			// Command ID, if the command exposes one.
 			if c, ok := cmd.(interface{ GetCommandID() string }); ok {
