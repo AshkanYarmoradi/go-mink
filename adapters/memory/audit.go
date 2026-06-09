@@ -39,8 +39,26 @@ func (s *AuditStore) Close() error {
 
 // Append stores a copy of the audit entry.
 func (s *AuditStore) Append(ctx context.Context, entry *adapters.AuditEntry) error {
+	if entry == nil {
+		return adapters.ErrNilAuditEntry
+	}
+	// Fast-fail before contending for the lock.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Re-check once the lock is held: the context may have been cancelled while
+	// this call was blocked acquiring it, and a cancelled write must not append.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	s.entries = append(s.entries, adapters.CopyAuditEntry(entry))
 	return nil
@@ -58,6 +76,9 @@ func matchesAuditQuery(entry *adapters.AuditEntry, q adapters.AuditQuery) bool {
 		return false
 	}
 	if q.AggregateID != "" && entry.AggregateID != q.AggregateID {
+		return false
+	}
+	if q.CorrelationID != "" && entry.CorrelationID != q.CorrelationID {
 		return false
 	}
 	// From is inclusive: keep entries with Timestamp >= From.

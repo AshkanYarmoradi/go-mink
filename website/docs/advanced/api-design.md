@@ -286,7 +286,7 @@ type AuditEntry struct {
 
 // AuditQuery filters and paginates the trail (zero value = all matching).
 type AuditQuery struct {
-    CommandType, Actor, TenantID, AggregateID string
+    CommandType, Actor, TenantID, AggregateID, CorrelationID string
     From, To                                  time.Time
     Success                                   *bool      // nil = both
     Limit, Offset                             int

@@ -203,16 +203,17 @@ default; the in-memory store returns all unless `Limit` is set).
 
 ```go
 type AuditQuery struct {
-    CommandType string      // exact match
-    Actor       string      // exact match
-    TenantID    string      // exact match
-    AggregateID string      // exact match
-    From        time.Time   // Timestamp >= From (inclusive)
-    To          time.Time   // Timestamp <  To  (exclusive)
-    Success     *bool       // nil = both; &true = successes; &false = failures
-    Limit       int         // <= 0 means the store default
-    Offset      int         // for pagination
-    Order       AuditOrder  // AuditOrderTimestampDesc (default) | AuditOrderTimestampAsc
+    CommandType   string     // exact match
+    Actor         string     // exact match
+    TenantID      string     // exact match
+    AggregateID   string     // exact match
+    CorrelationID string     // exact match (e.g. all commands in one request flow)
+    From          time.Time  // Timestamp >= From (inclusive)
+    To            time.Time  // Timestamp <  To  (exclusive)
+    Success       *bool      // nil = both; &true = successes; &false = failures
+    Limit         int        // <= 0 means the store default
+    Offset        int        // for pagination
+    Order         AuditOrder // AuditOrderTimestampDesc (default) | AuditOrderTimestampAsc
 }
 ```
 

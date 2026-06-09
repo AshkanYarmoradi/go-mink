@@ -91,6 +91,65 @@ func TestAuditStore_Append_NilMetadataStaysNil(t *testing.T) {
 	assert.Nil(t, got[0].Metadata)
 }
 
+func TestAuditStore_Append_NilEntry(t *testing.T) {
+	store := NewAuditStore()
+	ctx := context.Background()
+
+	err := store.Append(ctx, nil)
+	require.ErrorIs(t, err, adapters.ErrNilAuditEntry)
+
+	// A nil entry must not be stored (and must not panic a later query).
+	got, err := store.Find(ctx, adapters.AuditQuery{})
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestAuditStore_Append_ContextCancelled(t *testing.T) {
+	store := NewAuditStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.Append(ctx, &adapters.AuditEntry{ID: "1", Timestamp: time.Now()})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, store.Len())
+}
+
+func TestAuditStore_Append_ContextCancelledWaitingForLock(t *testing.T) {
+	store := NewAuditStore()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Hold the lock so the concurrent Append below blocks while acquiring it,
+	// then cancel before releasing. The post-lock cancellation check must honor
+	// the cancellation and refuse to append, even though the context was still
+	// live when Append passed its pre-lock fast-fail check.
+	store.mu.Lock()
+	appended := make(chan error, 1)
+	go func() {
+		appended <- store.Append(ctx, &adapters.AuditEntry{ID: "1", Timestamp: time.Now()})
+	}()
+	cancel()
+	store.mu.Unlock()
+
+	require.ErrorIs(t, <-appended, context.Canceled)
+	assert.Equal(t, 0, store.Len())
+}
+
+func TestAuditStore_Find_ByCorrelationID(t *testing.T) {
+	store := NewAuditStore()
+	ctx := context.Background()
+	require.NoError(t, store.Append(ctx, &adapters.AuditEntry{ID: "1", CorrelationID: "corr-A", Timestamp: time.Now()}))
+	require.NoError(t, store.Append(ctx, &adapters.AuditEntry{ID: "2", CorrelationID: "corr-B", Timestamp: time.Now()}))
+	require.NoError(t, store.Append(ctx, &adapters.AuditEntry{ID: "3", CorrelationID: "corr-A", Timestamp: time.Now()}))
+
+	got, err := store.Find(ctx, adapters.AuditQuery{CorrelationID: "corr-A"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"1", "3"}, ids(got))
+
+	n, err := store.Count(ctx, adapters.AuditQuery{CorrelationID: "corr-A"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+}
+
 func TestAuditStore_Find_Filters(t *testing.T) {
 	store, base := seedAuditStore(t)
 	ctx := context.Background()

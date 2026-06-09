@@ -48,9 +48,9 @@ func seedPGAudit(t *testing.T, store *AuditStore) time.Time {
 	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
 
 	entries := []*adapters.AuditEntry{
-		{ID: "11111111-1111-1111-1111-111111111111", CommandType: "CreateOrder", Actor: "alice", TenantID: "t1", AggregateID: "order-1", Success: true, DurationMs: 5, Timestamp: base},
+		{ID: "11111111-1111-1111-1111-111111111111", CommandType: "CreateOrder", Actor: "alice", TenantID: "t1", AggregateID: "order-1", CorrelationID: "req-1", Success: true, DurationMs: 5, Timestamp: base},
 		{ID: "22222222-2222-2222-2222-222222222222", CommandType: "AddItem", Actor: "bob", TenantID: "t1", AggregateID: "order-1", Success: true, DurationMs: 7, Timestamp: base.Add(1 * time.Minute)},
-		{ID: "33333333-3333-3333-3333-333333333333", CommandType: "ShipOrder", Actor: "alice", TenantID: "t2", AggregateID: "order-2", Success: false, Error: "boom", DurationMs: 9, Timestamp: base.Add(2 * time.Minute)},
+		{ID: "33333333-3333-3333-3333-333333333333", CommandType: "ShipOrder", Actor: "alice", TenantID: "t2", AggregateID: "order-2", CorrelationID: "req-1", Success: false, Error: "boom", DurationMs: 9, Timestamp: base.Add(2 * time.Minute)},
 		{ID: "44444444-4444-4444-4444-444444444444", CommandType: "CreateOrder", Actor: "carol", TenantID: "t2", AggregateID: "order-3", Success: true, DurationMs: 3, Timestamp: base.Add(3 * time.Minute)},
 		{ID: "55555555-5555-5555-5555-555555555555", CommandType: "AddItem", Actor: "alice", TenantID: "t1", AggregateID: "order-3", Success: false, Error: "nope", DurationMs: 4, Timestamp: base.Add(4 * time.Minute)},
 	}
@@ -72,6 +72,19 @@ func TestAuditStore_Initialize(t *testing.T) {
 	store := setupAuditTestStore(t)
 	// Calling Initialize again should be idempotent.
 	require.NoError(t, store.Initialize(context.Background()))
+}
+
+func TestAuditStore_Append_NilEntry(t *testing.T) {
+	store := setupAuditTestStore(t)
+	ctx := context.Background()
+
+	err := store.Append(ctx, nil)
+	require.ErrorIs(t, err, adapters.ErrNilAuditEntry)
+
+	// A nil entry must not be inserted.
+	got, err := store.Find(ctx, adapters.AuditQuery{})
+	require.NoError(t, err)
+	assert.Empty(t, got)
 }
 
 func TestAuditStore_AppendAndFind_RoundTrip(t *testing.T) {
@@ -172,6 +185,7 @@ func TestAuditStore_Find_Filters(t *testing.T) {
 		{"actor", adapters.AuditQuery{Actor: "alice"}, 3},
 		{"tenant", adapters.AuditQuery{TenantID: "t1"}, 3},
 		{"aggregate", adapters.AuditQuery{AggregateID: "order-3"}, 2},
+		{"correlation", adapters.AuditQuery{CorrelationID: "req-1"}, 2},
 		{"success true", adapters.AuditQuery{Success: auditBoolPtr(true)}, 3},
 		{"success false", adapters.AuditQuery{Success: auditBoolPtr(false)}, 2},
 		{"from inclusive", adapters.AuditQuery{From: base.Add(2 * time.Minute)}, 3},
