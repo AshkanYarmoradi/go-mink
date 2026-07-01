@@ -98,6 +98,25 @@ func NewFieldEncryptionConfig(opts ...EncryptionOption) *FieldEncryptionConfig {
 	return c
 }
 
+// Provider returns the configured encryption provider (may be nil).
+func (c *FieldEncryptionConfig) Provider() encryption.Provider {
+	return c.provider
+}
+
+// RevokeKey crypto-shreds keyID via the configured provider, implementing the
+// erasure side of GDPR (right to be forgotten). It returns
+// encryption.ErrRevocationUnsupported when the provider does not implement
+// encryption.Revocable, and is idempotent for providers that do.
+func (c *FieldEncryptionConfig) RevokeKey(keyID string) error {
+	return encryption.Revoke(c.provider, keyID)
+}
+
+// IsRevoked reports whether keyID is revoked via the configured provider,
+// returning encryption.ErrRevocationUnsupported when revocation is unavailable.
+func (c *FieldEncryptionConfig) IsRevoked(keyID string) (bool, error) {
+	return encryption.IsRevoked(c.provider, keyID)
+}
+
 // HasEncryptedFields reports whether any fields are configured for encryption
 // for the given event type.
 func (c *FieldEncryptionConfig) HasEncryptedFields(eventType string) bool {

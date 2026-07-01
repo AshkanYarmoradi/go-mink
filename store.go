@@ -17,9 +17,10 @@ type EventStore struct {
 	// upcasters holds an optional *UpcasterChain. It is an atomic pointer so that
 	// RegisterUpcasters can be called concurrently with Load/Append without a data
 	// race; nil (the default) means zero overhead.
-	upcasters    atomic.Pointer[UpcasterChain]
-	encryption   *FieldEncryptionConfig // nil by default — zero overhead when unused
-	maxEventSize int                    // 0 = unlimited
+	upcasters     atomic.Pointer[UpcasterChain]
+	encryption    *FieldEncryptionConfig // nil by default — zero overhead when unused
+	maxEventSize  int                    // 0 = unlimited
+	subjectTagger SubjectTagger          // nil by default — zero overhead when unused
 }
 
 // Logger defines the logging interface for the event store.
@@ -84,6 +85,16 @@ func WithFieldEncryption(config *FieldEncryptionConfig) Option {
 	}
 }
 
+// WithSubjectTagger configures a tagger that records, at append time, which data
+// subject(s) each event concerns (in Metadata.Custom). It enables a SubjectResolver
+// to later enumerate a subject's complete cross-stream footprint for GDPR export
+// and erasure. Zero overhead when unset.
+func WithSubjectTagger(tagger SubjectTagger) Option {
+	return func(es *EventStore) {
+		es.subjectTagger = tagger
+	}
+}
+
 // New creates a new EventStore with the given adapter and options.
 func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 	es := &EventStore{
@@ -107,6 +118,13 @@ func (s *EventStore) Serializer() Serializer {
 // Adapter returns the underlying adapter.
 func (s *EventStore) Adapter() adapters.EventStoreAdapter {
 	return s.adapter
+}
+
+// EncryptionConfig returns the field-encryption configuration, or nil if the
+// store was not configured with WithFieldEncryption. The erasure machinery
+// (DataEraser) uses it to crypto-shred a subject's keys.
+func (s *EventStore) EncryptionConfig() *FieldEncryptionConfig {
+	return s.encryption
 }
 
 // RegisterEvents registers event types with the serializer.
@@ -480,6 +498,14 @@ func (s *EventStore) prepareEventData(ctx context.Context, streamID string, even
 		// elsewhere) rather than clobbering it.
 		if !hasSchemaVersion(eventData.Metadata) {
 			eventData.Metadata = SetSchemaVersion(eventData.Metadata, upcasters.LatestVersion(eventData.Type))
+		}
+	}
+
+	// Tag the data subject(s) before encryption so the tag stays queryable in
+	// plaintext metadata (zero overhead when no tagger is configured).
+	if s.subjectTagger != nil {
+		if subjects := s.subjectTagger(eventData.Type, eventData.Data, eventData.Metadata); len(subjects) > 0 {
+			eventData.Metadata = setSubjectTags(eventData.Metadata, subjects)
 		}
 	}
 

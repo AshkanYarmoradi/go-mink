@@ -33,6 +33,7 @@ type DataExporter struct {
 	store     *EventStore
 	batchSize int
 	logger    Logger
+	resolver  *SubjectResolver
 }
 
 // DataExporterOption configures a DataExporter.
@@ -54,6 +55,16 @@ func WithExportLogger(l Logger) DataExporterOption {
 		if l != nil {
 			e.logger = l
 		}
+	}
+}
+
+// WithExportSubjectResolver configures a SubjectResolver so a SubjectID-only
+// ExportRequest (no Streams/Filter) is automatically resolved to the subject's
+// complete footprint. A partial footprint propagates to ExportResult.Partial —
+// never a silent partial.
+func WithExportSubjectResolver(r *SubjectResolver) DataExporterOption {
+	return func(e *DataExporter) {
+		e.resolver = r
 	}
 }
 
@@ -112,6 +123,11 @@ type ExportResult struct {
 
 	// ExportedAt is the timestamp when the export was generated.
 	ExportedAt time.Time
+
+	// Partial is true when the export was driven by a subject footprint that could
+	// not be proven complete (e.g. legacy untagged events); the caller MUST treat
+	// the export as potentially incomplete.
+	Partial bool
 }
 
 // ExportedEvent represents a single event in the data export.
@@ -159,13 +175,37 @@ type ExportedMetadata struct {
 // Export collects all matching events for a data subject and returns them.
 // Use ExportStream for large exports that should not be held in memory.
 func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportResult, error) {
-	if err := e.validateRequest(req); err != nil {
-		return nil, err
+	if req.SubjectID == "" {
+		return nil, ErrSubjectIDRequired
+	}
+
+	// A SubjectID-only request resolves to the subject's complete footprint.
+	resolved, partial := false, false
+	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil {
+		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
+		if err != nil {
+			return nil, NewExportError(req.SubjectID, err)
+		}
+		req.Streams = fp.Streams
+		partial = fp.Partial
+		resolved = true
+	}
+	if !resolved {
+		if err := e.validateRequest(req); err != nil {
+			return nil, err
+		}
 	}
 
 	result := &ExportResult{
 		SubjectID:  req.SubjectID,
 		ExportedAt: time.Now(),
+		Partial:    partial,
+	}
+
+	// A resolved subject with no streams has no data to export (avoid scanning all).
+	if resolved && len(req.Streams) == 0 {
+		result.Streams = []string{}
+		return result, nil
 	}
 
 	streamSet := make(map[string]struct{})
