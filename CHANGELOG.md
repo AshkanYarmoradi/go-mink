@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `RetentionManager` + `RetentionPolicy` — schedulable sweep (Shred / RedactFields / Anonymize) with dry-run and a report
   - `Anonymizer` — deterministic, one-way pseudonymization; `ReEncryptStream` — append-only re-encryption by copy
   - `DataEraser.Verify` — confirms no recoverable PII remains across events and read models
+  - `mink gdpr` CLI — `discover` (subject footprint), `verify` (erasure readiness: encrypted vs residual cleartext), `erase` (auditable erasure plan — keys to revoke), `retain` (dry-run a retention policy); read-only over the diagnostic adapter, since the CLI does not hold the app's encryption keys (revocation runs from the app via `DataEraser`/`RetentionManager`)
 - **Audit Logging Middleware** — `AuditMiddleware` writes an immutable, queryable audit trail of every command (who/what/when/outcome) for compliance and forensics
   - `AuditStore` interface (`Append`/`Find`/`Count`/`Cleanup`/`Initialize`/`Close`) with in-memory and PostgreSQL implementations (append-only `mink_audit` table)
   - `AuditConfig` with `SkipCommands`, `IncludeMetadata`, and `FailClosed` (default fail-open, so auditing never breaks command processing); `DefaultAuditConfig(store)`

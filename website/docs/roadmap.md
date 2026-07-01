@@ -98,6 +98,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `mink stream` -- Stream inspection (list, events, stats, export)
 - `mink diagnose` -- Health checks and diagnostics
 - `mink schema` -- Event schema generation
+- `mink gdpr` -- Data governance (discover, verify, erase-plan, retain dry-run)
 
 ### Testing Utilities
 - BDD-style fixtures (`testing/bdd`) -- Given/When/Then

@@ -58,6 +58,7 @@ It provides a complete solution for building event-driven systems.
 	rootCmd.AddCommand(NewStreamCommand())
 	rootCmd.AddCommand(NewDiagnoseCommand())
 	rootCmd.AddCommand(NewSchemaCommand())
+	rootCmd.AddCommand(NewGdprCommand())
 	rootCmd.AddCommand(NewVersionCommand(Version, Commit, BuildDate))
 
 	return rootCmd

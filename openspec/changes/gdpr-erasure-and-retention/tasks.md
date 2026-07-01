@@ -68,6 +68,6 @@
 ## 10. Docs, release & cross-cutting
 
 - [x] 10.1 Wrote `website/docs/security.md` GDPR guide: encryption → subject discovery → export → erasure (events + read models + side-effects) → retention; per-provider revocation semantics documented
-- [ ] 10.2 Add `mink gdpr` CLI verbs (`discover`, `erase`, `verify`, `retain`) — _deferred (explicitly optional); the library API is complete, the CLI is a separate follow-up_
+- [x] 10.2 Added `mink gdpr` CLI verbs (`discover`, `verify`, `erase`, `retain`) — read-only footprint / erasure-readiness / erasure-plan / retention-preview over the diagnostic adapter (wrapped in a provider-less `mink.EventStore`); actual key revocation stays in the app (DataEraser/RetentionManager own the keys). Registered on root; table-driven tests
 - [x] 10.3 CHANGELOG `[Unreleased]` entry added; `gofmt` + `go vet` clean; zero-overhead-when-unused (nil-guarded tagger/encryption/resolver/hooks); branch targets `develop`
 - [x] 10.4 All new public APIs documented (doc comments); behavior covered by table-driven tests across the new files
