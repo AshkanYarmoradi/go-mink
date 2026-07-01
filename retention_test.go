@@ -97,19 +97,31 @@ func TestRetention_Composition(t *testing.T) {
 	assert.Equal(t, []string{"k"}, report.KeysRevoked)
 }
 
-func TestRetention_RedactWithoutHookIsSkipped(t *testing.T) {
+func TestRetention_RedactWithoutHookIsLoud(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newEraseTestStore(t, "k")
 	seedRetention(t, ctx, store)
 
-	mgr := NewRetentionManager(store, []RetentionPolicy{
-		{Name: "mask", StreamPrefix: "User-", Action: ActionRedactFields, Fields: []string{"email"}},
-	})
+	policy := RetentionPolicy{Name: "mask", StreamPrefix: "User-", Action: ActionRedactFields, Fields: []string{"email"}}
+	// The misconfiguration is catchable up front.
+	assert.Error(t, policy.Validate())
+
+	mgr := NewRetentionManager(store, []RetentionPolicy{policy})
+	assert.NotEmpty(t, mgr.Validate())
+
 	report, err := mgr.Apply(ctx)
-	require.NoError(t, err)
+	require.NoError(t, err) // non-fatal...
 	assert.Equal(t, 1, report.Matched)
-	assert.Equal(t, 1, report.Skipped) // no Apply hook → residual, not silent
+	assert.Equal(t, 1, report.Skipped)
 	assert.Empty(t, report.KeysRevoked)
+	// ...but NOT silent: a redact/anonymize policy with no Apply hook is surfaced loudly.
+	assert.True(t, report.Failed(), "a redact/anonymize policy with no Apply hook must fail loudly, not skip silently")
+	assert.NotEmpty(t, report.Errors)
+
+	// A DryRun surfaces it too, before any real sweep.
+	dry, err := mgr.DryRun(ctx)
+	require.NoError(t, err)
+	assert.True(t, dry.Failed())
 }
 
 func TestRetention_RedactWithHook(t *testing.T) {
@@ -126,4 +138,5 @@ func TestRetention_RedactWithHook(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.Acted)
 	assert.Equal(t, 1, applied)
+	assert.False(t, report.Failed(), "a correctly-configured redact policy does not flag Failed")
 }

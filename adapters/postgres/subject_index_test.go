@@ -90,6 +90,38 @@ type indexTestEvent struct {
 	UserID string `json:"userId"`
 }
 
+func TestPostgresAdapter_StreamsBySubject(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+
+	tagger := func(_ string, _ []byte, md mink.Metadata) []string {
+		if md.UserID != "" {
+			return []string{md.UserID}
+		}
+		return nil
+	}
+	store := mink.New(adapter, mink.WithSubjectTagger(tagger))
+	store.RegisterEvents(indexTestEvent{})
+	require.NoError(t, store.Append(ctx, "User-u1", []interface{}{indexTestEvent{UserID: "u1"}}, mink.WithAppendMetadata(mink.Metadata{UserID: "u1"})))
+	require.NoError(t, store.Append(ctx, "Order-o1", []interface{}{indexTestEvent{UserID: "u1"}}, mink.WithAppendMetadata(mink.Metadata{UserID: "u1"})))
+	require.NoError(t, store.Append(ctx, "User-u2", []interface{}{indexTestEvent{UserID: "u2"}}, mink.WithAppendMetadata(mink.Metadata{UserID: "u2"})))
+
+	// Drift-free: the adapter reads the events' own $subjects tags (JSONB) directly.
+	streams, err := adapter.StreamsBySubject(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Order-o1", "User-u1"}, streams)
+
+	none, err := adapter.StreamsBySubject(ctx, "nobody")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	// Injected explicitly into a resolver (never auto-detected) + asserted authoritative.
+	fp, err := mink.NewSubjectResolver(store, mink.WithResolverIndex(adapter), mink.WithAuthoritativeIndex()).Resolve(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Order-o1", "User-u1"}, fp.Streams)
+	assert.False(t, fp.Partial)
+}
+
 func TestSubjectIndex_EndToEndWithResolver(t *testing.T) {
 	idx, cleanup := setupSubjectIndex(t)
 	defer cleanup()

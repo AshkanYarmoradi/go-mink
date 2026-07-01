@@ -9,9 +9,14 @@ import (
 	"go-mink.dev/adapters"
 )
 
-// subjectTagsKey is the reserved Metadata.Custom key under which subject tags are
-// recorded (a JSON array of subject ids).
-const subjectTagsKey = "$subjects"
+// SubjectTagsKey is the reserved Metadata.Custom key under which subject tags are
+// recorded (a JSON array of subject ids). It is exported so adapters can implement a
+// drift-free SubjectIndexAdapter by querying the events' own tags (e.g. a PostgreSQL
+// JSONB query on metadata->'custom'->>'$subjects').
+const SubjectTagsKey = "$subjects"
+
+// subjectTagsKey is the unexported alias kept for internal readability.
+const subjectTagsKey = SubjectTagsKey
 
 // SubjectTagger derives the data-subject identifier(s) a freshly-appended event
 // concerns, from its serialized data and metadata. The returned ids are recorded
@@ -188,15 +193,12 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 	streamSet := map[string]struct{}{}
 	keySet := map[string]struct{}{}
 
-	// Index-backed fast path: an explicitly injected index (WithResolverIndex) takes
-	// precedence over an adapter that happens to implement SubjectIndexAdapter.
-	idx := r.index
-	if idx == nil {
-		if ai, ok := r.store.Adapter().(SubjectIndexAdapter); ok {
-			idx = ai
-		}
-	}
-	if idx != nil {
+	// Index-backed fast path. An index is used ONLY when explicitly injected
+	// (WithResolverIndex) — never auto-detected from the adapter — so a store gaining a
+	// SubjectIndexAdapter never silently switches resolution away from the scan (which
+	// can prove completeness by observing untagged events) to an index (which cannot).
+	// Pass store.Adapter() to WithResolverIndex to opt into a drift-free adapter index.
+	if idx := r.index; idx != nil {
 		streams, err := idx.StreamsBySubject(ctx, subjectID)
 		if err != nil {
 			return nil, fmt.Errorf("mink: subject index for %q: %w", subjectID, err)

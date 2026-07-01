@@ -239,6 +239,13 @@ produce a falsely-complete footprint that makes `Erase` miss streams while certi
 success. Reconcile a drifted index with `BackfillSubjectIndex`. Without any index, legacy
 untagged events keep a footprint `Partial` (never a *silent* partial).
 
+A **drift-free** alternative on PostgreSQL is the event-store adapter's own
+`StreamsBySubject` — inject it with `mink.WithResolverIndex(adapter)`. It reads the
+events' `$subjects` tags directly (JSONB), so it cannot fall out of sync with the log
+(no separate table to maintain). Indexes are always explicit (`WithResolverIndex`) — never
+auto-detected — so a store gaining an index never silently swaps the completeness-proving
+scan for one that can't detect untagged events.
+
 > **Subject identifiers are plaintext and are NOT shredded.** The `$subjects` tag and
 > `Metadata` (UserID / CorrelationID) are stored in cleartext so they stay scannable, so
 > crypto-shredding a subject's event *fields* leaves their *identifier* in the append-only

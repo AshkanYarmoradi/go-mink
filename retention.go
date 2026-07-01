@@ -28,6 +28,20 @@ const (
 	ActionAnonymize
 )
 
+// String returns the action name.
+func (a RetentionAction) String() string {
+	switch a {
+	case ActionShred:
+		return "Shred"
+	case ActionRedactFields:
+		return "RedactFields"
+	case ActionAnonymize:
+		return "Anonymize"
+	default:
+		return "Unknown"
+	}
+}
+
 // RetentionPolicy describes a retention rule: a matcher (all set fields must match,
 // AND) and an action. Policies are composable.
 type RetentionPolicy struct {
@@ -48,6 +62,19 @@ type RetentionPolicy struct {
 	// external stores. Ignored for ActionShred; a Redact/Anonymize policy without
 	// Apply leaves matched events unhandled (reported as Skipped, never silent).
 	Apply func(ctx context.Context, e StoredEvent) error
+}
+
+// Validate reports a configuration error that would make the policy silently do
+// nothing: a RedactFields or Anonymize policy with no Apply hook. go-mink cannot mutate
+// append-only event rows, so those actions MUST be carried out against read models /
+// external stores via Apply — without it, every match is skipped and no anonymization
+// happens even though the sweep "succeeds". RetentionManager surfaces this on every
+// Apply/DryRun so it can never pass unnoticed.
+func (p RetentionPolicy) Validate() error {
+	if (p.Action == ActionRedactFields || p.Action == ActionAnonymize) && p.Apply == nil {
+		return fmt.Errorf("mink: retention policy %q uses %s but has no Apply hook — it would silently skip every match (go-mink cannot mutate append-only rows; provide Apply to redact/anonymize read models or external stores)", p.Name, p.Action)
+	}
+	return nil
 }
 
 func (p RetentionPolicy) matches(se StoredEvent, now time.Time) bool {
@@ -93,7 +120,14 @@ type RetentionReport struct {
 	Acted       int      // matches acted on (shred-with-key or applied hook)
 	Skipped     int      // matches with no applicable handler (residual; e.g. Redact w/o Apply)
 	KeysRevoked []string // distinct keys crypto-shredded (sorted)
-	Errors      []error  // non-fatal per-action errors
+	Errors      []error  // non-fatal per-action errors (incl. loud policy-misconfig errors)
+}
+
+// Failed reports whether the sweep had any error — a per-action failure or a
+// misconfigured policy (e.g. RedactFields/Anonymize with no Apply hook). A caller
+// SHOULD check it: a "successful" (nil-error) Apply can still have skipped everything.
+func (r *RetentionReport) Failed() bool {
+	return len(r.Errors) > 0
 }
 
 // RetentionManager applies retention policies over the event store. It NEVER deletes or
@@ -151,11 +185,33 @@ func (m *RetentionManager) DryRun(ctx context.Context) (*RetentionReport, error)
 	return m.run(ctx, true)
 }
 
+// Validate returns any policy misconfigurations (e.g. a RedactFields/Anonymize policy
+// with no Apply hook) so a caller can fail fast at startup instead of discovering it in
+// a report. Apply and DryRun also surface these on every run.
+func (m *RetentionManager) Validate() []error {
+	var errs []error
+	for i := range m.policies {
+		if err := m.policies[i].Validate(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
 func (m *RetentionManager) run(ctx context.Context, dryRun bool) (*RetentionReport, error) {
 	if _, ok := m.store.Adapter().(adapters.SubscriptionAdapter); !ok {
 		return nil, ErrExportScanNotSupported
 	}
 	report := &RetentionReport{DryRun: dryRun}
+	// Fail loud on policies that can never act (a RedactFields/Anonymize policy without
+	// an Apply hook). Surfaced on every Apply AND DryRun via report.Errors (so Failed()
+	// is true), rather than a silent Skipped count you'd think you anonymized when you
+	// did not.
+	for i := range m.policies {
+		if err := m.policies[i].Validate(); err != nil {
+			report.Errors = append(report.Errors, err)
+		}
+	}
 	now := m.now()
 	shredKeys := map[string]struct{}{}
 
@@ -205,7 +261,9 @@ func (m *RetentionManager) act(ctx context.Context, p RetentionPolicy, se Stored
 		}
 	case ActionRedactFields, ActionAnonymize:
 		if p.Apply == nil {
-			report.Skipped++ // no handler — residual, never silent
+			// No handler — residual. run() has already surfaced this as a loud
+			// report error (see Validate); the Skipped count is informational.
+			report.Skipped++
 			return
 		}
 		if err := p.Apply(ctx, se); err != nil {
