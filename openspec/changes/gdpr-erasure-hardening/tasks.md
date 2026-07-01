@@ -15,10 +15,10 @@
 
 - [x] 3.1 `mink.SubjectErasable` interface (`EraseSubject(ctx, subjectID, *SubjectFootprint) (SubjectErasureOutcome, error)`, `ErasableName()`) + `SubjectErasureOutcome` (Name/Erased/Skipped/Err)
 - [x] 3.2 `DataEraser.WithSubjectStore(...)`; `Erase` runs each after key-revoke + read-model redaction (non-fatal, symmetric with hooks); report `ErasureResult.SubjectStores`
-- [ ] 3.3 Audit: optional `adapters.SubjectAuditPurger { DeleteAuditBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `actor==subject OR aggregate_id==subject`); `mink.NewAuditSubjectEraser(store)`
-- [ ] 3.4 Saga: optional `adapters.SubjectSagaPurger { DeleteSagasBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `correlation_id==subject`); `mink.NewSagaSubjectEraser(store)`
-- [ ] 3.5 Snapshot: `mink.NewSnapshotSubjectEraser(snapshotAdapter)` deletes snapshots for each `footprint.Streams` via existing `DeleteSnapshot`
-- [ ] 3.6 Tests: each eraser purges its subject's rows, leaves others; unsupported store → `ErrRevocationUnsupported`-style skip; DataEraser aggregates outcomes; partial failure non-fatal
+- [x] 3.3 Audit: optional `adapters.SubjectAuditPurger { DeleteAuditBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `actor==subject OR aggregate_id==subject`); `mink.NewAuditSubjectEraser(store)`
+- [x] 3.4 Saga: optional `adapters.SubjectSagaPurger { DeleteSagasBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `correlation_id==subject`); `mink.NewSagaSubjectEraser(store)`
+- [x] 3.5 Snapshot: `mink.NewSnapshotSubjectEraser(snapshotAdapter)` deletes snapshots for each `footprint.Streams` via existing `DeleteSnapshot`
+- [x] 3.6 Tests: each eraser purges its subject's rows, leaves others; unsupported store → `ErrRevocationUnsupported`-style skip; DataEraser aggregates outcomes; partial failure non-fatal
 - [ ] 3.7 Document the outbox `Transform`-decrypts leak + the "register a SubjectErasable for your sink" guidance
 
 ## 4. Required — Blast-radius guard for shared keys (`data-erasure`)

@@ -16,7 +16,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.AuditStore = (*AuditStore)(nil)
+var (
+	_ adapters.AuditStore         = (*AuditStore)(nil)
+	_ adapters.SubjectAuditPurger = (*AuditStore)(nil)
+)
 
 const (
 	// defaultAuditFindLimit caps Find when the query specifies no positive limit.
@@ -345,6 +348,29 @@ func (s *AuditStore) Cleanup(ctx context.Context, olderThan time.Duration) (int6
 	result, err := s.db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("mink/postgres/audit: failed to cleanup entries: %w", err)
+	}
+
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/audit: failed to get affected rows: %w", err)
+	}
+
+	return count, nil
+}
+
+// DeleteAuditBySubject removes audit entries attributable to subjectID — those whose
+// actor or aggregate_id equals subjectID — for GDPR erasure of the audit trail. Returns
+// the number removed. Implements adapters.SubjectAuditPurger.
+func (s *AuditStore) DeleteAuditBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	tableQ := s.fullTableName()
+	query := `DELETE FROM ` + tableQ + ` WHERE actor = $1 OR aggregate_id = $1`
+
+	result, err := s.db.ExecContext(ctx, query, subjectID)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/audit: failed to delete entries by subject: %w", err)
 	}
 
 	count, err := result.RowsAffected()

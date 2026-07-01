@@ -740,6 +740,17 @@ type SagaStore interface {
 	Close() error
 }
 
+// SubjectSagaPurger is an OPTIONAL SagaStore extension supporting GDPR erasure of a
+// data subject's saga state. Sagas copy correlation/business data out of events into
+// their own plaintext state, which crypto-shredding the events does NOT reach. A store
+// must delete the subject's sagas explicitly. Stores MAY implement it;
+// mink.NewSagaSubjectEraser detects support and skips (rather than fails) when absent.
+type SubjectSagaPurger interface {
+	// DeleteSagasBySubject removes saga states whose CorrelationID equals subjectID and
+	// returns the count removed.
+	DeleteSagasBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+
 // OutboxStatus represents the current status of an outbox message.
 type OutboxStatus int
 

@@ -24,6 +24,10 @@ type (
 
 	// AuditOrder controls how audit entries are sorted when queried.
 	AuditOrder = adapters.AuditOrder
+
+	// SubjectAuditPurger is the optional AuditStore extension for GDPR erasure of a
+	// subject's audit trail (see NewAuditSubjectEraser).
+	SubjectAuditPurger = adapters.SubjectAuditPurger
 )
 
 // Re-export audit ordering constants for convenience.
