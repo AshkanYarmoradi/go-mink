@@ -100,18 +100,31 @@ type SubjectFootprint struct {
 	Partial bool
 }
 
-// SubjectIndexAdapter is an OPTIONAL adapter extension that resolves a subject's
-// streams from an index, avoiding a full scan. Adapters MAY implement it; the
-// resolver falls back to a scan otherwise.
+// SubjectIndexAdapter is an OPTIONAL extension that resolves a subject's streams from
+// an index, avoiding a full scan. The event-store adapter MAY implement it, or an index
+// can be injected into the resolver with WithResolverIndex; the resolver falls back to a
+// scan otherwise.
 type SubjectIndexAdapter interface {
 	StreamsBySubject(ctx context.Context, subjectID string) ([]string, error)
 }
 
+// SubjectIndexWriter is the OPTIONAL write side of a subject index: it records which
+// streams touch a subject so SubjectIndexAdapter can later resolve them without a scan.
+// Wire one into the store with WithSubjectIndexWriter (populated at append time) and/or
+// populate history with BackfillSubjectIndex. A type that implements both interfaces is
+// a complete, keep-in-sync subject index (see MemorySubjectIndex).
+type SubjectIndexWriter interface {
+	// IndexSubjects records that streamID contains events for each of subjectIDs.
+	// It MUST be idempotent (indexing the same (subject, stream) twice is a no-op).
+	IndexSubjects(ctx context.Context, streamID string, subjectIDs []string) error
+}
+
 // SubjectResolver resolves a subject id to its complete footprint across all
-// streams, using the adapter's subject index when available or a scan otherwise.
+// streams, using a subject index when available or a scan otherwise.
 type SubjectResolver struct {
 	store     *EventStore
 	batchSize int
+	index     SubjectIndexAdapter
 }
 
 // SubjectResolverOption configures a SubjectResolver.
@@ -122,6 +135,19 @@ func WithResolverBatchSize(size int) SubjectResolverOption {
 	return func(r *SubjectResolver) {
 		if size > 0 {
 			r.batchSize = size
+		}
+	}
+}
+
+// WithResolverIndex injects a subject index (read side) the resolver prefers over both
+// the adapter's own index and a full scan — turning resolution into O(subject's events).
+// The index MUST be kept complete (append-time via WithSubjectIndexWriter, plus
+// BackfillSubjectIndex for history); an authoritative index lets Resolve return a
+// non-partial footprint even for events written before tagging was enabled.
+func WithResolverIndex(idx SubjectIndexAdapter) SubjectResolverOption {
+	return func(r *SubjectResolver) {
+		if idx != nil {
+			r.index = idx
 		}
 	}
 }
@@ -146,8 +172,15 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 	streamSet := map[string]struct{}{}
 	keySet := map[string]struct{}{}
 
-	// Index-backed fast path.
-	if idx, ok := r.store.Adapter().(SubjectIndexAdapter); ok {
+	// Index-backed fast path: an explicitly injected index (WithResolverIndex) takes
+	// precedence over an adapter that happens to implement SubjectIndexAdapter.
+	idx := r.index
+	if idx == nil {
+		if ai, ok := r.store.Adapter().(SubjectIndexAdapter); ok {
+			idx = ai
+		}
+	}
+	if idx != nil {
 		streams, err := idx.StreamsBySubject(ctx, subjectID)
 		if err != nil {
 			return nil, fmt.Errorf("mink: subject index for %q: %w", subjectID, err)

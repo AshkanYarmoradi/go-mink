@@ -21,6 +21,7 @@ type EventStore struct {
 	encryption    *FieldEncryptionConfig // nil by default — zero overhead when unused
 	maxEventSize  int                    // 0 = unlimited
 	subjectTagger SubjectTagger          // nil by default — zero overhead when unused
+	subjectIndex  SubjectIndexWriter     // nil by default — zero overhead when unused
 }
 
 // Logger defines the logging interface for the event store.
@@ -92,6 +93,18 @@ func WithFieldEncryption(config *FieldEncryptionConfig) Option {
 func WithSubjectTagger(tagger SubjectTagger) Option {
 	return func(es *EventStore) {
 		es.subjectTagger = tagger
+	}
+}
+
+// WithSubjectIndexWriter records, at append time, which subject(s) each stream touches
+// into the given index (derived from the events' subject tags — pair with
+// WithSubjectTagger). Writes are best-effort: an index-write failure is logged, never
+// failing the append. Combine with a SubjectResolver using WithResolverIndex to make
+// discovery and erasure O(a subject's events) instead of a full scan. Zero overhead when
+// unset.
+func WithSubjectIndexWriter(w SubjectIndexWriter) Option {
+	return func(es *EventStore) {
+		es.subjectIndex = w
 	}
 }
 
@@ -184,6 +197,7 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 
 	// Convert events to EventRecords
 	records := make([]adapters.EventRecord, len(events))
+	subjectSet := make(map[string]struct{})
 	for i, event := range events {
 		eventData, err := SerializeEvent(s.serializer, event, config.metadata)
 		if err != nil {
@@ -193,6 +207,7 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 		if err := s.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
+		s.collectSubjects(eventData.Metadata, subjectSet)
 
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
@@ -201,8 +216,11 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 		}
 	}
 
-	_, err := s.adapter.Append(ctx, streamID, records, config.expectedVersion)
-	return err
+	if _, err := s.adapter.Append(ctx, streamID, records, config.expectedVersion); err != nil {
+		return err
+	}
+	s.writeSubjectIndex(ctx, streamID, subjectSet)
+	return nil
 }
 
 // Load retrieves all events from a stream.
@@ -279,6 +297,7 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 
 	// Convert events to EventRecords
 	records := make([]adapters.EventRecord, len(events))
+	subjectSet := make(map[string]struct{})
 	for i, event := range events {
 		eventData, err := SerializeEvent(s.serializer, event, Metadata{})
 		if err != nil {
@@ -288,6 +307,7 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 		if err := s.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
+		s.collectSubjects(eventData.Metadata, subjectSet)
 
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
@@ -303,6 +323,7 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 	if err != nil {
 		return err
 	}
+	s.writeSubjectIndex(ctx, streamID, subjectSet)
 
 	// Update aggregate version after successful save if it implements VersionSetter.
 	// New version = old version + number of events saved.
@@ -485,6 +506,33 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 	}
 
 	return EventFromStored(stored, data), nil
+}
+
+// collectSubjects adds an event's subject tags to set for subject-index writing.
+// No-op when no index writer is configured (zero overhead).
+func (s *EventStore) collectSubjects(md Metadata, set map[string]struct{}) {
+	if s.subjectIndex == nil {
+		return
+	}
+	for _, sub := range GetSubjectTags(md) {
+		set[sub] = struct{}{}
+	}
+}
+
+// writeSubjectIndex records the collected subjects for streamID into the configured
+// index. Best-effort: a failure is logged, never returned — the append already
+// succeeded, and the index can be reconciled with BackfillSubjectIndex.
+func (s *EventStore) writeSubjectIndex(ctx context.Context, streamID string, set map[string]struct{}) {
+	if s.subjectIndex == nil || len(set) == 0 {
+		return
+	}
+	subs := make([]string, 0, len(set))
+	for k := range set {
+		subs = append(subs, k)
+	}
+	if err := s.subjectIndex.IndexSubjects(ctx, streamID, subs); err != nil {
+		s.logger.Warn("mink: subject index write failed", "streamID", streamID, "error", err)
+	}
 }
 
 // prepareEventData stamps the schema version and encrypts fields as needed.
