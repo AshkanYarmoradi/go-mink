@@ -88,3 +88,33 @@ func AssertDecryptDataKeyError(t *testing.T, p encryption.Provider, keyID string
 	require.Error(t, err)
 	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
 }
+
+// AssertRevokeMakesDecryptFail verifies the core crypto-shred property for any
+// Revocable provider: after a key is revoked, data and DEKs encrypted under it can no
+// longer be decrypted. This is the property that actually delivers the GDPR right to
+// erasure, so every provider (not just local) must satisfy it. keyID must exist and be
+// live when called.
+func AssertRevokeMakesDecryptFail(t *testing.T, p encryption.Provider, keyID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Encrypt data and wrap a DEK under the key while it is still live.
+	ciphertext, err := p.Encrypt(ctx, keyID, []byte("secret"))
+	require.NoError(t, err)
+	dk, err := p.GenerateDataKey(ctx, keyID)
+	require.NoError(t, err)
+
+	// Crypto-shred the key.
+	require.NoError(t, encryption.Revoke(p, keyID))
+
+	revoked, err := encryption.IsRevoked(p, keyID)
+	require.NoError(t, err)
+	assert.True(t, revoked, "IsRevoked must report true after Revoke")
+
+	// Neither the data nor the DEK may be recoverable.
+	_, err = p.Decrypt(ctx, keyID, ciphertext)
+	assert.Error(t, err, "Decrypt must fail after the key is revoked")
+
+	_, err = p.DecryptDataKey(ctx, keyID, dk.Ciphertext)
+	assert.Error(t, err, "DecryptDataKey must fail after the key is revoked")
+}

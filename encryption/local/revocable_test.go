@@ -5,7 +5,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/encryption/providertest"
 )
+
+func TestProvider_RevokeMakesDecryptFail(t *testing.T) {
+	p, err := New(WithKey("k", make([]byte, 32)))
+	require.NoError(t, err)
+	providertest.AssertRevokeMakesDecryptFail(t, p, "k")
+}
 
 func TestProvider_IsRevoked(t *testing.T) {
 	p, err := New(WithKey("k", make([]byte, 32)))

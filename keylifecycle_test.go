@@ -90,9 +90,10 @@ func TestReEncryptStream(t *testing.T) {
 
 	// Re-encrypt the stream under key2 into a new stream.
 	store2 := encStore(t, provider, adapter, "key2")
-	n, err := ReEncryptStream(ctx, store2, "User-src", "User-dst")
+	n, oldKeys, err := ReEncryptStream(ctx, store2, "User-src", "User-dst")
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"key1"}, oldKeys, "returns the old key id(s) to revoke")
 
 	// Revoking key1 redacts the source but not the re-encrypted destination.
 	require.NoError(t, provider.RevokeKey("key1"))
@@ -101,4 +102,32 @@ func TestReEncryptStream(t *testing.T) {
 	require.NoError(t, err)
 	raw, _ := json.Marshal(dst[0].Data)
 	assert.Contains(t, string(raw), "carry@example.com")
+
+	// The destination now carries the NEW key marker, not the stale old one.
+	dstRaw, err := store2.LoadRaw(ctx, "User-dst", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "key2", GetEncryptionKeyID(dstRaw[0].Metadata))
+}
+
+// 8.1: a re-run against an existing destination errors instead of duplicating.
+func TestReEncryptStream_IdempotencyGuard(t *testing.T) {
+	ctx := context.Background()
+	provider, err := local.New(local.WithKey("key1", make([]byte, 32)), local.WithKey("key2", make([]byte, 32)))
+	require.NoError(t, err)
+	adapter := memory.NewAdapter()
+
+	store1 := encStore(t, provider, adapter, "key1")
+	require.NoError(t, store1.Append(ctx, "User-src", []interface{}{eraseUserCreated{UserID: "u1", Email: "carry@example.com"}}))
+
+	store2 := encStore(t, provider, adapter, "key2")
+	_, _, err = ReEncryptStream(ctx, store2, "User-src", "User-dst")
+	require.NoError(t, err)
+
+	// Second run must fail (destination already exists) rather than duplicate the copy.
+	_, _, err = ReEncryptStream(ctx, store2, "User-src", "User-dst")
+	require.Error(t, err)
+
+	dst, err := store2.Load(ctx, "User-dst")
+	require.NoError(t, err)
+	assert.Len(t, dst, 1, "no duplicate copy was appended")
 }

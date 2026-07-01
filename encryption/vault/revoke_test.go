@@ -2,11 +2,13 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go-mink.dev/encryption"
+	"go-mink.dev/encryption/providertest"
 )
 
 // mockVaultRevocationClient extends mockVaultClient with the optional revocation API.
@@ -27,6 +29,23 @@ func (m *mockVaultRevocationClient) DeleteKey(_ context.Context, keyName string)
 
 func (m *mockVaultRevocationClient) KeyExists(_ context.Context, keyName string) (bool, error) {
 	return !m.deleted[keyName], nil
+}
+
+// A deleted Transit key can no longer decrypt — mirror Vault so the shred property is
+// actually exercised.
+func (m *mockVaultRevocationClient) Decrypt(ctx context.Context, keyName string, ciphertext []byte) ([]byte, error) {
+	if m.deleted[keyName] {
+		return nil, errors.New("vault: key has been deleted")
+	}
+	return m.mockVaultClient.Decrypt(ctx, keyName, ciphertext)
+}
+
+func TestProvider_RevokeMakesDecryptFail(t *testing.T) {
+	rc := &mockVaultRevocationClient{mockVaultClient: &mockVaultClient{}}
+	p := New(WithVaultClient(rc))
+	defer func() { _ = p.Close() }()
+
+	providertest.AssertRevokeMakesDecryptFail(t, p, "k")
 }
 
 func TestProvider_RevokeKey(t *testing.T) {

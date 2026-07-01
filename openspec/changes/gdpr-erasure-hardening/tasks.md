@@ -50,20 +50,20 @@
 
 ## 8. Good-to-have — `ReEncryptStream` hardening (`key-lifecycle`)
 
-- [ ] 8.1 Destination `expectedVersion = NoStream` guard (idempotent; re-run errors, no duplicate copy)
-- [ ] 8.2 Strip `$encryption_*` markers from carried metadata before re-append
-- [ ] 8.3 Return `(copied int, oldKeyIDs []string, err error)`; docstring: source + old-key PII survive until retired + revoked
-- [ ] 8.4 Tests: idempotency guard, stale-marker strip, returned old key ids
+- [x] 8.1 Destination `expectedVersion = NoStream` guard (idempotent; re-run errors, no duplicate copy)
+- [x] 8.2 Strip `$encryption_*` markers from carried metadata before re-append
+- [x] 8.3 Return `(copied int, oldKeyIDs []string, err error)`; docstring: source + old-key PII survive until retired + revoked
+- [x] 8.4 Tests: idempotency guard, stale-marker strip, returned old key ids
 
 ## 9. Good-to-have — Provider revoke→decrypt contract test (`key-revocation`)
 
-- [ ] 9.1 `providertest.AssertRevokeMakesDecryptFail(t, provider)` — encrypt → revoke → assert Decrypt/DecryptDataKey error
-- [ ] 9.2 Wire into local + KMS + Vault suites (with revocation-capable mocks/backends)
+- [x] 9.1 `providertest.AssertRevokeMakesDecryptFail(t, provider)` — encrypt → revoke → assert Decrypt/DecryptDataKey error
+- [x] 9.2 Wire into local + KMS + Vault suites (with revocation-capable mocks/backends)
 
 ## 10. Good-to-have — Vault revoke-failure clarity (`key-revocation`)
 
 - [x] 10.1 `ErasureResult.Failed()` convenience (true when any requested key wasn't revoked) + doc that partial failures live in `Errors`/the `KeysRevoked` gap
-- [ ] 10.2 Test: a revoke that errors (e.g. simulated `deletion_allowed=false`) → `Failed()==true`, key absent from `KeysRevoked`
+- [x] 10.2 Test: a revoke that errors (e.g. simulated `deletion_allowed=false`) → `Failed()==true`, key absent from `KeysRevoked`
 
 ## 11. Docs, release & cross-cutting
 

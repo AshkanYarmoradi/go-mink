@@ -7,7 +7,28 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters/memory"
 )
+
+// failingRevokeProvider is Revocable but its RevokeKey always fails (e.g. a Vault
+// Transit key without deletion_allowed) — a partial failure, not ErrRevocationUnsupported.
+type failingRevokeProvider struct{ noRevokeProvider }
+
+func (failingRevokeProvider) RevokeKey(string) error {
+	return errors.New("vault: deletion_allowed=false")
+}
+func (failingRevokeProvider) IsRevoked(string) (bool, error) { return false, nil }
+
+func TestDataEraser_RevokeFailureIsNonFatalButFlagged(t *testing.T) {
+	cfg := NewFieldEncryptionConfig(WithEncryptionProvider(failingRevokeProvider{}), WithDefaultKeyID("k"))
+	store := New(memory.NewAdapter(), WithFieldEncryption(cfg))
+
+	res, err := NewDataEraser(store).Erase(context.Background(), ErasureRequest{SubjectID: "u", KeyIDs: []string{"k"}})
+	require.NoError(t, err, "a revoke failure (e.g. Vault deletion_allowed=false) is non-fatal by contract")
+	assert.Empty(t, res.KeysRevoked, "the un-revoked key is NOT reported as revoked")
+	assert.True(t, res.Failed(), "Failed() surfaces the partial failure a bare err check would miss")
+	assert.NotEmpty(t, res.Errors)
+}
 
 func TestDataEraser_SharedKeyGuard_BlocksTenantWideRevoke(t *testing.T) {
 	ctx := context.Background()
