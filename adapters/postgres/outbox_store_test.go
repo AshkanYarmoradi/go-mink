@@ -234,8 +234,11 @@ func TestPostgresOutboxStore_Cleanup(t *testing.T) {
 	err = store.MarkCompleted(ctx, []string{fetched[0].ID})
 	require.NoError(t, err)
 
-	// Cleanup with 0 threshold should remove it
-	cleaned, err := store.Cleanup(ctx, 0)
+	// Cleanup should remove the just-completed message. Use a cutoff safely in the
+	// future (negative olderThan) rather than 0: processed_at is stamped by the server
+	// clock (NOW()) while Cleanup's cutoff is the client clock, so a 0 threshold is a
+	// clock-tie coin-flip that makes this test flaky.
+	cleaned, err := store.Cleanup(ctx, -time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), cleaned)
 }
