@@ -117,6 +117,14 @@ func (c *FieldEncryptionConfig) IsRevoked(keyID string) (bool, error) {
 	return encryption.IsRevoked(c.provider, keyID)
 }
 
+// RevocationState reports keyID's fine-grained revocation state (NotRevoked /
+// SoftRevoked / Revoked) via the configured provider. It lets erasure verification
+// tell a still-recoverable soft-revocation from a permanent shred; providers without
+// StatefulRevocable fall back to IsRevoked (so they never report SoftRevoked).
+func (c *FieldEncryptionConfig) RevocationState(keyID string) (encryption.RevocationState, error) {
+	return encryption.GetRevocationState(c.provider, keyID)
+}
+
 // HasEncryptedFields reports whether any fields are configured for encryption
 // for the given event type.
 func (c *FieldEncryptionConfig) HasEncryptedFields(eventType string) bool {

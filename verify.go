@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"go-mink.dev/encryption"
 )
 
 // VerificationReport summarizes whether a subject's PII has been erased across its
@@ -18,6 +20,13 @@ type VerificationReport struct {
 	// ResidualEncrypted lists "stream@version" of encrypted events whose key is still
 	// live (PII recoverable).
 	ResidualEncrypted []string
+
+	// ResidualRecoverable lists "stream@version" of encrypted events whose key is only
+	// SOFT-revoked — decryption is blocked but the key can still be restored via
+	// UnrevokeKey within its grace window, so the PII is NOT yet permanently erased.
+	// A non-empty set forces Verified=false: a certificate must never claim final
+	// erasure while data is still recoverable.
+	ResidualRecoverable []string
 
 	// ResidualCleartext lists "stream@version" of events with no encryption (possible
 	// legacy cleartext PII that crypto-shredding cannot reach).
@@ -64,8 +73,17 @@ func (e *DataEraser) Verify(ctx context.Context, subjectID string) (*Verificatio
 	if err := e.verifyStreams(ctx, subjectID, fp.Streams, rep); err != nil {
 		return nil, err
 	}
-	rep.Verified = len(rep.ResidualEncrypted) == 0 && len(rep.ResidualCleartext) == 0 && !rep.Partial
+	rep.Verified = rep.clean()
 	return rep, nil
+}
+
+// clean reports whether the report shows no residual PII (including
+// still-recoverable soft-revoked keys) and a complete footprint.
+func (r *VerificationReport) clean() bool {
+	return len(r.ResidualEncrypted) == 0 &&
+		len(r.ResidualRecoverable) == 0 &&
+		len(r.ResidualCleartext) == 0 &&
+		!r.Partial
 }
 
 // emitCertificate verifies the erased subject and sends a PII-free certificate to
@@ -81,7 +99,7 @@ func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, resu
 	vr := &VerificationReport{SubjectID: subjectID, Partial: result.Partial}
 	if err := e.verifyStreams(ctx, subjectID, result.Streams, vr); err == nil {
 		cert.EventsChecked = vr.EventsChecked
-		cert.Verified = len(vr.ResidualEncrypted) == 0 && len(vr.ResidualCleartext) == 0 && !result.Partial
+		cert.Verified = vr.clean()
 	}
 	if err := e.certSink(ctx, cert); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate sink: %w", err))
@@ -105,15 +123,21 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 				rep.ResidualCleartext = append(rep.ResidualCleartext, ref)
 				continue
 			}
-			revoked := false
+			// Only a PERMANENT revocation counts as erased. A soft-revoked key
+			// (restorable within its grace window) leaves the PII recoverable, so it
+			// is surfaced separately and must block verification.
+			state := encryption.NotRevoked
 			if cfg != nil {
-				if r, err := cfg.IsRevoked(GetEncryptionKeyID(se.Metadata)); err == nil {
-					revoked = r
+				if s, err := cfg.RevocationState(GetEncryptionKeyID(se.Metadata)); err == nil {
+					state = s
 				}
 			}
-			if revoked {
+			switch state {
+			case encryption.Revoked:
 				rep.RedactedEvents++
-			} else {
+			case encryption.SoftRevoked:
+				rep.ResidualRecoverable = append(rep.ResidualRecoverable, ref)
+			default:
 				rep.ResidualEncrypted = append(rep.ResidualEncrypted, ref)
 			}
 		}

@@ -20,6 +20,7 @@ var (
 	_ encryption.Provider             = (*Provider)(nil)
 	_ encryption.Revocable            = (*Provider)(nil)
 	_ encryption.RecoverableRevocable = (*Provider)(nil)
+	_ encryption.StatefulRevocable    = (*Provider)(nil)
 )
 
 // Provider is an in-memory AES-256-GCM encryption provider for testing.
@@ -126,21 +127,65 @@ func (p *Provider) RevokeKey(keyID string) error {
 	// Zero out key material before removing
 	encryption.ClearBytes(key)
 	delete(p.keys, keyID)
+	delete(p.softRevoked, keyID)
 	p.revoked[keyID] = true
 	return nil
 }
 
-// IsRevoked reports whether keyID has been revoked (crypto-shredded).
-// It implements encryption.Revocable.
+// IsRevoked reports whether keyID has been revoked — soft or hard.
+// It implements encryption.Revocable. Callers that need to distinguish a
+// still-recoverable soft-revocation from a permanent shred use RevocationState.
 func (p *Provider) IsRevoked(keyID string) (bool, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.closed {
 		return false, encryption.ErrProviderClosed
 	}
-	_, soft := p.softRevoked[keyID]
-	return p.revoked[keyID] || soft, nil
+	state := p.stateLocked(keyID)
+	return state == encryption.Revoked || state == encryption.SoftRevoked, nil
+}
+
+// RevocationState reports keyID's fine-grained revocation state, first promoting an
+// elapsed soft-revocation to a permanent shred. Implements encryption.StatefulRevocable.
+func (p *Provider) RevocationState(keyID string) (encryption.RevocationState, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return encryption.NotRevoked, encryption.ErrProviderClosed
+	}
+	return p.stateLocked(keyID), nil
+}
+
+// promoteIfExpiredLocked converts an elapsed soft-revocation into a permanent
+// crypto-shred: it zeroes and removes the key material so "permanent after the grace
+// window" actually destroys the key, not merely gates decryption. The caller MUST
+// hold the write lock. No background reaper runs — promotion is lazy, on next access.
+func (p *Provider) promoteIfExpiredLocked(keyID string) {
+	expiry, ok := p.softRevoked[keyID]
+	if !ok || time.Now().Before(expiry) {
+		return
+	}
+	if key, ok := p.keys[keyID]; ok {
+		encryption.ClearBytes(key)
+		delete(p.keys, keyID)
+	}
+	delete(p.softRevoked, keyID)
+	p.revoked[keyID] = true
+}
+
+// stateLocked returns keyID's revocation state, promoting an expired soft-revocation
+// first. The caller MUST hold the write lock.
+func (p *Provider) stateLocked(keyID string) encryption.RevocationState {
+	p.promoteIfExpiredLocked(keyID)
+	if p.revoked[keyID] {
+		return encryption.Revoked
+	}
+	if _, soft := p.softRevoked[keyID]; soft {
+		return encryption.SoftRevoked
+	}
+	return encryption.NotRevoked
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with the specified master key.
@@ -221,19 +266,19 @@ func (p *Provider) Close() error {
 	return nil
 }
 
-// getKey retrieves a master key, checking for revocation and closure.
+// getKey retrieves a master key, checking for revocation and closure. It takes the
+// write lock because an elapsed soft-revocation is promoted to a permanent shred on
+// access (stateLocked), which mutates key material.
 func (p *Provider) getKey(keyID string) ([]byte, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.closed {
 		return nil, encryption.ErrProviderClosed
 	}
 
-	if p.revoked[keyID] {
-		return nil, encryption.NewKeyRevokedError(keyID)
-	}
-	if _, soft := p.softRevoked[keyID]; soft {
+	switch p.stateLocked(keyID) {
+	case encryption.Revoked, encryption.SoftRevoked:
 		return nil, encryption.NewKeyRevokedError(keyID)
 	}
 
@@ -254,6 +299,7 @@ func (p *Provider) SoftRevokeKey(keyID string, graceWindow time.Duration) error 
 	if p.closed {
 		return encryption.ErrProviderClosed
 	}
+	p.promoteIfExpiredLocked(keyID)
 	if p.revoked[keyID] {
 		return nil // already permanently revoked
 	}
@@ -273,12 +319,14 @@ func (p *Provider) UnrevokeKey(keyID string) error {
 	if p.closed {
 		return encryption.ErrProviderClosed
 	}
-	expiry, ok := p.softRevoked[keyID]
-	if !ok {
-		return nil // not soft-revoked: nothing to undo
-	}
-	if !time.Now().Before(expiry) {
+	// Promote first so a key whose window has already elapsed is reported as a
+	// permanent revocation rather than silently "restored".
+	p.promoteIfExpiredLocked(keyID)
+	if p.revoked[keyID] {
 		return fmt.Errorf("mink/local: grace window elapsed for key %q; revocation is permanent", keyID)
+	}
+	if _, ok := p.softRevoked[keyID]; !ok {
+		return nil // not soft-revoked: nothing to undo
 	}
 	delete(p.softRevoked, keyID)
 	return nil

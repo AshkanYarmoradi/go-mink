@@ -88,6 +88,86 @@ type RecoverableRevocable interface {
 	UnrevokeKey(keyID string) error
 }
 
+// RevocationState is the revocation status of a key. It lets callers (notably
+// erasure Verify) distinguish a still-recoverable soft-revocation from a permanent
+// crypto-shred, which IsRevoked (a single bool) cannot.
+type RevocationState int
+
+const (
+	// NotRevoked means the key is active and its data is recoverable.
+	NotRevoked RevocationState = iota
+
+	// SoftRevoked means decryption is blocked but the key can still be restored via
+	// UnrevokeKey until its grace window elapses — the data is NOT yet permanently
+	// erased. Verify MUST NOT certify a soft-revoked key as erased.
+	SoftRevoked
+
+	// Revoked means the key is permanently crypto-shredded; its data is unrecoverable.
+	Revoked
+)
+
+// String returns the state name.
+func (s RevocationState) String() string {
+	switch s {
+	case NotRevoked:
+		return "not_revoked"
+	case SoftRevoked:
+		return "soft_revoked"
+	case Revoked:
+		return "revoked"
+	default:
+		return "unknown"
+	}
+}
+
+// StatefulRevocable is an OPTIONAL extension that reports the fine-grained
+// RevocationState of a key. Providers with a grace window (RecoverableRevocable)
+// SHOULD implement it so callers can tell SoftRevoked from Revoked. Detect support
+// with GetRevocationState, which falls back to IsRevoked for providers without it.
+type StatefulRevocable interface {
+	RevocationState(keyID string) (RevocationState, error)
+}
+
+// GetRevocationState reports the RevocationState of keyID via p. If p implements
+// StatefulRevocable it is used directly; otherwise it falls back to IsRevoked,
+// mapping true→Revoked and false→NotRevoked (so a provider without soft-revoke can
+// never report SoftRevoked). Returns ErrRevocationUnsupported when p is not even
+// Revocable.
+func GetRevocationState(p Provider, keyID string) (RevocationState, error) {
+	if sr, ok := p.(StatefulRevocable); ok {
+		return sr.RevocationState(keyID)
+	}
+	revoked, err := IsRevoked(p, keyID)
+	if err != nil {
+		return NotRevoked, err
+	}
+	if revoked {
+		return Revoked, nil
+	}
+	return NotRevoked, nil
+}
+
+// SoftRevoke soft-revokes keyID via p when p implements RecoverableRevocable,
+// otherwise it returns ErrRevocationUnsupported — so a caller relying on a grace
+// window is told explicitly rather than silently falling through to a hard revoke.
+func SoftRevoke(p Provider, keyID string, graceWindow time.Duration) error {
+	r, ok := p.(RecoverableRevocable)
+	if !ok {
+		return ErrRevocationUnsupported
+	}
+	return r.SoftRevokeKey(keyID, graceWindow)
+}
+
+// Unrevoke restores a soft-revoked keyID via p when p implements
+// RecoverableRevocable, otherwise it returns ErrRevocationUnsupported.
+func Unrevoke(p Provider, keyID string) error {
+	r, ok := p.(RecoverableRevocable)
+	if !ok {
+		return ErrRevocationUnsupported
+	}
+	return r.UnrevokeKey(keyID)
+}
+
 // DataKey holds the plaintext and ciphertext forms of a data encryption key (DEK).
 // The plaintext is used for local AES-256-GCM encryption and must NEVER be persisted.
 // The ciphertext is safe to store in event metadata.

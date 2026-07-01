@@ -1,15 +1,15 @@
 ## 1. Required — Revocation state: soft vs permanent (`key-revocation`)
 
-- [ ] 1.1 Add `encryption.RevocationState` (`NotRevoked`/`SoftRevoked`/`Revoked`) + optional `StatefulRevocable interface { RevocationState(keyID) (RevocationState, error) }` + `encryption.GetRevocationState(p, keyID)` helper (falls back to `IsRevoked`)
-- [ ] 1.2 Local provider: single internal `stateLocked` that **promotes** an expired soft-revocation to hard (clears + deletes key bytes); `getKey`/`IsRevoked`/`RevocationState` all route through it — "permanent after window" now shreds material
-- [ ] 1.3 Add `encryption.SoftRevoke`/`Unrevoke` package helpers returning `ErrRevocationUnsupported` on non-`RecoverableRevocable` providers (KMS/Vault)
-- [ ] 1.4 Table-driven tests: soft→hard promotion clears material (assert bytes gone, not just decrypt blocked), `RevocationState` transitions, in-window vs post-window, KMS/Vault `SoftRevoke` → `ErrRevocationUnsupported`
+- [x] 1.1 Add `encryption.RevocationState` (`NotRevoked`/`SoftRevoked`/`Revoked`) + optional `StatefulRevocable interface { RevocationState(keyID) (RevocationState, error) }` + `encryption.GetRevocationState(p, keyID)` helper (falls back to `IsRevoked`)
+- [x] 1.2 Local provider: single internal `stateLocked` that **promotes** an expired soft-revocation to hard (clears + deletes key bytes); `getKey`/`IsRevoked`/`RevocationState` all route through it — "permanent after window" now shreds material
+- [x] 1.3 Add `encryption.SoftRevoke`/`Unrevoke` package helpers returning `ErrRevocationUnsupported` on non-`RecoverableRevocable` providers (KMS/Vault)
+- [x] 1.4 Table-driven tests: soft→hard promotion clears material (assert bytes gone, not just decrypt blocked), `RevocationState` transitions, in-window vs post-window, KMS/Vault `SoftRevoke` → `ErrRevocationUnsupported`
 
 ## 2. Required — Verify must not certify a recoverable key (`erasure-verification`)
 
-- [ ] 2.1 `Verify` uses `GetRevocationState`; only `Revoked` counts as erased; soft-revoked (in-window) → new `VerificationReport.ResidualRecoverable` and `Verified=false`
-- [ ] 2.2 Certificate reflects `ResidualRecoverable`; never `Verified=true` while a subject key is soft-revoked
-- [ ] 2.3 Tests: soft-revoked subject → not verified + residual; hard-revoked → verified; mixed
+- [x] 2.1 `Verify` uses `GetRevocationState`; only `Revoked` counts as erased; soft-revoked (in-window) → new `VerificationReport.ResidualRecoverable` and `Verified=false`
+- [x] 2.2 Certificate reflects `ResidualRecoverable`; never `Verified=true` while a subject key is soft-revoked
+- [x] 2.3 Tests: soft-revoked subject → not verified + residual; hard-revoked → verified; mixed
 
 ## 3. Required — Sibling-store erasure (`subject-erasure`)
 
