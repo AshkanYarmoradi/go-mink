@@ -68,11 +68,41 @@ jobs:
         run: docker compose -f docker-compose.test.yml down
 
       - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.out
           retention-days: 7
+
+  sonarqube:
+    name: SonarQube Cloud
+    runs-on: ubuntu-latest
+    needs: test
+    # Run even when the coverage-threshold gate fails, so analysis still happens.
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Full history lets SonarQube Cloud attribute new code and blame accurately.
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+        # Scan still runs (without coverage) if the test job produced no report.
+        continue-on-error: true
+
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
 
   lint:
     name: Lint
