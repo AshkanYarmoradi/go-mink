@@ -30,7 +30,7 @@ func TestMemorySubjectIndex(t *testing.T) {
 	assert.Empty(t, got)
 }
 
-func TestSubjectResolver_WithInjectedIndex_NonPartial(t *testing.T) {
+func TestSubjectResolver_IndexAuthorityContract(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newSubjectTestStore(t, "k")
 	appendUser(t, ctx, store, "User-u1", "u1")
@@ -42,13 +42,21 @@ func TestSubjectResolver_WithInjectedIndex_NonPartial(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, scanFP.Partial)
 
-	// An authoritative index makes resolution complete (and O(subject)).
 	idx := NewMemorySubjectIndex()
 	require.NoError(t, idx.IndexSubjects(ctx, "User-u1", []string{"u1"}))
-	idxFP, err := NewSubjectResolver(store, WithResolverIndex(idx)).Resolve(ctx, "u1")
+
+	// An index WITHOUT an authority assertion cannot claim completeness — a best-effort
+	// append-time write may have dropped a stream, so the footprint is honestly Partial.
+	nonAuth, err := NewSubjectResolver(store, WithResolverIndex(idx)).Resolve(ctx, "u1")
 	require.NoError(t, err)
-	assert.False(t, idxFP.Partial, "an authoritative index resolves historical subjects completely")
-	assert.Equal(t, []string{"User-u1"}, idxFP.Streams)
+	assert.True(t, nonAuth.Partial, "a non-authoritative index must not claim a complete footprint")
+	assert.Equal(t, []string{"User-u1"}, nonAuth.Streams)
+
+	// Asserting authority (e.g. after a clean backfill) makes it complete.
+	auth, err := NewSubjectResolver(store, WithResolverIndex(idx), WithAuthoritativeIndex()).Resolve(ctx, "u1")
+	require.NoError(t, err)
+	assert.False(t, auth.Partial, "an authoritative index resolves historical subjects completely")
+	assert.Equal(t, []string{"User-u1"}, auth.Streams)
 }
 
 func TestBackfillSubjectIndex(t *testing.T) {
@@ -67,8 +75,9 @@ func TestBackfillSubjectIndex(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Order-o1", "User-u1"}, streams)
 
-	// The back-filled index resolves the same footprint the scan would.
-	fp, err := NewSubjectResolver(store, WithResolverIndex(idx)).Resolve(ctx, "u1")
+	// After a clean backfill the index is authoritative and resolves the same footprint
+	// the scan would.
+	fp, err := NewSubjectResolver(store, WithResolverIndex(idx), WithAuthoritativeIndex()).Resolve(ctx, "u1")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Order-o1", "User-u1"}, fp.Streams)
 	assert.Equal(t, 2, fp.EventCount)

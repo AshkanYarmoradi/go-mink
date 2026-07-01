@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,7 +26,9 @@ func setupSubjectIndex(t *testing.T) (*SubjectIndex, func()) {
 		t.Skipf("PostgreSQL not available: %v", err)
 	}
 
-	table := "mink_subject_index_test_" + time.Now().Format("20060102150405")
+	// UnixNano (not second-resolution) so two tests in the same second don't collide
+	// on the table name and clobber each other's data.
+	table := fmt.Sprintf("mink_subject_index_test_%d", time.Now().UnixNano())
 	idx := NewSubjectIndex(db, WithSubjectIndexTable(table))
 	require.NoError(t, idx.Initialize(context.Background()))
 
@@ -84,7 +87,8 @@ func TestSubjectIndex_EndToEndWithResolver(t *testing.T) {
 	require.NoError(t, store.Append(ctx, "Order-o1", []interface{}{indexTestEvent{UserID: "u1"}}, mink.WithAppendMetadata(mink.Metadata{UserID: "u1"})))
 
 	// Append-time indexing populated the postgres index; the resolver reads from it.
-	fp, err := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx)).Resolve(ctx, "u1")
+	// WithAuthoritativeIndex asserts completeness (no concurrent writes here).
+	fp, err := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx), mink.WithAuthoritativeIndex()).Resolve(ctx, "u1")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Order-o1", "User-u1"}, fp.Streams)
 	assert.False(t, fp.Partial, "an authoritative postgres index resolves a complete footprint")

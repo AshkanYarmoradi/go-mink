@@ -180,6 +180,22 @@ func (f *fakeSubjectStore) EraseSubject(_ context.Context, _ string, fp *Subject
 	return SubjectErasureOutcome{Name: f.name, Erased: f.erased}, nil
 }
 
+func TestErase_CertificateNotVerifiedWhenSubjectStoreFails(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "User-u1", "u1")
+
+	var got ErasureCertificate
+	bad := &fakeSubjectStore{name: "audit", err: errors.New("audit store down")}
+	_, err := NewDataEraser(store,
+		WithEraseSubjectResolver(NewSubjectResolver(store)),
+		WithSubjectStore(bad),
+		WithCertificateSink(func(_ context.Context, c ErasureCertificate) error { got = c; return nil }),
+	).Erase(ctx, ErasureRequest{SubjectID: "u1"})
+	require.NoError(t, err)
+	assert.False(t, got.Verified, "certificate must not be verified when a sibling store failed to erase")
+}
+
 func TestDataEraser_SubjectStores(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newSubjectTestStore(t, "k")

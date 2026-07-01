@@ -108,6 +108,16 @@ func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, resu
 	if e.markerStream != "" && !result.MarkerWritten {
 		cert.Verified = false
 	}
+	// A registered sibling store that failed, or that could not be purged (Skipped,
+	// e.g. it lacks the subject-purger interface), may still hold the subject's PII —
+	// so the erasure is not fully verified. Verify() itself covers only events and read
+	// models; sibling-store outcomes are known here at Erase time via result.SubjectStores.
+	for _, ss := range result.SubjectStores {
+		if ss.Err != "" || ss.Skipped {
+			cert.Verified = false
+			break
+		}
+	}
 	if err := e.certSink(ctx, cert); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate sink: %w", err))
 		return err

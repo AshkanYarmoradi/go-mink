@@ -122,9 +122,10 @@ type SubjectIndexWriter interface {
 // SubjectResolver resolves a subject id to its complete footprint across all
 // streams, using a subject index when available or a scan otherwise.
 type SubjectResolver struct {
-	store     *EventStore
-	batchSize int
-	index     SubjectIndexAdapter
+	store         *EventStore
+	batchSize     int
+	index         SubjectIndexAdapter
+	authoritative bool
 }
 
 // SubjectResolverOption configures a SubjectResolver.
@@ -141,14 +142,29 @@ func WithResolverBatchSize(size int) SubjectResolverOption {
 
 // WithResolverIndex injects a subject index (read side) the resolver prefers over both
 // the adapter's own index and a full scan — turning resolution into O(subject's events).
-// The index MUST be kept complete (append-time via WithSubjectIndexWriter, plus
-// BackfillSubjectIndex for history); an authoritative index lets Resolve return a
-// non-partial footprint even for events written before tagging was enabled.
+//
+// By itself the index is treated as POSSIBLY INCOMPLETE: append-time index writes are
+// best-effort (a failed write is logged, not fatal), so an index can silently drift
+// behind the event log. A resolve that used the index therefore reports Partial=true
+// unless you ALSO pass WithAuthoritativeIndex to assert the index is complete. This
+// prevents an out-of-sync index from producing a falsely-complete footprint that would
+// make Erase miss streams while certifying success.
 func WithResolverIndex(idx SubjectIndexAdapter) SubjectResolverOption {
 	return func(r *SubjectResolver) {
 		if idx != nil {
 			r.index = idx
 		}
+	}
+}
+
+// WithAuthoritativeIndex asserts that the injected index (WithResolverIndex) is complete
+// — every stream touching a subject is recorded — so an index-backed resolve may report
+// a non-partial footprint. Use it only when you can guarantee completeness: after
+// BackfillSubjectIndex with no concurrent writes, or with a transactionally-consistent
+// index. Without it, an index-backed resolve is honestly marked Partial.
+func WithAuthoritativeIndex() SubjectResolverOption {
+	return func(r *SubjectResolver) {
+		r.authoritative = true
 	}
 }
 
@@ -200,6 +216,10 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 			}
 		}
 		r.finalize(fp, streamSet, keySet)
+		// An index only proves completeness when the caller asserts it is authoritative;
+		// otherwise it may have drifted behind best-effort append-time writes, so the
+		// footprint cannot be proven complete.
+		fp.Partial = !r.authoritative
 		return fp, nil
 	}
 

@@ -222,11 +222,18 @@ store := mink.New(adapter,
 // One-time migration for pre-adoption history:
 mink.BackfillSubjectIndex(ctx, store, tagger, idx, 1000)
 
-resolver := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx))
+// After a clean backfill (or with a transactionally-consistent index) you may assert
+// completeness; without the assertion an index-backed resolve is honestly Partial.
+resolver := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx), mink.WithAuthoritativeIndex())
 ```
 
-An authoritative index resolves a non-partial footprint even for historical events;
-without one, legacy untagged events keep a footprint `Partial` (never a *silent* partial).
+**Index authority.** Append-time index writes are best-effort (a failed write is logged,
+not fatal), so an index can silently drift behind the log. `WithResolverIndex` therefore
+treats the index as possibly-incomplete and marks the footprint `Partial` unless you also
+pass `WithAuthoritativeIndex` to assert completeness — so a drifted index can never
+produce a falsely-complete footprint that makes `Erase` miss streams while certifying
+success. Reconcile a drifted index with `BackfillSubjectIndex`. Without any index, legacy
+untagged events keep a footprint `Partial` (never a *silent* partial).
 
 > **Subject identifiers are plaintext and are NOT shredded.** The `$subjects` tag and
 > `Metadata` (UserID / CorrelationID) are stored in cleartext so they stay scannable, so
