@@ -1,14 +1,31 @@
 ---
-title: Security & GDPR
-sidebar_position: 12
+title: GDPR & Data Governance
+sidebar_label: GDPR & Data Governance
+sidebar_position: 11
 ---
 
-# Security & GDPR
+# GDPR & Data Governance
 
 go-mink treats personal data as a first-class concern. This guide covers the full
 data-governance lifecycle: **encryption → subject discovery → export → erasure →
 retention**, all built to preserve the append-only event log (no row is ever
 deleted or mutated).
+
+> This is the task-oriented guide to the data-subject rights (Articles 15, 17, 20)
+> and retention. For the field-level encryption reference (providers, configuration,
+> the on-disk format) see [Security & Compliance](/docs/advanced/security); to drive
+> the same operations from the command line see [`mink gdpr`](/docs/guide/cli#mink-gdpr).
+
+At a glance:
+
+| Right / concern | API | Section |
+|-----------------|-----|---------|
+| Erasure (Art. 17) | `DataEraser.Erase` | [Data erasure](#data-erasure-article-17) |
+| Access / portability (Art. 15 / 20) | `DataExporter.Export` | [Data export](#data-export-article-15--20) |
+| Find a subject's data | `SubjectResolver.Resolve` | [Subject discovery](#subject-discovery) |
+| Make data unrecoverable | `encryption.Revoke` (crypto-shred) | [Crypto-shredding](#crypto-shredding-key-revocation) |
+| Time-limited retention | `RetentionManager` | [Retention policies](#retention-policies) |
+| Reach derived PII (audit/saga/…) | `WithSubjectStore` | [Sibling stores](#sibling-stores--audit-saga-snapshots-outbox-idempotency) |
 
 ## Field-level encryption
 
@@ -58,7 +75,20 @@ client lacks it returns `encryption.ErrRevocationUnsupported`.
 
 `encryption.RecoverableRevocable` adds a grace window: `SoftRevokeKey(keyID, window)`
 blocks decryption but `UnrevokeKey(keyID)` can restore it until the window elapses,
-after which it becomes permanent — so an accidental erasure can be undone.
+after which it becomes a permanent crypto-shred (the local provider actually wipes the
+key material). Use the package helpers so a provider that lacks the capability is
+reported, not silently hard-revoked:
+
+```go
+encryption.SoftRevoke(provider, "tenant-A", 7*24*time.Hour) // ErrRevocationUnsupported if not RecoverableRevocable
+encryption.Unrevoke(provider, "tenant-A")                    // undo within the window
+```
+
+`encryption.GetRevocationState(provider, keyID)` returns the fine-grained state —
+`NotRevoked`, `SoftRevoked`, or `Revoked` — via the optional `StatefulRevocable`
+interface (falling back to `IsRevoked` for providers without it). This is what lets
+`Verify` distinguish a still-recoverable soft-revocation from a permanent shred and
+refuse to certify the former (see [Accountability](#accountability--the-discovery-race)).
 
 ## Subject discovery
 
@@ -130,19 +160,43 @@ reported in `res.Errors`, never fatal.
 
 ## Retention policies
 
-Enforce configurable retention rules on a schedulable sweep:
+Enforce configurable retention rules with `RetentionManager`. A `RetentionPolicy` is a
+matcher (`Category` / `StreamPrefix` / `EventTypes` / `TenantID` / `MaxAge`, ANDed) plus
+an action:
 
 ```go
 mgr := mink.NewRetentionManager(store, []mink.RetentionPolicy{
     {Name: "old-customers", Category: "Customer", MaxAge: 365 * 24 * time.Hour, Action: mink.ActionShred},
+    {Name: "pseudonymize-analytics", EventTypes: []string{"PageViewed"}, MaxAge: 90 * 24 * time.Hour,
+        Action: mink.ActionAnonymize, Fields: []string{"ip"},
+        Apply: func(ctx context.Context, e mink.StoredEvent) error {
+            return analytics.Pseudonymize(ctx, e, anonymizer) // you own the read-side write
+        }},
 })
 report, _ := mgr.DryRun(ctx) // preview, no changes
 report, _ = mgr.Apply(ctx)   // report.Matched, report.KeysRevoked, report.Skipped, report.Errors
 ```
 
 Actions preserve the append-only log: `ActionShred` revokes keys; `ActionRedactFields`
-and `ActionAnonymize` delegate to the policy's `Apply` hook (go-mink cannot mutate
-event rows). Pseudonymize with a deterministic, one-way `Anonymizer`.
+and `ActionAnonymize` **cannot** mutate event rows, so they delegate to the policy's
+`Apply` hook (applied to read models / external stores).
+
+**Scheduling is yours.** `Apply` performs a single sweep and returns — go-mink does not
+run it on a timer. Wire it to your own cron/gocron at your SLA's cadence.
+
+**Fail-loud validation.** A `RedactFields`/`Anonymize` policy with *no* `Apply` hook can
+never act. `mgr.Validate()` (or `policy.Validate()`) surfaces this up front, and every
+`Apply`/`DryRun` reports it via `report.Errors` / `report.Failed()` rather than silently
+counting it as `Skipped` — so you can never think you anonymized when you didn't.
+
+**Pseudonymization.** `mink.NewAnonymizer(secret, ...)` gives a deterministic, one-way
+HMAC pseudonym (stable per scope), suitable for `ActionAnonymize` `Apply` hooks or for
+replacing PII subject identifiers:
+
+```go
+anon := mink.NewAnonymizer(hmacSecret)
+pseudo := anon.Pseudonymize("email", "alice@example.com") // stable, irreversible
+```
 
 ## Key lifecycle
 
@@ -161,12 +215,12 @@ event rows). Pseudonymize with a deterministic, one-way `Anonymizer`.
 Crypto-shredding only reaches data encrypted under the revoked key. These controls close
 the gaps where an erasure can *look* done while leaving recoverable PII behind.
 
-### Sibling stores — audit, saga, snapshots
+### Sibling stores — audit, saga, snapshots, outbox, idempotency
 
 PII derived from events lives in stores the event key does not protect: the **audit
 trail** (plaintext actor / tenant / metadata / error strings), **saga state** (business
-data copied out of events), and **snapshots** (plaintext aggregate state). Register them
-so `Erase` reaches them too:
+data copied out of events), **snapshots** (plaintext aggregate state), **outbox** rows,
+and **idempotency** response payloads. Register them so `Erase` reaches them too:
 
 ```go
 eraser := mink.NewDataEraser(store,
@@ -252,3 +306,15 @@ scan for one that can't detect untagged events.
 > log forever. If your subject id is itself PII (an email, a national id), you have not
 > fully erased the person. Tag with an **opaque/pseudonymous** id (see `Anonymizer`) and
 > treat metadata identifiers as PII under the same discipline.
+
+## From the command line
+
+The [`mink gdpr`](/docs/guide/cli#mink-gdpr) CLI drives the read-only half of these
+workflows against a store: `discover` a subject's footprint, `verify` erasure readiness,
+print an `erase` plan (the keys to revoke), and `retain` (dry-run a policy). It does not
+hold your encryption keys, so actual revocation runs from your application via the APIs
+above — the CLI produces the auditable plan.
+
+---
+
+Next: [CLI →](/docs/guide/cli)

@@ -76,9 +76,15 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - Encryption metadata in `Metadata.Custom` (no DB schema changes)
 - Zero overhead when not configured
 
-### GDPR Compliance
-- Crypto-shredding via key revocation
-- `WithDecryptionErrorHandler()` for graceful degradation
+### GDPR & Data Governance
+- Crypto-shredding via key revocation (`encryption.Revocable` / `RecoverableRevocable`, `WithDecryptionErrorHandler()`)
+- `DataExporter` — right to access / portability (Article 15 / 20)
+- `DataEraser` — right to erasure (Article 17): subject discovery, sibling-store erasure (audit/saga/snapshot/outbox/idempotency), blast-radius guard, and a verification certificate
+- `SubjectResolver` + subject index / `BackfillSubjectIndex`
+- `RetentionManager` — configurable retention (shred / redact / anonymize)
+- `Anonymizer` — deterministic one-way pseudonymization
+- `mink gdpr` CLI — discover / verify / erase-plan / retain
+- See the [GDPR & Data Governance guide](/docs/security)
 
 ### Observability
 - Prometheus metrics middleware (`middleware/metrics`)
@@ -114,6 +120,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 ### v1.1.0 -- Data Governance
 
 - [x] Data export (GDPR right to access)
+- [x] Data erasure (GDPR right to be forgotten) — `DataEraser` + sibling-store erasure
 - [x] Audit logging middleware
 - [x] Data retention policies with configurable rules
 - [ ] Time-travel queries (load aggregate at timestamp or version)
