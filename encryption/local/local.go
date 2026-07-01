@@ -10,20 +10,26 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"go-mink.dev/encryption"
 )
 
-// Compile-time interface check.
-var _ encryption.Provider = (*Provider)(nil)
+// Compile-time interface checks.
+var (
+	_ encryption.Provider             = (*Provider)(nil)
+	_ encryption.Revocable            = (*Provider)(nil)
+	_ encryption.RecoverableRevocable = (*Provider)(nil)
+)
 
 // Provider is an in-memory AES-256-GCM encryption provider for testing.
 // Keys are stored in memory and never persisted.
 type Provider struct {
-	mu      sync.RWMutex
-	keys    map[string][]byte // keyID → 32-byte AES key
-	revoked map[string]bool
-	closed  bool
+	mu          sync.RWMutex
+	keys        map[string][]byte    // keyID → 32-byte AES key
+	revoked     map[string]bool      // hard (permanent) revocations
+	softRevoked map[string]time.Time // soft revocations → grace-window expiry
+	closed      bool
 }
 
 // Option configures a local Provider.
@@ -63,8 +69,9 @@ func WithKey(keyID string, key []byte) Option {
 // New creates a new local encryption provider.
 func New(opts ...Option) (*Provider, error) {
 	p := &Provider{
-		keys:    make(map[string][]byte),
-		revoked: make(map[string]bool),
+		keys:        make(map[string][]byte),
+		revoked:     make(map[string]bool),
+		softRevoked: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
 		if err := opt(p); err != nil {
@@ -96,13 +103,19 @@ func (p *Provider) AddKey(keyID string, key []byte) error {
 
 // RevokeKey marks a key as revoked and removes the key material.
 // This simulates crypto-shredding: once revoked, data encrypted with this key
-// can never be decrypted.
+// can never be decrypted. It implements encryption.Revocable and is idempotent —
+// revoking an already-revoked key is a no-op success.
 func (p *Provider) RevokeKey(keyID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.closed {
 		return encryption.ErrProviderClosed
+	}
+
+	// Idempotent: an already-revoked key has no material left to clear.
+	if p.revoked[keyID] {
+		return nil
 	}
 
 	key, ok := p.keys[keyID]
@@ -115,6 +128,19 @@ func (p *Provider) RevokeKey(keyID string) error {
 	delete(p.keys, keyID)
 	p.revoked[keyID] = true
 	return nil
+}
+
+// IsRevoked reports whether keyID has been revoked (crypto-shredded).
+// It implements encryption.Revocable.
+func (p *Provider) IsRevoked(keyID string) (bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return false, encryption.ErrProviderClosed
+	}
+	_, soft := p.softRevoked[keyID]
+	return p.revoked[keyID] || soft, nil
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with the specified master key.
@@ -207,10 +233,53 @@ func (p *Provider) getKey(keyID string) ([]byte, error) {
 	if p.revoked[keyID] {
 		return nil, encryption.NewKeyRevokedError(keyID)
 	}
+	if _, soft := p.softRevoked[keyID]; soft {
+		return nil, encryption.NewKeyRevokedError(keyID)
+	}
 
 	key, ok := p.keys[keyID]
 	if !ok {
 		return nil, encryption.NewKeyNotFoundError(keyID)
 	}
 	return key, nil
+}
+
+// SoftRevokeKey blocks decryption under keyID but allows UnrevokeKey to restore it
+// until graceWindow elapses, after which it is permanent. Implements
+// encryption.RecoverableRevocable.
+func (p *Provider) SoftRevokeKey(keyID string, graceWindow time.Duration) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return encryption.ErrProviderClosed
+	}
+	if p.revoked[keyID] {
+		return nil // already permanently revoked
+	}
+	if _, ok := p.keys[keyID]; !ok {
+		return encryption.NewKeyNotFoundError(keyID)
+	}
+	p.softRevoked[keyID] = time.Now().Add(graceWindow)
+	return nil
+}
+
+// UnrevokeKey restores a soft-revoked key if still within its grace window.
+// Implements encryption.RecoverableRevocable.
+func (p *Provider) UnrevokeKey(keyID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return encryption.ErrProviderClosed
+	}
+	expiry, ok := p.softRevoked[keyID]
+	if !ok {
+		return nil // not soft-revoked: nothing to undo
+	}
+	if !time.Now().Before(expiry) {
+		return fmt.Errorf("mink/local: grace window elapsed for key %q; revocation is permanent", keyID)
+	}
+	delete(p.softRevoked, keyID)
+	return nil
 }

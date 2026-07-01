@@ -20,14 +20,30 @@ type KMSClient interface {
 	GenerateDataKey(ctx context.Context, params *kms.GenerateDataKeyInput, optFns ...func(*kms.Options)) (*kms.GenerateDataKeyOutput, error)
 }
 
-// Compile-time interface check.
-var _ encryption.Provider = (*Provider)(nil)
+// KMSRevocationClient is an OPTIONAL extension of KMSClient. When the injected
+// client also implements it, the provider implements encryption.Revocable and
+// supports crypto-shredding (GDPR erasure) by scheduling deletion of the customer
+// master key (CMK). A CMK pending deletion is immediately unusable for decrypt,
+// and AWS destroys the key material permanently after the pending window.
+type KMSRevocationClient interface {
+	ScheduleKeyDeletion(ctx context.Context, params *kms.ScheduleKeyDeletionInput, optFns ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error)
+	DescribeKey(ctx context.Context, params *kms.DescribeKeyInput, optFns ...func(*kms.Options)) (*kms.DescribeKeyOutput, error)
+}
+
+// Compile-time interface checks. The Revocable assertion holds at the type level;
+// RevokeKey/IsRevoked return ErrRevocationUnsupported unless the injected client
+// also implements KMSRevocationClient.
+var (
+	_ encryption.Provider  = (*Provider)(nil)
+	_ encryption.Revocable = (*Provider)(nil)
+)
 
 // Provider implements encryption.Provider using AWS KMS.
 type Provider struct {
-	client KMSClient
-	mu     sync.RWMutex
-	closed bool
+	client            KMSClient
+	mu                sync.RWMutex
+	closed            bool
+	pendingWindowDays int32
 }
 
 // Option configures a KMS Provider.
@@ -37,6 +53,14 @@ type Option func(*Provider)
 func WithKMSClient(client KMSClient) Option {
 	return func(p *Provider) {
 		p.client = client
+	}
+}
+
+// WithPendingDeletionWindow sets the AWS KMS pending-deletion window in days
+// (AWS allows 7–30) used by RevokeKey. Defaults to 7 (the AWS minimum) when unset.
+func WithPendingDeletionWindow(days int32) Option {
+	return func(p *Provider) {
+		p.pendingWindowDays = days
 	}
 }
 
@@ -117,6 +141,70 @@ func (p *Provider) DecryptDataKey(ctx context.Context, keyID string, encryptedKe
 		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("KMS decrypt data key: %w", err))
 	}
 	return output.Plaintext, nil
+}
+
+// RevokeKey crypto-shreds keyID by scheduling deletion of its KMS CMK. It
+// implements encryption.Revocable. It requires the injected client to implement
+// KMSRevocationClient, otherwise it returns ErrRevocationUnsupported. It is
+// idempotent: a CMK already pending deletion or disabled returns nil.
+func (p *Provider) RevokeKey(keyID string) error {
+	rc, err := p.revocationClient()
+	if err != nil {
+		return err
+	}
+	revoked, err := p.revoked(rc, keyID)
+	if err != nil {
+		return err
+	}
+	if revoked {
+		return nil
+	}
+	days := p.pendingWindowDays
+	if days == 0 {
+		days = 7
+	}
+	if _, err := rc.ScheduleKeyDeletion(context.Background(), &kms.ScheduleKeyDeletionInput{
+		KeyId:               &keyID,
+		PendingWindowInDays: &days,
+	}); err != nil {
+		return encryption.NewEncryptionError(keyID, "", fmt.Errorf("KMS schedule key deletion: %w", err))
+	}
+	return nil
+}
+
+// IsRevoked reports whether keyID's CMK is pending deletion or disabled.
+// It implements encryption.Revocable.
+func (p *Provider) IsRevoked(keyID string) (bool, error) {
+	rc, err := p.revocationClient()
+	if err != nil {
+		return false, err
+	}
+	return p.revoked(rc, keyID)
+}
+
+// revocationClient returns the injected client as a KMSRevocationClient, or
+// ErrRevocationUnsupported if it does not support revocation.
+func (p *Provider) revocationClient() (KMSRevocationClient, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+	rc, ok := p.client.(KMSRevocationClient)
+	if !ok {
+		return nil, encryption.ErrRevocationUnsupported
+	}
+	return rc, nil
+}
+
+func (p *Provider) revoked(rc KMSRevocationClient, keyID string) (bool, error) {
+	out, err := rc.DescribeKey(context.Background(), &kms.DescribeKeyInput{KeyId: &keyID})
+	if err != nil {
+		return false, encryption.NewDecryptionError(keyID, "", fmt.Errorf("KMS describe key: %w", err))
+	}
+	if out.KeyMetadata == nil {
+		return false, nil
+	}
+	st := out.KeyMetadata.KeyState
+	return st == types.KeyStatePendingDeletion || st == types.KeyStateDisabled, nil
 }
 
 // Close marks the provider as closed.

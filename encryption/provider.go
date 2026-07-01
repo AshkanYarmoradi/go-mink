@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Provider abstracts crypto operations for field-level encryption.
@@ -30,6 +31,61 @@ type Provider interface {
 
 	// Close releases any resources held by the provider.
 	Close() error
+}
+
+// Revocable is an OPTIONAL extension of Provider that supports crypto-shredding:
+// revoking a master key renders all data encrypted under it permanently
+// unrecoverable, which is how go-mink satisfies the GDPR right to erasure
+// (Article 17). Providers MAY implement it; detect support with a type assertion
+// or the Revoke / IsRevoked package helpers.
+//
+// The signature intentionally mirrors the existing local provider's RevokeKey
+// (no context.Context): revocation is a deliberate administrative operation and
+// the established provider revocation signature is context-free. Providers whose
+// backend needs a context (KMS, Vault) use a background context internally.
+type Revocable interface {
+	// RevokeKey permanently revokes keyID (crypto-shredding). It is idempotent:
+	// revoking an already-revoked key returns nil.
+	RevokeKey(keyID string) error
+
+	// IsRevoked reports whether keyID is currently revoked.
+	IsRevoked(keyID string) (bool, error)
+}
+
+// Revoke crypto-shreds keyID via p when p implements Revocable, otherwise it
+// returns ErrRevocationUnsupported. It is the detection entry point the erasure
+// machinery uses so callers need not type-assert the provider themselves.
+func Revoke(p Provider, keyID string) error {
+	r, ok := p.(Revocable)
+	if !ok {
+		return ErrRevocationUnsupported
+	}
+	return r.RevokeKey(keyID)
+}
+
+// IsRevoked reports whether keyID is revoked via p, returning
+// ErrRevocationUnsupported when p does not implement Revocable.
+func IsRevoked(p Provider, keyID string) (bool, error) {
+	r, ok := p.(Revocable)
+	if !ok {
+		return false, ErrRevocationUnsupported
+	}
+	return r.IsRevoked(keyID)
+}
+
+// RecoverableRevocable is an OPTIONAL extension of Revocable supporting a grace
+// window: SoftRevokeKey blocks decryption but can be undone with UnrevokeKey until
+// the window elapses, after which the revocation becomes a permanent crypto-shred.
+// This lets an accidental erasure be recovered. Providers MAY implement it.
+type RecoverableRevocable interface {
+	Revocable
+
+	// SoftRevokeKey blocks decryption under keyID but allows UnrevokeKey to restore
+	// it until graceWindow elapses.
+	SoftRevokeKey(keyID string, graceWindow time.Duration) error
+
+	// UnrevokeKey restores a soft-revoked key, if still within its grace window.
+	UnrevokeKey(keyID string) error
 }
 
 // DataKey holds the plaintext and ciphertext forms of a data encryption key (DEK).
@@ -67,6 +123,10 @@ var (
 
 	// ErrKeyRevoked indicates the encryption key has been revoked (crypto-shredding).
 	ErrKeyRevoked = errors.New("mink: encryption key revoked")
+
+	// ErrRevocationUnsupported indicates the configured provider does not implement
+	// Revocable, so crypto-shredding (key revocation) is not available.
+	ErrRevocationUnsupported = errors.New("mink: key revocation unsupported by provider")
 
 	// ErrProviderClosed indicates the encryption provider has been closed.
 	ErrProviderClosed = errors.New("mink: encryption provider closed")
