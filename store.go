@@ -197,7 +197,10 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 
 	// Convert events to EventRecords
 	records := make([]adapters.EventRecord, len(events))
-	subjectSet := make(map[string]struct{})
+	var subjectSet map[string]struct{} // nil (zero overhead) unless a subject index is wired
+	if s.subjectIndex != nil {
+		subjectSet = make(map[string]struct{})
+	}
 	for i, event := range events {
 		eventData, err := SerializeEvent(s.serializer, event, config.metadata)
 		if err != nil {
@@ -297,7 +300,10 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 
 	// Convert events to EventRecords
 	records := make([]adapters.EventRecord, len(events))
-	subjectSet := make(map[string]struct{})
+	var subjectSet map[string]struct{} // nil (zero overhead) unless a subject index is wired
+	if s.subjectIndex != nil {
+		subjectSet = make(map[string]struct{})
+	}
 	for i, event := range events {
 		eventData, err := SerializeEvent(s.serializer, event, Metadata{})
 		if err != nil {

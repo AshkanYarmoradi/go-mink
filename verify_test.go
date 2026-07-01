@@ -55,6 +55,20 @@ func TestVerify_DoesNotCertifySoftRevoked(t *testing.T) {
 	assert.Equal(t, 0, rep.RedactedEvents)
 }
 
+func TestVerify_IgnoresOtherSubjectsInSharedStream(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "Shared-s1", "u1")
+	appendUser(t, ctx, store, "Shared-s1", "u2") // same stream, a different subject
+
+	eraser := NewDataEraser(store, WithEraseSubjectResolver(NewSubjectResolver(store)))
+	rep, err := eraser.Verify(ctx, "u1")
+	require.NoError(t, err)
+	// Only u1's event is considered — u2's event in the shared stream is not counted
+	// (which would otherwise inflate EventsChecked and produce a false residual for u1).
+	assert.Equal(t, 1, rep.EventsChecked)
+}
+
 func TestErase_EmitsCertificate(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newSubjectTestStore(t, "k")

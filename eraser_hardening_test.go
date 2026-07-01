@@ -124,6 +124,30 @@ func TestDataEraser_NonStrict_CertFailureIsSoft(t *testing.T) {
 	assert.NotEmpty(t, res.Errors)
 }
 
+// failingRedactor is a SubjectRedactable whose RedactSubject always fails.
+type failingRedactor struct{ name string }
+
+func (f failingRedactor) ReadModelName() string { return f.name }
+func (f failingRedactor) RedactSubject(context.Context, string) error {
+	return errors.New("redact failed")
+}
+
+func TestErase_CertificateNotVerifiedOnResidualReadModel(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "User-u1", "u1")
+
+	var got ErasureCertificate
+	res, err := NewDataEraser(store,
+		WithEraseSubjectResolver(NewSubjectResolver(store)),
+		WithReadModelRedactor(failingRedactor{name: "users"}),
+		WithCertificateSink(func(_ context.Context, c ErasureCertificate) error { got = c; return nil }),
+	).Erase(ctx, ErasureRequest{SubjectID: "u1"})
+	require.NoError(t, err)
+	require.NotEmpty(t, res.ResidualReadModels)
+	assert.False(t, got.Verified, "an un-redactable read model may still serve PII — it must block verification")
+}
+
 func TestEmitCertificate_GatesVerifiedOnMarker(t *testing.T) {
 	ctx := context.Background()
 	store, provider := newSubjectTestStore(t, "k")

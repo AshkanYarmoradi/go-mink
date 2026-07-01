@@ -118,6 +118,12 @@ func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, resu
 			break
 		}
 	}
+	// A read model that could not be redacted (ResidualReadModels) may still serve the
+	// subject's plaintext PII from the read side, so it must block verification too —
+	// key revocation alone does not make the erasure complete.
+	if len(result.ResidualReadModels) > 0 {
+		cert.Verified = false
+	}
 	if err := e.certSink(ctx, cert); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate sink: %w", err))
 		return err
@@ -136,6 +142,12 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 			return NewErasureError(subjectID, fmt.Errorf("load stream %q: %w", streamID, err))
 		}
 		for _, se := range stored {
+			// Only the target subject's events matter. A resolved stream can be shared
+			// with other subjects; checking their events would inflate EventsChecked and
+			// produce false residuals. Untagged (legacy) events are covered by Partial.
+			if !eventTagsSubject(se.Metadata, subjectID) {
+				continue
+			}
 			rep.EventsChecked++
 			ref := fmt.Sprintf("%s@%d", se.StreamID, se.Version)
 			if !IsEncrypted(se.Metadata) {
