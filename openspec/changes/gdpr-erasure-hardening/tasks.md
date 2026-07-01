@@ -13,8 +13,8 @@
 
 ## 3. Required — Sibling-store erasure (`subject-erasure`)
 
-- [ ] 3.1 `mink.SubjectErasable` interface (`EraseSubject(ctx, subjectID, *SubjectFootprint) (SubjectErasureOutcome, error)`, `ErasableName()`) + `SubjectErasureOutcome` (Name/Erased/Skipped/Err)
-- [ ] 3.2 `DataEraser.WithSubjectStore(...)`; `Erase` runs each after key-revoke + read-model redaction (non-fatal, symmetric with hooks); report `ErasureResult.SubjectStores`
+- [x] 3.1 `mink.SubjectErasable` interface (`EraseSubject(ctx, subjectID, *SubjectFootprint) (SubjectErasureOutcome, error)`, `ErasableName()`) + `SubjectErasureOutcome` (Name/Erased/Skipped/Err)
+- [x] 3.2 `DataEraser.WithSubjectStore(...)`; `Erase` runs each after key-revoke + read-model redaction (non-fatal, symmetric with hooks); report `ErasureResult.SubjectStores`
 - [ ] 3.3 Audit: optional `adapters.SubjectAuditPurger { DeleteAuditBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `actor==subject OR aggregate_id==subject`); `mink.NewAuditSubjectEraser(store)`
 - [ ] 3.4 Saga: optional `adapters.SubjectSagaPurger { DeleteSagasBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `correlation_id==subject`); `mink.NewSagaSubjectEraser(store)`
 - [ ] 3.5 Snapshot: `mink.NewSnapshotSubjectEraser(snapshotAdapter)` deletes snapshots for each `footprint.Streams` via existing `DeleteSnapshot`
@@ -23,21 +23,21 @@
 
 ## 4. Required — Blast-radius guard for shared keys (`data-erasure`)
 
-- [ ] 4.1 `WithSharedKeyGuard()` + `AllowSharedKeyRevocation()`; `*SharedKeyError`/`ErrSharedKeyRevocation`
-- [ ] 4.2 Exclusivity scan before revoke: a key is shared if any event under it is tagged for a subject `!= target` (or untagged); fail before the irreversible step unless allowed
-- [ ] 4.3 Tests: per-tenant shared key blocked; `AllowSharedKeyRevocation` overrides; per-subject key not flagged; guard-off = zero overhead + old behavior
+- [x] 4.1 `WithSharedKeyGuard()` + `AllowSharedKeyRevocation()`; `*SharedKeyError`/`ErrSharedKeyRevocation`
+- [x] 4.2 Exclusivity scan before revoke: a key is shared if any event under it is tagged for a subject `!= target` (or untagged); fail before the irreversible step unless allowed
+- [x] 4.3 Tests: per-tenant shared key blocked; `AllowSharedKeyRevocation` overrides; per-subject key not flagged; guard-off = zero overhead + old behavior
 
 ## 5. Required — Accountability durability (`data-erasure`)
 
-- [ ] 5.1 `WithStrictAccountability()` — marker/certificate persistence failure is fatal (after the idempotent revoke); default stays best-effort
-- [ ] 5.2 Gate `cert.Verified` on `MarkerWritten` when a marker stream is configured
-- [ ] 5.3 Tests: strict marker-fail → error; strict cert-fail → error; non-strict → soft error; `Verified` false when marker not written
+- [x] 5.1 `WithStrictAccountability()` — marker/certificate persistence failure is fatal (after the idempotent revoke); default stays best-effort
+- [x] 5.2 Gate `cert.Verified` on `MarkerWritten` when a marker stream is configured
+- [x] 5.3 Tests: strict marker-fail → error; strict cert-fail → error; non-strict → soft error; `Verified` false when marker not written
 
 ## 6. Good-to-have — Erase TOCTOU mitigation (`data-erasure`)
 
-- [ ] 6.1 After revoke, re-resolve once; revoke newly-appeared keys; if the set still grew, set `Partial=true` + warning error
-- [ ] 6.2 Document the quiescence contract on `Erase`/`ErasureRequest`
-- [ ] 6.3 Tests: append-after-discovery under a new key is caught (Partial) or revoked on the second pass
+- [x] 6.1 After revoke, re-resolve once; revoke newly-appeared keys; if the set still grew, set `Partial=true` + warning error
+- [x] 6.2 Document the quiescence contract on `Erase`/`ErasureRequest`
+- [x] 6.3 Tests: append-after-discovery under a new key is caught (Partial) or revoked on the second pass
 
 ## 7. Good-to-have — Subject index + backfill (`subject-discovery`)
 
@@ -62,7 +62,7 @@
 
 ## 10. Good-to-have — Vault revoke-failure clarity (`key-revocation`)
 
-- [ ] 10.1 `ErasureResult.Failed()` convenience (true when any requested key wasn't revoked) + doc that partial failures live in `Errors`/the `KeysRevoked` gap
+- [x] 10.1 `ErasureResult.Failed()` convenience (true when any requested key wasn't revoked) + doc that partial failures live in `Errors`/the `KeysRevoked` gap
 - [ ] 10.2 Test: a revoke that errors (e.g. simulated `deletion_allowed=false`) → `Failed()==true`, key absent from `KeysRevoked`
 
 ## 11. Docs, release & cross-cutting

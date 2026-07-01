@@ -87,8 +87,9 @@ func (r *VerificationReport) clean() bool {
 }
 
 // emitCertificate verifies the erased subject and sends a PII-free certificate to
-// the configured sink. Used by Erase when WithCertificateSink is set.
-func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, result *ErasureResult) {
+// the configured sink. Used by Erase when WithCertificateSink is set. Returns the
+// sink error (if any) so strict accountability can surface it fatally.
+func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, result *ErasureResult) error {
 	cert := ErasureCertificate{
 		SubjectID:   subjectID,
 		VerifiedAt:  time.Now(),
@@ -101,9 +102,17 @@ func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, resu
 		cert.EventsChecked = vr.EventsChecked
 		cert.Verified = vr.clean()
 	}
+	// When a marker stream is configured, the certificate must not claim verified
+	// erasure unless the append-only marker was actually written — otherwise a lost
+	// marker leaves a "verified" receipt with no durable erasure record.
+	if e.markerStream != "" && !result.MarkerWritten {
+		cert.Verified = false
+	}
 	if err := e.certSink(ctx, cert); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate sink: %w", err))
+		return err
 	}
+	return nil
 }
 
 func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, streams []string, rep *VerificationReport) error {

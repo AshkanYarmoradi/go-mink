@@ -34,6 +34,11 @@ type DataEraser struct {
 	rebuilders   []ReadModelRebuilder
 	certSink     CertificateSink
 	hooks        []ErasureHook
+
+	sharedKeyGuard       bool
+	allowSharedKey       bool
+	strictAccountability bool
+	subjectStores        []SubjectErasable
 }
 
 // DataEraserOption configures a DataEraser.
@@ -115,6 +120,43 @@ func WithErasureHook(hooks ...ErasureHook) DataEraserOption {
 	}
 }
 
+// WithSharedKeyGuard makes Erase refuse — BEFORE any (irreversible) revocation — to
+// revoke a key that also protects events tagged for a subject other than the target,
+// or untagged events whose ownership cannot be proven. This catches the per-tenant-key
+// blast radius (erasing one subject would crypto-shred the whole tenant). On a shared
+// key it returns *SharedKeyError (errors.Is ErrSharedKeyRevocation). Pair with
+// AllowSharedKeyRevocation to override. Zero overhead when unset. Requires a scannable
+// adapter (SubscriptionAdapter).
+func WithSharedKeyGuard() DataEraserOption {
+	return func(e *DataEraser) { e.sharedKeyGuard = true }
+}
+
+// AllowSharedKeyRevocation overrides WithSharedKeyGuard, permitting revocation of a
+// shared (e.g. per-tenant) key with full knowledge of the blast radius.
+// ErasureResult.KeysRevoked reports every key revoked.
+func AllowSharedKeyRevocation() DataEraserOption {
+	return func(e *DataEraser) { e.allowSharedKey = true }
+}
+
+// WithStrictAccountability makes a failure to append the erasure marker or emit the
+// certificate FATAL (returned as an error) AFTER the idempotent key revocation, so a
+// lost accountability record cannot be mistaken for a proven erasure. Re-run Erase to
+// retry — revocation is idempotent. Default is best-effort (failures are recorded in
+// ErasureResult.Errors, not returned).
+func WithStrictAccountability() DataEraserOption {
+	return func(e *DataEraser) { e.strictAccountability = true }
+}
+
+// WithSubjectStore registers stores that hold PII derived from events (audit trail,
+// saga state, snapshots, external sinks) so Erase reaches them too. Each is run after
+// key revocation and read-model redaction; a per-store failure is non-fatal and
+// reported in ErasureResult.SubjectStores (symmetric with WithErasureHook). Use the
+// built-in NewAuditSubjectEraser / NewSagaSubjectEraser / NewSnapshotSubjectEraser or
+// any custom SubjectErasable.
+func WithSubjectStore(stores ...SubjectErasable) DataEraserOption {
+	return func(e *DataEraser) { e.subjectStores = append(e.subjectStores, stores...) }
+}
+
 // NewDataEraser creates a new DataEraser for the given event store.
 func NewDataEraser(store *EventStore, opts ...DataEraserOption) *DataEraser {
 	e := &DataEraser{
@@ -129,6 +171,12 @@ func NewDataEraser(store *EventStore, opts ...DataEraserOption) *DataEraser {
 }
 
 // ErasureRequest describes which data subject to erase. It mirrors ExportRequest.
+//
+// For a race-free erasure, quiesce the subject's writes first (e.g. mark the subject
+// non-writable) before calling Erase: an event appended between key discovery and
+// revocation under a new key can otherwise survive. Erase mitigates this by
+// re-resolving once and revoking newcomers, flagging ErasureResult.Partial if the
+// footprint grew — but the guarantee only holds when writes are quiesced.
 type ErasureRequest struct {
 	// SubjectID identifies the data subject (required). It is a reference/identifier
 	// used for the audit marker, not the erased personal data itself.
@@ -185,11 +233,26 @@ type ErasureResult struct {
 	// SideEffects lists external-PII erasure hooks that ran successfully.
 	SideEffects []string
 
+	// SubjectStores reports the outcome of each registered SubjectErasable (sibling
+	// stores holding derived PII: audit trail, saga state, snapshots). See
+	// WithSubjectStore.
+	SubjectStores []SubjectErasureOutcome
+
 	// ErasedAt is when the erasure was performed.
 	ErasedAt time.Time
 
 	// Errors holds non-fatal per-key / marker failures (partial-failure contract).
 	Errors []error
+}
+
+// Failed reports whether the erasure did not fully succeed: any non-nil Errors (e.g. a
+// key that failed to revoke — a Vault key without deletion_allowed, a partial provider
+// outage), a partial footprint, or a residual read model. Because partial failures are
+// non-fatal by contract (Erase returns a nil error), a caller SHOULD check Failed() —
+// or inspect Errors / the gap between requested keys and KeysRevoked — rather than
+// only the returned error.
+func (r *ErasureResult) Failed() bool {
+	return len(r.Errors) > 0 || r.Partial || len(r.ResidualReadModels) > 0
 }
 
 // ErasureMarker is the default payload appended when WithErasureMarker is set. It
@@ -262,6 +325,18 @@ func (e *DataEraser) Erase(ctx context.Context, req ErasureRequest) (*ErasureRes
 		}
 	}
 
+	// Blast-radius guard: refuse (before the irreversible revoke) to shred a key that
+	// also protects other subjects' events, unless explicitly allowed.
+	if e.sharedKeyGuard && !e.allowSharedKey && len(keySet) > 0 {
+		serr, err := e.detectSharedKeys(ctx, req.SubjectID, keySet)
+		if err != nil {
+			return nil, err
+		}
+		if serr != nil {
+			return nil, serr
+		}
+	}
+
 	// Revoke each distinct key (idempotent). An unsupported provider is fatal —
 	// nothing can be crypto-shredded.
 	for keyID := range keySet {
@@ -277,24 +352,41 @@ func (e *DataEraser) Erase(ctx context.Context, req ErasureRequest) (*ErasureRes
 	sort.Strings(result.KeysRevoked)
 	result.Streams = sortedSet(streamSet)
 
+	// TOCTOU mitigation: an event for the subject may have been appended under a new
+	// key between discovery and revocation. Re-resolve once and revoke any newcomers;
+	// if the footprint grew, flag Partial (race-free erasure requires quiescing the
+	// subject's writes — see ErasureRequest).
+	if resolved && e.resolver != nil {
+		e.reconcileAfterRevoke(ctx, req.SubjectID, cfg, keySet, result)
+	}
+
 	// Propagate erasure to read models so PII does not survive on the read side.
 	e.redactReadModels(ctx, req.SubjectID, result)
+
+	// Reach PII derived from the events in registered sibling stores (audit/saga/
+	// snapshots/external). Non-fatal, symmetric with hooks.
+	e.eraseSubjectStores(ctx, req.SubjectID, result)
 
 	// Run side-effect hooks (PII the app owns outside the event store).
 	e.runErasureHooks(ctx, req.SubjectID, result)
 
-	// 3. Optional append-only marker (non-fatal on failure).
+	// 3. Optional append-only marker. Fatal only under strict accountability.
 	if e.markerStream != "" {
 		if err := e.appendMarker(ctx, req.SubjectID, result); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("append erasure marker: %w", err))
+			if e.strictAccountability {
+				return result, NewErasureError(req.SubjectID, fmt.Errorf("strict accountability: append erasure marker: %w", err))
+			}
 		} else {
 			result.MarkerWritten = true
 		}
 	}
 
-	// 4. Optional verification certificate (non-fatal on failure).
+	// 4. Optional verification certificate. Fatal only under strict accountability.
 	if e.certSink != nil {
-		e.emitCertificate(ctx, req.SubjectID, result)
+		if err := e.emitCertificate(ctx, req.SubjectID, result); err != nil && e.strictAccountability {
+			return result, NewErasureError(req.SubjectID, fmt.Errorf("strict accountability: %w", err))
+		}
 	}
 
 	return result, nil
@@ -423,6 +515,114 @@ func (e *DataEraser) runErasureHooks(ctx context.Context, subjectID string, resu
 	}
 }
 
+// detectSharedKeys scans the store and reports (via *SharedKeyError) any key in keySet
+// that also protects events tagged for a subject other than target, or untagged events
+// whose ownership cannot be proven. Returns (nil, nil) when every key is exclusive to
+// the target. Requires a SubscriptionAdapter (the guard cannot verify otherwise).
+func (e *DataEraser) detectSharedKeys(ctx context.Context, target string, keySet map[string]struct{}) (*SharedKeyError, error) {
+	if _, ok := e.store.Adapter().(adapters.SubscriptionAdapter); !ok {
+		return nil, NewErasureError(target, fmt.Errorf("shared-key guard needs event scanning: %w", ErrErasureScanNotSupported))
+	}
+	shared := map[string]struct{}{}
+	others := map[string]struct{}{}
+	var position uint64
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batch, err := e.store.LoadEventsFromPosition(ctx, position, e.batchSize)
+		if err != nil {
+			return nil, NewErasureError(target, fmt.Errorf("shared-key scan from %d: %w", position, err))
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, se := range batch {
+			keyID := GetEncryptionKeyID(se.Metadata)
+			if keyID == "" {
+				continue
+			}
+			if _, want := keySet[keyID]; !want {
+				continue
+			}
+			tags := GetSubjectTags(se.Metadata)
+			exclusive := len(tags) > 0 // untagged → ownership unprovable → treat as shared
+			for _, s := range tags {
+				if s != target {
+					exclusive = false
+					others[s] = struct{}{}
+				}
+			}
+			if !exclusive {
+				shared[keyID] = struct{}{}
+			}
+		}
+		position = batch[len(batch)-1].GlobalPosition
+	}
+	if len(shared) == 0 {
+		return nil, nil
+	}
+	return &SharedKeyError{
+		SubjectID:     target,
+		SharedKeys:    sortedSet(shared),
+		OtherSubjects: sampleSet(others, 10),
+	}, nil
+}
+
+// reconcileAfterRevoke re-resolves the subject once after revocation and revokes any
+// keys that appeared in the window between discovery and revoke. If the footprint grew,
+// it flags the result Partial — a subject that keeps receiving events during erasure
+// cannot be proven fully erased without quiescing its writes.
+func (e *DataEraser) reconcileAfterRevoke(ctx context.Context, subjectID string, cfg *FieldEncryptionConfig, keySet map[string]struct{}, result *ErasureResult) {
+	fp, err := e.resolver.Resolve(ctx, subjectID)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("post-revoke re-resolve: %w", err))
+		return
+	}
+	var newKeys []string
+	for _, k := range fp.KeyIDs {
+		if _, seen := keySet[k]; !seen {
+			newKeys = append(newKeys, k)
+		}
+	}
+	if len(newKeys) == 0 {
+		return
+	}
+	for _, k := range newKeys {
+		keySet[k] = struct{}{}
+		if err := cfg.RevokeKey(k); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("revoke late key %q: %w", k, err))
+			continue
+		}
+		result.KeysRevoked = append(result.KeysRevoked, k)
+	}
+	sort.Strings(result.KeysRevoked)
+	result.Partial = true
+	result.Errors = append(result.Errors, fmt.Errorf(
+		"subject %q had events appended during erasure under new key(s) %v; revoked them but marking Partial — re-run after quiescing the subject's writes",
+		subjectID, newKeys))
+}
+
+// eraseSubjectStores runs each registered SubjectErasable, recording its outcome.
+// Failures are non-fatal (partial-failure contract).
+func (e *DataEraser) eraseSubjectStores(ctx context.Context, subjectID string, result *ErasureResult) {
+	if len(e.subjectStores) == 0 {
+		return
+	}
+	fp := &SubjectFootprint{SubjectID: subjectID, Streams: result.Streams, KeyIDs: result.KeysRevoked}
+	for _, s := range e.subjectStores {
+		outcome, err := s.EraseSubject(ctx, subjectID, fp)
+		if outcome.Name == "" {
+			outcome.Name = s.ErasableName()
+		}
+		if err != nil {
+			outcome.Err = err.Error()
+			result.Errors = append(result.Errors, fmt.Errorf("subject store %q: %w", s.ErasableName(), err))
+		}
+		result.SubjectStores = append(result.SubjectStores, outcome)
+	}
+}
+
 func sortedSet(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -430,4 +630,13 @@ func sortedSet(m map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// sampleSet returns up to n sorted members of m (for PII-bounded error samples).
+func sampleSet(m map[string]struct{}, n int) []string {
+	all := sortedSet(m)
+	if len(all) > n {
+		return all[:n]
+	}
+	return all
 }
