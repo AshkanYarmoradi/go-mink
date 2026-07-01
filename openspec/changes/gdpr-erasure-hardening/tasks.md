@@ -19,7 +19,7 @@
 - [x] 3.4 Saga: optional `adapters.SubjectSagaPurger { DeleteSagasBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `correlation_id==subject`); `mink.NewSagaSubjectEraser(store)`
 - [x] 3.5 Snapshot: `mink.NewSnapshotSubjectEraser(snapshotAdapter)` deletes snapshots for each `footprint.Streams` via existing `DeleteSnapshot`
 - [x] 3.6 Tests: each eraser purges its subject's rows, leaves others; unsupported store → `ErrRevocationUnsupported`-style skip; DataEraser aggregates outcomes; partial failure non-fatal
-- [ ] 3.7 Document the outbox `Transform`-decrypts leak + the "register a SubjectErasable for your sink" guidance
+- [x] 3.7 Document the outbox `Transform`-decrypts leak + the "register a SubjectErasable for your sink" guidance
 
 ## 4. Required — Blast-radius guard for shared keys (`data-erasure`)
 
@@ -67,8 +67,8 @@
 
 ## 11. Docs, release & cross-cutting
 
-- [ ] 11.1 `RetentionManager` docstring: `Apply` is a single sweep — wire your own scheduler (go-mink does not schedule it)
-- [ ] 11.2 `security.md`: subject identifiers in `$subjects`/`Metadata` are plaintext and never shredded — tag with opaque ids (use `Anonymizer`); an email/user-id used as subject id survives erasure
-- [ ] 11.3 `security.md`: sibling-store erasure (audit/saga/snapshot) + backfill sections
-- [ ] 11.4 CHANGELOG `[Unreleased]`; `gofmt` + `go vet` clean; zero-overhead-when-unused preserved; branch targets `develop`
-- [ ] 11.5 All new public APIs documented (doc comments) + table-driven tests across new files; `openspec validate gdpr-erasure-hardening --strict`
+- [x] 11.1 `RetentionManager` docstring: `Apply` is a single sweep — wire your own scheduler (go-mink does not schedule it)
+- [x] 11.2 `security.md`: subject identifiers in `$subjects`/`Metadata` are plaintext and never shredded — tag with opaque ids (use `Anonymizer`); an email/user-id used as subject id survives erasure
+- [x] 11.3 `security.md`: sibling-store erasure (audit/saga/snapshot) + backfill sections
+- [x] 11.4 CHANGELOG `[Unreleased]`; `gofmt` + `go vet` clean; zero-overhead-when-unused preserved; branch targets `develop`
+- [x] 11.5 All new public APIs documented (doc comments) + table-driven tests across new files; `openspec validate gdpr-erasure-hardening --strict`

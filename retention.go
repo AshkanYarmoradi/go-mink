@@ -96,9 +96,14 @@ type RetentionReport struct {
 	Errors      []error  // non-fatal per-action errors
 }
 
-// RetentionManager applies retention policies over the event store on a schedulable
-// sweep. It NEVER deletes or mutates event rows — Shred revokes keys, Redact/Anonymize
-// delegate to the policy Apply hook — preserving the append-only log.
+// RetentionManager applies retention policies over the event store. It NEVER deletes or
+// mutates event rows — Shred revokes keys, Redact/Anonymize delegate to the policy Apply
+// hook — preserving the append-only log.
+//
+// Scheduling is the caller's responsibility: Apply performs a single sweep and returns.
+// go-mink does NOT run it on a timer — wire Apply to your own scheduler (cron, gocron,
+// a ticker) at whatever cadence your retention SLA requires. "Sweep" here means one pass,
+// not a self-scheduling loop.
 type RetentionManager struct {
 	store     *EventStore
 	policies  []RetentionPolicy

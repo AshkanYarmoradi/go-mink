@@ -150,5 +150,87 @@ event rows). Pseudonymize with a deterministic, one-way `Anonymizer`.
   key only affects new appends; old events keep decrypting. KMS/Vault native rotation
   is likewise transparent.
 - **Re-encryption** after a suspected compromise is append-only via
-  `mink.ReEncryptStream(ctx, store, src, dst)` — it re-encrypts into a new stream
-  under the current key, leaving the source intact.
+  `mink.ReEncryptStream(ctx, store, src, dst)` — it re-encrypts into a new stream under
+  the current key and returns `(copied, oldKeyIDs, err)`. It **erases nothing**: the
+  source stream and its old-key-recoverable PII survive until you retire the source and
+  revoke the returned `oldKeyIDs`. Re-running against an existing destination errors
+  rather than duplicating the copy.
+
+## Erasure completeness (hardening)
+
+Crypto-shredding only reaches data encrypted under the revoked key. These controls close
+the gaps where an erasure can *look* done while leaving recoverable PII behind.
+
+### Sibling stores — audit, saga, snapshots
+
+PII derived from events lives in stores the event key does not protect: the **audit
+trail** (plaintext actor / tenant / metadata / error strings), **saga state** (business
+data copied out of events), and **snapshots** (plaintext aggregate state). Register them
+so `Erase` reaches them too:
+
+```go
+eraser := mink.NewDataEraser(store,
+    mink.WithEraseSubjectResolver(resolver),
+    mink.WithSubjectStore(
+        mink.NewAuditSubjectEraser(auditStore),      // deletes rows where actor|aggregate_id == subject
+        mink.NewSagaSubjectEraser(sagaStore),        // deletes sagas where correlation_id == subject
+        mink.NewSnapshotSubjectEraser(adapter),      // deletes snapshots for the footprint's streams
+    ),
+)
+// res.SubjectStores reports what each erased; a per-store failure is non-fatal.
+```
+
+The audit/saga purges use optional adapter sub-interfaces (`SubjectAuditPurger` /
+`SubjectSagaPurger`) implemented on the memory and PostgreSQL stores; a store that lacks
+them is reported as `Skipped`, not failed. For an **outbox** with a `route.Transform` that
+emits *decrypted* payloads to an external sink, revoking the key does not touch that
+sink's copy — register a `SubjectErasable` for the sink (or keep transforms
+ciphertext-only).
+
+### Blast-radius guard (per-tenant keys)
+
+With `WithTenantKeyResolver`, one key protects a whole tenant, so erasing a single subject
+would crypto-shred everyone under it. `WithSharedKeyGuard()` detects this **before** the
+irreversible revoke and fails with `*SharedKeyError`; pair with `AllowSharedKeyRevocation()`
+to proceed deliberately (per-subject keys avoid the problem entirely).
+
+### Accountability & the discovery race
+
+- `WithStrictAccountability()` makes a lost marker/certificate a fatal error (after the
+  idempotent revoke), and a certificate is never `Verified` unless its marker was written.
+- `Erase` re-resolves once after revoking and shreds any late-appearing keys, flagging
+  `Partial` if the footprint grew. For a race-free erasure, **quiesce the subject's writes
+  first** (mark it non-writable) — the guarantee holds only when writes are stopped.
+- Soft-revoke is not erasure: `Verify` reports a soft-revoked (still-restorable) key as
+  `ResidualRecoverable` and refuses to certify it until the grace window elapses (at which
+  point the local provider shreds the key material).
+- Partial failures are non-fatal by contract; check `res.Failed()` (or the gap between
+  requested keys and `res.KeysRevoked`), not just the returned error.
+
+## Subject index & backfill
+
+Discovery/erasure scan the whole store unless a subject index is available. Wire an index
+to make them O(a subject's events), and **backfill** it so subjects whose events predate
+tag adoption are still fully resolvable — and therefore fully erasable:
+
+```go
+idx := mink.NewMemorySubjectIndex() // or a durable, table-backed index
+store := mink.New(adapter,
+    mink.WithSubjectTagger(tagger),
+    mink.WithSubjectIndexWriter(idx), // append-time indexing keeps it complete
+)
+// One-time migration for pre-adoption history:
+mink.BackfillSubjectIndex(ctx, store, tagger, idx, 1000)
+
+resolver := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx))
+```
+
+An authoritative index resolves a non-partial footprint even for historical events;
+without one, legacy untagged events keep a footprint `Partial` (never a *silent* partial).
+
+> **Subject identifiers are plaintext and are NOT shredded.** The `$subjects` tag and
+> `Metadata` (UserID / CorrelationID) are stored in cleartext so they stay scannable, so
+> crypto-shredding a subject's event *fields* leaves their *identifier* in the append-only
+> log forever. If your subject id is itself PII (an email, a national id), you have not
+> fully erased the person. Tag with an **opaque/pseudonymous** id (see `Anonymizer`) and
+> treat metadata identifiers as PII under the same discipline.
