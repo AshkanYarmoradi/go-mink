@@ -11,7 +11,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.IdempotencyStore = (*IdempotencyStore)(nil)
+var (
+	_ adapters.IdempotencyStore         = (*IdempotencyStore)(nil)
+	_ adapters.SubjectIdempotencyPurger = (*IdempotencyStore)(nil)
+)
 
 // IdempotencyStore provides a PostgreSQL implementation of mink.IdempotencyStore.
 type IdempotencyStore struct {
@@ -285,6 +288,21 @@ func (s *IdempotencyStore) Delete(ctx context.Context, key string) error {
 	}
 
 	return nil
+}
+
+// DeleteIdempotencyBySubject removes idempotency records whose aggregate_id equals
+// subjectID, for GDPR erasure of any PII an app stored in the record's response payload.
+// Returns the count removed. Implements adapters.SubjectIdempotencyPurger.
+func (s *IdempotencyStore) DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	tableQ := s.fullTableName()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM `+tableQ+` WHERE aggregate_id = $1`, subjectID)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/idempotency: failed to delete records by subject: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 // Cleanup removes records older than the specified duration.

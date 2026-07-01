@@ -44,6 +44,23 @@ func setupOutboxStore(t *testing.T) (*OutboxStore, context.Context) {
 	return store, ctx
 }
 
+func TestPostgresOutboxStore_DeleteBySubject(t *testing.T) {
+	store, ctx := setupOutboxStore(t)
+	require.NoError(t, store.Schedule(ctx, []*adapters.OutboxMessage{
+		{AggregateID: "u1", EventType: "E", Destination: "webhook:x", Payload: []byte("{}"), MaxAttempts: 5},
+		{AggregateID: "u1", EventType: "E", Destination: "webhook:x", Payload: []byte("{}"), MaxAttempts: 5},
+		{AggregateID: "u2", EventType: "E", Destination: "webhook:x", Payload: []byte("{}"), MaxAttempts: 5},
+	}))
+
+	n, err := store.DeleteOutboxBySubject(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+
+	n, err = store.DeleteOutboxBySubject(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "empty subject is a no-op")
+}
+
 func TestPostgresOutboxStore_ScheduleAndFetch(t *testing.T) {
 	store, ctx := setupOutboxStore(t)
 

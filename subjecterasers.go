@@ -58,6 +58,58 @@ func (s *sagaSubjectEraser) EraseSubject(ctx context.Context, subjectID string, 
 	return SubjectErasureOutcome{Name: s.ErasableName(), Erased: int(n)}, nil
 }
 
+// NewOutboxSubjectEraser wraps an OutboxStore as a SubjectErasable so DataEraser reaches
+// the subject's outbox rows. The default outbox path stores the ENCRYPTED payload (which
+// crypto-shredding erases), but a route Transform that emits a decrypted/reshaped payload
+// leaves an independent plaintext copy, and dead-lettered rows persist. If the store
+// implements the optional adapters.SubjectOutboxPurger, EraseSubject deletes rows whose
+// AggregateID equals the subject id; otherwise it reports Skipped. Register with
+// DataEraser.WithSubjectStore.
+func NewOutboxSubjectEraser(store OutboxStore) SubjectErasable {
+	return &outboxSubjectEraser{store: store}
+}
+
+type outboxSubjectEraser struct{ store OutboxStore }
+
+func (o *outboxSubjectEraser) ErasableName() string { return "outbox" }
+
+func (o *outboxSubjectEraser) EraseSubject(ctx context.Context, subjectID string, _ *SubjectFootprint) (SubjectErasureOutcome, error) {
+	purger, ok := o.store.(SubjectOutboxPurger)
+	if !ok {
+		return SubjectErasureOutcome{Name: o.ErasableName(), Skipped: true}, nil
+	}
+	n, err := purger.DeleteOutboxBySubject(ctx, subjectID)
+	if err != nil {
+		return SubjectErasureOutcome{Name: o.ErasableName()}, err
+	}
+	return SubjectErasureOutcome{Name: o.ErasableName(), Erased: int(n)}, nil
+}
+
+// NewIdempotencySubjectEraser wraps an IdempotencyStore as a SubjectErasable so DataEraser
+// reaches the subject's idempotency records. Records are TTL-bounded and keyed by a command
+// hash, but the optional Response payload can hold PII. If the store implements the optional
+// adapters.SubjectIdempotencyPurger, EraseSubject deletes records whose AggregateID equals
+// the subject id; otherwise it reports Skipped. Register with DataEraser.WithSubjectStore.
+func NewIdempotencySubjectEraser(store IdempotencyStore) SubjectErasable {
+	return &idempotencySubjectEraser{store: store}
+}
+
+type idempotencySubjectEraser struct{ store IdempotencyStore }
+
+func (i *idempotencySubjectEraser) ErasableName() string { return "idempotency" }
+
+func (i *idempotencySubjectEraser) EraseSubject(ctx context.Context, subjectID string, _ *SubjectFootprint) (SubjectErasureOutcome, error) {
+	purger, ok := i.store.(SubjectIdempotencyPurger)
+	if !ok {
+		return SubjectErasureOutcome{Name: i.ErasableName(), Skipped: true}, nil
+	}
+	n, err := purger.DeleteIdempotencyBySubject(ctx, subjectID)
+	if err != nil {
+		return SubjectErasureOutcome{Name: i.ErasableName()}, err
+	}
+	return SubjectErasureOutcome{Name: i.ErasableName(), Erased: int(n)}, nil
+}
+
 // NewSnapshotSubjectEraser wraps a SnapshotAdapter as a SubjectErasable that deletes the
 // snapshot of each stream in the subject's resolved footprint. Snapshots serialize
 // decrypted aggregate STATE in plaintext, which crypto-shredding does NOT touch, so an

@@ -11,7 +11,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.OutboxStore = (*OutboxStore)(nil)
+var (
+	_ adapters.OutboxStore         = (*OutboxStore)(nil)
+	_ adapters.SubjectOutboxPurger = (*OutboxStore)(nil)
+)
 
 // OutboxStore provides an in-memory implementation of adapters.OutboxStore.
 // This is primarily intended for testing and development purposes.
@@ -284,6 +287,32 @@ func (s *OutboxStore) Initialize(ctx context.Context) error {
 // Close is a no-op for the in-memory store.
 func (s *OutboxStore) Close() error {
 	return nil
+}
+
+// DeleteOutboxBySubject removes outbox messages whose AggregateID equals subjectID, for
+// GDPR erasure of outbox rows (notably dead-lettered rows whose route Transform emitted a
+// decrypted payload). Returns the count removed. Implements adapters.SubjectOutboxPurger.
+func (s *OutboxStore) DeleteOutboxBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var count int64
+	for id, msg := range s.messages {
+		if msg.AggregateID == subjectID {
+			delete(s.messages, id)
+			count++
+		}
+	}
+	return count, nil
 }
 
 // Clear removes all messages (useful for testing).

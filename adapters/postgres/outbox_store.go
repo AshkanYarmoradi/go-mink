@@ -13,7 +13,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.OutboxStore = (*OutboxStore)(nil)
+var (
+	_ adapters.OutboxStore         = (*OutboxStore)(nil)
+	_ adapters.SubjectOutboxPurger = (*OutboxStore)(nil)
+)
 
 // OutboxStore provides a PostgreSQL implementation of adapters.OutboxStore.
 type OutboxStore struct {
@@ -379,6 +382,21 @@ func (s *OutboxStore) Cleanup(ctx context.Context, olderThan time.Duration) (int
 		return 0, fmt.Errorf("mink/postgres/outbox: failed to cleanup: %w", err)
 	}
 
+	return result.RowsAffected()
+}
+
+// DeleteOutboxBySubject removes outbox messages whose aggregate_id equals subjectID, for
+// GDPR erasure of outbox rows (notably dead-lettered rows whose route Transform emitted a
+// decrypted payload). Returns the count removed. Implements adapters.SubjectOutboxPurger.
+func (s *OutboxStore) DeleteOutboxBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	tableQ := s.fullTableName()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM `+tableQ+` WHERE aggregate_id = $1`, subjectID)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/outbox: failed to delete by subject: %w", err)
+	}
 	return result.RowsAffected()
 }
 

@@ -751,6 +751,29 @@ type SubjectSagaPurger interface {
 	DeleteSagasBySubject(ctx context.Context, subjectID string) (int64, error)
 }
 
+// SubjectOutboxPurger is an OPTIONAL OutboxStore extension supporting GDPR erasure of a
+// data subject's outbox rows. The default outbox path stores the ENCRYPTED event payload
+// (crypto-shredding reaches it), but a route Transform that emits a decrypted/reshaped
+// payload leaves an independent plaintext copy — and dead-lettered rows persist. This
+// deletes the subject's rows by producing aggregate. Stores MAY implement it;
+// mink.NewOutboxSubjectEraser detects support and skips (rather than fails) when absent.
+type SubjectOutboxPurger interface {
+	// DeleteOutboxBySubject removes outbox messages whose AggregateID equals subjectID
+	// and returns the count removed.
+	DeleteOutboxBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+
+// SubjectIdempotencyPurger is an OPTIONAL IdempotencyStore extension supporting GDPR
+// erasure of a data subject's idempotency records. Records are keyed by a command hash
+// and are TTL-bounded, but the optional Response payload can hold PII. This deletes the
+// subject's records by AggregateID. Stores MAY implement it; mink.NewIdempotencySubjectEraser
+// detects support and skips (rather than fails) when absent.
+type SubjectIdempotencyPurger interface {
+	// DeleteIdempotencyBySubject removes idempotency records whose AggregateID equals
+	// subjectID and returns the count removed.
+	DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+
 // OutboxStatus represents the current status of an outbox message.
 type OutboxStatus int
 

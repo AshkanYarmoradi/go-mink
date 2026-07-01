@@ -64,6 +64,28 @@ func TestSubjectIndex_ReadWrite(t *testing.T) {
 	require.NoError(t, idx.Initialize(ctx))
 }
 
+func TestSnapshotSubjectEraser_Postgres(t *testing.T) {
+	adapter := setupIntegrationTest(t)
+	ctx := context.Background()
+
+	require.NoError(t, adapter.SaveSnapshot(ctx, "User-u1", 1, []byte(`{"email":"alice@example.com"}`)))
+	require.NoError(t, adapter.SaveSnapshot(ctx, "Order-o9", 1, []byte(`{}`)))
+
+	fp := &mink.SubjectFootprint{SubjectID: "u1", Streams: []string{"User-u1"}}
+	out, err := mink.NewSnapshotSubjectEraser(adapter).EraseSubject(ctx, "u1", fp)
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot", out.Name)
+	assert.Equal(t, 1, out.Erased)
+
+	snap, err := adapter.LoadSnapshot(ctx, "User-u1")
+	require.NoError(t, err)
+	assert.Nil(t, snap, "the subject's plaintext-state snapshot is deleted")
+
+	other, err := adapter.LoadSnapshot(ctx, "Order-o9")
+	require.NoError(t, err)
+	assert.NotNil(t, other, "unrelated snapshots survive")
+}
+
 type indexTestEvent struct {
 	UserID string `json:"userId"`
 }

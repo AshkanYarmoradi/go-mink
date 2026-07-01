@@ -172,20 +172,24 @@ so `Erase` reaches them too:
 eraser := mink.NewDataEraser(store,
     mink.WithEraseSubjectResolver(resolver),
     mink.WithSubjectStore(
-        mink.NewAuditSubjectEraser(auditStore),      // deletes rows where actor|aggregate_id == subject
-        mink.NewSagaSubjectEraser(sagaStore),        // deletes sagas where correlation_id == subject
-        mink.NewSnapshotSubjectEraser(adapter),      // deletes snapshots for the footprint's streams
+        mink.NewAuditSubjectEraser(auditStore),        // deletes rows where actor|aggregate_id == subject
+        mink.NewSagaSubjectEraser(sagaStore),          // deletes sagas where correlation_id == subject
+        mink.NewSnapshotSubjectEraser(adapter),        // deletes snapshots for the footprint's streams
+        mink.NewOutboxSubjectEraser(outboxStore),      // deletes outbox rows where aggregate_id == subject
+        mink.NewIdempotencySubjectEraser(idempStore),  // deletes idempotency records where aggregate_id == subject
     ),
 )
-// res.SubjectStores reports what each erased; a per-store failure is non-fatal.
+// res.SubjectStores reports what each erased; a per-store failure is non-fatal, but a
+// failed or Skipped store blocks the certificate's Verified flag.
 ```
 
-The audit/saga purges use optional adapter sub-interfaces (`SubjectAuditPurger` /
-`SubjectSagaPurger`) implemented on the memory and PostgreSQL stores; a store that lacks
-them is reported as `Skipped`, not failed. For an **outbox** with a `route.Transform` that
-emits *decrypted* payloads to an external sink, revoking the key does not touch that
-sink's copy — register a `SubjectErasable` for the sink (or keep transforms
-ciphertext-only).
+The purges use optional adapter sub-interfaces (`SubjectAuditPurger` / `SubjectSagaPurger`
+/ `SubjectOutboxPurger` / `SubjectIdempotencyPurger`) implemented on the memory and
+PostgreSQL stores; a store that lacks its purger is reported as `Skipped`, not failed. The
+**default outbox path stores ciphertext** (shredded with the key) — the outbox eraser is
+for a `route.Transform` that emits a *decrypted* payload and for dead-lettered rows; it
+matches on `aggregate_id`, so register a custom `SubjectErasable` if your subject↔row
+association differs or the sink is external.
 
 ### Blast-radius guard (per-tenant keys)
 

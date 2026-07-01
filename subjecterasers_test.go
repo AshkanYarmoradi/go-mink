@@ -62,6 +62,36 @@ func TestSagaSubjectEraser(t *testing.T) {
 	assert.NoError(t, err, "u2's saga remains")
 }
 
+func TestOutboxSubjectEraser(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewOutboxStore()
+	require.NoError(t, store.Schedule(ctx, []*adapters.OutboxMessage{
+		{AggregateID: "u1", EventType: "E", Destination: "webhook:x", Payload: []byte("{}")},
+		{AggregateID: "u1", EventType: "E", Destination: "webhook:x", Payload: []byte("{}")},
+		{AggregateID: "u2", EventType: "E", Destination: "webhook:x", Payload: []byte("{}")},
+	}))
+
+	out, err := NewOutboxSubjectEraser(store).EraseSubject(ctx, "u1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "outbox", out.Name)
+	assert.Equal(t, 2, out.Erased)
+	assert.Equal(t, 1, store.Count(), "only u2's row remains")
+}
+
+func TestIdempotencySubjectEraser(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewIdempotencyStore()
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, store.Store(ctx, &adapters.IdempotencyRecord{Key: "k1", AggregateID: "u1", ProcessedAt: time.Now(), ExpiresAt: exp}))
+	require.NoError(t, store.Store(ctx, &adapters.IdempotencyRecord{Key: "k2", AggregateID: "u2", ProcessedAt: time.Now(), ExpiresAt: exp}))
+
+	out, err := NewIdempotencySubjectEraser(store).EraseSubject(ctx, "u1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "idempotency", out.Name)
+	assert.Equal(t, 1, out.Erased)
+	assert.Equal(t, 1, store.Len(), "only u2's record remains")
+}
+
 func TestSnapshotSubjectEraser(t *testing.T) {
 	ctx := context.Background()
 	a := memory.NewAdapter()
