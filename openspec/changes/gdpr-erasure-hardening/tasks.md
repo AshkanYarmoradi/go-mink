@@ -42,7 +42,7 @@
 ## 7. Good-to-have — Subject index + backfill (`subject-discovery`)
 
 - [x] 7.1 `SubjectIndexWriter interface { IndexSubjects(ctx, streamID, subjectIDs) error }` (write) alongside existing `SubjectIndexAdapter` (read)
-- [x] 7.2 `MemorySubjectIndex` implements both read + write; the index is decoupled from the event-store adapter (injected via `WithResolverIndex` / `WithSubjectIndexWriter`), so a durable table-backed index plugs in without touching the core adapter. _(A postgres `mink_subject_index` table is a straightforward follow-up needing live-DB integration testing; the scan fallback already works on postgres, so this is a pure optimization.)_
+- [x] 7.2 `MemorySubjectIndex` (read + write) AND a PostgreSQL `SubjectIndex` backed by a `mink_subject_index` table (`Initialize` creates it; idempotent `ON CONFLICT` writes; GIN-free `(subject_id)` index) — both decoupled from the event-store adapter, injected via `WithResolverIndex` / `WithSubjectIndexWriter`. Postgres verified against a live DB (docker-compose.test.yml on :5433): direct read/write + end-to-end append-time-index → resolver.
 - [x] 7.3 Append path (Append + SaveAggregate) writes derived subjects to the index when a writer is wired (best-effort, logged); `mink.BackfillSubjectIndex(ctx, store, tagger, writer, batchSize)` for history
 - [x] 7.4 Resolver prefers an injected index over the adapter index over scan (O(subject)); a fully back-filled index lets `Resolve` return `Partial=false` for historical subjects
 - [x] 7.5 Tests: index read/write + idempotency, backfill populates history, indexed resolve is non-partial vs a partial scan, append auto-indexes

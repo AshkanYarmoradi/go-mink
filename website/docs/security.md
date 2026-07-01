@@ -214,7 +214,7 @@ to make them O(a subject's events), and **backfill** it so subjects whose events
 tag adoption are still fully resolvable — and therefore fully erasable:
 
 ```go
-idx := mink.NewMemorySubjectIndex() // or a durable, table-backed index
+idx := mink.NewMemorySubjectIndex() // or postgres.NewSubjectIndex(db) — a durable mink_subject_index table
 store := mink.New(adapter,
     mink.WithSubjectTagger(tagger),
     mink.WithSubjectIndexWriter(idx), // append-time indexing keeps it complete
