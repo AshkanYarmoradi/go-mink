@@ -60,7 +60,7 @@ func TestGdprRetainCommand_Flags(t *testing.T) {
 }
 
 func TestTaggedForSubject(t *testing.T) {
-	tagged := mink.Metadata{Custom: map[string]string{"$subjects": `["user-1","user-2"]`}}
+	tagged := mink.Metadata{Custom: map[string]string{mink.SubjectTagsKey: `["user-1","user-2"]`}}
 
 	tests := []struct {
 		name    string
