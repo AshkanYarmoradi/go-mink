@@ -114,7 +114,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 
 - [x] Data export (GDPR right to access)
 - [x] Audit logging middleware
-- [ ] Data retention policies with configurable rules
+- [x] Data retention policies with configurable rules
 - [ ] Time-travel queries (load aggregate at timestamp or version)
 
 ### v1.2.0 -- Scale & Performance

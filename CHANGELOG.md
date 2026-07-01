@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **GDPR Right to Erasure (Article 17) & Retention** — completes the data-governance story alongside `DataExporter`:
+  - `encryption.Revocable` (`RevokeKey`/`IsRevoked`) — portable crypto-shredding, implemented for local/KMS/Vault via optional client sub-interfaces (base injected clients unchanged); `encryption.RecoverableRevocable` adds soft-revoke with a grace window
+  - `DataEraser` — one-call subject erasure: revoke keys, redact read models (`SubjectRedactable` in-place hook or `ReadModelRebuilder`), run external-PII `WithErasureHook`s, append an optional `ErasureMarker`, and emit a verified `ErasureCertificate`; idempotent, with a partial-failure result
+  - `SubjectResolver` + `WithSubjectTagger` — resolve a subject's complete cross-stream footprint (optional `SubjectIndexAdapter`, scan fallback); completeness is never silently partial (`Partial` flag)
+  - `RetentionManager` + `RetentionPolicy` — schedulable sweep (Shred / RedactFields / Anonymize) with dry-run and a report
+  - `Anonymizer` — deterministic, one-way pseudonymization; `ReEncryptStream` — append-only re-encryption by copy
+  - `DataEraser.Verify` — confirms no recoverable PII remains across events and read models
 - **Audit Logging Middleware** — `AuditMiddleware` writes an immutable, queryable audit trail of every command (who/what/when/outcome) for compliance and forensics
   - `AuditStore` interface (`Append`/`Find`/`Count`/`Cleanup`/`Initialize`/`Close`) with in-memory and PostgreSQL implementations (append-only `mink_audit` table)
   - `AuditConfig` with `SkipCommands`, `IncludeMetadata`, and `FailClosed` (default fail-open, so auditing never breaks command processing); `DefaultAuditConfig(store)`
