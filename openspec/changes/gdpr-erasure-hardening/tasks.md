@@ -1,0 +1,74 @@
+## 1. Required — Revocation state: soft vs permanent (`key-revocation`)
+
+- [ ] 1.1 Add `encryption.RevocationState` (`NotRevoked`/`SoftRevoked`/`Revoked`) + optional `StatefulRevocable interface { RevocationState(keyID) (RevocationState, error) }` + `encryption.GetRevocationState(p, keyID)` helper (falls back to `IsRevoked`)
+- [ ] 1.2 Local provider: single internal `stateLocked` that **promotes** an expired soft-revocation to hard (clears + deletes key bytes); `getKey`/`IsRevoked`/`RevocationState` all route through it — "permanent after window" now shreds material
+- [ ] 1.3 Add `encryption.SoftRevoke`/`Unrevoke` package helpers returning `ErrRevocationUnsupported` on non-`RecoverableRevocable` providers (KMS/Vault)
+- [ ] 1.4 Table-driven tests: soft→hard promotion clears material (assert bytes gone, not just decrypt blocked), `RevocationState` transitions, in-window vs post-window, KMS/Vault `SoftRevoke` → `ErrRevocationUnsupported`
+
+## 2. Required — Verify must not certify a recoverable key (`erasure-verification`)
+
+- [ ] 2.1 `Verify` uses `GetRevocationState`; only `Revoked` counts as erased; soft-revoked (in-window) → new `VerificationReport.ResidualRecoverable` and `Verified=false`
+- [ ] 2.2 Certificate reflects `ResidualRecoverable`; never `Verified=true` while a subject key is soft-revoked
+- [ ] 2.3 Tests: soft-revoked subject → not verified + residual; hard-revoked → verified; mixed
+
+## 3. Required — Sibling-store erasure (`subject-erasure`)
+
+- [ ] 3.1 `mink.SubjectErasable` interface (`EraseSubject(ctx, subjectID, *SubjectFootprint) (SubjectErasureOutcome, error)`, `ErasableName()`) + `SubjectErasureOutcome` (Name/Erased/Skipped/Err)
+- [ ] 3.2 `DataEraser.WithSubjectStore(...)`; `Erase` runs each after key-revoke + read-model redaction (non-fatal, symmetric with hooks); report `ErasureResult.SubjectStores`
+- [ ] 3.3 Audit: optional `adapters.SubjectAuditPurger { DeleteAuditBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `actor==subject OR aggregate_id==subject`); `mink.NewAuditSubjectEraser(store)`
+- [ ] 3.4 Saga: optional `adapters.SubjectSagaPurger { DeleteSagasBySubject(ctx, subjectID) (int64, error) }` on memory + postgres (delete where `correlation_id==subject`); `mink.NewSagaSubjectEraser(store)`
+- [ ] 3.5 Snapshot: `mink.NewSnapshotSubjectEraser(snapshotAdapter)` deletes snapshots for each `footprint.Streams` via existing `DeleteSnapshot`
+- [ ] 3.6 Tests: each eraser purges its subject's rows, leaves others; unsupported store → `ErrRevocationUnsupported`-style skip; DataEraser aggregates outcomes; partial failure non-fatal
+- [ ] 3.7 Document the outbox `Transform`-decrypts leak + the "register a SubjectErasable for your sink" guidance
+
+## 4. Required — Blast-radius guard for shared keys (`data-erasure`)
+
+- [ ] 4.1 `WithSharedKeyGuard()` + `AllowSharedKeyRevocation()`; `*SharedKeyError`/`ErrSharedKeyRevocation`
+- [ ] 4.2 Exclusivity scan before revoke: a key is shared if any event under it is tagged for a subject `!= target` (or untagged); fail before the irreversible step unless allowed
+- [ ] 4.3 Tests: per-tenant shared key blocked; `AllowSharedKeyRevocation` overrides; per-subject key not flagged; guard-off = zero overhead + old behavior
+
+## 5. Required — Accountability durability (`data-erasure`)
+
+- [ ] 5.1 `WithStrictAccountability()` — marker/certificate persistence failure is fatal (after the idempotent revoke); default stays best-effort
+- [ ] 5.2 Gate `cert.Verified` on `MarkerWritten` when a marker stream is configured
+- [ ] 5.3 Tests: strict marker-fail → error; strict cert-fail → error; non-strict → soft error; `Verified` false when marker not written
+
+## 6. Good-to-have — Erase TOCTOU mitigation (`data-erasure`)
+
+- [ ] 6.1 After revoke, re-resolve once; revoke newly-appeared keys; if the set still grew, set `Partial=true` + warning error
+- [ ] 6.2 Document the quiescence contract on `Erase`/`ErasureRequest`
+- [ ] 6.3 Tests: append-after-discovery under a new key is caught (Partial) or revoked on the second pass
+
+## 7. Good-to-have — Subject index + backfill (`subject-discovery`)
+
+- [ ] 7.1 `SubjectIndexWriter interface { IndexSubjects(ctx, streamID, subjectIDs) error }` (write) alongside existing `SubjectIndexAdapter` (read)
+- [ ] 7.2 Postgres `mink_subject_index` table + migration (created only when used) implementing both read + write; memory impl
+- [ ] 7.3 Append path writes derived subjects to the index when a writer is wired (best-effort, logged); `mink.BackfillSubjectIndex(ctx, store, tagger, writer)` for history
+- [ ] 7.4 Resolver prefers the index (O(subject)); a fully back-filled index lets `Resolve` return `Partial=false` for historical subjects
+- [ ] 7.5 Tests: index fast-path vs scan parity, backfill populates history, indexed resolve is non-partial, append auto-indexes
+- [ ] 7.6 Reconcile the base change's design-doc "migration step" claim with the shipped backfill
+
+## 8. Good-to-have — `ReEncryptStream` hardening (`key-lifecycle`)
+
+- [ ] 8.1 Destination `expectedVersion = NoStream` guard (idempotent; re-run errors, no duplicate copy)
+- [ ] 8.2 Strip `$encryption_*` markers from carried metadata before re-append
+- [ ] 8.3 Return `(copied int, oldKeyIDs []string, err error)`; docstring: source + old-key PII survive until retired + revoked
+- [ ] 8.4 Tests: idempotency guard, stale-marker strip, returned old key ids
+
+## 9. Good-to-have — Provider revoke→decrypt contract test (`key-revocation`)
+
+- [ ] 9.1 `providertest.AssertRevokeMakesDecryptFail(t, provider)` — encrypt → revoke → assert Decrypt/DecryptDataKey error
+- [ ] 9.2 Wire into local + KMS + Vault suites (with revocation-capable mocks/backends)
+
+## 10. Good-to-have — Vault revoke-failure clarity (`key-revocation`)
+
+- [ ] 10.1 `ErasureResult.Failed()` convenience (true when any requested key wasn't revoked) + doc that partial failures live in `Errors`/the `KeysRevoked` gap
+- [ ] 10.2 Test: a revoke that errors (e.g. simulated `deletion_allowed=false`) → `Failed()==true`, key absent from `KeysRevoked`
+
+## 11. Docs, release & cross-cutting
+
+- [ ] 11.1 `RetentionManager` docstring: `Apply` is a single sweep — wire your own scheduler (go-mink does not schedule it)
+- [ ] 11.2 `security.md`: subject identifiers in `$subjects`/`Metadata` are plaintext and never shredded — tag with opaque ids (use `Anonymizer`); an email/user-id used as subject id survives erasure
+- [ ] 11.3 `security.md`: sibling-store erasure (audit/saga/snapshot) + backfill sections
+- [ ] 11.4 CHANGELOG `[Unreleased]`; `gofmt` + `go vet` clean; zero-overhead-when-unused preserved; branch targets `develop`
+- [ ] 11.5 All new public APIs documented (doc comments) + table-driven tests across new files; `openspec validate gdpr-erasure-hardening --strict`
