@@ -5,6 +5,7 @@ package kms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -217,6 +218,14 @@ func (p *Provider) revocationClient() (KMSRevocationClient, error) {
 func (p *Provider) revoked(rc KMSRevocationClient, keyID string) (bool, error) {
 	out, err := rc.DescribeKey(context.Background(), &kms.DescribeKeyInput{KeyId: &keyID})
 	if err != nil {
+		// A CMK whose deletion has completed (after the pending window) no longer exists,
+		// so DescribeKey returns NotFound. That is the terminal crypto-shred state — report
+		// it as revoked, not an error, so Verify and decryptError keep recognizing a
+		// permanently erased key after AWS finishes the deletion.
+		var notFound *types.NotFoundException
+		if errors.As(err, &notFound) {
+			return true, nil
+		}
 		return false, encryption.NewDecryptionError(keyID, "", fmt.Errorf("KMS describe key: %w", err))
 	}
 	if out.KeyMetadata == nil {

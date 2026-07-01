@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,36 @@ func setupSubjectIndex(t *testing.T) (*SubjectIndex, func()) {
 		_ = db.Close()
 	}
 	return idx, cleanup
+}
+
+func TestSubjectIndex_LongTableNameInitializes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping PostgreSQL integration test in short mode")
+	}
+	url := getTestDatabaseURL(t)
+	db, err := sql.Open("pgx", url)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	if err := db.Ping(); err != nil {
+		t.Skipf("PostgreSQL not available: %v", err)
+	}
+
+	// A valid but maximal 63-char table name. The naive derived index name
+	// "idx_<table>_subject" would be 75 chars — over PostgreSQL's 63-byte identifier
+	// limit — so Initialize must bound it (boundedIndexName) rather than let PostgreSQL
+	// silently truncate it (which could collide with another long table's index).
+	table := ("t" + fmt.Sprintf("%d", time.Now().UnixNano()) + strings.Repeat("x", 63))[:63]
+	require.Len(t, table, 63)
+
+	idx := NewSubjectIndex(db, WithSubjectIndexTable(table))
+	require.NoError(t, idx.Initialize(context.Background()), "Initialize must succeed for a max-length table name")
+	defer func() { _, _ = db.Exec("DROP TABLE IF EXISTS " + quoteQualifiedTable("public", table)) }()
+
+	ctx := context.Background()
+	require.NoError(t, idx.IndexSubjects(ctx, "User-u1", []string{"u1"}))
+	got, err := idx.StreamsBySubject(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"User-u1"}, got)
 }
 
 func TestSubjectIndex_ReadWrite(t *testing.T) {

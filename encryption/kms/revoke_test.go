@@ -18,6 +18,7 @@ type mockKMSRevocationClient struct {
 	*mockKMSClient
 	state     types.KeyState
 	scheduled int
+	notFound  bool // simulate a CMK whose deletion has completed (DescribeKey → NotFound)
 }
 
 func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, _ *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
@@ -27,6 +28,9 @@ func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, _ *kms.
 }
 
 func (m *mockKMSRevocationClient) DescribeKey(_ context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
+	if m.notFound {
+		return nil, &types.NotFoundException{}
+	}
 	st := m.state
 	if st == "" {
 		st = types.KeyStateEnabled
@@ -84,6 +88,18 @@ func TestProvider_RevokeKey(t *testing.T) {
 	revoked, err = p.IsRevoked("k")
 	require.NoError(t, err)
 	assert.True(t, revoked)
+}
+
+func TestProvider_IsRevoked_DeletedKeyIsRevoked(t *testing.T) {
+	// Once AWS finishes deleting the CMK, DescribeKey returns NotFound. That terminal
+	// crypto-shred state must read as revoked, not surface as an error.
+	rc := &mockKMSRevocationClient{mockKMSClient: &mockKMSClient{}, notFound: true}
+	p := New(WithKMSClient(rc))
+	defer func() { _ = p.Close() }()
+
+	revoked, err := p.IsRevoked("k")
+	require.NoError(t, err)
+	assert.True(t, revoked, "a fully-deleted CMK (DescribeKey NotFound) must report revoked")
 }
 
 func TestProvider_RevokeKey_Idempotent(t *testing.T) {

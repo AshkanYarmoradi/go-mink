@@ -78,7 +78,7 @@ func (s *SubjectIndex) Initialize(ctx context.Context) error {
 			stream_id  TEXT NOT NULL,
 			PRIMARY KEY (subject_id, stream_id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier("idx_"+s.table+"_subject") + ` ON ` + tableQ + ` (subject_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + quoteIdentifier(boundedIndexName(s.schema, "idx_"+s.table+"_subject")) + ` ON ` + tableQ + ` (subject_id)`,
 	}
 	if _, err := s.db.ExecContext(ctx, joinSQLStatements(stmts)); err != nil {
 		return fmt.Errorf("mink/postgres/subjectindex: failed to create table: %w", err)
