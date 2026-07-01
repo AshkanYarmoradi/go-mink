@@ -64,6 +64,23 @@ func (m *MemorySubjectIndex) StreamsBySubject(_ context.Context, subjectID strin
 	return out, nil
 }
 
+// dedupeStrings returns in with duplicates removed, preserving order.
+func dedupeStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 // BackfillSubjectIndex scans the whole event store and records each event's subjects
 // (derived by tagger, plus any already tagged on the event) into writer. This is the
 // migration step that lets a subject index cover events written BEFORE subject tagging
@@ -97,7 +114,10 @@ func BackfillSubjectIndex(ctx context.Context, store *EventStore, tagger Subject
 		}
 		for _, se := range batch {
 			scanned++
-			subjects := append(tagger(se.Type, se.Data, se.Metadata), GetSubjectTags(se.Metadata)...)
+			// Combine tagger-derived subjects with any already tagged on the event, then
+			// de-duplicate — when tagging was already enabled the two overlap, and
+			// duplicate (subject, stream) pairs are redundant index writes.
+			subjects := dedupeStrings(append(tagger(se.Type, se.Data, se.Metadata), GetSubjectTags(se.Metadata)...))
 			if len(subjects) == 0 {
 				continue
 			}

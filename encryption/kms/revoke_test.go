@@ -62,6 +62,13 @@ func TestProvider_RevokeMakesDecryptFail(t *testing.T) {
 	providertest.AssertRevokeMakesDecryptFail(t, p, "k")
 }
 
+func TestWithPendingDeletionWindow_Clamps(t *testing.T) {
+	// AWS accepts only 7–30 days; out-of-range values are clamped so RevokeKey can't fail.
+	assert.Equal(t, int32(7), New(WithKMSClient(&mockKMSClient{}), WithPendingDeletionWindow(3)).pendingWindowDays)
+	assert.Equal(t, int32(30), New(WithKMSClient(&mockKMSClient{}), WithPendingDeletionWindow(45)).pendingWindowDays)
+	assert.Equal(t, int32(14), New(WithKMSClient(&mockKMSClient{}), WithPendingDeletionWindow(14)).pendingWindowDays)
+}
+
 func TestProvider_RevokeKey(t *testing.T) {
 	rc := &mockKMSRevocationClient{mockKMSClient: &mockKMSClient{}}
 	p := New(WithKMSClient(rc))

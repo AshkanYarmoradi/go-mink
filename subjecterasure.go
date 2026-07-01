@@ -4,8 +4,8 @@ import "context"
 
 // SubjectErasable is an OPTIONAL seam letting stores that hold PII *derived* from
 // events — the audit trail, saga state, snapshots, or an external sink — be erased
-// alongside crypto-shredding. Register implementations with
-// DataEraser.WithSubjectStore; Erase invokes each after key revocation and read-model
+// alongside crypto-shredding. Register implementations via the WithSubjectStore option
+// of NewDataEraser; Erase invokes each after key revocation and read-model
 // redaction, records a SubjectErasureOutcome, and treats a per-store failure as
 // non-fatal (symmetric with WithErasureHook).
 //

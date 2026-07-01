@@ -56,10 +56,17 @@ func WithKMSClient(client KMSClient) Option {
 	}
 }
 
-// WithPendingDeletionWindow sets the AWS KMS pending-deletion window in days
-// (AWS allows 7–30) used by RevokeKey. Defaults to 7 (the AWS minimum) when unset.
+// WithPendingDeletionWindow sets the AWS KMS pending-deletion window in days used by
+// RevokeKey. AWS only accepts 7–30 days, so an out-of-range value is clamped into that
+// range — a misconfigured window cannot fail at RevokeKey time (the erasure moment).
+// Defaults to 7 (the AWS minimum) when unset.
 func WithPendingDeletionWindow(days int32) Option {
 	return func(p *Provider) {
+		if days < 7 {
+			days = 7
+		} else if days > 30 {
+			days = 30
+		}
 		p.pendingWindowDays = days
 	}
 }

@@ -78,6 +78,30 @@ func TestRetention_CategoryAndEventTypeMatchers(t *testing.T) {
 	assert.Equal(t, 0, rep2.Matched)
 }
 
+func TestDedupeStrings(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"}, dedupeStrings([]string{"a", "b", "a", "b", "a"}))
+	assert.Equal(t, []string{"x"}, dedupeStrings([]string{"x"}))
+	assert.Empty(t, dedupeStrings(nil))
+}
+
+func TestExportStream_AutoResolvesSubject(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "User-u1", "u1")
+	appendUser(t, ctx, store, "Order-o1", "u1")
+
+	// A SubjectID-only ExportStream now auto-resolves (mirrors Export) instead of
+	// failing validation.
+	exporter := NewDataExporter(store, WithExportSubjectResolver(NewSubjectResolver(store)))
+	var streamed int
+	err := exporter.ExportStream(ctx, ExportRequest{SubjectID: "u1"}, func(context.Context, ExportedEvent) error {
+		streamed++
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, streamed)
+}
+
 func TestErasureErrorStrings(t *testing.T) {
 	assert.Contains(t, NewErasureError("u1", errors.New("boom")).Error(), "u1")
 

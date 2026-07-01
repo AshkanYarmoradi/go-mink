@@ -755,7 +755,8 @@ type SubjectSagaPurger interface {
 // data subject's outbox rows. The default outbox path stores the ENCRYPTED event payload
 // (crypto-shredding reaches it), but a route Transform that emits a decrypted/reshaped
 // payload leaves an independent plaintext copy — and dead-lettered rows persist. This
-// deletes the subject's rows by producing aggregate. Stores MAY implement it;
+// deletes the subject's rows keyed on the producing aggregate's id (AggregateID).
+// Stores MAY implement it;
 // mink.NewOutboxSubjectEraser detects support and skips (rather than fails) when absent.
 type SubjectOutboxPurger interface {
 	// DeleteOutboxBySubject removes outbox messages whose AggregateID equals subjectID

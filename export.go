@@ -60,8 +60,9 @@ func WithExportLogger(l Logger) DataExporterOption {
 
 // WithExportSubjectResolver configures a SubjectResolver so a SubjectID-only
 // ExportRequest (no Streams/Filter) is automatically resolved to the subject's
-// complete footprint. A partial footprint propagates to ExportResult.Partial —
-// never a silent partial.
+// complete footprint — for both Export and ExportStream. A partial footprint propagates
+// to ExportResult.Partial on Export (ExportStream has no result object); never a silent
+// partial.
 func WithExportSubjectResolver(r *SubjectResolver) DataExporterOption {
 	return func(e *DataExporter) {
 		e.resolver = r
@@ -237,11 +238,27 @@ func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportRe
 // export, or global position order for scan-based export.
 // Return a non-nil error from the handler to stop the export early.
 func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, handler ExportHandler) error {
-	if err := e.validateRequest(req); err != nil {
-		return err
+	if req.SubjectID == "" {
+		return ErrSubjectIDRequired
 	}
 	if handler == nil {
 		return NewExportError(req.SubjectID, fmt.Errorf("handler is required"))
+	}
+
+	// A SubjectID-only request resolves to the subject's footprint, mirroring Export.
+	// (ExportStream has no result object, so a partial footprint is not surfaced here —
+	// use Export when you need ExportResult.Partial.)
+	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil {
+		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
+		if err != nil {
+			return NewExportError(req.SubjectID, err)
+		}
+		req.Streams = fp.Streams
+		if len(req.Streams) == 0 {
+			return nil // resolved to no streams — nothing to export
+		}
+	} else if err := e.validateRequest(req); err != nil {
+		return err
 	}
 
 	return e.processEvents(ctx, req, handler)

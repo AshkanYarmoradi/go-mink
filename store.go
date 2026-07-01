@@ -515,9 +515,10 @@ func (s *EventStore) deserializeWithUpcast(ctx context.Context, stored StoredEve
 }
 
 // collectSubjects adds an event's subject tags to set for subject-index writing.
-// No-op when no index writer is configured (zero overhead).
+// No-op when no index writer is configured (zero overhead) or when set is nil
+// (defensive — callers allocate set exactly when subjectIndex is configured).
 func (s *EventStore) collectSubjects(md Metadata, set map[string]struct{}) {
-	if s.subjectIndex == nil {
+	if s.subjectIndex == nil || set == nil {
 		return
 	}
 	for _, sub := range GetSubjectTags(md) {
