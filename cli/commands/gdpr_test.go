@@ -124,6 +124,19 @@ func TestGdprDiscoverCommand_RequiresSubjectArg(t *testing.T) {
 	assert.Error(t, err) // cobra ExactArgs(1)
 }
 
+func TestPrintFootprint_PopulatedAndPartial(t *testing.T) {
+	// Exercises the details, PARTIAL-warning, and per-stream table branches with a
+	// populated footprint (the empty-store command tests never reach them).
+	printFootprint(&mink.SubjectFootprint{
+		SubjectID:         "user-123",
+		Streams:           []string{"User-user-123", "Order-o1"},
+		StreamEventCounts: map[string]int{"User-user-123": 2, "Order-o1": 1},
+		EventCount:        3,
+		KeyIDs:            []string{"key-a", "key-b"},
+		Partial:           true,
+	})
+}
+
 func TestGdprCommand_NoConfig(t *testing.T) {
 	env := setupTestEnv(t, "mink-gdpr-noconfig-*")
 	_ = env // intentionally no mink.yaml

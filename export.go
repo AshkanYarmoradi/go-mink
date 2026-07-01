@@ -188,6 +188,10 @@ func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportRe
 			return nil, NewExportError(req.SubjectID, err)
 		}
 		req.Streams = fp.Streams
+		// A resolved stream is included because it holds at least one event tagged for the
+		// subject, but a shared stream may also hold OTHER subjects' events. Constrain the
+		// export to this subject's events so a shared stream never leaks a co-tenant's data.
+		req.Filter = SubjectFilter(req.SubjectID)
 		partial = fp.Partial
 		resolved = true
 	}
@@ -263,6 +267,9 @@ func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, hand
 		if len(req.Streams) == 0 {
 			return nil // resolved to no streams — nothing to export
 		}
+		// Constrain to this subject's events: a shared stream may also hold other subjects'
+		// events, and streaming the whole stream would leak them (see Export).
+		req.Filter = SubjectFilter(req.SubjectID)
 	} else if err := e.validateRequest(req); err != nil {
 		return err
 	}

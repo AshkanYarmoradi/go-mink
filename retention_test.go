@@ -2,11 +2,13 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters/memory"
 )
 
 func seedRetention(t *testing.T, ctx context.Context, store *EventStore) {
@@ -122,6 +124,66 @@ func TestRetention_RedactWithoutHookIsLoud(t *testing.T) {
 	dry, err := mgr.DryRun(ctx)
 	require.NoError(t, err)
 	assert.True(t, dry.Failed())
+}
+
+func TestRetention_RedactHookErrorIsReported(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEraseTestStore(t, "k")
+	seedRetention(t, ctx, store)
+
+	mgr := NewRetentionManager(store, []RetentionPolicy{{
+		Name: "mask", StreamPrefix: "User-", Action: ActionRedactFields, Fields: []string{"email"},
+		Apply: func(context.Context, StoredEvent) error { return errors.New("mask failed") },
+	}})
+	report, err := mgr.Apply(ctx)
+	require.NoError(t, err) // a hook failure is reported, never fatal to the sweep
+	assert.Equal(t, 1, report.Matched)
+	assert.Equal(t, 0, report.Acted)
+	assert.True(t, report.Failed())
+	require.NotEmpty(t, report.Errors)
+	assert.Contains(t, report.Errors[0].Error(), "mask failed")
+}
+
+func TestRetention_ShredWithoutEncryptionKeyIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	// A plain store with no field encryption: events carry no key id, so there is
+	// nothing to crypto-shred — the policy matches but the event is skipped.
+	store := New(memory.NewAdapter())
+	store.RegisterEvents(eraseUserCreated{})
+	require.NoError(t, store.Append(ctx, "Plain-p1", []interface{}{eraseUserCreated{UserID: "u1"}}))
+
+	mgr := NewRetentionManager(store, []RetentionPolicy{{Name: "p", StreamPrefix: "Plain-", Action: ActionShred}})
+	report, err := mgr.Apply(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Matched)
+	assert.Equal(t, 1, report.Skipped, "no encryption key means nothing to shred")
+	assert.Empty(t, report.KeysRevoked)
+	assert.False(t, report.Failed())
+}
+
+func TestRetention_CategoryDashlessAndEventTypeMiss(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEraseTestStore(t, "k")
+	// A dash-less stream id: streamCategory("Singleton") returns the whole id.
+	require.NoError(t, store.Append(ctx, "Singleton",
+		[]interface{}{eraseUserCreated{UserID: "u1", Email: "a@b.c"}}))
+
+	// EventTypes that exclude the event's type must not match (containsString miss).
+	miss := NewRetentionManager(store, []RetentionPolicy{
+		{Name: "miss", Category: "Singleton", EventTypes: []string{"OtherEvent"}, Action: ActionShred},
+	})
+	rep, err := miss.Apply(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, rep.Matched)
+
+	// The category alone (dash-less) matches.
+	hit := NewRetentionManager(store, []RetentionPolicy{
+		{Name: "hit", Category: "Singleton", Action: ActionShred},
+	})
+	rep2, err := hit.Apply(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, rep2.Matched)
+	assert.Equal(t, []string{"k"}, rep2.KeysRevoked)
 }
 
 func TestRetention_RedactWithHook(t *testing.T) {

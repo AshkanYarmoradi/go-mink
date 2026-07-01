@@ -74,6 +74,9 @@ jobs:
           name: coverage-report
           path: coverage.out
           retention-days: 7
+          # coverage.out is absent only when the test step already failed loudly, so don't
+          # add a redundant artifact warning on top of that failure.
+          if-no-files-found: ignore
 
   sonarqube:
     name: SonarQube Cloud

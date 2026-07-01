@@ -1,6 +1,9 @@
 package mink
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Key lifecycle helpers.
 //
@@ -47,6 +50,15 @@ func ReEncryptStream(ctx context.Context, store *EventStore, srcStreamID, dstStr
 	oldKeyIDs = sortedSet(oldSet)
 
 	for i, ev := range events {
+		// Re-encryption re-appends by value, so the store must be able to derive the event
+		// type from ev.Data (GetEventType). An unregistered stored type deserializes to a
+		// map fallback whose type name is empty; appending it would fail deep in the
+		// serializer with an opaque error. Fail here with an actionable one instead.
+		if GetEventType(ev.Data) == "" {
+			return i, oldKeyIDs, fmt.Errorf(
+				"mink: ReEncryptStream: cannot derive a Go event type for event %d of stream %q (stored type %q, version %d) — register the event type (RegisterEvents) before re-encrypting",
+				i, srcStreamID, ev.Type, ev.Version)
+		}
 		md := stripEncryptionMarkers(ev.Metadata)
 		// Expected version i: 0 (NoStream) for the first event, then the running
 		// version — so a re-run against an existing destination errors rather than

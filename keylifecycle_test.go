@@ -109,6 +109,30 @@ func TestReEncryptStream(t *testing.T) {
 	assert.Equal(t, "key2", GetEncryptionKeyID(dstRaw[0].Metadata))
 }
 
+// An event whose stored type is not registered loads as a map fallback (empty Go type
+// name), which cannot be re-appended by value — ReEncryptStream must fail with a clear,
+// actionable error rather than an opaque one from deep in the serializer.
+func TestReEncryptStream_UnregisteredTypeFailsClearly(t *testing.T) {
+	ctx := context.Background()
+	adapter := memory.NewAdapter()
+
+	writer := New(adapter)
+	writer.RegisterEvents(eraseUserCreated{})
+	require.NoError(t, writer.Append(ctx, "User-src", []interface{}{eraseUserCreated{UserID: "u1", Email: "x@example.com"}}))
+
+	// A store that has NOT registered the event type sees it as a map fallback.
+	reenc := New(adapter)
+	_, _, err := ReEncryptStream(ctx, reenc, "User-src", "User-dst")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot derive a Go event type")
+	assert.Contains(t, err.Error(), "eraseUserCreated", "error should name the stored type")
+
+	// Nothing was written to the destination.
+	dst, err := reenc.Load(ctx, "User-dst")
+	require.NoError(t, err)
+	assert.Empty(t, dst)
+}
+
 // 8.1: a re-run against an existing destination errors instead of duplicating.
 func TestReEncryptStream_IdempotencyGuard(t *testing.T) {
 	ctx := context.Background()

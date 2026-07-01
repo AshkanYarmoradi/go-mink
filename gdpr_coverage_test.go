@@ -119,6 +119,35 @@ func TestExportStream_ErrorsOnPartialFootprint(t *testing.T) {
 	assert.ErrorIs(t, err, ErrExportPartialFootprint, "ExportStream must refuse to stream a partial footprint")
 }
 
+func TestExport_SharedStreamDoesNotLeakOtherSubjects(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	// One shared stream holding events for two different subjects.
+	appendUser(t, ctx, store, "Shared-s1", "u1")
+	appendUser(t, ctx, store, "Shared-s1", "u2")
+
+	resolver := NewSubjectResolver(store)
+	exporter := NewDataExporter(store, WithExportSubjectResolver(resolver))
+
+	// Export: the resolved (shared) stream must yield only u1's event, never u2's.
+	res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1"})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.TotalEvents, "shared stream must not leak the co-tenant's event")
+	assert.Contains(t, string(res.Events[0].RawData), "u1")
+	assert.NotContains(t, string(res.Events[0].RawData), "u2")
+
+	// ExportStream must apply the same subject filter.
+	var streamed int
+	err = exporter.ExportStream(ctx, ExportRequest{SubjectID: "u1"}, func(_ context.Context, ev ExportedEvent) error {
+		streamed++
+		assert.Contains(t, string(ev.RawData), "u1", "ExportStream must not leak the co-tenant's event")
+		assert.NotContains(t, string(ev.RawData), "u2")
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, streamed)
+}
+
 func TestErasureErrorStrings(t *testing.T) {
 	assert.Contains(t, NewErasureError("u1", errors.New("boom")).Error(), "u1")
 
