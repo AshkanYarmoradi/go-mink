@@ -60,9 +60,9 @@ func WithExportLogger(l Logger) DataExporterOption {
 
 // WithExportSubjectResolver configures a SubjectResolver so a SubjectID-only
 // ExportRequest (no Streams/Filter) is automatically resolved to the subject's
-// complete footprint — for both Export and ExportStream. A partial footprint propagates
-// to ExportResult.Partial on Export (ExportStream has no result object); never a silent
-// partial.
+// complete footprint — for both Export and ExportStream. A partial footprint is never
+// silently exported: Export surfaces it as ExportResult.Partial, while ExportStream (which
+// has no result object) fails with ErrExportPartialFootprint.
 func WithExportSubjectResolver(r *SubjectResolver) DataExporterOption {
 	return func(e *DataExporter) {
 		e.resolver = r
@@ -237,6 +237,8 @@ func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportRe
 // This is suitable for large exports. Events are yielded in stream order for stream-based
 // export, or global position order for scan-based export.
 // Return a non-nil error from the handler to stop the export early.
+// When a SubjectID-only request auto-resolves to a partial footprint, ExportStream returns
+// ErrExportPartialFootprint rather than streaming incomplete data — use Export for the flag.
 func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, handler ExportHandler) error {
 	if req.SubjectID == "" {
 		return ErrSubjectIDRequired
@@ -246,12 +248,16 @@ func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, hand
 	}
 
 	// A SubjectID-only request resolves to the subject's footprint, mirroring Export.
-	// (ExportStream has no result object, so a partial footprint is not surfaced here —
-	// use Export when you need ExportResult.Partial.)
+	// ExportStream has no result object to carry a Partial flag, so rather than silently
+	// streaming an incomplete footprint it fails with ErrExportPartialFootprint — callers
+	// who need the flag (not an error) should use Export and inspect ExportResult.Partial.
 	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil {
 		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
 		if err != nil {
 			return NewExportError(req.SubjectID, err)
+		}
+		if fp.Partial {
+			return NewExportError(req.SubjectID, ErrExportPartialFootprint)
 		}
 		req.Streams = fp.Streams
 		if len(req.Streams) == 0 {

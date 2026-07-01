@@ -102,6 +102,23 @@ func TestExportStream_AutoResolvesSubject(t *testing.T) {
 	assert.Equal(t, 2, streamed)
 }
 
+func TestExportStream_ErrorsOnPartialFootprint(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "User-u1", "u1")
+	// An untagged event (no UserID metadata) means tagging was not universally applied, so
+	// the scan cannot prove u1's footprint is complete → Footprint.Partial.
+	require.NoError(t, store.Append(ctx, "Legacy-x",
+		[]interface{}{eraseUserCreated{UserID: "u1", Email: "u1@example.com"}}))
+
+	exporter := NewDataExporter(store, WithExportSubjectResolver(NewSubjectResolver(store)))
+	err := exporter.ExportStream(ctx, ExportRequest{SubjectID: "u1"}, func(context.Context, ExportedEvent) error {
+		t.Fatal("handler must not be called when the footprint is partial")
+		return nil
+	})
+	assert.ErrorIs(t, err, ErrExportPartialFootprint, "ExportStream must refuse to stream a partial footprint")
+}
+
 func TestErasureErrorStrings(t *testing.T) {
 	assert.Contains(t, NewErasureError("u1", errors.New("boom")).Error(), "u1")
 

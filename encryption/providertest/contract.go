@@ -111,10 +111,12 @@ func AssertRevokeMakesDecryptFail(t *testing.T, p encryption.Provider, keyID str
 	require.NoError(t, err)
 	assert.True(t, revoked, "IsRevoked must report true after Revoke")
 
-	// Neither the data nor the DEK may be recoverable.
+	// Neither the data nor the DEK may be recoverable, and the failure MUST surface as
+	// ErrKeyRevoked (not a generic decryption error) so WithDecryptionErrorHandler can
+	// recognize the crypto-shred and degrade gracefully.
 	_, err = p.Decrypt(ctx, keyID, ciphertext)
-	assert.Error(t, err, "Decrypt must fail after the key is revoked")
+	assert.ErrorIs(t, err, encryption.ErrKeyRevoked, "Decrypt must return ErrKeyRevoked after the key is revoked")
 
 	_, err = p.DecryptDataKey(ctx, keyID, dk.Ciphertext)
-	assert.Error(t, err, "DecryptDataKey must fail after the key is revoked")
+	assert.ErrorIs(t, err, encryption.ErrKeyRevoked, "DecryptDataKey must return ErrKeyRevoked after the key is revoked")
 }

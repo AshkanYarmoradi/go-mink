@@ -81,6 +81,17 @@ func (p *Provider) Encrypt(ctx context.Context, keyID string, plaintext []byte) 
 	return ciphertext, nil
 }
 
+// decryptError maps a decrypt failure to ErrKeyRevoked when keyID has been revoked
+// (crypto-shredded) — the Transit key was deleted — so a WithDecryptionErrorHandler
+// checking for ErrKeyRevoked recognizes it as shredded. Otherwise it is a genuine
+// ErrDecryptionFailed. The IsRevoked probe runs only on the (rare) error path.
+func (p *Provider) decryptError(keyID string, cause error) error {
+	if revoked, rerr := p.IsRevoked(keyID); rerr == nil && revoked {
+		return encryption.NewKeyRevokedError(keyID)
+	}
+	return encryption.NewDecryptionError(keyID, "", cause)
+}
+
 // Decrypt decrypts ciphertext using the Vault Transit key.
 func (p *Provider) Decrypt(ctx context.Context, keyID string, ciphertext []byte) ([]byte, error) {
 	if err := p.checkClosed(); err != nil {
@@ -89,7 +100,7 @@ func (p *Provider) Decrypt(ctx context.Context, keyID string, ciphertext []byte)
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, ciphertext)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt: %w", err))
+		return nil, p.decryptError(keyID, fmt.Errorf("vault decrypt: %w", err))
 	}
 	return plaintext, nil
 }
@@ -130,7 +141,7 @@ func (p *Provider) DecryptDataKey(ctx context.Context, keyID string, encryptedKe
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, encryptedKey)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt DEK: %w", err))
+		return nil, p.decryptError(keyID, fmt.Errorf("vault decrypt DEK: %w", err))
 	}
 	return plaintext, nil
 }

@@ -19,6 +19,12 @@ var (
 	// ErrExportScanNotSupported indicates the adapter does not support event scanning.
 	// Provide explicit stream IDs in the ExportRequest instead.
 	ErrExportScanNotSupported = errors.New("mink: adapter does not support event scanning; provide explicit stream IDs")
+
+	// ErrExportPartialFootprint indicates ExportStream auto-resolved a subject to an
+	// incomplete footprint. ExportStream has no result object to carry a Partial flag, so
+	// rather than silently stream partial data it fails with this error — use Export
+	// (which reports ExportResult.Partial), or pass explicit Streams to acknowledge it.
+	ErrExportPartialFootprint = errors.New("mink: subject footprint is partial; use Export for ExportResult.Partial, or pass explicit Streams")
 )
 
 // ExportError provides detailed information about a data export failure.
