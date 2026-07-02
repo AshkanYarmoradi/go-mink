@@ -1193,17 +1193,20 @@ func TestProjectionEngine_PauseResume(t *testing.T) {
 	_ = engine.Start(runCtx)
 	defer func() { _ = engine.Stop(context.Background()) }()
 
+	// The worker's initial catch-up can briefly set Running after Pause, and it only
+	// re-asserts Paused on its next poll — so wait for the settled state instead of
+	// assuming a fixed delay is enough (which flakes on a loaded CI runner).
 	require.NoError(t, engine.Pause("AsyncPauseResume"))
-	time.Sleep(80 * time.Millisecond)
-	status, err := engine.GetStatus("AsyncPauseResume")
-	require.NoError(t, err)
-	assert.Equal(t, ProjectionStatePaused, status.State)
+	require.Eventually(t, func() bool {
+		status, err := engine.GetStatus("AsyncPauseResume")
+		return err == nil && status.State == ProjectionStatePaused
+	}, 2*time.Second, 5*time.Millisecond, "projection should settle into Paused")
 
 	require.NoError(t, engine.Resume("AsyncPauseResume"))
-	time.Sleep(80 * time.Millisecond)
-	status, err = engine.GetStatus("AsyncPauseResume")
-	require.NoError(t, err)
-	assert.Equal(t, ProjectionStateRunning, status.State)
+	require.Eventually(t, func() bool {
+		status, err := engine.GetStatus("AsyncPauseResume")
+		return err == nil && status.State == ProjectionStateRunning
+	}, 2*time.Second, 5*time.Millisecond, "projection should settle into Running")
 
 	assert.ErrorIs(t, engine.Pause("missing"), ErrProjectionNotFound)
 	assert.ErrorIs(t, engine.Resume("missing"), ErrProjectionNotFound)

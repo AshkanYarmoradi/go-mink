@@ -132,11 +132,15 @@ func (s *OutboxStore) ScheduleInTx(ctx context.Context, tx interface{}, messages
 // insertMessages inserts outbox messages into the database within a transaction.
 func (s *OutboxStore) insertMessages(ctx context.Context, tx *sql.Tx, messages []*adapters.OutboxMessage) error {
 	tableQ := s.fullTableName()
+	// scheduled_at/created_at default to the SERVER clock (NOW()) when the caller does not
+	// set them, so they are stamped on the same clock FetchPending compares against
+	// (scheduled_at <= NOW()). Defaulting to the client's time.Now() instead lets any
+	// client-ahead clock skew make a just-scheduled message briefly invisible to fetch.
 	query := `
 		INSERT INTO ` + tableQ + ` (
 			aggregate_id, event_type, destination, payload, headers,
 			status, attempts, max_attempts, scheduled_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), COALESCE($10::timestamptz, NOW()))
 		RETURNING id
 	`
 
@@ -146,14 +150,13 @@ func (s *OutboxStore) insertMessages(ctx context.Context, tx *sql.Tx, messages [
 			return fmt.Errorf("mink/postgres/outbox: failed to marshal headers: %w", err)
 		}
 
-		scheduledAt := msg.ScheduledAt
-		if scheduledAt.IsZero() {
-			scheduledAt = time.Now()
+		// Pass NULL for an unset timestamp so COALESCE substitutes the server's NOW().
+		var scheduledAt, createdAt interface{}
+		if !msg.ScheduledAt.IsZero() {
+			scheduledAt = msg.ScheduledAt
 		}
-
-		createdAt := msg.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
+		if !msg.CreatedAt.IsZero() {
+			createdAt = msg.CreatedAt
 		}
 
 		maxAttempts := msg.MaxAttempts
