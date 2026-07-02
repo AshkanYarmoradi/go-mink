@@ -258,6 +258,22 @@ removed, _ := store.Cleanup(ctx, 365*24*time.Hour)
 Check your retention obligations before pruning — many regimes mandate minimum
 retention periods.
 
+### Erasing a subject (GDPR)
+
+`Cleanup` is time-based. For the **right to erasure**, remove a specific subject's rows
+via the optional `SubjectAuditPurger` (implemented by both stores) — audit entries are
+plaintext, so crypto-shredding the *events* does not reach them:
+
+```go
+// Directly on the store:
+n, _ := store.DeleteAuditBySubject(ctx, "user-123") // deletes rows where actor OR aggregate_id == subject
+
+// Or wire it into DataEraser so the audit trail is erased alongside the events:
+mink.NewDataEraser(store, mink.WithSubjectStore(mink.NewAuditSubjectEraser(auditStore)))
+```
+
+See [Sibling stores](/docs/security#sibling-stores--audit-saga-snapshots-outbox-idempotency).
+
 ---
 
 ## PostgreSQL store
@@ -346,7 +362,8 @@ features:
 :::warning Audit logs can contain sensitive data
 `error` messages and captured `metadata` may include PII. Treat the audit table as
 sensitive: restrict access, and avoid placing secrets in command metadata if you
-enable `IncludeMetadata`.
+enable `IncludeMetadata`. Because those fields are stored in **plaintext**, an erasure
+request must reach them too — use [`DeleteAuditBySubject` / `NewAuditSubjectEraser`](#erasing-a-subject-gdpr).
 :::
 
 ---

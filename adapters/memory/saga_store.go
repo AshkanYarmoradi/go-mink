@@ -9,7 +9,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.SagaStore = (*SagaStore)(nil)
+var (
+	_ adapters.SagaStore         = (*SagaStore)(nil)
+	_ adapters.SubjectSagaPurger = (*SagaStore)(nil)
+)
 
 // SagaStore provides an in-memory implementation of adapters.SagaStore.
 // This is primarily intended for testing and development purposes.
@@ -248,6 +251,32 @@ func (s *SagaStore) Delete(ctx context.Context, sagaID string) error {
 
 	delete(s.sagas, sagaID)
 	return nil
+}
+
+// DeleteSagasBySubject removes saga states whose CorrelationID equals subjectID, for
+// GDPR erasure of saga state that copied the subject's PII out of events. Returns the
+// number removed. Implements adapters.SubjectSagaPurger.
+func (s *SagaStore) DeleteSagasBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+
+	var removed int64
+	for id, state := range s.sagas {
+		if state.CorrelationID == subjectID {
+			delete(s.sagas, id)
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 // Close releases any resources (no-op for in-memory implementation).

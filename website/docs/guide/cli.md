@@ -61,6 +61,7 @@ Available Commands:
   stream      Inspect and manage event streams
   diagnose    Run diagnostic checks
   schema      Schema management
+  gdpr        GDPR data-governance operations
   version     Show version information
   help        Help about any command
 
@@ -616,6 +617,108 @@ CREATE SCHEMA IF NOT EXISTS "mink";
 -- Includes streams, events, snapshots, checkpoints, migrations,
 -- outbox, and idempotency tables using schema-qualified names.
 ```
+
+---
+
+### `mink gdpr`
+
+Subject-centric **GDPR data-governance** operations over the event store. These verbs are
+**read-only**: the CLI operates through the diagnostic adapter and deliberately does **not**
+hold your application's encryption keys, so it produces auditable *plans and reports* —
+actual key revocation runs from your application via `mink.NewDataEraser(...).Erase` and
+`mink.NewRetentionManager(...).Apply`. See [GDPR & Data Governance](/docs/security).
+
+Requires a `mink.yaml` (it uses the configured store — `postgres` or `memory`).
+
+#### Discover a subject's footprint
+
+Resolve every stream and event tagged for a data subject, plus the distinct encryption
+keys protecting them. This is the read-only erasure preview.
+
+```bash
+$ mink gdpr discover user-123
+
+🗄️  Subject footprint: user-123
+
+  Streams:         2
+  Tagged events:   7
+  Encryption keys: 1
+
+┌────────────────┬───────────────┐
+│ Stream         │ Tagged events │
+├────────────────┼───────────────┤
+│ Order-o1       │ 3             │
+│ User-user-123  │ 4             │
+└────────────────┴───────────────┘
+
+🔑 Encryption keys
+  • tenant-A
+```
+
+If tagging was not applied uniformly (legacy untagged events exist), the footprint is
+reported as **PARTIAL** — treat it as incomplete.
+
+#### Verify erasure readiness
+
+Classify a subject's tagged events by encryption posture: encrypted (crypto-shreddable)
+vs. **residual cleartext** (written before encryption was enabled — must be handled on the
+read side).
+
+```bash
+$ mink gdpr verify user-123
+
+🔒 Erasure readiness: user-123
+
+  Tagged events:          7
+  Encrypted (shreddable): 7
+  Cleartext (residual):   0
+  Encryption keys:        1
+
+✓ All tagged events are encrypted — the subject is fully crypto-shreddable
+```
+
+#### Print an erasure plan
+
+Resolve the footprint and list the encryption keys that must be revoked. The CLI does not
+revoke them (it holds no keys) — run the erasure from your app or your KMS/Vault console.
+
+```bash
+$ mink gdpr erase user-123
+
+🗄️  Subject footprint: user-123
+  ...
+
+🔑 Erasure plan — revoke these keys
+  → tenant-A
+
+ℹ Execute via mink.NewDataEraser(store, ...).Erase — the CLI does not hold your keys
+```
+
+#### Preview a retention policy (dry-run)
+
+Report how many events a retention policy would crypto-shred, without changing anything.
+
+```bash
+$ mink gdpr retain --category Customer --max-age 8760h
+
+📊 Retention preview (dry-run)
+
+  Scanned:  1240 events
+  Matched:  38 events
+
+⚠ 38 event(s) would be crypto-shredded — run RetentionManager.Apply with your
+  encryption provider to enforce
+```
+
+**Flags for `retain`** (at least one matcher is required):
+
+| Flag | Description |
+|------|-------------|
+| `--prefix` | Match stream-id prefix |
+| `--category` | Match stream category (text before the first `-`) |
+| `--tenant` | Match metadata tenant id |
+| `--event-type` | Match event type |
+| `--max-age` | Match events older than this age (e.g. `8760h`) |
 
 ---
 

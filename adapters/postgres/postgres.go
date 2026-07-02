@@ -297,6 +297,10 @@ func migrationSchemaStatements(schemaName string) []string {
 func outboxSchemaStatements(schemaName, tableName string) []string {
 	tableQ := quoteQualifiedTable(schemaName, tableName)
 	return []string{
+		// Create the schema first so the outbox store is self-sufficient — it must not
+		// depend on the event-store adapter (or any other component) having created a
+		// non-public schema beforehand.
+		`CREATE SCHEMA IF NOT EXISTS ` + quoteIdentifier(schemaName),
 		`CREATE TABLE IF NOT EXISTS ` + tableQ + ` (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			aggregate_id VARCHAR(255) NOT NULL,

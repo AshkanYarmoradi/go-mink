@@ -10,7 +10,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.AuditStore = (*AuditStore)(nil)
+var (
+	_ adapters.AuditStore         = (*AuditStore)(nil)
+	_ adapters.SubjectAuditPurger = (*AuditStore)(nil)
+)
 
 // AuditStore provides an in-memory implementation of adapters.AuditStore.
 // It is useful for testing and development but should not be used in production
@@ -170,6 +173,29 @@ func (s *AuditStore) Cleanup(ctx context.Context, olderThan time.Duration) (int6
 	var removed int64
 	for _, entry := range s.entries {
 		if entry.Timestamp.Before(cutoff) {
+			removed++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	s.entries = kept
+	return removed, nil
+}
+
+// DeleteAuditBySubject removes audit entries attributable to subjectID — those whose
+// Actor or AggregateID equals subjectID — for GDPR erasure of the audit trail. Returns
+// the number removed. Implements adapters.SubjectAuditPurger.
+func (s *AuditStore) DeleteAuditBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := make([]*adapters.AuditEntry, 0, len(s.entries))
+	var removed int64
+	for _, entry := range s.entries {
+		if entry.Actor == subjectID || entry.AggregateID == subjectID {
 			removed++
 			continue
 		}

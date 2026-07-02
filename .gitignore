@@ -39,3 +39,6 @@ website/node_modules/
 website/build/
 website/.docusaurus/
 website/.cache-loader/
+
+# Claude Code / OpenSpec local tooling (regenerable via `openspec init`)
+.claude/

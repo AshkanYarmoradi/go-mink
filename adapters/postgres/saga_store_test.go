@@ -62,6 +62,38 @@ func setupTestSagaStore(t *testing.T) (*SagaStore, func()) {
 	return store, cleanup
 }
 
+func TestSagaStore_DeleteSagasBySubject(t *testing.T) {
+	store, cleanup := setupTestSagaStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	save := func(id, corr string) {
+		require.NoError(t, store.Save(ctx, &mink.SagaState{
+			ID: id, Type: "OrderSaga", CorrelationID: corr,
+			Status: mink.SagaStatusStarted, StartedAt: time.Now(), Version: 0,
+		}))
+	}
+	save("s1", "user-1")
+	save("s2", "user-1")
+	save("s3", "user-2")
+
+	n, err := store.DeleteSagasBySubject(ctx, "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+
+	// user-1's sagas are gone; user-2's remains.
+	_, err = store.Load(ctx, "s1")
+	assert.Error(t, err)
+	got, err := store.Load(ctx, "s3")
+	require.NoError(t, err)
+	assert.Equal(t, "user-2", got.CorrelationID)
+
+	// Empty subject is a no-op.
+	n, err = store.DeleteSagasBySubject(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+}
+
 // ====================================================================
 // Option Tests
 // ====================================================================

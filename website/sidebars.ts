@@ -25,6 +25,7 @@ const sidebars: SidebarsConfig = {
         "advanced/advanced-patterns",
         "advanced/api-design",
         "advanced/security",
+        "security",
         "advanced/audit-logging",
         "advanced/versioning",
       ],

@@ -33,6 +33,7 @@ type DataExporter struct {
 	store     *EventStore
 	batchSize int
 	logger    Logger
+	resolver  *SubjectResolver
 }
 
 // DataExporterOption configures a DataExporter.
@@ -54,6 +55,17 @@ func WithExportLogger(l Logger) DataExporterOption {
 		if l != nil {
 			e.logger = l
 		}
+	}
+}
+
+// WithExportSubjectResolver configures a SubjectResolver so a SubjectID-only
+// ExportRequest (no Streams/Filter) is automatically resolved to the subject's
+// complete footprint — for both Export and ExportStream. A partial footprint is never
+// silently exported: Export surfaces it as ExportResult.Partial, while ExportStream (which
+// has no result object) fails with ErrExportPartialFootprint.
+func WithExportSubjectResolver(r *SubjectResolver) DataExporterOption {
+	return func(e *DataExporter) {
+		e.resolver = r
 	}
 }
 
@@ -112,6 +124,11 @@ type ExportResult struct {
 
 	// ExportedAt is the timestamp when the export was generated.
 	ExportedAt time.Time
+
+	// Partial is true when the export was driven by a subject footprint that could
+	// not be proven complete (e.g. legacy untagged events); the caller MUST treat
+	// the export as potentially incomplete.
+	Partial bool
 }
 
 // ExportedEvent represents a single event in the data export.
@@ -159,13 +176,41 @@ type ExportedMetadata struct {
 // Export collects all matching events for a data subject and returns them.
 // Use ExportStream for large exports that should not be held in memory.
 func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportResult, error) {
-	if err := e.validateRequest(req); err != nil {
-		return nil, err
+	if req.SubjectID == "" {
+		return nil, ErrSubjectIDRequired
+	}
+
+	// A SubjectID-only request resolves to the subject's complete footprint.
+	resolved, partial := false, false
+	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil {
+		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
+		if err != nil {
+			return nil, NewExportError(req.SubjectID, err)
+		}
+		req.Streams = fp.Streams
+		// A resolved stream is included because it holds at least one event tagged for the
+		// subject, but a shared stream may also hold OTHER subjects' events. Constrain the
+		// export to this subject's events so a shared stream never leaks a co-tenant's data.
+		req.Filter = SubjectFilter(req.SubjectID)
+		partial = fp.Partial
+		resolved = true
+	}
+	if !resolved {
+		if err := e.validateRequest(req); err != nil {
+			return nil, err
+		}
 	}
 
 	result := &ExportResult{
 		SubjectID:  req.SubjectID,
 		ExportedAt: time.Now(),
+		Partial:    partial,
+	}
+
+	// A resolved subject with no streams has no data to export (avoid scanning all).
+	if resolved && len(req.Streams) == 0 {
+		result.Streams = []string{}
+		return result, nil
 	}
 
 	streamSet := make(map[string]struct{})
@@ -196,12 +241,37 @@ func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportRe
 // This is suitable for large exports. Events are yielded in stream order for stream-based
 // export, or global position order for scan-based export.
 // Return a non-nil error from the handler to stop the export early.
+// When a SubjectID-only request auto-resolves to a partial footprint, ExportStream returns
+// ErrExportPartialFootprint rather than streaming incomplete data — use Export for the flag.
 func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, handler ExportHandler) error {
-	if err := e.validateRequest(req); err != nil {
-		return err
+	if req.SubjectID == "" {
+		return ErrSubjectIDRequired
 	}
 	if handler == nil {
 		return NewExportError(req.SubjectID, fmt.Errorf("handler is required"))
+	}
+
+	// A SubjectID-only request resolves to the subject's footprint, mirroring Export.
+	// ExportStream has no result object to carry a Partial flag, so rather than silently
+	// streaming an incomplete footprint it fails with ErrExportPartialFootprint — callers
+	// who need the flag (not an error) should use Export and inspect ExportResult.Partial.
+	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil {
+		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
+		if err != nil {
+			return NewExportError(req.SubjectID, err)
+		}
+		if fp.Partial {
+			return NewExportError(req.SubjectID, ErrExportPartialFootprint)
+		}
+		req.Streams = fp.Streams
+		if len(req.Streams) == 0 {
+			return nil // resolved to no streams — nothing to export
+		}
+		// Constrain to this subject's events: a shared stream may also hold other subjects'
+		// events, and streaming the whole stream would leak them (see Export).
+		req.Filter = SubjectFilter(req.SubjectID)
+	} else if err := e.validateRequest(req); err != nil {
+		return err
 	}
 
 	return e.processEvents(ctx, req, handler)

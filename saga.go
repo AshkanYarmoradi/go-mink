@@ -47,6 +47,10 @@ type (
 
 	// SagaStore defines the interface for saga persistence.
 	SagaStore = adapters.SagaStore
+
+	// SubjectSagaPurger is the optional SagaStore extension for GDPR erasure of a
+	// subject's saga state (see NewSagaSubjectEraser).
+	SubjectSagaPurger = adapters.SubjectSagaPurger
 )
 
 // Re-export saga status constants from adapters.

@@ -70,6 +70,32 @@ func auditIDs(entries []*adapters.AuditEntry) []string {
 	return out
 }
 
+func TestAuditStore_DeleteAuditBySubject(t *testing.T) {
+	store := setupAuditTestStore(t)
+	seedPGAudit(t, store)
+	ctx := context.Background()
+
+	// Matches by actor: alice is the actor on 3 seeded entries (#1, #3, #5).
+	n, err := store.DeleteAuditBySubject(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+
+	// Matches by aggregate_id: order-1 remains on bob's entry (#2).
+	n, err = store.DeleteAuditBySubject(ctx, "order-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+
+	// Empty subject is a no-op.
+	n, err = store.DeleteAuditBySubject(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	// Only carol/order-3 (#4) survives.
+	remaining, err := store.Count(ctx, adapters.AuditQuery{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), remaining)
+}
+
 func TestAuditStore_Initialize(t *testing.T) {
 	store := setupAuditTestStore(t)
 	// Calling Initialize again should be idempotent.
