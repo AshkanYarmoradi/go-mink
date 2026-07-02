@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected the read-models documentation, which referenced non-existent symbols (`mink.Eq`, `mink.Contains`, `repo.Query`) instead of the real `mink.FilterOp*` constants and `repo.Find`.
 - **Data race (PostgreSQL adapter):** the `WithHealthCheck` goroutine read the adapter's `closed` flag on every tick while `Close()` wrote it without synchronization. The flag is now an `atomic.Bool`, removing the race flagged by the race detector.
 
+### Documentation
+- Overhauled the root `README.md`: fixed the broken documentation links (they now point to https://go-mink.dev), expanded the feature overview to cover the GDPR erasure/retention, audit-logging, anonymization, and subject-discovery capabilities, added a "Why Event Sourcing?" section and a Mermaid architecture diagram, an examples index, and a Contributing / Community section. Corrected the required Go version to 1.25+.
+- Added a `README.md` to every project under `examples/` (14 new files) plus an `examples/README.md` index with a suggested learning path.
+- Refreshed `CONTRIBUTING.md` (Makefile-based workflow, a project-layout map, and good-first-contribution ideas), `.github/SECURITY.md` (accurate supported-versions table and GitHub private vulnerability reporting), `CODE_OF_CONDUCT.md` (real enforcement contact), and the issue/PR templates.
+
 ## [1.0.0] - 2026-03-02
 
 First stable release consolidating all features from the development phases.

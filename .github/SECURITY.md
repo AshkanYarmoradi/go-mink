@@ -1,43 +1,49 @@
 # Security Policy
 
+We take the security of **go-mink** seriously. Thank you for helping keep the project and its users safe.
+
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are currently being supported with security updates.
+go-mink follows [Semantic Versioning](https://semver.org/). Security fixes are applied to the latest stable release line.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.x.x   | :white_check_mark: |
-| < 0.4.0 | :x:                |
+| 1.0.x   | :white_check_mark: |
+| < 1.0.0 (pre-release / RC) | :x: |
+
+Because go-mink is a library, the most effective way to receive security fixes is to stay on the latest tagged release (`go get go-mink.dev@latest`).
 
 ## Reporting a Vulnerability
 
-We take the security of **go-mink** seriously. If you believe you have found a security vulnerability in go-mink, please report it to us as described below.
+**Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
 
-**Please do not report security vulnerabilities through public GitHub issues.**
+Instead, report them privately through GitHub's coordinated disclosure workflow:
 
-### How to Report
+1. Go to the [**Security** tab](https://github.com/AshkanYarmoradi/go-mink/security) of the repository.
+2. Click **"Report a vulnerability"** to open a private security advisory (GitHub Private Vulnerability Reporting).
+3. Fill in the details described below.
 
-If you believe you have found a security vulnerability, please email us at [security@go-mink.dev](mailto:security@go-mink.dev) (replace with actual email if available, or instruct to use GitHub Security Advisories).
-
-You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
+This keeps the report confidential between you and the maintainers until a fix is released.
 
 ### What to Include
 
-Please include the following details in your report:
+A good report helps us reproduce and fix the issue quickly. Please include as much of the following as you can:
 
-- The type of issue (e.g., buffer overflow, SQL injection, cross-site scripting, etc.)
-- Full paths of source file(s) related to the manifestation of the issue
-- The location of the affected source code (tag/branch/commit or direct URL)
-- Any special configuration required to reproduce the issue
-- Step-by-step instructions to reproduce the issue
-- Proof-of-concept or exploit code (if possible)
-- Impact of the issue, including how an attacker might exploit the issue
+- The type of issue (e.g., data exposure, injection, authentication/authorization flaw, cryptographic weakness).
+- The affected component and version (tag/branch/commit, or a direct source URL).
+- Full paths of the source file(s) involved.
+- Any special configuration required to reproduce.
+- Step-by-step instructions to reproduce the behavior.
+- Proof-of-concept or exploit code, if possible.
+- The impact — how an attacker might exploit the issue.
 
-### Disclosure Policy
+### Our Commitment
 
-1.  **Initial Report**: Once we receive your report, we will acknowledge receipt within 48 hours and begin our investigation.
-2.  **Assessment**: We will assess the vulnerability and determine its impact. We may contact you for further information.
-3.  **Fix**: We will work on a fix for the vulnerability. We will keep you updated on our progress.
-4.  **Disclosure**: Once the fix is ready and released, we will publicly disclose the vulnerability. We will give you credit for the discovery if you wish.
+- **Acknowledgement** within **48 hours** of your report.
+- **Assessment** of severity and impact, keeping you updated as we investigate (we may reach out for more detail).
+- **Fix & release** — we develop a fix, release it, and publish an advisory.
+- **Credit** — with your permission, we'll credit you in the advisory and release notes.
 
-Thank you for helping keep go-mink safe!
+If you do not receive an acknowledgement within 48 hours, please open a *non-sensitive* placeholder issue asking us to check our security advisories (without disclosing any details), so we can follow up.
+
+Thank you for practicing responsible disclosure and helping make go-mink safer for everyone. 🔐
