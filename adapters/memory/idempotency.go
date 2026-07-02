@@ -9,7 +9,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.IdempotencyStore = (*IdempotencyStore)(nil)
+var (
+	_ adapters.IdempotencyStore         = (*IdempotencyStore)(nil)
+	_ adapters.SubjectIdempotencyPurger = (*IdempotencyStore)(nil)
+)
 
 // IdempotencyStore provides an in-memory implementation of adapters.IdempotencyStore.
 // It is useful for testing and development but should not be used in production
@@ -171,6 +174,26 @@ func (s *IdempotencyStore) Delete(ctx context.Context, key string) error {
 
 	delete(s.records, key)
 	return nil
+}
+
+// DeleteIdempotencyBySubject removes idempotency records whose AggregateID equals
+// subjectID, for GDPR erasure of any PII an app stored in the record's Response payload.
+// Returns the count removed. Implements adapters.SubjectIdempotencyPurger.
+func (s *IdempotencyStore) DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var count int64
+	for key, rec := range s.records {
+		if rec.AggregateID == subjectID {
+			delete(s.records, key)
+			count++
+		}
+	}
+	return count, nil
 }
 
 // Cleanup removes records older than the specified duration.

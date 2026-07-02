@@ -13,7 +13,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ adapters.OutboxStore = (*OutboxStore)(nil)
+var (
+	_ adapters.OutboxStore         = (*OutboxStore)(nil)
+	_ adapters.SubjectOutboxPurger = (*OutboxStore)(nil)
+)
 
 // OutboxStore provides a PostgreSQL implementation of adapters.OutboxStore.
 type OutboxStore struct {
@@ -129,11 +132,15 @@ func (s *OutboxStore) ScheduleInTx(ctx context.Context, tx interface{}, messages
 // insertMessages inserts outbox messages into the database within a transaction.
 func (s *OutboxStore) insertMessages(ctx context.Context, tx *sql.Tx, messages []*adapters.OutboxMessage) error {
 	tableQ := s.fullTableName()
+	// scheduled_at/created_at default to the SERVER clock (NOW()) when the caller does not
+	// set them, so they are stamped on the same clock FetchPending compares against
+	// (scheduled_at <= NOW()). Defaulting to the client's time.Now() instead lets any
+	// client-ahead clock skew make a just-scheduled message briefly invisible to fetch.
 	query := `
 		INSERT INTO ` + tableQ + ` (
 			aggregate_id, event_type, destination, payload, headers,
 			status, attempts, max_attempts, scheduled_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), COALESCE($10::timestamptz, NOW()))
 		RETURNING id
 	`
 
@@ -143,14 +150,13 @@ func (s *OutboxStore) insertMessages(ctx context.Context, tx *sql.Tx, messages [
 			return fmt.Errorf("mink/postgres/outbox: failed to marshal headers: %w", err)
 		}
 
-		scheduledAt := msg.ScheduledAt
-		if scheduledAt.IsZero() {
-			scheduledAt = time.Now()
+		// Pass NULL for an unset timestamp so COALESCE substitutes the server's NOW().
+		var scheduledAt, createdAt interface{}
+		if !msg.ScheduledAt.IsZero() {
+			scheduledAt = msg.ScheduledAt
 		}
-
-		createdAt := msg.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
+		if !msg.CreatedAt.IsZero() {
+			createdAt = msg.CreatedAt
 		}
 
 		maxAttempts := msg.MaxAttempts
@@ -379,6 +385,21 @@ func (s *OutboxStore) Cleanup(ctx context.Context, olderThan time.Duration) (int
 		return 0, fmt.Errorf("mink/postgres/outbox: failed to cleanup: %w", err)
 	}
 
+	return result.RowsAffected()
+}
+
+// DeleteOutboxBySubject removes outbox messages whose aggregate_id equals subjectID, for
+// GDPR erasure of outbox rows (notably dead-lettered rows whose route Transform emitted a
+// decrypted payload). Returns the count removed. Implements adapters.SubjectOutboxPurger.
+func (s *OutboxStore) DeleteOutboxBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	tableQ := s.fullTableName()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM `+tableQ+` WHERE aggregate_id = $1`, subjectID)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/outbox: failed to delete by subject: %w", err)
+	}
 	return result.RowsAffected()
 }
 

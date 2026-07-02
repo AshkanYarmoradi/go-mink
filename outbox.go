@@ -26,6 +26,10 @@ type OutboxMessage = adapters.OutboxMessage
 // OutboxStore defines the interface for outbox message persistence.
 type OutboxStore = adapters.OutboxStore
 
+// SubjectOutboxPurger is the optional OutboxStore extension for GDPR erasure of a
+// subject's outbox rows (see NewOutboxSubjectEraser).
+type SubjectOutboxPurger = adapters.SubjectOutboxPurger
+
 // Publisher publishes outbox messages to an external system.
 type Publisher interface {
 	// Publish sends one or more messages to the external system.

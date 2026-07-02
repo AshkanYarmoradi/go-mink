@@ -100,6 +100,54 @@ type SubscriptionOptions struct {
 }
 ```
 
+### GDPR Erasure Sub-Interfaces (Optional)
+
+For the GDPR **right to erasure**, adapters may implement small, *optional* sub-interfaces
+so `DataEraser` can reach a subject's data. Support is detected by type assertion — a store
+that does not implement its purger is reported as `Skipped`, never an error. The in-memory
+and PostgreSQL stores implement all of these.
+
+```go
+// Delete a data subject's rows from a sibling store (matched on the noted column).
+type SubjectAuditPurger interface {        // audit trail — actor OR aggregate_id == subject
+    DeleteAuditBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+type SubjectSagaPurger interface {         // saga state — correlation_id == subject
+    DeleteSagasBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+type SubjectOutboxPurger interface {       // outbox rows — aggregate_id == subject
+    DeleteOutboxBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+type SubjectIdempotencyPurger interface {  // idempotency records — aggregate_id == subject
+    DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error)
+}
+```
+
+Wrap a store as a `mink.SubjectErasable` with `mink.NewAuditSubjectEraser`,
+`NewSagaSubjectEraser`, `NewOutboxSubjectEraser`, `NewIdempotencySubjectEraser`, or
+`NewSnapshotSubjectEraser`, then register it on the eraser via `WithSubjectStore`. See the
+[GDPR guide](/docs/security#sibling-stores--audit-saga-snapshots-outbox-idempotency).
+
+### Subject Index (Optional)
+
+To resolve *which streams touch a subject* without scanning the whole store, an adapter (or
+a standalone index) may implement:
+
+```go
+type SubjectIndexAdapter interface { // read side
+    StreamsBySubject(ctx context.Context, subjectID string) ([]string, error)
+}
+type SubjectIndexWriter interface {  // write side (idempotent)
+    IndexSubjects(ctx context.Context, streamID string, subjectIDs []string) error
+}
+```
+
+The PostgreSQL event-store adapter implements a **drift-free** `SubjectIndexAdapter` by
+querying the events' own `$subjects` tags in JSONB — no separate table to fall out of sync.
+`mink.MemorySubjectIndex` and `postgres.SubjectIndex` implement both sides; inject either
+into a resolver with `mink.WithResolverIndex`. See the
+[subject index section](/docs/security#subject-index--backfill).
+
 ### Read Model Adapter (Future)
 
 ```go

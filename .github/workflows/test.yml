@@ -23,10 +23,10 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -57,7 +57,7 @@ jobs:
           fi
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
@@ -68,11 +68,44 @@ jobs:
         run: docker compose -f docker-compose.test.yml down
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.out
           retention-days: 7
+          # coverage.out is absent only when the test step already failed loudly, so don't
+          # add a redundant artifact warning on top of that failure.
+          if-no-files-found: ignore
+
+  sonarqube:
+    name: SonarQube Cloud
+    runs-on: ubuntu-latest
+    needs: test
+    # Run even when the coverage-threshold gate fails, so analysis still happens.
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # Full history lets SonarQube Cloud attribute new code and blame accurately.
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-report
+        # Scan still runs (without coverage) if the test job produced no report.
+        continue-on-error: true
+
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
 
   lint:
     name: Lint
@@ -82,10 +115,10 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
           cache: true
@@ -116,10 +149,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -137,7 +170,7 @@ jobs:
         run: go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/memory/ 2>&1 | tee -a benchmark-results.txt
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark-results
@@ -167,10 +200,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -187,7 +220,7 @@ jobs:
         run: go test -run='TestAdapterScale' -v -timeout=10m -count=1 ./adapters/postgres/ 2>&1 | tee -a benchmark-postgres-results.txt
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark-postgres-results
@@ -208,10 +241,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true

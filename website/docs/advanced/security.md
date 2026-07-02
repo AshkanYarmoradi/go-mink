@@ -178,6 +178,13 @@ erasure) and **data export** (right to access) are covered below, and
 [**Audit Logging**](/docs/advanced/audit-logging) provides the queryable trail of
 *who changed what, when* that many regimes require (e.g. GDPR Article 30).
 
+:::tip Full guide
+This page is the encryption + primitives reference. For the complete, task-oriented
+workflow — subject discovery, one-call **`DataEraser`** (with sibling-store erasure,
+blast-radius guard, and a verification certificate), retention, and the subject index —
+see **[GDPR & Data Governance](/docs/security)**.
+:::
+
 ### Crypto-Shredding
 
 Make personal data permanently unrecoverable by revoking encryption keys. Since PII fields are encrypted with per-tenant keys, revoking a tenant's key makes all their encrypted data unreadable -- even though the events remain in the store.
@@ -230,6 +237,18 @@ provider.RevokeKey("tenant-B")
 // Events remain in the store (audit trail preserved)
 // Non-encrypted fields (name, country) are still readable
 ```
+
+**Portable revocation.** Revocation is an *optional* provider capability
+(`encryption.Revocable`). Call it via `encryption.Revoke(provider, keyID)` /
+`encryption.IsRevoked(...)` rather than type-asserting — a provider that does not support
+it returns `encryption.ErrRevocationUnsupported`. The built-in providers implement it
+(local zeroes the key; **AWS KMS** schedules deletion — immediately unusable, destroyed
+after the 7–30 day window; **Vault Transit** deletes the key), with KMS/Vault gaining it
+through an optional client sub-interface so your injected client never changes.
+`encryption.RecoverableRevocable` adds a **grace window** (`SoftRevoke`/`Unrevoke`) so an
+accidental erasure can be undone before it becomes permanent, and
+`encryption.GetRevocationState` reports `NotRevoked` / `SoftRevoked` / `Revoked`. See the
+[GDPR guide](/docs/security#crypto-shredding-key-revocation) for the full erasure workflow.
 
 ### Data Export (Right to Access / Data Portability)
 
@@ -327,104 +346,60 @@ for _, e := range result.Events {
 fmt.Printf("Total: %d, Redacted: %d\n", result.TotalEvents, result.RedactedCount)
 ```
 
-### Data Retention
+### Data Erasure (Right to be Forgotten)
+
+`DataEraser` is the erasure counterpart to `DataExporter`: in one call it resolves the
+subject, revokes its encryption keys (crypto-shred), redacts read models, erases derived
+PII in **sibling stores** (audit trail, saga state, snapshots, outbox, idempotency), runs
+external-PII hooks, appends an optional marker, and emits a verification certificate.
 
 ```go
-// RetentionPolicy defines how long to keep data
-type RetentionPolicy struct {
-    // Default retention for all events
-    DefaultRetention time.Duration
-
-    // Override per event type
-    EventTypeRetention map[string]time.Duration
-
-    // Override per category
-    CategoryRetention map[string]time.Duration
-
-    // Events to never delete (legal holds, etc.)
-    ExemptEventTypes []string
-}
-
-// RetentionManager handles automatic deletion
-type RetentionManager struct {
-    store  *EventStore
-    policy RetentionPolicy
-}
-
-func (m *RetentionManager) EnforceRetention(ctx context.Context) (*RetentionReport, error) {
-    report := &RetentionReport{StartedAt: time.Now()}
-
-    // Find events past retention
-    for eventType, retention := range m.policy.EventTypeRetention {
-        cutoff := time.Now().Add(-retention)
-
-        expired, _ := m.store.QueryExpiredEvents(ctx, eventType, cutoff)
-        for _, event := range expired {
-            // Archive before deletion (optional)
-            m.archiveEvent(ctx, event)
-
-            // Delete from main store
-            m.store.DeleteEvent(ctx, event.ID)
-            report.DeletedCount++
-        }
-    }
-
-    return report, nil
-}
-
-// CLI integration
-// $ mink retention enforce --dry-run
-// $ mink retention report
+eraser := mink.NewDataEraser(store,
+    mink.WithEraseSubjectResolver(resolver),
+    mink.WithReadModelRedactor(usersReadModel),
+    mink.WithSubjectStore(mink.NewAuditSubjectEraser(auditStore)), // reach derived PII
+    mink.WithSharedKeyGuard(),                                     // refuse to nuke a shared per-tenant key
+    mink.WithCertificateSink(writeToAuditStore),
+)
+res, _ := eraser.Erase(ctx, mink.ErasureRequest{SubjectID: "user-123"})
+report, _ := eraser.Verify(ctx, "user-123") // is any recoverable PII left?
 ```
+
+`Erase` is idempotent; partial failures are reported in `res.Errors` / `res.Failed()`,
+never fatal. The full workflow — blast-radius guard, strict accountability, the discovery
+race, and the subject index — is documented in the
+[GDPR & Data Governance guide](/docs/security#data-erasure-article-17).
+
+### Data Retention
+
+`RetentionManager` enforces time-based retention **without deleting event rows** (the log
+stays append-only). A `RetentionPolicy` is a matcher (`Category` / `StreamPrefix` /
+`EventTypes` / `TenantID` / `MaxAge`) plus an action — `ActionShred` (revoke the key),
+or `ActionRedactFields` / `ActionAnonymize` (applied to read models via the policy's
+`Apply` hook, since go-mink cannot mutate event rows).
+
+```go
+mgr := mink.NewRetentionManager(store, []mink.RetentionPolicy{
+    {Name: "old-customers", Category: "Customer", MaxAge: 365 * 24 * time.Hour, Action: mink.ActionShred},
+})
+
+report, _ := mgr.DryRun(ctx) // preview, no changes
+report, _ = mgr.Apply(ctx)   // report.Matched, report.KeysRevoked, report.Skipped, report.Errors
+```
+
+`Apply` is a **single sweep** — schedule it yourself (cron/gocron). A `RedactFields` /
+`Anonymize` policy with no `Apply` hook is surfaced loudly via `mgr.Validate()` /
+`report.Failed()`, never silently skipped. See the
+[Retention section](/docs/security#retention-policies) of the GDPR guide.
 
 ### Audit Logging
 
-```go
-// AuditLog tracks all data access
-type AuditLog interface {
-    LogAccess(ctx context.Context, entry AuditEntry) error
-    Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error)
-}
-
-type AuditEntry struct {
-    ID           string
-    Timestamp    time.Time
-    UserID       string
-    Action       string // "read", "write", "delete", "export"
-    ResourceType string // "event", "aggregate", "projection"
-    ResourceID   string
-    IPAddress    string
-    UserAgent    string
-    Success      bool
-    ErrorMessage string
-}
-
-// Middleware for automatic audit logging
-func AuditMiddleware(log AuditLog) Middleware {
-    return func(next Handler) Handler {
-        return func(ctx context.Context, cmd Command) error {
-            entry := AuditEntry{
-                ID:           uuid.NewString(),
-                Timestamp:    time.Now(),
-                UserID:       auth.UserFromContext(ctx),
-                Action:       "write",
-                ResourceType: "aggregate",
-                ResourceID:   cmd.AggregateID(),
-                IPAddress:    request.IPFromContext(ctx),
-            }
-
-            err := next(ctx, cmd)
-            entry.Success = err == nil
-            if err != nil {
-                entry.ErrorMessage = err.Error()
-            }
-
-            log.LogAccess(ctx, entry)
-            return err
-        }
-    }
-}
-```
+The command **audit trail** — an immutable record of *who ran what command, when, and
+with what outcome* — has its own dedicated page: **[Audit Logging](/docs/advanced/audit-logging)**.
+It ships as a command-bus middleware (`mink.AuditMiddleware`) backed by an `AuditStore`
+(in-memory + PostgreSQL). For GDPR, a subject's audit rows can be **erased** via
+`mink.NewAuditSubjectEraser` (registered on the `DataEraser` — see
+[Sibling stores](/docs/security#sibling-stores--audit-saga-snapshots-outbox-idempotency)).
 
 ---
 

@@ -17,6 +17,10 @@ type (
 
 	// IdempotencyRecord stores information about a processed command.
 	IdempotencyRecord = adapters.IdempotencyRecord
+
+	// SubjectIdempotencyPurger is the optional IdempotencyStore extension for GDPR
+	// erasure of a subject's idempotency records (see NewIdempotencySubjectEraser).
+	SubjectIdempotencyPurger = adapters.SubjectIdempotencyPurger
 )
 
 // IdempotencyReplayError indicates a command was already processed.

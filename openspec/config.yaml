@@ -1,0 +1,50 @@
+schema: spec-driven
+
+# Project context — shown to AI when creating artifacts.
+context: |
+  Project: go-mink (module `go-mink.dev`) — an event-sourcing toolkit for Go:
+  append-only event store, CQRS command bus, projections/read models, sagas,
+  outbox, event versioning/upcasting, field-level encryption, GDPR data export,
+  and audit logging. Adapters: PostgreSQL (production) + in-memory (testing).
+
+  Current GDPR / data-governance state (v1.0.0 + Unreleased):
+  - Field-level **envelope encryption** (AES-256-GCM) — `FieldEncryptionConfig`
+    via `mink.WithFieldEncryption`, `WithEncryptedFields`, per-tenant keys via
+    `WithTenantKeyResolver`, `WithDecryptionErrorHandler`. Encryption metadata
+    lives in `Metadata.Custom` (no DB schema changes). Zero overhead when unused.
+  - `encryption.Provider` interface: `Encrypt`/`Decrypt`/`GenerateDataKey`/
+    `DecryptDataKey`/`Close`. Implementations: local, AWS KMS, HashiCorp Vault.
+    Crypto-shredding is *signalled* by `ErrKeyRevoked`/`KeyRevokedError` on
+    decrypt — but the Provider has **no standard Revoke method**; revocation is
+    out-of-band/provider-specific today.
+  - `DataExporter` (GDPR Article 15/20 — right to access/portability):
+    `Export`/`ExportStream`, filters, redacts crypto-shredded events.
+  - `AuditMiddleware` + `AuditStore` (append-only `mink_audit` table).
+
+  Roadmap (website/docs/roadmap.md) — next milestone **v1.1.0 "Data Governance"**:
+  - [x] Data export, [x] Audit logging
+  - [ ] **Data retention policies with configurable rules**  ← in scope here
+  - [ ] Time-travel queries (out of scope for this change)
+  Right-to-erasure (Article 17) is only half-built: crypto-shredding works on the
+  read side, but there is no first-class revoke API, no erasure orchestrator
+  (symmetric to DataExporter), and no retention engine.
+
+  Conventions (CONTRIBUTING.md / roadmap):
+  - Branch from `develop`; PRs target `develop`. `gofmt` + `golangci-lint`.
+  - Table-driven tests; document all public APIs; keep functions small/focused.
+  - Design philosophy: zero overhead when not configured; no DB-schema changes
+    where avoidable (use `Metadata.Custom`); options-pattern constructors
+    (`WithX(...)`); typed sentinel errors with `Is`/`Unwrap`.
+  - APIs are symmetric where possible (mirror `DataExporter` for erasure).
+
+rules:
+  proposal:
+    - Always include a "Non-Goals" subsection.
+    - Split "What Changes" into Required vs Good-to-have, mapped to capabilities.
+  specs:
+    - Requirements are Go-API-shaped (interfaces, option funcs, typed errors) and use SHALL/MUST.
+    - Every requirement has at least one #### Scenario with WHEN/THEN, including failure modes.
+    - Preserve go-mink invariants: append-only event store (never rewrite history), zero-overhead-when-unused, no forced DB-schema changes.
+  tasks:
+    - Group Required tasks before Good-to-have; order by dependency.
+    - Each capability needs table-driven tests + public-API docs; PRs target develop.

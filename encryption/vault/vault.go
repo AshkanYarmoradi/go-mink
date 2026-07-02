@@ -23,8 +23,24 @@ type VaultClient interface {
 	Decrypt(ctx context.Context, keyName string, ciphertext []byte) (plaintext []byte, err error)
 }
 
-// Compile-time interface check.
-var _ encryption.Provider = (*Provider)(nil)
+// VaultRevocationClient is an OPTIONAL extension of VaultClient. When the
+// injected client also implements it, the provider implements
+// encryption.Revocable and supports crypto-shredding (GDPR erasure) by deleting
+// the named Transit key so its ciphertext can never be decrypted again.
+type VaultRevocationClient interface {
+	// DeleteKey deletes the named Transit key (the key must allow deletion).
+	DeleteKey(ctx context.Context, keyName string) error
+	// KeyExists reports whether the named Transit key still exists.
+	KeyExists(ctx context.Context, keyName string) (bool, error)
+}
+
+// Compile-time interface checks. The Revocable assertion holds at the type level;
+// RevokeKey/IsRevoked return ErrRevocationUnsupported unless the injected client
+// also implements VaultRevocationClient.
+var (
+	_ encryption.Provider  = (*Provider)(nil)
+	_ encryption.Revocable = (*Provider)(nil)
+)
 
 // Provider implements encryption.Provider using HashiCorp Vault Transit.
 type Provider struct {
@@ -65,6 +81,17 @@ func (p *Provider) Encrypt(ctx context.Context, keyID string, plaintext []byte) 
 	return ciphertext, nil
 }
 
+// decryptError maps a decrypt failure to ErrKeyRevoked when keyID has been revoked
+// (crypto-shredded) — the Transit key was deleted — so a WithDecryptionErrorHandler
+// checking for ErrKeyRevoked recognizes it as shredded. Otherwise it is a genuine
+// ErrDecryptionFailed. The IsRevoked probe runs only on the (rare) error path.
+func (p *Provider) decryptError(keyID string, cause error) error {
+	if revoked, rerr := p.IsRevoked(keyID); rerr == nil && revoked {
+		return encryption.NewKeyRevokedError(keyID)
+	}
+	return encryption.NewDecryptionError(keyID, "", cause)
+}
+
 // Decrypt decrypts ciphertext using the Vault Transit key.
 func (p *Provider) Decrypt(ctx context.Context, keyID string, ciphertext []byte) ([]byte, error) {
 	if err := p.checkClosed(); err != nil {
@@ -73,7 +100,7 @@ func (p *Provider) Decrypt(ctx context.Context, keyID string, ciphertext []byte)
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, ciphertext)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt: %w", err))
+		return nil, p.decryptError(keyID, fmt.Errorf("vault decrypt: %w", err))
 	}
 	return plaintext, nil
 }
@@ -114,9 +141,58 @@ func (p *Provider) DecryptDataKey(ctx context.Context, keyID string, encryptedKe
 
 	plaintext, err := p.client.Decrypt(ctx, keyID, encryptedKey)
 	if err != nil {
-		return nil, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault decrypt DEK: %w", err))
+		return nil, p.decryptError(keyID, fmt.Errorf("vault decrypt DEK: %w", err))
 	}
 	return plaintext, nil
+}
+
+// RevokeKey crypto-shreds keyID by deleting its Vault Transit key. It implements
+// encryption.Revocable. It requires the injected client to implement
+// VaultRevocationClient, otherwise it returns ErrRevocationUnsupported. It is
+// idempotent: a key that no longer exists returns nil.
+func (p *Provider) RevokeKey(keyID string) error {
+	rc, err := p.revocationClient()
+	if err != nil {
+		return err
+	}
+	exists, err := rc.KeyExists(context.Background(), keyID)
+	if err != nil {
+		return encryption.NewEncryptionError(keyID, "", fmt.Errorf("vault key exists: %w", err))
+	}
+	if !exists {
+		return nil // idempotent: already deleted
+	}
+	if err := rc.DeleteKey(context.Background(), keyID); err != nil {
+		return encryption.NewEncryptionError(keyID, "", fmt.Errorf("vault delete key: %w", err))
+	}
+	return nil
+}
+
+// IsRevoked reports whether keyID's Transit key has been deleted.
+// It implements encryption.Revocable.
+func (p *Provider) IsRevoked(keyID string) (bool, error) {
+	rc, err := p.revocationClient()
+	if err != nil {
+		return false, err
+	}
+	exists, err := rc.KeyExists(context.Background(), keyID)
+	if err != nil {
+		return false, encryption.NewDecryptionError(keyID, "", fmt.Errorf("vault key exists: %w", err))
+	}
+	return !exists, nil
+}
+
+// revocationClient returns the injected client as a VaultRevocationClient, or
+// ErrRevocationUnsupported if it does not support revocation.
+func (p *Provider) revocationClient() (VaultRevocationClient, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+	rc, ok := p.client.(VaultRevocationClient)
+	if !ok {
+		return nil, encryption.ErrRevocationUnsupported
+	}
+	return rc, nil
 }
 
 // Close marks the provider as closed.

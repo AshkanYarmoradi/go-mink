@@ -13,7 +13,10 @@ import (
 )
 
 // Ensure interface compliance at compile time
-var _ mink.SagaStore = (*SagaStore)(nil)
+var (
+	_ mink.SagaStore         = (*SagaStore)(nil)
+	_ mink.SubjectSagaPurger = (*SagaStore)(nil)
+)
 
 // SagaStore provides a PostgreSQL implementation of mink.SagaStore.
 type SagaStore struct {
@@ -363,6 +366,23 @@ func (s *SagaStore) Delete(ctx context.Context, sagaID string) error {
 	}
 
 	return nil
+}
+
+// DeleteSagasBySubject removes saga states whose correlation_id equals subjectID, for
+// GDPR erasure of saga state that copied the subject's PII out of events. Returns the
+// number removed. Implements mink.SubjectSagaPurger.
+func (s *SagaStore) DeleteSagasBySubject(ctx context.Context, subjectID string) (int64, error) {
+	if subjectID == "" {
+		return 0, nil
+	}
+	tableQ := s.fullTableName()
+	query := `DELETE FROM ` + tableQ + ` WHERE correlation_id = $1`
+
+	result, err := s.db.ExecContext(ctx, query, subjectID)
+	if err != nil {
+		return 0, fmt.Errorf("mink/postgres/saga: failed to delete sagas by subject: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 // Close releases any resources (no-op for this implementation as db is shared).

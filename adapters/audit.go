@@ -126,3 +126,15 @@ type AuditStore interface {
 	// Close releases any resources held by the store.
 	Close() error
 }
+
+// SubjectAuditPurger is an OPTIONAL AuditStore extension supporting GDPR erasure of a
+// data subject's audit trail. Because the audit log records who/what/when in plaintext
+// (Actor, TenantID, arbitrary Metadata, and raw Error strings that can carry PII),
+// crypto-shredding the events does NOT reach it — a store must delete the subject's
+// rows explicitly. Stores MAY implement it; mink.NewAuditSubjectEraser detects support
+// and skips (rather than fails) when absent.
+type SubjectAuditPurger interface {
+	// DeleteAuditBySubject removes audit entries attributable to subjectID — those
+	// whose Actor or AggregateID equals subjectID — and returns the count removed.
+	DeleteAuditBySubject(ctx context.Context, subjectID string) (int64, error)
+}

@@ -61,6 +61,14 @@ func TestContract_LocalProvider(t *testing.T) {
 		providertest.AssertDecryptDataKeyError(t, p, keyID)
 	})
 
+	// RevokeMakesDecryptFail: the local provider is Revocable, so this exercises the
+	// crypto-shred property helper (encrypt → revoke → decrypt fails) end to end.
+	t.Run("RevokeMakesDecryptFail", func(t *testing.T) {
+		p := newLocalProvider(t, keyID)
+		defer func() { _ = p.Close() }()
+		providertest.AssertRevokeMakesDecryptFail(t, p, keyID)
+	})
+
 	// CloseBlocksAllOperations closes the provider itself, so it needs its own
 	// instance separate from the success-path checks above.
 	t.Run("CloseBlocksAllOperations", func(t *testing.T) {

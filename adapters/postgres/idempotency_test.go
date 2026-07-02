@@ -42,6 +42,24 @@ func setupIdempotencyTestStore(t *testing.T) *IdempotencyStore {
 	return store
 }
 
+func TestIdempotencyStore_DeleteBySubject(t *testing.T) {
+	store := setupIdempotencyTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, store.Store(ctx, &adapters.IdempotencyRecord{Key: "k1", CommandType: "C", AggregateID: "u1", ProcessedAt: time.Now(), ExpiresAt: exp}))
+	require.NoError(t, store.Store(ctx, &adapters.IdempotencyRecord{Key: "k2", CommandType: "C", AggregateID: "u2", ProcessedAt: time.Now(), ExpiresAt: exp}))
+
+	n, err := store.DeleteIdempotencyBySubject(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+
+	// u2's record still resolves.
+	rec, err := store.Get(ctx, "k2")
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Equal(t, "u2", rec.AggregateID)
+}
+
 func TestIdempotencyStore_Initialize(t *testing.T) {
 	store := setupIdempotencyTestStore(t)
 	ctx := context.Background()
