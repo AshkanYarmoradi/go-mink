@@ -92,6 +92,15 @@ func TestBackfillSubjectIndex_RequiresTaggerAndWriter(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestBackfillSubjectIndex_ScanNotSupported(t *testing.T) {
+	// An adapter without SubscriptionAdapter can't be scanned; backfill reports the
+	// missing subscription capability (not the export sentinel with its irrelevant
+	// "provide explicit stream IDs" guidance).
+	store := New(&minimalExportAdapter{})
+	_, err := BackfillSubjectIndex(context.Background(), store, userIDTagger, NewMemorySubjectIndex(), 0)
+	assert.ErrorIs(t, err, ErrSubscriptionNotSupported)
+}
+
 func TestStore_AppendWritesSubjectIndex(t *testing.T) {
 	ctx := context.Background()
 	idx := NewMemorySubjectIndex()

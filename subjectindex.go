@@ -86,8 +86,9 @@ func dedupeStrings(in []string) []string {
 // migration step that lets a subject index cover events written BEFORE subject tagging
 // was enabled — making historical subjects fully resolvable, and therefore fully
 // erasable, instead of permanently Partial. It reads RAW events (no decryption) and
-// requires a scannable adapter (SubscriptionAdapter). Returns the number of events
-// scanned. Safe to re-run (IndexSubjects is idempotent).
+// requires a scannable adapter (SubscriptionAdapter) — returns ErrSubscriptionNotSupported
+// otherwise. Returns the number of events scanned. Safe to re-run (IndexSubjects is
+// idempotent).
 func BackfillSubjectIndex(ctx context.Context, store *EventStore, tagger SubjectTagger, writer SubjectIndexWriter, batchSize int) (int, error) {
 	if tagger == nil || writer == nil {
 		return 0, fmt.Errorf("mink: BackfillSubjectIndex requires a tagger and a writer")
@@ -96,7 +97,10 @@ func BackfillSubjectIndex(ctx context.Context, store *EventStore, tagger Subject
 		batchSize = 1000
 	}
 	if _, ok := store.Adapter().(adapters.SubscriptionAdapter); !ok {
-		return 0, ErrExportScanNotSupported
+		// The backfill scans every event, which needs a SubscriptionAdapter. Report that
+		// missing capability directly — not the export sentinel, whose "provide explicit
+		// stream IDs" guidance is meaningless here (backfill takes no stream IDs).
+		return 0, ErrSubscriptionNotSupported
 	}
 
 	var scanned int
