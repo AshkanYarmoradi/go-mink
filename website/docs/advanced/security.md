@@ -108,6 +108,14 @@ encConfig := mink.NewFieldEncryptionConfig(
     mink.WithTenantKeyResolver(func(tenantID string) string {
         return "tenant-" + tenantID
     }),
+    // Optional: per-subject keys (alias of WithTenantKeyResolver). With a
+    // SubjectTagger configured, an event whose Metadata.TenantID is empty — every
+    // event persisted via SaveAggregate — keys off its first $subjects tag, so
+    // aggregate PII is individually crypto-shreddable. Prefer this name for
+    // per-subject/GDPR setups; keep WithTenantKeyResolver for per-tenant.
+    // mink.WithSubjectKeyResolver(func(subjectID string) string {
+    //     return "subject-" + subjectID
+    // }),
 
     // Optional: crypto-shredding handler
     mink.WithDecryptionErrorHandler(func(err error, eventType string, metadata mink.Metadata) error {
@@ -122,6 +130,21 @@ encConfig := mink.NewFieldEncryptionConfig(
 // Create event store with encryption
 store := mink.New(adapter, mink.WithFieldEncryption(encConfig))
 ```
+
+:::tip Per-subject keys for aggregate PII (GDPR)
+Which master key wraps each event is chosen by precedence: **(1)** `Metadata.TenantID`,
+**(2)** the first `$subjects` tag, **(3)** the default key. Events persisted via
+`SaveAggregate` carry an empty `Metadata{}` (no `TenantID`), so with a
+[`WithSubjectTagger`](/docs/security) configured they key off their subject tag — the
+**same** tagger that defines a subject's erasure footprint also selects its shred key,
+so the two can never drift. Pair it with `WithSubjectKeyResolver` (a legibility alias of
+`WithTenantKeyResolver`) to map each subject to its own key, making that subject's PII
+individually crypto-shreddable. This is the mechanism that lets you *avoid* shared keys;
+[`WithSharedKeyGuard`](/docs/security) is the complementary backstop that *detects* a key
+still shared across subjects before an erasure revokes it. Decryption is unaffected — the
+wrapping key id is read from each event's own metadata, so events written under either
+rule decrypt with no migration.
+:::
 
 ### How It Works
 

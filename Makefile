@@ -3,9 +3,23 @@
 # All test infrastructure is defined in docker-compose.test.yml
 # This is the single source of truth for both local and CI environments.
 
-.PHONY: all build test test-unit test-unit-race test-coverage lint fmt clean help
+.PHONY: all build test test-unit test-unit-race test-coverage lint golangci-lint fmt clean help
 .PHONY: infra-up infra-down infra-logs infra-ps
 .PHONY: benchmark benchmark-quick benchmark-adapters benchmark-adapters-pg
+
+# Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with the version input
+# of golangci/golangci-lint-action in .github/workflows/test.yml so local `make lint`
+# and CI run byte-for-byte the same linter.
+GOLANGCI_LINT_VERSION ?= v2.12.2
+
+# Repo-local tool bin. Pinned tools install here (never onto $PATH / $GOPATH/bin), so
+# `make lint` is reproducible regardless of what golangci-lint or Go toolchain a
+# developer happens to have installed. golangci-lint's bundled type-checker must be
+# built with a Go >= the toolchain that compiled the code it inspects; installing it
+# with the repo's own `go` guarantees that and avoids the export-data mismatch that a
+# stale, globally-installed binary produces on a newer Go.
+LOCALBIN := $(CURDIR)/bin
+GOLANGCI_LINT := $(LOCALBIN)/golangci-lint
 
 # Default target
 all: lint test build
@@ -105,8 +119,17 @@ infra-ps:
 # Code Quality
 #------------------------------------------------------------------------------
 
-lint:
-	golangci-lint run ./...
+lint: golangci-lint
+	$(GOLANGCI_LINT) run ./...
+
+# Ensure the pinned golangci-lint is present in ./bin, (re)installing it with the
+# repo's own Go toolchain when missing or version-mismatched.
+golangci-lint:
+	@if ! test -x "$(GOLANGCI_LINT)" || ! "$(GOLANGCI_LINT)" version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION:v%=%)"; then \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) into $(LOCALBIN)..."; \
+		mkdir -p "$(LOCALBIN)"; \
+		GOBIN="$(LOCALBIN)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
+	fi
 
 fmt:
 	go fmt ./...
@@ -146,7 +169,7 @@ help:
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make build         - Build all packages"
-	@echo "  make lint          - Run golangci-lint"
+	@echo "  make lint          - Run golangci-lint (auto-installs pinned $(GOLANGCI_LINT_VERSION) into ./bin)"
 	@echo "  make fmt           - Format code"
 	@echo ""
 	@echo "Cleanup:"

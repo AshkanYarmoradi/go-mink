@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Repo-local tool bin (pinned dev tools installed by the Makefile, e.g. golangci-lint)
+/bin/
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage

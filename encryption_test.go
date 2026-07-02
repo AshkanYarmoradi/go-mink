@@ -294,6 +294,115 @@ func TestFieldEncryptionConfig_TenantKeyResolver(t *testing.T) {
 	assert.Contains(t, string(decData2), "test@example.com")
 }
 
+// TestFieldEncryptionConfig_ResolveKeyID_Precedence exhaustively pins the
+// master-key selection precedence: (1) explicit TenantID, (2) the first $subjects
+// tag, (3) defaultKeyID — including the zero-overhead paths (no resolver / no tag).
+func TestFieldEncryptionConfig_ResolveKeyID_Precedence(t *testing.T) {
+	const defaultKey = "default-key"
+	byID := func(id string) string { return "key:" + id }
+	always := func(string) string { return "" } // resolver that never matches
+
+	tests := []struct {
+		name     string
+		resolver func(string) string
+		metadata Metadata
+		want     string
+	}{
+		{
+			name:     "explicit tenant wins over a present subject tag",
+			resolver: byID,
+			metadata: setSubjectTags(Metadata{TenantID: "tenant-1"}, []string{"subj-9"}),
+			want:     "key:tenant-1",
+		},
+		{
+			name:     "subject-tag fallback when tenant is empty",
+			resolver: byID,
+			metadata: setSubjectTags(Metadata{}, []string{"subj-9"}),
+			want:     "key:subj-9",
+		},
+		{
+			name:     "first subject tag is the primary subject",
+			resolver: byID,
+			metadata: setSubjectTags(Metadata{}, []string{"subj-primary", "subj-other"}),
+			want:     "key:subj-primary",
+		},
+		{
+			name:     "tenant set, no subject tag",
+			resolver: byID,
+			metadata: Metadata{TenantID: "tenant-1"},
+			want:     "key:tenant-1",
+		},
+		{
+			name:     "no tenant and no subject tag resolves to default",
+			resolver: byID,
+			metadata: Metadata{},
+			want:     defaultKey,
+		},
+		{
+			name:     "resolver returning empty falls through to default",
+			resolver: always,
+			metadata: setSubjectTags(Metadata{}, []string{"subj-9"}),
+			want:     defaultKey,
+		},
+		{
+			name:     "no resolver: subject tag is ignored, default returned (zero overhead)",
+			resolver: nil,
+			metadata: setSubjectTags(Metadata{}, []string{"subj-9"}),
+			want:     defaultKey,
+		},
+		{
+			name:     "no resolver: tenant is ignored, default returned",
+			resolver: nil,
+			metadata: Metadata{TenantID: "tenant-1"},
+			want:     defaultKey,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := NewFieldEncryptionConfig(
+				WithDefaultKeyID(defaultKey),
+				WithTenantKeyResolver(tt.resolver),
+			)
+			assert.Equal(t, tt.want, config.resolveKeyID(tt.metadata))
+		})
+	}
+}
+
+// TestFieldEncryptionConfig_SubjectKeyResolver_Alias verifies WithSubjectKeyResolver
+// is a pure legibility alias of WithTenantKeyResolver: it configures the same single
+// resolver field, so the two are interchangeable and, when both are passed, the
+// last-applied option wins (no second, separately-tracked resolver).
+func TestFieldEncryptionConfig_SubjectKeyResolver_Alias(t *testing.T) {
+	fn := func(id string) string { return "key:" + id }
+
+	t.Run("interchangeable with WithTenantKeyResolver", func(t *testing.T) {
+		viaSubject := NewFieldEncryptionConfig(WithDefaultKeyID("d"), WithSubjectKeyResolver(fn))
+		viaTenant := NewFieldEncryptionConfig(WithDefaultKeyID("d"), WithTenantKeyResolver(fn))
+
+		for _, md := range []Metadata{
+			{TenantID: "t1"},
+			setSubjectTags(Metadata{}, []string{"s1"}),
+			setSubjectTags(Metadata{TenantID: "t2"}, []string{"s2"}),
+			{},
+		} {
+			assert.Equal(t, viaTenant.resolveKeyID(md), viaSubject.resolveKeyID(md))
+		}
+	})
+
+	t.Run("last-applied option wins when both are set", func(t *testing.T) {
+		fnA := func(id string) string { return "A:" + id }
+		fnB := func(id string) string { return "B:" + id }
+		md := Metadata{TenantID: "x"}
+
+		subjectLast := NewFieldEncryptionConfig(WithDefaultKeyID("d"), WithTenantKeyResolver(fnA), WithSubjectKeyResolver(fnB))
+		tenantLast := NewFieldEncryptionConfig(WithDefaultKeyID("d"), WithSubjectKeyResolver(fnB), WithTenantKeyResolver(fnA))
+
+		assert.Equal(t, "B:x", subjectLast.resolveKeyID(md))
+		assert.Equal(t, "A:x", tenantLast.resolveKeyID(md))
+	})
+}
+
 func TestFieldEncryptionConfig_CryptoShredding(t *testing.T) {
 	var handlerCalled bool
 	provider, config := testEncConfig(t, "master-1",

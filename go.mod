@@ -3,9 +3,9 @@ module go-mink.dev
 go 1.25.0
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.42.0
-	github.com/aws/aws-sdk-go-v2/service/kms v1.53.4
-	github.com/aws/aws-sdk-go-v2/service/sns v1.40.1
+	github.com/aws/aws-sdk-go-v2 v1.42.1
+	github.com/aws/aws-sdk-go-v2/service/kms v1.53.6
+	github.com/aws/aws-sdk-go-v2/service/sns v1.40.3
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/huh v1.0.0
@@ -28,9 +28,9 @@ require (
 
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
-	github.com/aws/smithy-go v1.27.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
+	github.com/aws/smithy-go v1.27.3 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
@@ -52,7 +52,7 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
@@ -66,8 +66,8 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.68.1 // indirect
-	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/prometheus/common v0.69.0 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
