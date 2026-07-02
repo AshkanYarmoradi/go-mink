@@ -124,7 +124,13 @@ func (s RevocationState) String() string {
 // RevocationState of a key. Providers with a grace window (RecoverableRevocable)
 // SHOULD implement it so callers can tell SoftRevoked from Revoked. Detect support
 // with GetRevocationState, which falls back to IsRevoked for providers without it.
+//
+// It embeds Revocable — reporting a revocation state only makes sense for a provider
+// that can revoke — so GetRevocationState's contract holds: a provider that is not
+// Revocable is never treated as stateful, and GetRevocationState reports it as
+// unsupported. This mirrors RecoverableRevocable, which also embeds Revocable.
 type StatefulRevocable interface {
+	Revocable
 	RevocationState(keyID string) (RevocationState, error)
 }
 
