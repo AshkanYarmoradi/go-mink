@@ -36,7 +36,7 @@ type FieldEncryptionConfig struct {
 	provider          encryption.Provider
 	fields            map[string][]string                                        // eventType → field paths
 	defaultKeyID      string                                                     // default master key ID
-	tenantKeyResolver func(tenantID string) string                               // per-tenant key support
+	tenantKeyResolver func(id string) string                                     // maps a tenant OR subject id to a master key (see resolveKeyID); set via WithTenantKeyResolver / WithSubjectKeyResolver
 	onDecryptionError func(err error, eventType string, metadata Metadata) error // crypto-shredding handler
 }
 
@@ -60,6 +60,14 @@ func WithDefaultKeyID(keyID string) EncryptionOption {
 
 // WithEncryptedFields registers field paths to encrypt for a given event type.
 // Field paths are dot-separated JSON field names (e.g., "email", "address.street").
+//
+// Which master key wraps each event is chosen by resolveKeyID. When a SubjectTagger
+// (WithSubjectTagger) is configured, an event with an empty Metadata.TenantID — every
+// event persisted via SaveAggregate — keys off its first $subjects tag instead of the
+// default key, so the one tagger that defines a subject's erasure footprint also
+// selects its shred key; the two can never drift. Pair with WithTenantKeyResolver or
+// WithSubjectKeyResolver to map that id to a per-subject key. See WithSharedKeyGuard
+// (blast-radius guard) for the complementary detection of keys shared across subjects.
 func WithEncryptedFields(eventType string, fields ...string) EncryptionOption {
 	return func(c *FieldEncryptionConfig) {
 		if c.fields == nil {
@@ -71,7 +79,29 @@ func WithEncryptedFields(eventType string, fields ...string) EncryptionOption {
 
 // WithTenantKeyResolver sets a function that maps tenant IDs to master key IDs.
 // This enables per-tenant encryption keys for multi-tenant applications.
+//
+// The resolver also drives the subject-tag fallback in resolveKeyID: when an event's
+// Metadata.TenantID is empty (e.g. every SaveAggregate event) but a SubjectTagger has
+// recorded a $subjects tag, the first tag is passed to this same resolver, giving
+// aggregate PII a per-subject key. For per-subject setups prefer the WithSubjectKeyResolver
+// alias, which reads by intent. Cross-link: WithSharedKeyGuard.
 func WithTenantKeyResolver(resolver func(tenantID string) string) EncryptionOption {
+	return func(c *FieldEncryptionConfig) {
+		c.tenantKeyResolver = resolver
+	}
+}
+
+// WithSubjectKeyResolver sets a function that maps a data-subject id to a master key ID,
+// enabling per-subject encryption keys so a subject's PII can be individually
+// crypto-shredded (GDPR Article 17) by revoking its key.
+//
+// It is a legibility alias of WithTenantKeyResolver: both configure the one resolver
+// used by resolveKeyID, which selects the input as metadata.TenantID when present and
+// otherwise the first $subjects tag (WithSubjectTagger) — so with a tagger configured,
+// SaveAggregate events resolve to a per-subject key. Prefer this name for per-subject /
+// GDPR setups and WithTenantKeyResolver for per-tenant ones. Because both set the same
+// field, passing both is unambiguous: the last option applied wins.
+func WithSubjectKeyResolver(resolver func(subjectID string) string) EncryptionOption {
 	return func(c *FieldEncryptionConfig) {
 		c.tenantKeyResolver = resolver
 	}
@@ -132,14 +162,37 @@ func (c *FieldEncryptionConfig) HasEncryptedFields(eventType string) bool {
 }
 
 // resolveKeyID determines the master key ID for a given metadata context.
-// It checks the tenant key resolver first, then falls back to the default key.
+//
+// Precedence (highest first):
+//  1. metadata.TenantID, when non-empty — explicit per-tenant selection (unchanged).
+//  2. the primary data subject — the first $subjects tag recorded by the configured
+//     SubjectTagger before encryption (GetSubjectTags(metadata)[0]). This makes
+//     SaveAggregate-persisted events, which carry an empty Metadata{} and therefore
+//     no TenantID, resolvable to a per-subject master key so their PII is individually
+//     crypto-shreddable. See setSubjectTags / prepareEventData.
+//  3. c.defaultKeyID — the unchanged fallback.
+//
+// The chosen tenant/subject id is passed through c.tenantKeyResolver (also settable
+// via the WithSubjectKeyResolver alias). Zero overhead when unused: with no resolver
+// this returns defaultKeyID, and with no tagger there are no tags to inspect, so the
+// pre-change behavior is preserved exactly. Decryption never re-runs this — the
+// wrapping key id is read from the event's own metadata (GetEncryptionKeyID) — so
+// events written under either rule decrypt unchanged, with no migration.
 func (c *FieldEncryptionConfig) resolveKeyID(metadata Metadata) string {
-	if c.tenantKeyResolver != nil && metadata.TenantID != "" {
-		if keyID := c.tenantKeyResolver(metadata.TenantID); keyID != "" {
-			return keyID
+	if c.tenantKeyResolver != nil {
+		subject := metadata.TenantID // 1. explicit tenant wins (unchanged)
+		if subject == "" {           // 2. else the primary data subject
+			if tags := GetSubjectTags(metadata); len(tags) > 0 {
+				subject = tags[0]
+			}
+		}
+		if subject != "" {
+			if keyID := c.tenantKeyResolver(subject); keyID != "" {
+				return keyID
+			}
 		}
 	}
-	return c.defaultKeyID
+	return c.defaultKeyID // 3. unchanged fallback
 }
 
 // encryptFields encrypts the configured fields in the serialized event data.

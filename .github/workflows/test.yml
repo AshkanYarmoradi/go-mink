@@ -137,6 +137,9 @@ jobs:
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
+        with:
+          # Pin the linter version; keep in sync with GOLANGCI_LINT_VERSION in the Makefile.
+          version: v2.12.2
 
   benchmark:
     name: Benchmark
