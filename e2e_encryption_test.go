@@ -3,6 +3,7 @@ package mink_test
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -305,6 +306,164 @@ func TestE2E_Encryption_PerTenantKeys(t *testing.T) {
 	eventsB, err := store.Load(ctx, "User-tenantB-1")
 	require.NoError(t, err)
 	assert.Equal(t, "b@tenant.com", eventsB[0].Data.(UserRegistered).Email)
+}
+
+// =============================================================================
+// Test: Subject-scoped keys — aggregate PII keys off its $subjects tag
+// =============================================================================
+
+// userSubjectTagger derives the data subject from a UserRegistered payload's
+// user_id. Applied at the shared prepare-event hook, it tags Append and
+// SaveAggregate events alike, before encryption, so resolveKeyID can key off it.
+func userSubjectTagger(_ string, data []byte, _ mink.Metadata) []string {
+	var e struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(data, &e); err != nil || e.UserID == "" {
+		return nil
+	}
+	return []string{e.UserID}
+}
+
+// newSubjectScopedSetup builds a store that encrypts UserRegistered PII under a
+// per-subject master key ("key-<subjectID>"), tagging the subject from user_id.
+// keyIDs are pre-loaded into the provider (resolvable keys plus "default-key").
+func newSubjectScopedSetup(t *testing.T, keyIDs ...string) (*local.Provider, *mink.EventStore) {
+	t.Helper()
+	opts := make([]local.Option, 0, len(keyIDs))
+	for _, id := range keyIDs {
+		opts = append(opts, local.WithKey(id, testEncryptionKey(t)))
+	}
+	provider, err := local.New(opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Close() })
+
+	config := mink.NewFieldEncryptionConfig(
+		mink.WithEncryptionProvider(provider),
+		mink.WithDefaultKeyID("default-key"),
+		mink.WithEncryptedFields("UserRegistered", "email", "phone"),
+		mink.WithSubjectKeyResolver(func(subjectID string) string { return "key-" + subjectID }),
+	)
+	store := mink.New(memory.NewAdapter(),
+		mink.WithFieldEncryption(config),
+		mink.WithSubjectTagger(userSubjectTagger),
+	)
+	store.RegisterEvents(UserRegistered{})
+	return provider, store
+}
+
+// TestE2E_Encryption_SubjectScopedKey_SaveAggregate is the ordering guard (task 1.2)
+// and the headline case (task 1.3a): a SaveAggregate event carries an empty
+// Metadata{}, yet its PII must be wrapped under the subject's own key — proving the
+// SubjectTagger ran before encryptFields and resolveKeyID saw the $subjects tag.
+func TestE2E_Encryption_SubjectScopedKey_SaveAggregate(t *testing.T) {
+	ctx := context.Background()
+	provider, store := newSubjectScopedSetup(t, "key-u1", "default-key")
+
+	user := newUserProfile("u1")
+	user.Register("Alice", "alice@example.com", "+1-555-0100")
+	require.NoError(t, store.SaveAggregate(ctx, user))
+
+	raw, err := store.LoadRaw(ctx, "User-u1", 0)
+	require.NoError(t, err)
+	require.Len(t, raw, 1)
+	assert.Equal(t, []string{"u1"}, mink.GetSubjectTags(raw[0].Metadata),
+		"the SubjectTagger must have tagged the subject in plaintext metadata")
+	assert.Equal(t, "key-u1", mink.GetEncryptionKeyID(raw[0].Metadata),
+		"aggregate event (empty metadata) must key off its subject tag, not defaultKeyID")
+
+	// Round-trips normally before revocation.
+	loaded := newUserProfile("u1")
+	require.NoError(t, store.LoadAggregate(ctx, loaded))
+	assert.Equal(t, "alice@example.com", loaded.Email)
+
+	// Crypto-shred the subject: revoking its key makes its PII permanently unrecoverable.
+	require.NoError(t, provider.RevokeKey("key-u1"))
+	require.Error(t, store.LoadAggregate(ctx, newUserProfile("u1")),
+		"after revoking the subject key, the event must fail to decrypt")
+}
+
+// TestE2E_Encryption_SubjectScopedKeys_ShredOneLeavesOther (task 1.3b): two subjects
+// get two distinct keys, so revoking one shreds only that subject — the individual
+// crypto-shred that subject-scoped keys unlock for aggregate PII.
+func TestE2E_Encryption_SubjectScopedKeys_ShredOneLeavesOther(t *testing.T) {
+	ctx := context.Background()
+	provider, store := newSubjectScopedSetup(t, "key-u1", "key-u2", "default-key")
+
+	u1 := newUserProfile("u1")
+	u1.Register("Alice", "alice@example.com", "+1-555-0001")
+	require.NoError(t, store.SaveAggregate(ctx, u1))
+
+	u2 := newUserProfile("u2")
+	u2.Register("Bob", "bob@example.com", "+1-555-0002")
+	require.NoError(t, store.SaveAggregate(ctx, u2))
+
+	raw1, _ := store.LoadRaw(ctx, "User-u1", 0)
+	raw2, _ := store.LoadRaw(ctx, "User-u2", 0)
+	assert.Equal(t, "key-u1", mink.GetEncryptionKeyID(raw1[0].Metadata))
+	assert.Equal(t, "key-u2", mink.GetEncryptionKeyID(raw2[0].Metadata))
+
+	// Revoke only u1: u1 is shredded, u2 is untouched.
+	require.NoError(t, provider.RevokeKey("key-u1"))
+
+	require.Error(t, store.LoadAggregate(ctx, newUserProfile("u1")),
+		"the revoked subject's PII must be unrecoverable")
+
+	survivor := newUserProfile("u2")
+	require.NoError(t, store.LoadAggregate(ctx, survivor),
+		"a different subject's PII must remain decryptable")
+	assert.Equal(t, "bob@example.com", survivor.Email)
+}
+
+// TestE2E_Encryption_TenantIDWinsOverSubjectTag (task 1.3c): an explicit TenantID
+// still selects the key even when a $subjects tag is also present — existing
+// per-tenant precedence is preserved.
+func TestE2E_Encryption_TenantIDWinsOverSubjectTag(t *testing.T) {
+	ctx := context.Background()
+	_, store := newSubjectScopedSetup(t, "key-acme", "key-u1", "default-key")
+
+	require.NoError(t, store.Append(ctx, "User-u1", []interface{}{
+		UserRegistered{UserID: "u1", Name: "Alice", Email: "alice@example.com"},
+	}, mink.WithAppendMetadata(mink.Metadata{TenantID: "acme"})))
+
+	raw, err := store.LoadRaw(ctx, "User-u1", 0)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u1"}, mink.GetSubjectTags(raw[0].Metadata),
+		"the subject is still tagged (footprint intact)")
+	assert.Equal(t, "key-acme", mink.GetEncryptionKeyID(raw[0].Metadata),
+		"the explicit TenantID must select the key over the subject tag")
+}
+
+// TestE2E_Encryption_TenantAndSubjectRules_BothDecrypt (task 1.3f, decision D3):
+// events written under the tenant rule and under the subject-tag rule coexist and
+// both decrypt, because the wrapping key id is read from each event's own metadata —
+// resolveKeyID is never re-run on decrypt, so no migration is required.
+func TestE2E_Encryption_TenantAndSubjectRules_BothDecrypt(t *testing.T) {
+	ctx := context.Background()
+	_, store := newSubjectScopedSetup(t, "key-acme", "key-u1", "default-key")
+
+	// Event A — tenant rule (explicit TenantID on Append).
+	require.NoError(t, store.Append(ctx, "User-acme-1", []interface{}{
+		UserRegistered{UserID: "acme-user", Name: "Tenant User", Email: "tenant@acme.com"},
+	}, mink.WithAppendMetadata(mink.Metadata{TenantID: "acme"})))
+
+	// Event B — subject-tag rule (SaveAggregate, empty metadata).
+	user := newUserProfile("u1")
+	user.Register("Alice", "alice@example.com", "+1-555-0100")
+	require.NoError(t, store.SaveAggregate(ctx, user))
+
+	rawA, _ := store.LoadRaw(ctx, "User-acme-1", 0)
+	rawB, _ := store.LoadRaw(ctx, "User-u1", 0)
+	assert.Equal(t, "key-acme", mink.GetEncryptionKeyID(rawA[0].Metadata))
+	assert.Equal(t, "key-u1", mink.GetEncryptionKeyID(rawB[0].Metadata))
+
+	eventsA, err := store.Load(ctx, "User-acme-1")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant@acme.com", eventsA[0].Data.(UserRegistered).Email)
+
+	loaded := newUserProfile("u1")
+	require.NoError(t, store.LoadAggregate(ctx, loaded))
+	assert.Equal(t, "alice@example.com", loaded.Email)
 }
 
 // =============================================================================
