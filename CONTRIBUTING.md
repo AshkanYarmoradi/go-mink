@@ -33,7 +33,7 @@ This section guides you through submitting a bug report for go-mink. Following t
 
 **Before Submitting a Bug Report**
 
-*   **Check the [documentation](docs/)** for a list of common questions and guides.
+*   **Check the [documentation](https://go-mink.dev)** for guides and common questions.
 *   **Search the existing Issues** to see if the problem has already been reported.
 
 **How to Submit a Good Bug Report**
@@ -68,10 +68,13 @@ This section guides you through submitting an enhancement suggestion for go-mink
     git checkout -b feature/amazing-feature
     ```
 4.  **Make your changes**.
-5.  **Run tests** to ensure you haven't broken anything.
+5.  **Run the checks** to make sure everything passes.
     ```bash
-    go test ./...
+    make test-unit   # fast unit tests — no infrastructure required
+    make lint        # golangci-lint
+    make fmt         # go fmt ./...
     ```
+    For the full suite (which spins up PostgreSQL + Kafka via Docker Compose), run `make test`.
 6.  **Commit your changes** using descriptive commit messages.
 
 ### Branching Strategy & Release Process
@@ -129,37 +132,67 @@ Please follow these steps to have your contribution considered by the maintainer
 
 ### Prerequisites
 
-- Go 1.25 or later
-- PostgreSQL 14+ (for integration tests)
-- Docker (optional, for test containers)
+- **Go 1.25+** — the module targets Go 1.25; CI builds on Go 1.25 and 1.26.
+- **Docker** — used by `make test` to spin up PostgreSQL + Kafka for integration tests.
+- **golangci-lint** — for `make lint` ([installation guide](https://golangci-lint.run/welcome/install/)).
 
-### Running Tests
+Infrastructure for integration tests is managed for you via `docker-compose.test.yml` — the Makefile starts and stops it automatically, so you rarely need to touch Docker directly.
+
+### Common Commands
 
 ```bash
-# Run unit tests
-go test -short ./...
-
-# Run all tests (requires PostgreSQL)
-docker-compose -f docker-compose.test.yml up -d
-go test ./...
-
-# Run CLI tests with coverage
-cd cli/commands
-go test -tags=integration -cover -timeout 180s
-
-# Run CLI E2E tests
-go test -tags=integration -run "TestE2E" -v
+make build           # go build ./...
+make test-unit       # unit tests only (no infra, CGO_ENABLED=0 — works everywhere)
+make test-unit-race  # unit tests with the race detector (needs gcc/clang)
+make test            # full suite — auto-starts PostgreSQL + Kafka
+make lint            # golangci-lint run ./...
+make fmt             # go fmt ./...
+make test-coverage   # coverage report (excludes examples/ and testing/)
+make help            # list every target
 ```
+
+To run a single test (integration tests need infra up — `make infra-up`):
+
+```bash
+TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
+  go test -v -run TestName ./path/to/pkg/...
+```
+
+Integration tests skip themselves automatically under `-short`, or when `TEST_DATABASE_URL` / `TEST_KAFKA_BROKERS` are unset — so `make test-unit` is safe to run anywhere.
 
 ### Test Coverage
 
-The project maintains high test coverage:
+**CI enforces 90% coverage** (excluding `examples/` and `testing/`), so new features are expected to ship with tests. Check coverage locally with `make test-coverage`; overall coverage is tracked on [Codecov](https://codecov.io/gh/AshkanYarmoradi/go-mink) and [SonarCloud](https://sonarcloud.io/summary/new_code?id=AshkanYarmoradi_go-mink).
 
-| Package | Coverage |
-|---------|----------|
-| `cli/commands` | 84.9% |
-| `cli/config` | 95.5% |
-| `cli/styles` | 100% |
-| `cli/ui` | 96.7% |
+## Project Layout
 
-Thank you for contributing!
+A quick map to help you navigate the codebase:
+
+| Path | What lives here |
+|------|-----------------|
+| `*.go` (root, package `mink`) | Core types: event store, command bus, projections, sagas, outbox, encryption, GDPR toolkit, versioning |
+| `adapters/` | Storage adapters — `postgres/` (production), `memory/` (testing), and the shared interfaces in `adapter.go` |
+| `encryption/` | The `Provider` interface plus `local/`, `kms/`, and `vault/` implementations |
+| `outbox/` | Outbox publishers — `webhook/`, `kafka/`, `sns/` |
+| `serializer/` | Alternative serializers — `msgpack/`, `protobuf/` |
+| `middleware/` | `metrics/` (Prometheus) and `tracing/` (OpenTelemetry) |
+| `testing/` | Test utilities — BDD fixtures, assertions, projection/saga harnesses, containers |
+| `cli/`, `cmd/mink/` | The `mink` command-line tool |
+| `examples/` | Runnable example projects (each with its own README) |
+| `website/` | The Docusaurus documentation site ([go-mink.dev](https://go-mink.dev)) |
+
+Adding storage support means implementing the interfaces in [`adapters/adapter.go`](adapters/adapter.go) — see the [Adapters guide](https://go-mink.dev/docs/core/adapters).
+
+## Good First Contributions
+
+Looking for a place to start? Any of these are genuinely useful:
+
+- 📝 Improve a documentation page or an example README.
+- 🧪 Add a test that covers an edge case.
+- 📊 Add a benchmark using the shared helpers in `adapters/common.go`.
+- 🔌 Implement an `EventStoreAdapter` for another database.
+- 🐛 Pick up a [good first issue](https://github.com/AshkanYarmoradi/go-mink/labels/good%20first%20issue).
+
+Not sure where your idea fits? Open a [Discussion](https://github.com/AshkanYarmoradi/go-mink/discussions) — we're happy to help you get started.
+
+Thank you for contributing! 🦫

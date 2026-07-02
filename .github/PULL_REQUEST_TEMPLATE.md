@@ -1,3 +1,10 @@
+<!--
+Thanks for contributing to go-mink! 🦫
+- Please target the `develop` branch (not `main`).
+- See CONTRIBUTING.md for the workflow, style guide, and how to run tests.
+- Link any related issue with "Closes #123".
+-->
+
 ## Summary
 <!-- Brief description of changes -->
 

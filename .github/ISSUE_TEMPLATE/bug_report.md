@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Report a problem to help us improve go-mink
 title: ''
 labels: bug
 assignees: ''
@@ -9,24 +9,28 @@ assignees: ''
 **Describe the bug**
 A clear and concise description of what the bug is.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '...'
-3. Scroll down to '...'
-4. See error
+**Minimal reproduction**
+The smallest possible Go snippet (or link to a repo) that reproduces the problem:
+
+```go
+// go-mink version, adapter, and the code that triggers the bug
+```
+
+Steps to reproduce, if the snippet needs them:
+1. ...
+2. ...
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Actual behavior**
+What actually happened. Include the full error message and stack trace if there is one.
 
-**Environment (please complete the following information):**
- - OS: [e.g. Windows, Linux]
- - Go Version: [e.g. 1.21]
- - Database: [e.g. PostgreSQL 15]
- - go-mink Version: [e.g. v0.1.0]
+**Environment**
+ - go-mink version: [e.g. v1.0.0 — run `go list -m go-mink.dev`]
+ - Go version: [e.g. 1.25 — run `go version`]
+ - Adapter: [e.g. PostgreSQL 16, in-memory]
+ - OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
 
 **Additional context**
-Add any other context about the problem here.
+Anything else that might help — related configuration, whether it's intermittent, recent changes, etc.
