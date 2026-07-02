@@ -1,0 +1,35 @@
+# Codecov configuration for go-mink.
+#
+# Without this file Codecov applies its defaults: the project status allows ZERO
+# coverage drop and the patch status targets the existing project average (~89%).
+# Those defaults are stricter than — and inconsistent with — this project's own
+# quality bars: the CI "Test with Coverage" job enforces >=90% overall, and the
+# SonarCloud Quality Gate enforces >=80% on new code. This file aligns Codecov with
+# that policy.
+coverage:
+  status:
+    project:
+      default:
+        target: auto        # compare against the base commit
+        threshold: 2%        # tolerate the minor dip a large feature PR can cause;
+                             # the >=90% CI gate remains the hard floor.
+    patch:
+      default:
+        target: 80%          # new code must be reasonably covered — same bar as the
+                             # SonarCloud new-code gate, so the two agree.
+        threshold: 0%
+
+# Files with no meaningful coverage to measure. Test files, runnable examples, and
+# shared test helpers are already absent from coverage.out (the CI coverage job omits
+# examples/ and testing/); CLI entrypoints under cmd/ are thin wiring. Listing them
+# keeps Codecov from treating their absence as a coverage regression.
+ignore:
+  - "**/*_test.go"
+  - "examples/**"
+  - "testing/**"
+  - "cmd/**"
+
+# Keep PR comments concise and only when coverage changes.
+comment:
+  layout: "condensed_header, diff, flags, components"
+  require_changes: true

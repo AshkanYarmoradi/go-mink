@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters/memory"
+	"go-mink.dev/encryption/local"
 )
 
 // okRedactor is a SubjectRedactable whose RedactSubject always succeeds.
@@ -56,6 +58,79 @@ func TestDataEraser_EraseTimeWindowFilters(t *testing.T) {
 	res, err = eraser.Erase(ctx, ErasureRequest{SubjectID: "u1", Streams: []string{"User-u1"}, FromTime: &after, ToTime: &before})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"k"}, res.KeysRevoked)
+}
+
+func TestSetSubjectTags_MergeDedupeAndEmpty(t *testing.T) {
+	// Empty ids are skipped, duplicates (including against existing tags) collapse.
+	md := setSubjectTags(Metadata{}, []string{"a", "", "a", "b"})
+	assert.Equal(t, []string{"a", "b"}, GetSubjectTags(md))
+
+	// Merging new subjects with ones already recorded de-duplicates across both.
+	merged := setSubjectTags(md, []string{"b", "c"})
+	assert.Equal(t, []string{"a", "b", "c"}, GetSubjectTags(merged))
+
+	// All-empty input leaves the metadata untouched (no tags written).
+	unchanged := setSubjectTags(Metadata{}, []string{"", ""})
+	assert.Empty(t, GetSubjectTags(unchanged))
+}
+
+func TestSampleSet_Truncates(t *testing.T) {
+	full := map[string]struct{}{}
+	for _, s := range []string{"a", "b", "c", "d", "e"} {
+		full[s] = struct{}{}
+	}
+	assert.Len(t, sampleSet(full, 3), 3, "over-limit sets are truncated")
+	assert.Len(t, sampleSet(full, 10), 5, "under-limit sets are returned whole")
+}
+
+func TestVerify_ReportsResidualCleartext(t *testing.T) {
+	ctx := context.Background()
+	// A store WITHOUT field encryption: tagged events carry plaintext PII that cannot be
+	// crypto-shredded, so Verify must surface them as residual cleartext and refuse to
+	// certify erasure.
+	store := New(memory.NewAdapter(), WithSubjectTagger(userIDTagger))
+	store.RegisterEvents(eraseUserCreated{})
+	require.NoError(t, store.Append(ctx, "User-u1",
+		[]interface{}{eraseUserCreated{UserID: "u1", Email: "u1@example.com"}},
+		WithAppendMetadata(Metadata{UserID: "u1"})))
+
+	rep, err := NewDataEraser(store, WithEraseSubjectResolver(NewSubjectResolver(store))).Verify(ctx, "u1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, rep.ResidualCleartext, "unencrypted PII is residual")
+	assert.False(t, rep.Verified, "cleartext PII must block verification")
+}
+
+func TestErase_StreamNotFoundIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	store, provider := newEraseTestStore(t, "k")
+	require.NoError(t, store.Append(ctx, "User-u1",
+		[]interface{}{eraseUserCreated{UserID: "u1", Email: "a@b.c"}}))
+
+	// A missing stream in the request is skipped, not fatal; the present one still erases.
+	res, err := NewDataEraser(store).Erase(ctx, ErasureRequest{
+		SubjectID: "u1", Streams: []string{"User-u1", "Ghost-does-not-exist"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k"}, res.KeysRevoked)
+	revoked, _ := provider.IsRevoked("k")
+	assert.True(t, revoked)
+}
+
+func TestErase_ScanNotSupported(t *testing.T) {
+	provider, err := local.New(local.WithKey("k", make([]byte, 32)))
+	require.NoError(t, err)
+	cfg := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("k"),
+		WithEncryptedFields("eraseUserCreated", "email"),
+	)
+	// A filter-based erase must scan the log, which needs a SubscriptionAdapter; the
+	// minimal adapter has none, so it fails cleanly instead of silently erasing nothing.
+	store := New(&minimalExportAdapter{}, WithFieldEncryption(cfg))
+	_, err = NewDataEraser(store).Erase(context.Background(), ErasureRequest{
+		SubjectID: "u1", Filter: SubjectFilter("u1"),
+	})
+	assert.ErrorIs(t, err, ErrErasureScanNotSupported)
 }
 
 func TestErase_ReadModelsAndHooks(t *testing.T) {
