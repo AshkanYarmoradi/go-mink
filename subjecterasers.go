@@ -11,7 +11,7 @@ import (
 // plaintext (actor, tenant, arbitrary metadata, raw error strings that can carry PII),
 // which crypto-shredding the events does NOT touch. If the store implements the optional
 // adapters.SubjectAuditPurger, EraseSubject deletes the subject's rows; otherwise it
-// reports Skipped (never fails). Register with DataEraser.WithSubjectStore.
+// reports Skipped (never fails). Register with the WithSubjectStore option of NewDataEraser.
 func NewAuditSubjectEraser(store AuditStore) SubjectErasable {
 	return &auditSubjectEraser{store: store}
 }
@@ -37,7 +37,7 @@ func (a *auditSubjectEraser) EraseSubject(ctx context.Context, subjectID string,
 // own plaintext state, which crypto-shredding does NOT touch. If the store implements
 // the optional adapters.SubjectSagaPurger, EraseSubject deletes sagas whose
 // CorrelationID equals the subject id; otherwise it reports Skipped. Register with
-// DataEraser.WithSubjectStore.
+// the WithSubjectStore option of NewDataEraser.
 func NewSagaSubjectEraser(store SagaStore) SubjectErasable {
 	return &sagaSubjectEraser{store: store}
 }
@@ -64,7 +64,7 @@ func (s *sagaSubjectEraser) EraseSubject(ctx context.Context, subjectID string, 
 // leaves an independent plaintext copy, and dead-lettered rows persist. If the store
 // implements the optional adapters.SubjectOutboxPurger, EraseSubject deletes rows whose
 // AggregateID equals the subject id; otherwise it reports Skipped. Register with
-// DataEraser.WithSubjectStore.
+// the WithSubjectStore option of NewDataEraser.
 func NewOutboxSubjectEraser(store OutboxStore) SubjectErasable {
 	return &outboxSubjectEraser{store: store}
 }
@@ -89,7 +89,7 @@ func (o *outboxSubjectEraser) EraseSubject(ctx context.Context, subjectID string
 // reaches the subject's idempotency records. Records are TTL-bounded and keyed by a command
 // hash, but the optional Response payload can hold PII. If the store implements the optional
 // adapters.SubjectIdempotencyPurger, EraseSubject deletes records whose AggregateID equals
-// the subject id; otherwise it reports Skipped. Register with DataEraser.WithSubjectStore.
+// the subject id; otherwise it reports Skipped. Register with the WithSubjectStore option of NewDataEraser.
 func NewIdempotencySubjectEraser(store IdempotencyStore) SubjectErasable {
 	return &idempotencySubjectEraser{store: store}
 }
@@ -115,7 +115,7 @@ func (i *idempotencySubjectEraser) EraseSubject(ctx context.Context, subjectID s
 // decrypted aggregate STATE in plaintext, which crypto-shredding does NOT touch, so an
 // un-deleted snapshot leaves the subject's PII recoverable. DeleteSnapshot is idempotent,
 // so Erased counts the footprint streams whose snapshot was cleared. Register with
-// DataEraser.WithSubjectStore.
+// the WithSubjectStore option of NewDataEraser.
 func NewSnapshotSubjectEraser(adapter adapters.SnapshotAdapter) SubjectErasable {
 	return &snapshotSubjectEraser{adapter: adapter}
 }
