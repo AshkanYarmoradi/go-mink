@@ -84,6 +84,27 @@ func TestBackfillSubjectIndex(t *testing.T) {
 	assert.False(t, fp.Partial)
 }
 
+func TestMemorySubjectIndex_HonorsContextCancellation(t *testing.T) {
+	idx := NewMemorySubjectIndex()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.ErrorIs(t, idx.IndexSubjects(ctx, "User-u1", []string{"u1"}), context.Canceled)
+	_, err := idx.StreamsBySubject(ctx, "u1")
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestBackfillSubjectIndex_HonorsContextCancellation(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSubjectTestStore(t, "k")
+	appendUser(t, ctx, store, "User-u1", "u1")
+
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err := BackfillSubjectIndex(cctx, store, userIDTagger, NewMemorySubjectIndex(), 100)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 func TestBackfillSubjectIndex_RequiresTaggerAndWriter(t *testing.T) {
 	store, _ := newSubjectTestStore(t, "k")
 	_, err := BackfillSubjectIndex(context.Background(), store, nil, NewMemorySubjectIndex(), 0)

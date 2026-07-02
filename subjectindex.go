@@ -31,7 +31,10 @@ func NewMemorySubjectIndex() *MemorySubjectIndex {
 }
 
 // IndexSubjects records that streamID contains events for each subject. Idempotent.
-func (m *MemorySubjectIndex) IndexSubjects(_ context.Context, streamID string, subjectIDs []string) error {
+func (m *MemorySubjectIndex) IndexSubjects(ctx context.Context, streamID string, subjectIDs []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if streamID == "" || len(subjectIDs) == 0 {
 		return nil
 	}
@@ -52,7 +55,10 @@ func (m *MemorySubjectIndex) IndexSubjects(_ context.Context, streamID string, s
 }
 
 // StreamsBySubject returns the sorted streams recorded for subjectID (empty if none).
-func (m *MemorySubjectIndex) StreamsBySubject(_ context.Context, subjectID string) ([]string, error) {
+func (m *MemorySubjectIndex) StreamsBySubject(ctx context.Context, subjectID string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	set := m.streams[subjectID]
@@ -117,11 +123,22 @@ func BackfillSubjectIndex(ctx context.Context, store *EventStore, tagger Subject
 			break
 		}
 		for _, se := range batch {
+			// Honor cancellation mid-batch, not only between batches.
+			if err := ctx.Err(); err != nil {
+				return scanned, err
+			}
 			scanned++
 			// Combine tagger-derived subjects with any already tagged on the event, then
 			// de-duplicate — when tagging was already enabled the two overlap, and
-			// duplicate (subject, stream) pairs are redundant index writes.
-			subjects := dedupeStrings(append(tagger(se.Type, se.Data, se.Metadata), GetSubjectTags(se.Metadata)...))
+			// duplicate (subject, stream) pairs are redundant index writes. Build a fresh
+			// slice rather than appending onto the tagger's return: the tagger's
+			// slice-ownership is unspecified, so appending could mutate a buffer it reuses.
+			derived := tagger(se.Type, se.Data, se.Metadata)
+			existing := GetSubjectTags(se.Metadata)
+			subjects := make([]string, 0, len(derived)+len(existing))
+			subjects = append(subjects, derived...)
+			subjects = append(subjects, existing...)
+			subjects = dedupeStrings(subjects)
 			if len(subjects) == 0 {
 				continue
 			}
