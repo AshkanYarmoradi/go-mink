@@ -29,7 +29,7 @@ func (a *auditSubjectEraser) EraseSubject(ctx context.Context, subjectID string,
 	if err != nil {
 		return SubjectErasureOutcome{Name: a.ErasableName()}, err
 	}
-	return SubjectErasureOutcome{Name: a.ErasableName(), Erased: int(n)}, nil
+	return SubjectErasureOutcome{Name: a.ErasableName(), Erased: n}, nil
 }
 
 // NewSagaSubjectEraser wraps a SagaStore as a SubjectErasable so DataEraser reaches the
@@ -55,7 +55,7 @@ func (s *sagaSubjectEraser) EraseSubject(ctx context.Context, subjectID string, 
 	if err != nil {
 		return SubjectErasureOutcome{Name: s.ErasableName()}, err
 	}
-	return SubjectErasureOutcome{Name: s.ErasableName(), Erased: int(n)}, nil
+	return SubjectErasureOutcome{Name: s.ErasableName(), Erased: n}, nil
 }
 
 // NewOutboxSubjectEraser wraps an OutboxStore as a SubjectErasable so DataEraser reaches
@@ -82,7 +82,7 @@ func (o *outboxSubjectEraser) EraseSubject(ctx context.Context, subjectID string
 	if err != nil {
 		return SubjectErasureOutcome{Name: o.ErasableName()}, err
 	}
-	return SubjectErasureOutcome{Name: o.ErasableName(), Erased: int(n)}, nil
+	return SubjectErasureOutcome{Name: o.ErasableName(), Erased: n}, nil
 }
 
 // NewIdempotencySubjectEraser wraps an IdempotencyStore as a SubjectErasable so DataEraser
@@ -107,7 +107,7 @@ func (i *idempotencySubjectEraser) EraseSubject(ctx context.Context, subjectID s
 	if err != nil {
 		return SubjectErasureOutcome{Name: i.ErasableName()}, err
 	}
-	return SubjectErasureOutcome{Name: i.ErasableName(), Erased: int(n)}, nil
+	return SubjectErasureOutcome{Name: i.ErasableName(), Erased: n}, nil
 }
 
 // NewSnapshotSubjectEraser wraps a SnapshotAdapter as a SubjectErasable that deletes the
@@ -128,7 +128,7 @@ func (s *snapshotSubjectEraser) EraseSubject(ctx context.Context, _ string, fp *
 	if fp == nil || len(fp.Streams) == 0 {
 		return SubjectErasureOutcome{Name: s.ErasableName()}, nil
 	}
-	var erased int
+	var erased int64
 	var firstErr error
 	for _, streamID := range fp.Streams {
 		if err := s.adapter.DeleteSnapshot(ctx, streamID); err != nil {

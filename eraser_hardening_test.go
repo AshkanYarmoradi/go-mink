@@ -190,7 +190,7 @@ func TestDataEraser_ReconcileCatchesLateKey(t *testing.T) {
 // fakeSubjectStore is a test double for SubjectErasable.
 type fakeSubjectStore struct {
 	name   string
-	erased int
+	erased int64
 	err    error
 	gotFP  *SubjectFootprint
 }
@@ -234,7 +234,7 @@ func TestDataEraser_SubjectStores(t *testing.T) {
 	require.NoError(t, err) // per-store failure is non-fatal
 
 	require.Len(t, res.SubjectStores, 2)
-	assert.Equal(t, 3, res.SubjectStores[0].Erased)
+	assert.Equal(t, int64(3), res.SubjectStores[0].Erased)
 	assert.Contains(t, ok.gotFP.Streams, "User-u1", "sibling store receives the footprint streams")
 	assert.Equal(t, "boom", res.SubjectStores[1].Err)
 	assert.True(t, res.Failed())

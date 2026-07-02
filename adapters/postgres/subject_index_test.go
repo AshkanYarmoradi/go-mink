@@ -106,7 +106,7 @@ func TestSnapshotSubjectEraser_Postgres(t *testing.T) {
 	out, err := mink.NewSnapshotSubjectEraser(adapter).EraseSubject(ctx, "u1", fp)
 	require.NoError(t, err)
 	assert.Equal(t, "snapshot", out.Name)
-	assert.Equal(t, 1, out.Erased)
+	assert.Equal(t, int64(1), out.Erased)
 
 	snap, err := adapter.LoadSnapshot(ctx, "User-u1")
 	require.NoError(t, err)

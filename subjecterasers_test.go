@@ -21,7 +21,7 @@ func TestAuditSubjectEraser(t *testing.T) {
 	out, err := NewAuditSubjectEraser(store).EraseSubject(ctx, "u1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "audit", out.Name)
-	assert.Equal(t, 2, out.Erased) // actor==u1 AND aggregate_id==u1
+	assert.Equal(t, int64(2), out.Erased) // actor==u1 AND aggregate_id==u1
 	assert.False(t, out.Skipped)
 	assert.Equal(t, 1, store.Len(), "only u2's entry remains")
 }
@@ -42,7 +42,7 @@ func TestAuditSubjectEraser_SkipsWhenUnsupported(t *testing.T) {
 	out, err := NewAuditSubjectEraser(auditNoPurger{}).EraseSubject(context.Background(), "u1", nil)
 	require.NoError(t, err)
 	assert.True(t, out.Skipped)
-	assert.Equal(t, 0, out.Erased)
+	assert.Equal(t, int64(0), out.Erased)
 }
 
 func TestSagaSubjectEraser(t *testing.T) {
@@ -54,7 +54,7 @@ func TestSagaSubjectEraser(t *testing.T) {
 	out, err := NewSagaSubjectEraser(store).EraseSubject(ctx, "u1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "saga", out.Name)
-	assert.Equal(t, 1, out.Erased)
+	assert.Equal(t, int64(1), out.Erased)
 
 	_, err = store.Load(ctx, "s1")
 	assert.Error(t, err, "u1's saga is gone")
@@ -74,7 +74,7 @@ func TestOutboxSubjectEraser(t *testing.T) {
 	out, err := NewOutboxSubjectEraser(store).EraseSubject(ctx, "u1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "outbox", out.Name)
-	assert.Equal(t, 2, out.Erased)
+	assert.Equal(t, int64(2), out.Erased)
 	assert.Equal(t, 1, store.Count(), "only u2's row remains")
 }
 
@@ -88,7 +88,7 @@ func TestIdempotencySubjectEraser(t *testing.T) {
 	out, err := NewIdempotencySubjectEraser(store).EraseSubject(ctx, "u1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "idempotency", out.Name)
-	assert.Equal(t, 1, out.Erased)
+	assert.Equal(t, int64(1), out.Erased)
 	assert.Equal(t, 1, store.Len(), "only u2's record remains")
 }
 
@@ -101,7 +101,7 @@ func TestSnapshotSubjectEraser(t *testing.T) {
 	fp := &SubjectFootprint{SubjectID: "u1", Streams: []string{"User-u1"}}
 	out, err := NewSnapshotSubjectEraser(a).EraseSubject(ctx, "u1", fp)
 	require.NoError(t, err)
-	assert.Equal(t, 1, out.Erased)
+	assert.Equal(t, int64(1), out.Erased)
 
 	snap, err := a.LoadSnapshot(ctx, "User-u1")
 	require.NoError(t, err)
@@ -128,6 +128,6 @@ func TestDataEraser_WithAuditSubjectStore(t *testing.T) {
 
 	require.Len(t, res.SubjectStores, 1)
 	assert.Equal(t, "audit", res.SubjectStores[0].Name)
-	assert.Equal(t, 1, res.SubjectStores[0].Erased)
+	assert.Equal(t, int64(1), res.SubjectStores[0].Erased)
 	assert.Equal(t, 0, audit.Len(), "the subject's PII-bearing audit row is erased alongside the events")
 }

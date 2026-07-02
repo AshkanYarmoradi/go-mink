@@ -29,8 +29,10 @@ type SubjectErasureOutcome struct {
 	// Name identifies the store (e.g. "audit", "saga", "snapshot").
 	Name string `json:"name"`
 
-	// Erased is the number of rows/records removed for the subject.
-	Erased int `json:"erased"`
+	// Erased is the number of rows/records removed for the subject. It is int64 to match
+	// the purger APIs' row counts (e.g. sql.Result.RowsAffected), so large purges are
+	// reported without truncation or overflow.
+	Erased int64 `json:"erased"`
 
 	// Skipped is true when the store could not target the subject (e.g. the
 	// underlying adapter does not implement the optional purger sub-interface).
