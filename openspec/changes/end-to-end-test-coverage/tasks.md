@@ -11,7 +11,7 @@
 - [x] 2.1 `e2e_outbox_delivery_test.go`: `NewEventStoreWithOutbox.Append` on PG → real `OutboxProcessor` → `outbox/webhook` publisher (httptest); assert delivery + completion + `X-Outbox-event-type` header
 - [x] 2.2 Same flow with the `outbox/kafka` publisher; consume the message back from `TEST_KAFKA_BROKERS` and assert payload/header + completion
 - [x] 2.3 Failure path: publisher returns 5xx → exhausts retries → dead-letter; assert never completed and the `events` row count is unchanged (at-least-once + append-only)
-- [ ] 2.4 (good-to-have) SNS via LocalStack (`TEST_SNS_ENDPOINT`), self-skipping when unset
+- [x] 2.4 SNS delivery: `e2e_sns_delivery_test.go` publishes through the `outbox/sns` publisher to a real SNS endpoint (a goaws / LocalStack emulator), gated on `TEST_SNS_ENDPOINT`, self-skipping when unset
 
 ## 3. Required — Projection pipeline E2E (`projection-pipeline-e2e`)
 
@@ -24,7 +24,7 @@
 
 - [x] 4.1 `e2e_encryption_at_rest_test.go` (`encryption/local`): save an encrypted event to PG, read raw `data` via SQL and assert the field is ciphertext (non-encrypted field stays plaintext), then `Load` decrypts transparently
 - [x] 4.2 Zero-overhead control: same flow without encryption stores/loads unchanged, no encryption metadata added
-- [ ] 4.3 (good-to-have) Run the same suite against KMS (`AWS_*`+`MINK_KMS_TEST_KEY_ID`) and Vault (`VAULT_*`+`MINK_VAULT_TEST_KEY`), env-gated; revoke through `DataEraser`/`Revocable` → `Load` cannot decrypt
+- [x] 4.3 KMS + Vault crypto-shred: `e2e_kms_encryption_test.go` (gated on `TEST_KMS_ENDPOINT`; runs against local-kms or real AWS) and `e2e_vault_encryption_test.go` (gated on `VAULT_ADDR`; runs against a Vault dev container) round-trip a data key through the real provider and assert revoke → `IsRevoked` + `DecryptDataKey` fails with `ErrKeyRevoked`
 
 ## 5. Required — GDPR lifecycle E2E (`gdpr-lifecycle-e2e`)
 
@@ -32,7 +32,7 @@
 - [x] 5.2 Append-only + idempotency: re-run `Erase` → no-op, no duplicate marker; assert raw `events` row count identical before/after the re-run
 - [x] 5.3 Shared-key guard: a key shared with another subject is refused (`ErrSharedKeyRevocation`), the key is not revoked, and both subjects stay recoverable
 - [x] 5.4 `DataExporter.Export` over a real PG stream with a live-key subject (plaintext) and a shredded subject (`Redacted=true`, `Data=nil`, `RedactedCount=1`)
-- [ ] 5.5 (good-to-have) `mink gdpr discover`/`verify` over the populated PG footprint; assert read-only output + that the CLI performs no revocation
+- [x] 5.5 `e2e_cli_gdpr_test.go`: `mink gdpr discover`/`verify` (via `NewGdprCommand`, pointed at the isolated schema through a `mink.yaml`) run read-only over a populated PG footprint; discover reports the subject/streams/keys and verify produces a report — the CLI holds no keys and performs no revocation
 
 ## 6. Good-to-have — Saga → outbox → publisher E2E (`saga-outbox-e2e`)
 

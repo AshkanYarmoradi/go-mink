@@ -162,12 +162,14 @@ self-skip under `-short` or when their env vars are unset:
 
 - **PostgreSQL** — `TEST_DATABASE_URL` (required by every E2E suite).
 - **Kafka** — `TEST_KAFKA_BROKERS` (the outbox→Kafka suite; others don't need it).
-- **Cloud (opt-in, not required in CI)** — the KMS/Vault-through-store and SNS/LocalStack paths
-  skip unless their own credentials/endpoints are set (`AWS_*`+`MINK_KMS_TEST_KEY_ID`,
-  `VAULT_*`+`MINK_VAULT_TEST_KEY`, `TEST_SNS_ENDPOINT`).
+- **Cloud providers (opt-in, not required in CI)** — the SNS, KMS, and Vault suites skip unless
+  their endpoint env var is set. Any AWS-compatible emulator works (no license needed):
+  - **SNS** — `TEST_SNS_ENDPOINT` (e.g. `docker run -d -p 4100:4100 pafortin/goaws` → `http://localhost:4100`)
+  - **KMS** — `TEST_KMS_ENDPOINT` (e.g. `docker run -d -p 8087:8080 nsmithuk/local-kms` → `http://localhost:8087`)
+  - **Vault** — `VAULT_ADDR` (+ `VAULT_TOKEN`, default `root`) (e.g. a `hashicorp/vault` dev container on `http://localhost:8200`; the test provisions the transit key itself)
 
-Run them with `make test-e2e` (auto-starts PostgreSQL + Kafka). Because they self-skip,
-`make test-unit` stays green everywhere.
+Run the core suites with `make test-e2e` (auto-starts PostgreSQL + Kafka); set the cloud env vars
+above to also run those. Because every suite self-skips, `make test-unit` stays green everywhere.
 
 To run a single test (integration tests need infra up — `make infra-up`):
 
