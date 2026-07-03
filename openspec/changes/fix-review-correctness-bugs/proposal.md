@@ -47,10 +47,17 @@ semantics, never event mutation.
   filter set resolves to zero column conditions, so `DeleteMany` can never issue an
   unqualified `DELETE` and `Find`/`Count` never silently scan all rows. (Finding 1 —
   Critical)
-- **Gapless subscriptions** (`event-subscriptions`, NEW). PostgreSQL `SubscribeAll`
-  and `SubscribeCategory` SHALL never skip a committed event by advancing past an
-  out-of-order-committed `global_position`; the in-memory adapter SHALL snapshot
-  history and register the subscriber atomically. (Findings 2, 5)
+- **Gapless position-based delivery** (`event-subscriptions`, NEW). The shared
+  load-from-position mechanism — used by PostgreSQL `SubscribeAll`/`SubscribeCategory`,
+  **async projections** (which also checkpoint the advanced position), **and sagas** —
+  SHALL never skip a committed event by advancing its cursor past an out-of-order-committed
+  `global_position`. Fixed at the adapter layer via a PG-native safe watermark
+  (transaction-snapshot or gap-detection; **no DB-schema change**) so all three consumers
+  benefit. The in-memory `SubscribeAll` already snapshots history and registers the
+  subscriber atomically (done). (Findings 2, 5 — scope broadened after confirming async
+  projections and sagas share the gap and the production consumer huisscan is exposed;
+  interim mitigations: the gap-free outbox for must-not-miss delivery, projection
+  rebuild-from-0 to recover missed events.)
 - **Saga reliability** (`saga-orchestration`, NEW). `WithSagaRetryAttempts` SHALL
   clamp to `>= 1`; a `context.Canceled`/`DeadlineExceeded` from dispatch during
   `Stop()` SHALL leave the saga `Running` rather than driving compensation on a dead

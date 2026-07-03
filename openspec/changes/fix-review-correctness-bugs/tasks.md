@@ -7,9 +7,17 @@
 
 ## 2. Required — Gapless PostgreSQL subscriptions (`event-subscriptions`)
 
-- [ ] 2.1 Add a safe-watermark helper: compute the largest `global_position` with no uncommitted lower position (via txid/`pg_snapshot` boundary or a stability/lag window), so the poller never advances past an out-of-order-committed row
-- [ ] 2.2 `SubscribeAll` + `SubscribeCategory` advance the cursor only across the contiguous stable prefix; positions behind the watermark are re-scanned next poll
-- [ ] 2.3 Integration tests (skip-guarded, `TEST_DATABASE_URL`): two concurrent appends where the higher position commits first → the lower-position event is still delivered; assert no event is skipped under interleaved commits; at-least-once (dup-on-restart) unchanged
+> **Scope broadened (2026-07-03):** the gap affects the shared load-from-position layer —
+> subscriptions, async projections (which checkpoint the advance), and sagas — not just
+> `subscription.go`. The production consumer (huisscan) is exposed via projections + a saga
+> under concurrent, unserialized writes. Fix at the adapter layer, no DB-schema change. This
+> is the most delicate change (core delivery) — implement as a focused, integration-tested
+> unit after this spec is reviewed.
+
+- [ ] 2.1 Add a PG-native safe-watermark helper in the postgres adapter (no schema change): the largest `global_position` with no still-in-flight lower position, via transaction-snapshot (`pg_snapshot_xmin`/`xid8` + sequence `last_value` + hidden `xmin`) OR gap-detection with a staleness timeout for rolled-back gaps. Pick the mechanism during implementation; document the latency-vs-safety trade-off
+- [ ] 2.2 Enforce the watermark at the adapter's load-from-position query (return nothing above the safe watermark) so `SubscribeAll`/`SubscribeCategory`, async projections (`loadEventsFromPosition`), and the saga event loop all inherit it with no consumer-side cursor change; held-back positions are returned on a later poll once stable
+- [ ] 2.3 Integration tests (skip-guarded, `TEST_DATABASE_URL`) simulating out-of-order commits via explicit `BEGIN`/commit ordering: (a) a subscriber, (b) an async projection (its checkpoint never passes an uncommitted lower position), and (c) a saga all receive the late-committing lower-position event; no event skipped under interleaved commits; a rolled-back position does not stall; at-least-once (dup-on-restart) unchanged
+- [ ] 2.4 Docs: subscriptions/`security.md` note the at-least-once guarantee + added latency; cross-link the gap-free outbox for must-not-miss delivery and projection rebuild-from-0 to recover historical skips
 
 ## 3. Required — Gapless in-memory subscribe (`event-subscriptions`)
 

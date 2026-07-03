@@ -23,25 +23,54 @@ filter set (`len(query.Filters) == 0`). This is defense-in-depth at the exact la
 that builds the SQL, so every caller (memory adapter mirrors the check) is covered
 without validating field names at `Query.Where` time.
 
-## 2. Gapless subscriptions — `event-subscriptions`
+## 2. Gapless position-based delivery — `event-subscriptions`
 
-### PostgreSQL out-of-order-commit gap
-Problem: `global_position` (`BIGSERIAL`) is assigned at `INSERT` but becomes visible at
-`COMMIT`, so commit order can differ from position order. Advancing the cursor to the
-last-seen position (`subscription.go`) permanently skips a lower-position row that
-commits after the poller passed it.
+### Scope (broadened after review)
+The original finding named `subscription.go`, but the **same** "advance a cursor to the
+last-seen `global_position`, then poll `global_position > cursor`" pattern drives every
+position-based delivery path: PostgreSQL `SubscribeAll`/`SubscribeCategory` **and** async
+projections (`ProjectionEngine.loadEventsFromPosition`, which also **checkpoints** the
+advanced position, so a skip is permanent) **and** the saga manager's event loop. So the
+fix must live at the **shared load-from-position layer**, not in `subscription.go` alone,
+and all three consumers inherit it.
 
-Decision: poll only up to a **safe high-watermark** that no in-flight transaction can
-still fill. Compute it per poll as the largest position such that there is no gap below
-it owned by an as-yet-uncommitted transaction — implementable without schema change via
-`pg_snapshot`/`txid` boundaries (`SELECT ... WHERE global_position < <safe>`), or, as a
-simpler equivalent, a short **lag/stability window**: do not deliver a position until a
-subsequent poll confirms no lower position appeared. The cursor advances only across
-the contiguous, stable prefix; rows behind the watermark are re-scanned on the next
-poll. This trades a small, bounded delivery latency (one poll interval / the visibility
-window) for the no-skip guarantee. `SubscribeAll` and `SubscribeCategory` share the
-helper. Existing at-least-once semantics are preserved — duplicates on restart remain
-possible; the fix only removes *at-most-once loss*.
+Production context: the live consumer (huisscan) runs async projections + a saga with
+concurrent, unserialized writers, so it is exposed today (silently missed read-model
+updates and un-fired saga steps under load). Interim mitigations while this ships: the
+**outbox is gap-free** (it claims rows with `FOR UPDATE SKIP LOCKED`, no position
+dependency) — route must-not-miss side effects through it; and a projection
+**rebuild-from-0** recovers already-missed read-model events.
+
+### Problem
+`global_position` (`BIGSERIAL`) is assigned at `INSERT` but a row becomes visible only at
+`COMMIT`, so commit order can differ from position order. Crucially, under MVCC the poller
+**cannot see** an in-flight transaction's row at all — it sees position 6 (committed) but
+not the still-open position 5, advances its cursor to 6, and when 5 commits it can never
+satisfy `> 6` again. The poller must therefore *detect* that a lower position may still
+appear and hold back, rather than trust visible contiguity.
+
+### Decision (no DB-schema change)
+Deliver only up to a **safe high-watermark** = the largest position guaranteed to have no
+still-in-flight lower position. Two viable PG-native mechanisms (to be chosen during
+implementation, both **without** a schema column):
+
+- **Transaction-snapshot watermark** — at poll time capture `pg_snapshot`/`xid8`
+  boundaries (`pg_snapshot_xmin(pg_current_snapshot())`) and the sequence's `last_value`;
+  the watermark is the highest position below any xid still in the in-progress set. Uses
+  the hidden `xmin` system column — no schema change.
+- **Gap-detection with a staleness timeout** (Marten's async-daemon approach) — process
+  the contiguous committed prefix; on a gap, wait a grace period; if it fills, deliver in
+  order; if it persists past the timeout and no in-flight transaction could fill it, treat
+  it as a rolled-back (permanent) gap and advance past it.
+
+Enforce the watermark at the **adapter's load-from-position query** (return nothing above
+the safe watermark). Each consumer then naturally advances its cursor/checkpoint only to
+the last *returned* (safe) event; held-back positions are returned on a later poll once
+stable — so subscriptions, projections, and sagas are fixed with no consumer-side change.
+This trades a small, bounded delivery latency (≈ one poll interval / the grace window) for
+the no-skip guarantee. **At-least-once is preserved** (duplicates on restart still
+possible); only the *at-most-once loss* is removed. The in-memory adapter has no
+transactions and is already fixed by the atomic snapshot+register in §2.1 above.
 
 ### In-memory snapshot/register race
 Problem: `SubscribeAll` copies history under `a.mu`, releases it, then registers the
