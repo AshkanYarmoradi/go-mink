@@ -42,6 +42,12 @@ func (e *UnknownFilterFieldError) Is(target error) bool {
 	return target == ErrUnknownFilterField || target == ErrInvalidQuery
 }
 
+// Unwrap returns the wrapped sentinel (itself wrapping ErrInvalidQuery), so errors.Is and
+// errors.As traverse the chain to both ErrUnknownFilterField and ErrInvalidQuery.
+func (e *UnknownFilterFieldError) Unwrap() error {
+	return ErrUnknownFilterField
+}
+
 // ReadModelRepository provides generic CRUD operations for read models.
 // T is the read model type.
 type ReadModelRepository[T any] interface {

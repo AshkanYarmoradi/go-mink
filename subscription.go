@@ -326,18 +326,9 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 // a hard, unhandled decryption failure — surfaced via Err(), never silently swallowed. A
 // crypto-shredded subject whose DecryptionErrorHandler returns nil yields the event with
 // its fields left as stored and no error. Zero overhead when no encryption is configured.
+// Delegates to the shared decryptStoredEvents primitive so every pull surface decrypts alike.
 func (s *CatchupSubscription) decryptEvents(ctx context.Context, events []StoredEvent) ([]StoredEvent, error) {
-	if s.store.EncryptionConfig() == nil {
-		return events, nil
-	}
-	for i := range events {
-		dec, err := s.store.DecryptStoredEvent(ctx, events[i])
-		if err != nil {
-			return nil, err
-		}
-		events[i] = dec
-	}
-	return events, nil
+	return s.store.decryptStoredEvents(ctx, events)
 }
 
 // Events returns the channel for receiving events.

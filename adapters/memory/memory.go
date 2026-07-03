@@ -481,8 +481,20 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	// Apply options
 	bufferSize := getBufferSize(opts)
 
+	// Size the channel to hold all pending history plus the caller's live buffer, so the
+	// historical drain below never blocks while holding a.mu.RLock. A blocking drain would
+	// wedge every writer (Append needs the write lock) until the consumer drains — but the
+	// consumer cannot start draining until this call returns, which the drain itself prevents:
+	// a setup-time deadlock whenever the history past fromPosition exceeds the buffer.
+	historyCount := 0
+	for i := range a.globalEvents {
+		if a.globalEvents[i].GlobalPosition > fromPosition {
+			historyCount++
+		}
+	}
+
 	// Create buffered channel for subscriber
-	ch := make(chan adapters.StoredEvent, bufferSize)
+	ch := make(chan adapters.StoredEvent, bufferSize+historyCount)
 
 	// Register for future events BEFORE releasing a.mu and BEFORE draining history, so
 	// no Append can interleave between the historical snapshot and registration and be

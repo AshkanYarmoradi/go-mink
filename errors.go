@@ -377,3 +377,8 @@ func (e *UnregisteredEventTypeError) Error() string {
 func (e *UnregisteredEventTypeError) Is(target error) bool {
 	return target == ErrUnregisteredEventType
 }
+
+// Unwrap returns the sentinel this error wraps, so errors.Is/errors.As traverse the chain.
+func (e *UnregisteredEventTypeError) Unwrap() error {
+	return ErrUnregisteredEventType
+}

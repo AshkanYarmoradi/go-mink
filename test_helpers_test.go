@@ -5,9 +5,14 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
+
+// errTransientCheckpoint is the error the mock checkpoint store returns for a bounded number
+// of GetCheckpoint calls (getFailN) to simulate a transient read failure that then recovers.
+var errTransientCheckpoint = errors.New("mink-test: transient checkpoint read error")
 
 // =============================================================================
 // Shared Test Logger
@@ -84,6 +89,7 @@ type testCheckpointStore struct {
 	checkpoints map[string]uint64
 	setErr      error
 	getErr      error
+	getFailN    int // when >0, the next N GetCheckpoint calls return errTransientCheckpoint, then succeed
 	deleteErr   error
 }
 
@@ -94,11 +100,15 @@ func newTestCheckpointStore() *testCheckpointStore {
 }
 
 func (s *testCheckpointStore) GetCheckpoint(ctx context.Context, projectionName string) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.getFailN > 0 {
+		s.getFailN--
+		return 0, errTransientCheckpoint
+	}
 	if s.getErr != nil {
 		return 0, s.getErr
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.checkpoints[projectionName], nil
 }
 

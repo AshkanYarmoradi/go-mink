@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,14 @@ import (
 
 	"go-mink.dev/adapters/memory"
 )
+
+// TestUnregisteredEventTypeError_Unwrap verifies the typed error implements Unwrap to the
+// sentinel (CLAUDE.md rule 5: typed errors implement both Is() and Unwrap()).
+func TestUnregisteredEventTypeError_Unwrap(t *testing.T) {
+	err := &UnregisteredEventTypeError{StreamID: "s", EventType: "T", Version: 3}
+	assert.Equal(t, ErrUnregisteredEventType, errors.Unwrap(err))
+	assert.ErrorIs(t, err, ErrUnregisteredEventType)
+}
 
 type replayCreated struct {
 	ID string `json:"id"`

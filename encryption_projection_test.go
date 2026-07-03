@@ -139,6 +139,44 @@ func TestEventStore_DecryptStoredEvent(t *testing.T) {
 		_, err = store.DecryptStoredEvent(ctx, raw[0])
 		require.Error(t, err)
 	})
+
+	t.Run("clears encryption metadata after a real decrypt (no double-decrypt)", func(t *testing.T) {
+		store, _ := newProjEncStore(t, nil)
+		require.NoError(t, store.Append(ctx, "U-9", []interface{}{projEncEvent{UserID: "u9", Name: "Bob", Emails: []string{"b@x.com"}}}))
+		raw, err := store.LoadRaw(ctx, "U-9", 0)
+		require.NoError(t, err)
+		require.True(t, IsEncrypted(raw[0].Metadata), "stored event is flagged encrypted")
+
+		out, err := store.DecryptStoredEvent(ctx, raw[0])
+		require.NoError(t, err)
+		assert.False(t, IsEncrypted(out.Metadata), "decrypted event must not still be flagged encrypted")
+		assert.True(t, IsEncrypted(raw[0].Metadata), "the input event's metadata must not be mutated")
+
+		// Re-processing the already-decrypted event is a safe no-op, not a double-decrypt failure.
+		out2, err := store.DecryptStoredEvent(ctx, out)
+		require.NoError(t, err)
+		assert.Equal(t, out.Data, out2.Data, "re-decrypting plaintext must be a no-op")
+	})
+}
+
+// TestProjectionRebuilder_Decryption verifies that a projection rebuild decrypts field-
+// encrypted events before applying them, so the read model is rebuilt from plaintext rather
+// than ciphertext (the async/inline live paths already do this; the rebuild path must too).
+func TestProjectionRebuilder_Decryption(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newProjEncStore(t, nil)
+	require.NoError(t, store.Append(ctx, "U-1", []interface{}{
+		projEncEvent{UserID: "u1", Name: "Alice", Emails: []string{"a@x.com", "b@y.com"}},
+	}))
+
+	rebuilder := NewProjectionRebuilder(store, newTestCheckpointStore())
+	proj := &captureProjection{name: "rebuild-cap"}
+	require.NoError(t, rebuilder.RebuildInline(ctx, proj))
+
+	got := proj.snapshot()
+	require.Len(t, got, 1)
+	assert.Equal(t, "Alice", got[0].Name, "rebuild must deliver decrypted plaintext, not ciphertext/base64")
+	assert.Equal(t, []string{"a@x.com", "b@y.com"}, got[0].Emails, "non-scalar field would fail to unmarshal from ciphertext")
 }
 
 func TestProjectionEngine_InlineDecryption(t *testing.T) {

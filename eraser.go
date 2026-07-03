@@ -267,6 +267,11 @@ func (r *ErasureResult) Failed() bool {
 	return false
 }
 
+// erasureMarkerSubjectKey tags an erasure marker's event metadata with its subject id.
+// Metadata is stored in its own column (independent of the Data serializer), so markerExists
+// can detect an existing marker regardless of the configured serializer (JSON/msgpack/protobuf).
+const erasureMarkerSubjectKey = "$erasure_marker_subject"
+
 // ErasureMarker is the default payload appended when WithErasureMarker is set. It
 // records that an erasure occurred WITHOUT carrying any erased PII.
 type ErasureMarker struct {
@@ -492,18 +497,27 @@ func (e *DataEraser) appendMarker(ctx context.Context, subjectID string, result 
 		ErasedAt:    result.ErasedAt,
 		KeysRevoked: len(result.KeysRevoked),
 	}
-	return e.store.Append(ctx, e.markerStream, []interface{}{marker})
+	// Stamp the subject in event metadata so markerExists can detect this marker under any
+	// serializer (metadata lives in its own column, not the serializer-encoded Data).
+	md := Metadata{Custom: map[string]string{erasureMarkerSubjectKey: subjectID}}
+	return e.store.Append(ctx, e.markerStream, []interface{}{marker}, WithAppendMetadata(md))
 }
 
 // markerExists reports whether the marker stream already holds an ErasureMarker for
-// subjectID. Best-effort and serializer-agnostic for the default JSON encoding: a
-// read or unmarshal failure returns false so the marker is (re)written.
+// subjectID. Best-effort: a read failure returns false so the marker is (re)written. It is
+// serializer-agnostic — the primary check reads the subject tag stamped in event metadata
+// (its own column), with a JSON-Data fallback for markers written before the tag existed.
 func (e *DataEraser) markerExists(ctx context.Context, subjectID string) bool {
 	stored, err := e.store.LoadRaw(ctx, e.markerStream, 0)
 	if err != nil {
 		return false
 	}
 	for i := range stored {
+		// Primary, serializer-agnostic check: the metadata subject tag.
+		if stored[i].Metadata.Custom[erasureMarkerSubjectKey] == subjectID {
+			return true
+		}
+		// Backward-compatible fallback for pre-tag markers (default JSON serializer only).
 		var m ErasureMarker
 		if json.Unmarshal(stored[i].Data, &m) == nil && m.SubjectID == subjectID {
 			return true

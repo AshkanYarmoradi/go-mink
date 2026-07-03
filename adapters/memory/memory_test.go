@@ -1177,6 +1177,44 @@ func TestMemoryAdapter_SubscribeAll_ContextCancelledDuringReplay(t *testing.T) {
 	})
 }
 
+// TestMemoryAdapter_SubscribeAll_LargeHistoryNoDeadlock verifies that subscribing with a tiny
+// buffer to a stream whose history far exceeds it does not deadlock: the historical drain must
+// not block writers/consumers under the read lock. The channel is sized to fit history, so a
+// consumer that reads only after SubscribeAll returns still receives every event.
+func TestMemoryAdapter_SubscribeAll_LargeHistoryNoDeadlock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	adapter := NewAdapter()
+
+	const n = 500 // well beyond the default buffer (100) and the tiny buffer requested below
+	events := make([]adapters.EventRecord, n)
+	for i := range events {
+		events[i] = adapters.EventRecord{Type: "E", Data: []byte(`{}`)}
+	}
+	_, err := adapter.Append(ctx, "S-1", events, mink.NoStream)
+	require.NoError(t, err)
+
+	// Subscribe with a tiny buffer, then drain only AFTER the call returns — the exact pattern
+	// that deadlocked when the historical drain blocked on a full channel under a.mu.RLock.
+	ch, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{BufferSize: 1})
+	require.NoError(t, err)
+
+	got := 0
+	deadline := time.After(5 * time.Second)
+	for got < n {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed early after %d/%d events", got, n)
+			}
+			got++
+		case <-deadline:
+			t.Fatalf("timeout/deadlock: received only %d/%d events", got, n)
+		}
+	}
+	assert.Equal(t, n, got, "all historical events delivered without deadlock")
+}
+
 func TestMemoryAdapter_LoadFromPosition(t *testing.T) {
 	t.Run("returns events from position", func(t *testing.T) {
 		adapter := NewAdapter()

@@ -18,6 +18,39 @@ type eraseUserCreated struct {
 	Email  string `json:"email"`
 }
 
+// nonJSONMarkerSerializer produces non-JSON Data, so the marker-idempotency test below proves
+// the metadata-based (serializer-agnostic) detection works rather than the JSON-Data fallback.
+type nonJSONMarkerSerializer struct{}
+
+func (nonJSONMarkerSerializer) Serialize(interface{}) ([]byte, error) {
+	return []byte{0x00, 0x01, 0x02, 0xff}, nil
+}
+
+func (nonJSONMarkerSerializer) Deserialize([]byte, string) (interface{}, error) {
+	return map[string]interface{}{}, nil
+}
+
+// TestDataEraser_MarkerIdempotency_NonJSONSerializer verifies the erasure marker is detected
+// (and therefore not duplicated on re-run) under a serializer whose Data is not JSON-decodable
+// — the metadata subject tag, not the Data, drives markerExists.
+func TestDataEraser_MarkerIdempotency_NonJSONSerializer(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.NewAdapter(), WithSerializer(nonJSONMarkerSerializer{}))
+	eraser := NewDataEraser(store, WithErasureMarker("erasure-log"))
+	res := &ErasureResult{KeysRevoked: []string{"k"}}
+
+	require.NoError(t, eraser.appendMarker(ctx, "subj-1", res))
+	assert.True(t, eraser.markerExists(ctx, "subj-1"),
+		"marker must be detectable via metadata under a non-JSON serializer")
+
+	// Re-run must not append a duplicate — idempotency holds even though Data is not JSON.
+	require.NoError(t, eraser.appendMarker(ctx, "subj-1", res))
+	raw, err := store.LoadRaw(ctx, "erasure-log", 0)
+	require.NoError(t, err)
+	assert.Len(t, raw, 1,
+		"re-running appendMarker under a non-JSON serializer must not duplicate the marker")
+}
+
 // newEraseTestStore builds a memory-backed store with field encryption keyed by
 // keyID, plus a crypto-shredding decryption handler so revoked keys redact instead
 // of failing. It returns the store and the local provider (to assert revocation).

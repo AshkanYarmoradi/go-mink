@@ -1,6 +1,7 @@
 package mink
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -28,6 +29,12 @@ type EventStore struct {
 	strictReplay bool     // WithStrictReplay: fail LoadAggregate on an unregistered type
 	autoRegister bool     // WithAutoRegisterOnAppend: register concrete types at append time
 	replayWarned sync.Map // dedups the default WARN to once per (stream|type|version)
+
+	// eventTypeRegistrar caches the serializer's optional EventTypeRegistrar view,
+	// resolved once at construction, so the per-event replay-type check on the hot
+	// LoadAggregate path is a single field read + map lookup rather than an interface
+	// type assertion per event. nil when the serializer does not support introspection.
+	eventTypeRegistrar EventTypeRegistrar
 }
 
 // Logger defines the logging interface for the event store.
@@ -126,6 +133,12 @@ func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 		opt(es)
 	}
 
+	// Cache the serializer's optional introspection view once (the serializer is fixed
+	// after options are applied), so replay-safety checks avoid a per-event type assertion.
+	if r, ok := es.serializer.(EventTypeRegistrar); ok {
+		es.eventTypeRegistrar = r
+	}
+
 	return es
 }
 
@@ -166,8 +179,8 @@ func (s *EventStore) RegisterAggregateEvents(events ...interface{}) {
 // if the serializer does not support introspection. Use it to assert, in a test, that every
 // event type your aggregates apply is registered — a pre-flight against silent replay drops.
 func (s *EventStore) RegisteredEventTypes() []string {
-	if r, ok := s.serializer.(EventTypeRegistrar); ok {
-		return r.RegisteredEventTypes()
+	if s.eventTypeRegistrar != nil {
+		return s.eventTypeRegistrar.RegisteredEventTypes()
 	}
 	return nil
 }
@@ -194,8 +207,8 @@ func WithAutoRegisterOnAppend() Option {
 // fallback (its Type is not registered), so an aggregate's concrete-type ApplyEvent switch
 // cannot apply it — the silent-drop condition WithStrictReplay guards against.
 func (s *EventStore) isUnresolvedReplayType(stored StoredEvent, data interface{}) bool {
-	if r, ok := s.serializer.(EventTypeRegistrar); ok {
-		return !r.IsRegistered(stored.Type)
+	if s.eventTypeRegistrar != nil {
+		return !s.eventTypeRegistrar.IsRegistered(stored.Type)
 	}
 	_, isMap := data.(map[string]interface{})
 	return isMap
@@ -588,8 +601,38 @@ func (s *EventStore) DecryptStoredEvent(ctx context.Context, stored StoredEvent)
 	if err != nil {
 		return StoredEvent{}, err
 	}
+	// If decryption actually transformed the data, clear the encryption markers on a COPY
+	// of the metadata so the returned event is internally consistent: plaintext Data must
+	// not still be flagged $encrypted_fields, or re-processing it (ProcessStoredEvent /
+	// DecryptStoredEvent) would try to decrypt plaintext and fail. When decryptFields is a
+	// crypto-shred no-op (handler swallowed the error, ciphertext left in place), the bytes
+	// are unchanged and the markers are intentionally kept so the event still reports as
+	// encrypted/unrecoverable.
+	if !bytes.Equal(dec, stored.Data) {
+		stored.Metadata = stripEncryptionMetadata(stored.Metadata)
+	}
 	stored.Data = dec
 	return stored, nil
+}
+
+// decryptStoredEvents returns events with each field-encrypted event's Data decrypted, via
+// DecryptStoredEvent. It is the shared batch primitive the pull-based delivery surfaces —
+// async projections, projection rebuild, and catch-up subscriptions — route through, so
+// decryption is applied identically everywhere and a new pull surface inherits it by calling
+// one method. Zero overhead when encryption is unconfigured. A hard, unhandled decryption
+// error aborts the batch and is returned (the caller must not advance its cursor/checkpoint).
+func (s *EventStore) decryptStoredEvents(ctx context.Context, events []StoredEvent) ([]StoredEvent, error) {
+	if s.encryption == nil {
+		return events, nil
+	}
+	for i := range events {
+		dec, err := s.DecryptStoredEvent(ctx, events[i])
+		if err != nil {
+			return nil, fmt.Errorf("decrypt event at position %d: %w", events[i].GlobalPosition, err)
+		}
+		events[i] = dec
+	}
+	return events, nil
 }
 
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.

@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,6 +62,12 @@ func TestInMemoryRepository_UnknownFilterFieldGuard(t *testing.T) {
 	t.Run("Count rejects an unknown field", func(t *testing.T) {
 		_, err := repo.Count(ctx, unknown)
 		require.ErrorIs(t, err, ErrUnknownFilterField)
+	})
+
+	t.Run("typed error implements Unwrap to the wrapped sentinel", func(t *testing.T) {
+		err := &UnknownFilterFieldError{Field: "x"}
+		assert.Equal(t, ErrUnknownFilterField, errors.Unwrap(err))
+		require.ErrorIs(t, err, ErrInvalidQuery) // reachable through the wrapped chain
 	})
 
 	t.Run("DeleteMany rejects an unknown field and deletes nothing", func(t *testing.T) {

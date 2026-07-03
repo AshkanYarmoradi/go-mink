@@ -30,6 +30,11 @@ func (s *EventStore) UnregisteredStreamTypes(ctx context.Context, streamID strin
 // to UnregisteredStreamTypes. Read-only; requires a SubscriptionAdapter for the global scan
 // (returns ErrSubscriptionNotSupported otherwise), and nil when the serializer lacks
 // introspection.
+//
+// Completeness caveat: the scan uses the same position-load path as delivery, which on the
+// PostgreSQL adapter is capped at the gapless safe watermark. Events from still-in-flight
+// transactions are therefore excluded, so run this against a quiescent store for a complete
+// pre-deploy/migration audit — under concurrent writers it may miss the most recent events.
 func (s *EventStore) UnregisteredEventTypes(ctx context.Context) ([]string, error) {
 	r, ok := s.serializer.(EventTypeRegistrar)
 	if !ok {
