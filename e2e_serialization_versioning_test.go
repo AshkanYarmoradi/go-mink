@@ -130,15 +130,23 @@ func TestE2E_Serialization_MsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, 9, prod.Price)
 }
 
-// TestE2E_Serialization_MsgpackRejectedByPGJSONB documents the constraint that the PostgreSQL
-// adapter's JSONB `data` column cannot store non-JSON (msgpack) event bodies. This locks in the
-// current behavior; supporting binary serializers on PostgreSQL would be a separate change.
+// TestE2E_Serialization_MsgpackRejectedByPGJSONB locks in the fail-fast contract: because the
+// PostgreSQL adapter stores event data in a JSONB column, pairing it with a binary serializer
+// (msgpack) is rejected at construction — mink.New panics with ErrBinarySerializerUnsupported —
+// instead of failing later on the first Append with a cryptic "invalid input syntax for type json".
 func TestE2E_Serialization_MsgpackRejectedByPGJSONB(t *testing.T) {
 	p := newE2EPGBase(t)
 	s := msgpack.NewSerializer()
 	s.Register("e2eProductMsg", e2eProductMsg{})
-	p.Store = mink.New(p.Adapter, mink.WithSerializer(s))
 
-	err := p.Store.Append(p.Ctx, "prod-msg-pg", []interface{}{e2eProductMsg{Name: "widget", Price: 9}})
-	require.Error(t, err, "msgpack bytes are not valid JSON and the JSONB column must reject them")
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected mink.New to panic on msgpack + JSONB PostgreSQL adapter")
+		err, ok := r.(error)
+		require.Truef(t, ok, "panic value should be an error, got %T", r)
+		assert.ErrorIs(t, err, mink.ErrBinarySerializerUnsupported)
+	}()
+
+	_ = mink.New(p.Adapter, mink.WithSerializer(s))
+	t.Fatal("mink.New returned without panicking")
 }

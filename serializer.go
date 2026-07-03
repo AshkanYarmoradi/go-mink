@@ -30,6 +30,22 @@ type EventTypeRegistrar interface {
 	RegisteredEventTypes() []string
 }
 
+// BinaryFormatReporter is an optional interface a Serializer may implement to
+// declare whether its Serialize output is binary — i.e. not valid JSON text.
+// The shipped serializer/msgpack and serializer/protobuf serializers implement
+// it returning true; the default JSONSerializer returns false.
+//
+// It is consulted by New, together with adapters.JSONDataAdapter, so that
+// pairing a binary serializer with a JSON/JSONB-backed event store (such as the
+// PostgreSQL adapter) fails fast at construction with an actionable error
+// rather than deep in the driver on the first Append. A serializer that does
+// not implement this interface is assumed to produce JSON-compatible text (the
+// historical default), so existing custom serializers are unaffected.
+type BinaryFormatReporter interface {
+	// BinaryFormat reports whether Serialize produces binary (non-JSON-text) output.
+	BinaryFormat() bool
+}
+
 // EventRegistry maps event type names to Go types.
 // It is used by the JSONSerializer to deserialize events to the correct type.
 type EventRegistry struct {
@@ -150,6 +166,10 @@ func (s *JSONSerializer) IsRegistered(eventType string) bool {
 func (s *JSONSerializer) RegisteredEventTypes() []string {
 	return s.registry.RegisteredTypes()
 }
+
+// BinaryFormat reports that JSON output is textual, not binary. It satisfies
+// BinaryFormatReporter so JSON-backed adapters accept this serializer.
+func (s *JSONSerializer) BinaryFormat() bool { return false }
 
 // Serialize converts an event to JSON bytes.
 func (s *JSONSerializer) Serialize(event interface{}) ([]byte, error) {

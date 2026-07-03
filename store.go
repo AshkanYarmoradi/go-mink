@@ -122,6 +122,15 @@ func WithSubjectIndexWriter(w SubjectIndexWriter) Option {
 }
 
 // New creates a new EventStore with the given adapter and options.
+//
+// New panics if a binary serializer (one whose BinaryFormat reports true, such
+// as serializer/msgpack or serializer/protobuf) is paired with an adapter that
+// stores event data as JSON text (one whose RequiresJSONData reports true, such
+// as the PostgreSQL JSONB adapter). Such a pairing can never succeed — the
+// binary payload is rejected by the JSON column on every Append — so it is
+// reported here, at construction, as a programming error wrapping
+// ErrBinarySerializerUnsupported, rather than as a cryptic driver failure on
+// the first write. Use the default JSON serializer with JSON-backed adapters.
 func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 	es := &EventStore{
 		adapter:    adapter,
@@ -139,7 +148,54 @@ func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 		es.eventTypeRegistrar = r
 	}
 
+	if err := checkSerializerAdapterCompatible(es.serializer, adapter); err != nil {
+		panic(err)
+	}
+
 	return es
+}
+
+// checkSerializerAdapterCompatible rejects a binary serializer paired with an
+// adapter that requires JSON-encoded event data. Both signals are opt-in: an
+// adapter that does not implement adapters.JSONDataAdapter (or returns false)
+// imposes no constraint, and a serializer that does not report a binary format
+// is assumed to emit JSON text. It therefore returns nil for every historical
+// pairing (JSON serializer with any adapter; any serializer with the in-memory
+// adapter).
+func checkSerializerAdapterCompatible(s Serializer, adapter adapters.EventStoreAdapter) error {
+	jsonAdapter, ok := adapter.(adapters.JSONDataAdapter)
+	if !ok || !jsonAdapter.RequiresJSONData() {
+		return nil
+	}
+	if !producesBinary(s) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: this serializer emits binary (non-JSON) event data that the adapter's JSON/JSONB data column cannot store; use the default JSON serializer, or an event-store adapter with a BYTEA data column",
+		ErrBinarySerializerUnsupported,
+	)
+}
+
+// producesBinary reports whether s serializes to a binary (non-JSON-text)
+// format. It honors BinaryFormatReporter and transparently unwraps decorators
+// that expose their wrapped serializer via Inner (such as UpcastingSerializer),
+// so wrapping a binary serializer does not defeat the check.
+func producesBinary(s Serializer) bool {
+	for s != nil {
+		if r, ok := s.(BinaryFormatReporter); ok {
+			return r.BinaryFormat()
+		}
+		inner, ok := s.(interface{ Inner() Serializer })
+		if !ok {
+			return false
+		}
+		next := inner.Inner()
+		if next == s {
+			return false
+		}
+		s = next
+	}
+	return false
 }
 
 // Serializer returns the event store's serializer.

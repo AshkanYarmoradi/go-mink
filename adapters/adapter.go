@@ -295,6 +295,22 @@ type Migrator interface {
 	MigrationVersion(ctx context.Context) (int, error)
 }
 
+// JSONDataAdapter is an optional interface an EventStoreAdapter implements to
+// declare that it persists event data in a JSON/JSONB column, and therefore
+// requires a serializer whose output is valid JSON text.
+//
+// mink.New consults it at construction time: pairing such an adapter with a
+// binary serializer (e.g. serializer/msgpack or serializer/protobuf) is
+// rejected up front with an actionable error, instead of letting the first
+// Append fail deep in the driver with a cryptic "invalid input syntax for type
+// json". An adapter that does not implement this interface (or returns false)
+// imposes no constraint and accepts any serializer.
+type JSONDataAdapter interface {
+	// RequiresJSONData reports whether the adapter stores event data as JSON
+	// text (e.g. a PostgreSQL JSONB column) and so cannot accept binary payloads.
+	RequiresJSONData() bool
+}
+
 // IdempotencyStore tracks processed commands to prevent duplicate processing.
 // Adapters may implement this to support command idempotency.
 type IdempotencyStore interface {

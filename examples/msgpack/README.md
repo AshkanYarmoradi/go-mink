@@ -4,6 +4,8 @@
 
 By default go-mink serializes events to JSON, which is human-readable but larger and slower to encode. Swapping in the MessagePack serializer yields smaller payloads and faster serialization — valuable for high-throughput or storage-sensitive systems. This example compares the two formats side by side, then wires MessagePack into a real `EventStore`.
 
+> **Compatibility:** MessagePack is a *binary* format. It works with the in-memory adapter (used here) or any `BYTEA`-backed store, but **not** the PostgreSQL event store, whose `events.data` column is `JSONB`. Pairing this serializer with the PostgreSQL adapter makes `mink.New` panic with `mink.ErrBinarySerializerUnsupported` — use the default JSON serializer there.
+
 ## What this demonstrates
 
 - **Pluggable serialization** — `msgpack.NewSerializer()` produces a serializer that drops into an `EventStore` via `mink.WithSerializer(...)`, no other code changes.

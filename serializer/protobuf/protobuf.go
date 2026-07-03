@@ -219,6 +219,12 @@ func (s *Serializer) Count() int {
 	return len(s.registry)
 }
 
+// BinaryFormat reports that Protocol Buffers output is binary, not JSON text.
+// It satisfies mink.BinaryFormatReporter (structurally, without importing
+// mink), so mink.New rejects this serializer up front when paired with a
+// JSON/JSONB event store such as the PostgreSQL adapter.
+func (s *Serializer) BinaryFormat() bool { return true }
+
 // Serialize converts an event to Protocol Buffers binary format.
 // The event must implement proto.Message.
 func (s *Serializer) Serialize(event interface{}) ([]byte, error) {

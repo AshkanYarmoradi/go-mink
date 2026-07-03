@@ -26,6 +26,15 @@ var (
 	// ErrSerializationFailed indicates event serialization/deserialization failed.
 	ErrSerializationFailed = errors.New("mink: serialization failed")
 
+	// ErrBinarySerializerUnsupported indicates a binary serializer (e.g.
+	// serializer/msgpack or serializer/protobuf, whose output is not valid JSON
+	// text) was paired with an event-store adapter that persists event data in a
+	// JSON/JSONB column (see adapters.JSONDataAdapter, implemented by the
+	// PostgreSQL adapter). New panics with an error wrapping this sentinel so the
+	// misconfiguration surfaces at construction time instead of as a cryptic
+	// driver error on the first Append.
+	ErrBinarySerializerUnsupported = errors.New("mink: binary serializer is not supported by a JSON-backed event store adapter")
+
 	// ErrEventTypeNotRegistered indicates an unknown event type was encountered.
 	ErrEventTypeNotRegistered = errors.New("mink: event type not registered")
 
