@@ -70,7 +70,17 @@ stable — so subscriptions, projections, and sagas are fixed with no consumer-s
 This trades a small, bounded delivery latency (≈ one poll interval / the grace window) for
 the no-skip guarantee. **At-least-once is preserved** (duplicates on restart still
 possible); only the *at-most-once loss* is removed. The in-memory adapter has no
-transactions and is already fixed by the atomic snapshot+register in §2.1 above.
+transactions and is already fixed by the atomic snapshot+register above.
+
+**Implemented** (`safePositionClause`, `adapters/postgres/subscription.go`): the
+transaction-snapshot mechanism, as a single `WHERE` predicate on `LoadFromPosition` /
+`loadCategoryEvents` — `age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)`
+— so every consumer inherits it with no cursor-side change. `age()` is xid-wraparound-safe;
+read-only transactions never hold an xid so long reports / `pg_dump` don't stall it. Chosen
+over gap-detection for its statelessness (no per-consumer gap tracking, no timeout tuning).
+Validated empirically against a live DB and by `watermark_test.go` (in-flight holdback +
+rolled-back-gap-no-stall). Documented residuals: the concurrent-new-stream-first-event
+µs window, and long unrelated in-flight *write* transactions in the same database.
 
 ### In-memory snapshot/register race
 Problem: `SubscribeAll` copies history under `a.mu`, releases it, then registers the

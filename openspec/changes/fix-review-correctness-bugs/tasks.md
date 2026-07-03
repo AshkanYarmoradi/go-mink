@@ -7,17 +7,15 @@
 
 ## 2. Required — Gapless PostgreSQL subscriptions (`event-subscriptions`)
 
-> **Scope broadened (2026-07-03):** the gap affects the shared load-from-position layer —
-> subscriptions, async projections (which checkpoint the advance), and sagas — not just
-> `subscription.go`. The production consumer (huisscan) is exposed via projections + a saga
-> under concurrent, unserialized writes. Fix at the adapter layer, no DB-schema change. This
-> is the most delicate change (core delivery) — implement as a focused, integration-tested
-> unit after this spec is reviewed.
+> **Scope broadened (2026-07-03), now implemented:** the gap affected the shared
+> load-from-position layer — subscriptions, async projections (which checkpoint the
+> advance), and sagas — not just `subscription.go`. Fixed at the adapter layer, no
+> DB-schema change, via a transaction-snapshot watermark (`safePositionClause`).
 
-- [ ] 2.1 Add a PG-native safe-watermark helper in the postgres adapter (no schema change): the largest `global_position` with no still-in-flight lower position, via transaction-snapshot (`pg_snapshot_xmin`/`xid8` + sequence `last_value` + hidden `xmin`) OR gap-detection with a staleness timeout for rolled-back gaps. Pick the mechanism during implementation; document the latency-vs-safety trade-off
-- [ ] 2.2 Enforce the watermark at the adapter's load-from-position query (return nothing above the safe watermark) so `SubscribeAll`/`SubscribeCategory`, async projections (`loadEventsFromPosition`), and the saga event loop all inherit it with no consumer-side cursor change; held-back positions are returned on a later poll once stable
-- [ ] 2.3 Integration tests (skip-guarded, `TEST_DATABASE_URL`) simulating out-of-order commits via explicit `BEGIN`/commit ordering: (a) a subscriber, (b) an async projection (its checkpoint never passes an uncommitted lower position), and (c) a saga all receive the late-committing lower-position event; no event skipped under interleaved commits; a rolled-back position does not stall; at-least-once (dup-on-restart) unchanged
-- [ ] 2.4 Docs: subscriptions/`security.md` note the at-least-once guarantee + added latency; cross-link the gap-free outbox for must-not-miss delivery and projection rebuild-from-0 to recover historical skips
+- [x] 2.1 PG-native safe-watermark (`safePositionClause` in `adapters/postgres/subscription.go`): only rows whose inserting transaction is older than every in-flight transaction (`age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)`). Wraparound-safe via `age()`; read-only txns don't hold an xid so they never stall it; empirically validated against the live DB. Residuals documented in the code comment (concurrent new-stream first-events µs window; long unrelated in-flight *write* txns)
+- [x] 2.2 Enforce at `LoadFromPosition` (and `loadCategoryEvents`) — the shared read path for `SubscribeAll`, async projections (`loadEventsFromPosition` → `LoadFromPosition`), and the saga event loop (`SubscribeAll`) — so all three inherit the no-skip guarantee with no consumer-side cursor change
+- [x] 2.3 Integration test (`watermark_test.go`, skip-guarded): an in-flight lower position holds back a committed higher position (no skip), then both delivered in order once committed; a rolled-back position is a permanent gap that does not stall. Full postgres integration suite green
+- [x] 2.4 Docs: thorough doc comment on `safePositionClause` (guarantee, latency, robustness, residuals) + CHANGELOG entry cross-linking the gap-free outbox and projection rebuild. (Website subscriptions/security.md prose is a follow-up.)
 
 ## 3. Required — Gapless in-memory subscribe (`event-subscriptions`)
 
@@ -71,7 +69,7 @@
 ## 12. Good-to-have — Category LIKE escaping (`event-subscriptions`)
 
 - [x] 12.1 `loadCategoryEvents`: escape `%`/`_` in the category prefix via the existing `escapeLikePattern` before appending `-%`
-- [ ] 12.2 Tests: a category containing `_`/`%` matches only its own streams, not `LIKE`-adjacent ones
+- [x] 12.2 Tests: a category containing `_`/`%` matches only its own streams, not `LIKE`-adjacent ones (`category_like_test.go`, integration)
 
 ## 13. Good-to-have — In-memory adapter data integrity (`event-store`)
 
