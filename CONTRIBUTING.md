@@ -145,11 +145,29 @@ make build           # go build ./...
 make test-unit       # unit tests only (no infra, CGO_ENABLED=0 — works everywhere)
 make test-unit-race  # unit tests with the race detector (needs gcc/clang)
 make test            # full suite — auto-starts PostgreSQL + Kafka
+make test-e2e        # end-to-end suites only (TestE2E_*) against real PostgreSQL + Kafka
 make lint            # golangci-lint run ./...
 make fmt             # go fmt ./...
 make test-coverage   # coverage report (excludes examples/ and testing/)
 make help            # list every target
 ```
+
+### End-to-end suite
+
+The `e2e_*_test.go` files (package `mink_test`) exercise each feature through the full stack
+against real infrastructure — command bus → PostgreSQL store → projections; store → outbox →
+Kafka/webhook; field encryption ciphertext-at-rest; and the GDPR erasure/export lifecycle. They
+build on `testing/containers` (`StartPostgres`, `StartKafka`, per-test isolated schemas) and
+self-skip under `-short` or when their env vars are unset:
+
+- **PostgreSQL** — `TEST_DATABASE_URL` (required by every E2E suite).
+- **Kafka** — `TEST_KAFKA_BROKERS` (the outbox→Kafka suite; others don't need it).
+- **Cloud (opt-in, not required in CI)** — the KMS/Vault-through-store and SNS/LocalStack paths
+  skip unless their own credentials/endpoints are set (`AWS_*`+`MINK_KMS_TEST_KEY_ID`,
+  `VAULT_*`+`MINK_VAULT_TEST_KEY`, `TEST_SNS_ENDPOINT`).
+
+Run them with `make test-e2e` (auto-starts PostgreSQL + Kafka). Because they self-skip,
+`make test-unit` stays green everywhere.
 
 To run a single test (integration tests need infra up — `make infra-up`):
 
