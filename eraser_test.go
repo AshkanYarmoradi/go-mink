@@ -160,6 +160,42 @@ func TestDataEraser_Marker(t *testing.T) {
 	assert.NotContains(t, string(raw), "alice@example.com")
 }
 
+func TestDataEraser_Marker_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEraseTestStore(t, "user-1-key")
+	require.NoError(t, store.Append(ctx, "User-user-1", []interface{}{
+		eraseUserCreated{UserID: "user-1", Email: "alice@example.com"},
+	}))
+
+	eraser := NewDataEraser(store, WithErasureMarker("erasure-log"))
+	req := ErasureRequest{SubjectID: "user-1", Streams: []string{"User-user-1"}}
+
+	res1, err := eraser.Erase(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res1.MarkerWritten)
+
+	// Re-run: revocation is idempotent and the marker must not be duplicated.
+	res2, err := eraser.Erase(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res2.MarkerWritten)
+
+	markers, err := store.Load(ctx, "erasure-log")
+	require.NoError(t, err)
+	assert.Len(t, markers, 1, "re-running Erase must not append a duplicate marker")
+}
+
+func TestErasureResult_Failed_SkippedSubjectStore(t *testing.T) {
+	// A registered subject store that was skipped (unimplemented purger) leaves PII —
+	// Failed() must report it even with no Errors/Partial/ResidualReadModels.
+	assert.False(t, (&ErasureResult{}).Failed())
+
+	skipped := &ErasureResult{SubjectStores: []SubjectErasureOutcome{{Name: "saga", Skipped: true}}}
+	assert.True(t, skipped.Failed(), "a skipped subject store must make Failed() true")
+
+	erased := &ErasureResult{SubjectStores: []SubjectErasureOutcome{{Name: "saga", Erased: 3}}}
+	assert.False(t, erased.Failed())
+}
+
 func TestDataEraser_Validation(t *testing.T) {
 	store, _ := newEraseTestStore(t, "k")
 	eraser := NewDataEraser(store)

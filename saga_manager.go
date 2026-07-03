@@ -77,8 +77,15 @@ func WithSagaSweepInterval(d time.Duration) SagaManagerOption {
 }
 
 // WithSagaRetryAttempts sets the number of retry attempts for failed commands.
+// The value is clamped to a minimum of 1: a saga event is always attempted at
+// least once. Passing 0 (or a negative value) would otherwise make the retry
+// loops skip their body entirely, silently dropping the event while advancing
+// the manager's position past it.
 func WithSagaRetryAttempts(attempts int) SagaManagerOption {
 	return func(m *SagaManager) {
+		if attempts < 1 {
+			attempts = 1
+		}
 		m.retryAttempts = attempts
 	}
 }
@@ -464,6 +471,13 @@ func (m *SagaManager) getSagaLock(sagaID string) *sync.Mutex {
 	return lock.(*sync.Mutex)
 }
 
+// isShutdownError reports whether err is a context cancellation or deadline —
+// i.e. the manager is stopping — as opposed to a genuine saga-step failure. Such
+// an error must not drive compensation or advance the manager's position.
+func isShutdownError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // processEvent routes an event to appropriate sagas.
 func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error {
 	m.mu.RLock()
@@ -722,6 +736,9 @@ func (m *SagaManager) attemptProcessSagaEvent(
 	saga.SetStatus(SagaStatusRunning)
 	commands, err := saga.HandleEvent(ctx, event)
 	if err != nil {
+		if isShutdownError(err) {
+			return err
+		}
 		return m.handleSagaFailure(ctx, saga, err)
 	}
 
@@ -730,6 +747,13 @@ func (m *SagaManager) attemptProcessSagaEvent(
 	// step number passed to Compensate is the count of steps that succeeded.
 	for _, cmd := range commands {
 		if err := m.dispatchCommand(ctx, saga, cmd); err != nil {
+			// A context cancellation/deadline (e.g. a graceful Stop() mid-dispatch) is
+			// not a business failure: leave the saga Running so a restart resumes it,
+			// instead of driving compensation on an already-cancelled context (which
+			// would fail every compensation command and persist CompensationFailed).
+			if isShutdownError(err) {
+				return err
+			}
 			return m.handleSagaFailure(ctx, saga, err)
 		}
 		saga.SetCurrentStep(saga.CurrentStep() + 1)

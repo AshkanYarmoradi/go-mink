@@ -209,10 +209,10 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 				}
 
 				if err := env.Adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
-					fmt.Println(styles.WarningStyle.Render("WARNING"))
-				} else {
-					fmt.Println(styles.SuccessStyle.Render("OK"))
+					fmt.Println(styles.ErrorStyle.Render("FAILED"))
+					return fmt.Errorf("failed to remove migration record %q (schema rolled back but the record remains — the migrations table is now inconsistent): %w", m.Name, err)
 				}
+				fmt.Println(styles.SuccessStyle.Render("OK"))
 			}
 
 			fmt.Println()

@@ -253,7 +253,9 @@ func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category strin
 		ORDER BY global_position ASC
 		LIMIT $3`
 
-	rows, err := a.db.QueryContext(ctx, query, fromPosition, category+"-%", limit)
+	// Escape LIKE metacharacters in the category so a name containing % or _ matches
+	// only its own streams (the trailing -% stays the intended wildcard).
+	rows, err := a.db.QueryContext(ctx, query, fromPosition, escapeLikePattern(category)+"-%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load category events: %w", err)
 	}

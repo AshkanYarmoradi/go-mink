@@ -255,6 +255,67 @@ func (s *scheduleFailingOutboxStore) Schedule(ctx context.Context, messages []*a
 	return s.err
 }
 
+func TestMemoryAdapter_Append_DeepCopiesInput(t *testing.T) {
+	adapter := NewAdapter()
+	ctx := context.Background()
+
+	data := []byte(`{"pii":"alice"}`)
+	custom := map[string]string{"$subjects": "alice"}
+	events := []adapters.EventRecord{
+		{Type: "UserRegistered", Data: data, Metadata: adapters.Metadata{Custom: custom}},
+	}
+	_, err := adapter.Append(ctx, "User-1", events, mink.NoStream)
+	require.NoError(t, err)
+
+	// Reuse/mutate the caller's buffer and map after Append — must not reach stored events.
+	copy(data, []byte(`{"pii":"BBBBB"}`))
+	custom["$subjects"] = "mallory"
+
+	loaded, err := adapter.Load(ctx, "User-1", 0)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	assert.Equal(t, `{"pii":"alice"}`, string(loaded[0].Data), "stored Data must not alias the caller's buffer")
+	assert.Equal(t, "alice", loaded[0].Metadata.Custom["$subjects"], "stored Metadata.Custom must not alias the caller's map")
+}
+
+func TestMemoryAdapter_SubscribeAll_ConcurrentAppendNoGap(t *testing.T) {
+	// Regression: an Append concurrent with SubscribeAll setup must be delivered, never
+	// lost in the snapshot→register gap. A large buffer rules out legitimate buffer-drops,
+	// so any shortfall is the gap bug. Run under -race.
+	const n = 50
+	for iter := 0; iter < 20; iter++ {
+		adapter := NewAdapter()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n; i++ {
+				_, _ = adapter.Append(ctx, "S", []adapters.EventRecord{{Type: "E", Data: []byte(`{}`)}}, mink.AnyVersion)
+			}
+		}()
+
+		ch, err := adapter.SubscribeAll(ctx, 0, adapters.SubscriptionOptions{BufferSize: n * 4})
+		require.NoError(t, err)
+		wg.Wait()
+
+		got := 0
+		timeout := time.After(2 * time.Second)
+	loop:
+		for got < n {
+			select {
+			case <-ch:
+				got++
+			case <-timeout:
+				break loop
+			}
+		}
+		cancel()
+		require.Equal(t, n, got, "iter %d: events lost around subscribe (snapshot→register gap)", iter)
+	}
+}
+
 func TestMemoryAdapter_AppendWithOutbox(t *testing.T) {
 	ctx := context.Background()
 

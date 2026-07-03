@@ -410,6 +410,22 @@ func (e *DataExporter) processStoredEvent(ctx context.Context, se StoredEvent) (
 		Timestamp:      se.Timestamp,
 	}
 
+	// Independently redact crypto-shredded events. A WithDecryptionErrorHandler that
+	// returns nil (the recommended shred setup) makes ProcessStoredEvent report success
+	// with still-encrypted data, which would otherwise leak ciphertext into the export.
+	// If the event is encrypted under a revoked key, redact regardless of the handler.
+	if enc := e.store.EncryptionConfig(); enc != nil && IsEncrypted(se.Metadata) {
+		if revoked, rerr := enc.IsRevoked(GetEncryptionKeyID(se.Metadata)); rerr == nil && revoked {
+			e.logger.Info("event redacted: encrypted under a revoked key",
+				"streamID", se.StreamID, "eventType", se.Type, "position", se.GlobalPosition)
+			exported.Redacted = true
+			exported.Data = nil
+			// RawData keeps the (unrecoverable) ciphertext, consistent with the
+			// ErrKeyRevoked/ErrKeyNotFound redaction branches below.
+			return exported, nil
+		}
+	}
+
 	event, err := e.store.ProcessStoredEvent(ctx, se)
 	if err != nil {
 		if errors.Is(err, ErrKeyRevoked) || errors.Is(err, ErrKeyNotFound) {

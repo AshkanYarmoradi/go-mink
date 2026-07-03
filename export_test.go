@@ -869,6 +869,45 @@ func TestDataExporter_Export_CryptoShredding(t *testing.T) {
 	assert.NotEmpty(t, result.Events[0].RawData)
 }
 
+func TestDataExporter_Export_CryptoShredding_SwallowingHandler(t *testing.T) {
+	// A WithDecryptionErrorHandler that returns nil (the recommended crypto-shred setup,
+	// so read-model rebuilds get redacted payloads) makes decryptFields return the still-
+	// encrypted data with a nil error. Export must STILL redact — never leak ciphertext
+	// as a non-redacted record. Regression for the reviewed export bug.
+	key := make([]byte, 32)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+	provider, err := local.New(local.WithKey("shred-key", key))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Close() })
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("shred-key"),
+		WithEncryptedFields("exportEncryptedEvent", "email"),
+		WithDecryptionErrorHandler(func(_ error, _ string, _ Metadata) error {
+			return nil // swallow — crypto-shredding
+		}),
+	)
+	store := New(memory.NewAdapter(), WithFieldEncryption(config))
+	store.RegisterEvents(exportEncryptedEvent{})
+	ctx := context.Background()
+
+	require.NoError(t, store.Append(ctx, "User-shred-2", []interface{}{
+		exportEncryptedEvent{UserID: "u2", Name: "Bob", Email: "bob@secret.com"},
+	}))
+	require.NoError(t, provider.RevokeKey("shred-key"))
+
+	exporter := NewDataExporter(store, WithExportLogger(newTestLogger()))
+	result, err := exporter.Export(ctx, ExportRequest{SubjectID: "u2", Streams: []string{"User-shred-2"}})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 1)
+
+	assert.True(t, result.Events[0].Redacted, "shredded event must be redacted even with a swallowing handler")
+	assert.Nil(t, result.Events[0].Data, "must not leak the ciphertext object as Data")
+	assert.Equal(t, 1, result.RedactedCount)
+}
+
 func TestDataExporter_ExportStream_CryptoShredding(t *testing.T) {
 	ctx, provider, store := newExportEncryptedStore(t)
 

@@ -22,7 +22,25 @@ var (
 
 	// ErrInvalidQuery indicates the query is invalid.
 	ErrInvalidQuery = errors.New("mink: invalid query")
+
+	// ErrUnknownFilterField indicates a query filter names a field that does not
+	// resolve to a known column / struct field. It wraps ErrInvalidQuery so a
+	// non-empty filter set can never silently degrade to an unqualified match-all
+	// (e.g. a mistyped field turning DeleteMany into a whole-table delete).
+	ErrUnknownFilterField = fmt.Errorf("%w: filter names an unknown field", ErrInvalidQuery)
 )
+
+// UnknownFilterFieldError names the unresolved filter field. Both
+// errors.Is(err, ErrUnknownFilterField) and errors.Is(err, ErrInvalidQuery) hold.
+type UnknownFilterFieldError struct{ Field string }
+
+func (e *UnknownFilterFieldError) Error() string {
+	return fmt.Sprintf("mink: query filter names an unknown field %q", e.Field)
+}
+
+func (e *UnknownFilterFieldError) Is(target error) bool {
+	return target == ErrUnknownFilterField || target == ErrInvalidQuery
+}
 
 // ReadModelRepository provides generic CRUD operations for read models.
 // T is the read model type.
@@ -430,6 +448,9 @@ func (r *InMemoryRepository[T]) DeleteMany(ctx context.Context, query Query) (in
 		return count, nil
 	}
 
+	if err := validateFilterFields[T](query.Filters); err != nil {
+		return 0, err
+	}
 	compiled, err := compileFilters(query.Filters)
 	if err != nil {
 		return 0, err
@@ -488,7 +509,38 @@ func (r *InMemoryRepository[T]) GetAll(ctx context.Context) ([]*T, error) {
 // query's filters. Filters are compiled once (regex/slice/bounds precomputed)
 // before the model loop, so per-model evaluation is allocation-light. Callers
 // hold at least an RLock.
+// validateFilterFields rejects a filter naming a field that does not exist on T,
+// mirroring the postgres adapter's ErrUnknownFilterField guard so a typo cannot
+// silently match nothing (or, in SQL, everything). Empty filter sets are the
+// caller's explicit "match all" and are not validated.
+func validateFilterFields[T any](filters []Filter) error {
+	if len(filters) == 0 {
+		return nil
+	}
+	t := reflect.TypeOf(new(T)).Elem()
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	idx := fieldIndexFor(t)
+	for _, f := range filters {
+		if _, ok := idx[f.Field]; ok {
+			continue
+		}
+		if _, ok := idx[strings.ToLower(f.Field)]; ok {
+			continue
+		}
+		return &UnknownFilterFieldError{Field: f.Field}
+	}
+	return nil
+}
+
 func (r *InMemoryRepository[T]) matchingModels(query Query) ([]*T, error) {
+	if err := validateFilterFields[T](query.Filters); err != nil {
+		return nil, err
+	}
 	compiled, err := compileFilters(query.Filters)
 	if err != nil {
 		return nil, err

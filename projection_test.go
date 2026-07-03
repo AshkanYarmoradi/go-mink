@@ -1591,15 +1591,18 @@ func TestProjectionEngine_AsyncWorker_CheckpointGetError(t *testing.T) {
 	_ = engine.RegisterAsync(projection, opts)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	_ = engine.Start(ctx)
 
 	time.Sleep(100 * time.Millisecond)
 
-	cancel()
-	_ = engine.Stop(context.Background())
+	// The checkpoint load error faults the worker instead of silently restarting from 0.
+	assert.True(t, logger.hasLogMessage("error", "Failed to get checkpoint; faulting worker instead of restarting from 0"))
+	status, statusErr := engine.GetStatus("AsyncCheckpointGetErr")
+	require.NoError(t, statusErr)
+	assert.Equal(t, ProjectionStateFaulted, status.State)
 
-	// Logger should have recorded the error
-	assert.True(t, logger.hasLogMessage("error", "Failed to get checkpoint"))
+	_ = engine.Stop(context.Background())
 }
 
 func TestProjectionEngine_AsyncWorker_InterruptDuringBackoff(t *testing.T) {

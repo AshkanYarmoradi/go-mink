@@ -310,11 +310,14 @@ func (a *MemoryAdapter) appendLocked(streamID string, events []adapters.EventRec
 		currentVersion++
 
 		stored := adapters.StoredEvent{
-			ID:             uuid.New().String(),
-			StreamID:       streamID,
-			Type:           event.Type,
-			Data:           event.Data,
-			Metadata:       event.Metadata,
+			ID:       uuid.New().String(),
+			StreamID: streamID,
+			Type:     event.Type,
+			// Deep-copy Data and Metadata.Custom so a caller reusing/mutating the
+			// passed slice or map after Append cannot corrupt stored/loaded events
+			// (mirrors the snapshot/outbox deep-copy discipline and the PG adapter).
+			Data:           copyBytes(event.Data),
+			Metadata:       copyMetadata(event.Metadata),
 			Version:        currentVersion,
 			GlobalPosition: a.globalPosition,
 			Timestamp:      now,
@@ -481,25 +484,28 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	// Create buffered channel for subscriber
 	ch := make(chan adapters.StoredEvent, bufferSize)
 
-	// Send historical events
+	// Register for future events BEFORE releasing a.mu and BEFORE draining history, so
+	// no Append can interleave between the historical snapshot and registration and be
+	// lost. Append takes a.mu as a write lock, so it is mutually excluded by this read
+	// lock; the a.mu -> a.subscribersMu order matches Append's notify path. Retain the
+	// OnError callback so dropped live events can be reported.
+	a.subscribersMu.Lock()
+	a.subscribers = append(a.subscribers, &subscriber{ch: ch, onError: getOnError(opts)})
+	a.subscribersMu.Unlock()
+
+	// Send historical events (still under a.mu.RLock, so live Appends cannot interleave).
 	for _, event := range a.globalEvents {
 		if event.GlobalPosition > fromPosition {
 			select {
 			case ch <- event:
 			case <-ctx.Done():
-				close(ch)
 				a.mu.RUnlock()
+				a.removeSubscriber(ch)
 				return nil, ctx.Err()
 			}
 		}
 	}
 	a.mu.RUnlock()
-
-	// Register for future events, retaining the OnError callback so dropped
-	// live events can be reported.
-	a.subscribersMu.Lock()
-	a.subscribers = append(a.subscribers, &subscriber{ch: ch, onError: getOnError(opts)})
-	a.subscribersMu.Unlock()
 
 	// Handle context cancellation
 	go func() {
@@ -578,6 +584,20 @@ func copyBytes(b []byte) []byte {
 	dst := make([]byte, len(b))
 	copy(dst, b)
 	return dst
+}
+
+// copyMetadata returns a copy of md with its Custom map cloned, so a caller's
+// later mutation of the passed map cannot reach into stored events. Scalar
+// fields are value-copied by the struct assignment.
+func copyMetadata(md adapters.Metadata) adapters.Metadata {
+	if md.Custom != nil {
+		custom := make(map[string]string, len(md.Custom))
+		for k, v := range md.Custom {
+			custom[k] = v
+		}
+		md.Custom = custom
+	}
+	return md
 }
 
 // LoadSnapshot retrieves the latest snapshot for the given stream.

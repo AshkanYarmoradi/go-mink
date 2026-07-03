@@ -2,6 +2,7 @@ package mink
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -247,12 +248,23 @@ type ErasureResult struct {
 
 // Failed reports whether the erasure did not fully succeed: any non-nil Errors (e.g. a
 // key that failed to revoke — a Vault key without deletion_allowed, a partial provider
-// outage), a partial footprint, or a residual read model. Because partial failures are
-// non-fatal by contract (Erase returns a nil error), a caller SHOULD check Failed() —
-// or inspect Errors / the gap between requested keys and KeysRevoked — rather than
-// only the returned error.
+// outage), a partial footprint, a residual read model, or a registered subject store
+// that was skipped (its optional purger interface is unimplemented, so the subject's
+// PII survives there). Because partial failures are non-fatal by contract (Erase
+// returns a nil error), a caller SHOULD check Failed() — or inspect Errors / the gap
+// between requested keys and KeysRevoked — rather than only the returned error.
 func (r *ErasureResult) Failed() bool {
-	return len(r.Errors) > 0 || r.Partial || len(r.ResidualReadModels) > 0
+	if len(r.Errors) > 0 || r.Partial || len(r.ResidualReadModels) > 0 {
+		return true
+	}
+	// A registered subject store that was skipped leaves the subject's PII in that
+	// store — a failure to fully erase, even though it produced no error.
+	for i := range r.SubjectStores {
+		if r.SubjectStores[i].Skipped {
+			return true
+		}
+	}
+	return false
 }
 
 // ErasureMarker is the default payload appended when WithErasureMarker is set. It
@@ -469,12 +481,35 @@ func (e *DataEraser) matches(se StoredEvent, req ErasureRequest) bool {
 }
 
 func (e *DataEraser) appendMarker(ctx context.Context, subjectID string, result *ErasureResult) error {
+	// Idempotency: re-running Erase for an already-marked subject must not append a
+	// duplicate marker. Best-effort — on any read/deserialize failure we fall through
+	// and append rather than risk losing the accountability record.
+	if e.markerExists(ctx, subjectID) {
+		return nil
+	}
 	marker := ErasureMarker{
 		SubjectID:   subjectID,
 		ErasedAt:    result.ErasedAt,
 		KeysRevoked: len(result.KeysRevoked),
 	}
 	return e.store.Append(ctx, e.markerStream, []interface{}{marker})
+}
+
+// markerExists reports whether the marker stream already holds an ErasureMarker for
+// subjectID. Best-effort and serializer-agnostic for the default JSON encoding: a
+// read or unmarshal failure returns false so the marker is (re)written.
+func (e *DataEraser) markerExists(ctx context.Context, subjectID string) bool {
+	stored, err := e.store.LoadRaw(ctx, e.markerStream, 0)
+	if err != nil {
+		return false
+	}
+	for i := range stored {
+		var m ErasureMarker
+		if json.Unmarshal(stored[i].Data, &m) == nil && m.SubjectID == subjectID {
+			return true
+		}
+	}
+	return false
 }
 
 // redactReadModels runs the configured in-place redactors then rebuilders,
@@ -587,6 +622,26 @@ func (e *DataEraser) reconcileAfterRevoke(ctx context.Context, subjectID string,
 	}
 	if len(newKeys) == 0 {
 		return
+	}
+	// Apply the same blast-radius guard to late-arriving keys as the initial revoke:
+	// a newcomer key that also protects another subject must not be silently shredded.
+	if e.sharedKeyGuard && !e.allowSharedKey {
+		newSet := make(map[string]struct{}, len(newKeys))
+		for _, k := range newKeys {
+			newSet[k] = struct{}{}
+		}
+		serr, derr := e.detectSharedKeys(ctx, subjectID, newSet)
+		if derr != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("post-revoke shared-key check: %w", derr))
+			result.Partial = true
+			return
+		}
+		if serr != nil {
+			// A late key also protects another subject; do not shred it.
+			result.Errors = append(result.Errors, serr)
+			result.Partial = true
+			return
+		}
 	}
 	for _, k := range newKeys {
 		keySet[k] = struct{}{}

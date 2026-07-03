@@ -639,6 +639,21 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 		worker.stateMu.RUnlock()
 
 		if state != ProjectionStateRunning || eventCh == nil {
+			// A live projection has no catch-up, so events arriving while it is not
+			// Running are lost. Surface the drop (never silent) so the loss is visible
+			// and operators can rebuild/restart to backfill.
+			dropped := 0
+			for _, event := range events {
+				if shouldHandleEvent(worker.projection, event.Type) {
+					dropped++
+				}
+			}
+			if dropped > 0 {
+				e.logger.Warn("Live projection not running; dropping events with no catch-up",
+					"projection", worker.projection.Name(),
+					"state", state,
+					"droppedEvents", dropped)
+			}
 			continue
 		}
 
@@ -817,10 +832,16 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 	if !worker.options.StartFromBeginning && e.checkpointStore != nil {
 		pos, err := e.checkpointStore.GetCheckpoint(ctx, worker.projection.Name())
 		if err != nil {
-			e.logger.Error("Failed to get checkpoint", "projection", worker.projection.Name(), "error", err)
-		} else {
-			startPosition = pos
+			// A load error is NOT "no checkpoint" — adapters return (0, nil) for a
+			// missing checkpoint. Defaulting to 0 here would replay the entire history
+			// into a non-idempotent projection, so fault the worker instead of silently
+			// restarting from the beginning.
+			e.logger.Error("Failed to get checkpoint; faulting worker instead of restarting from 0",
+				"projection", worker.projection.Name(), "error", err)
+			worker.setError(fmt.Errorf("load checkpoint: %w", err))
+			return
 		}
+		startPosition = pos
 	}
 	worker.stateMu.Lock()
 	worker.lastPosition = startPosition
@@ -1050,11 +1071,11 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		}
 	} else if err != nil {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), false)
-		// ApplyBatch is opaque about which event failed, so on a poison-skip we
-		// advance past the whole loaded batch (its last position) rather than just
-		// the first filtered event — otherwise the batch tail would be reloaded and
-		// reprocessed on every retry cycle.
-		worker.setFailedEvent(&events[len(events)-1])
+		// ApplyBatch is opaque about which event failed, so on a poison-skip we report
+		// the last APPLIED (filtered) event — never an event the projection does not
+		// handle — as the poison event. Any unhandled trailing events after it are
+		// harmlessly re-loaded and re-filtered on the next cycle.
+		worker.setFailedEvent(&filteredEvents[len(filteredEvents)-1])
 		return err
 	} else {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), true)

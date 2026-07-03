@@ -41,6 +41,51 @@ func TestInMemoryRepository_Get(t *testing.T) {
 	})
 }
 
+func TestInMemoryRepository_UnknownFilterFieldGuard(t *testing.T) {
+	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
+	ctx := context.Background()
+	require.NoError(t, repo.Insert(ctx, &TestReadModel{ID: "1", Status: "active"}))
+	require.NoError(t, repo.Insert(ctx, &TestReadModel{ID: "2", Status: "inactive"}))
+
+	unknown := Query{Filters: []Filter{{Field: "does_not_exist", Op: FilterOpEq, Value: "x"}}}
+
+	t.Run("Find rejects an unknown field", func(t *testing.T) {
+		_, err := repo.Find(ctx, unknown)
+		require.ErrorIs(t, err, ErrUnknownFilterField)
+		require.ErrorIs(t, err, ErrInvalidQuery)
+		var ufe *UnknownFilterFieldError
+		require.ErrorAs(t, err, &ufe)
+		assert.Equal(t, "does_not_exist", ufe.Field)
+	})
+
+	t.Run("Count rejects an unknown field", func(t *testing.T) {
+		_, err := repo.Count(ctx, unknown)
+		require.ErrorIs(t, err, ErrUnknownFilterField)
+	})
+
+	t.Run("DeleteMany rejects an unknown field and deletes nothing", func(t *testing.T) {
+		n, err := repo.DeleteMany(ctx, unknown)
+		require.ErrorIs(t, err, ErrUnknownFilterField)
+		assert.Zero(t, n)
+		// Whole-table guard: both rows survive.
+		count, err := repo.Count(ctx, Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), count)
+	})
+
+	t.Run("a known field still works", func(t *testing.T) {
+		results, err := repo.Find(ctx, Query{Filters: []Filter{{Field: "Status", Op: FilterOpEq, Value: "active"}}})
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("empty filters remain an explicit match-all", func(t *testing.T) {
+		count, err := repo.Count(ctx, Query{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), count)
+	})
+}
+
 func TestInMemoryRepository_GetMany(t *testing.T) {
 	repo := NewInMemoryRepository(func(m *TestReadModel) string { return m.ID })
 	ctx := context.Background()
