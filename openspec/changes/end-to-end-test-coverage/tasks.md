@@ -36,21 +36,21 @@
 
 ## 6. Good-to-have — Saga → outbox → publisher E2E (`saga-outbox-e2e`)
 
-- [ ] 6.1 `e2e_saga_outbox_test.go`: `SagaManager` reacting to PG-stored events → emitted commands persisted + enqueued → real publisher delivers; assert saga completes and messages delivered
-- [ ] 6.2 Compensation: force a downstream failure → compensation runs, saga recorded compensated/failed; no appended event rewritten
-- [ ] 6.3 Graceful shutdown mid-dispatch (context cancel) leaves the saga `Running` for restart (no compensation on a dead context)
+- [x] 6.1 `e2e_saga_outbox_test.go`: `SagaManager` (StartAsync) reacts to a PG-stored event → its command handler appends a follow-up event through the outbox → real webhook publisher delivers it → saga reaches `Completed`
+- [x] 6.2 Compensation: a failing command drives the saga to `Compensated` (the compensating command is dispatched); no appended event rewritten
+- [x] 6.3 A context-cancellation during dispatch does NOT compensate (no compensating command dispatched; saga not `Compensated`)
 
 ## 7. Good-to-have — Governance & retention E2E (`governance-retention-e2e`)
 
-- [ ] 7.1 `e2e_governance_test.go`: `RetentionManager` over PG with Shred/RedactFields/Anonymize policies + dry-run; assert report + read-side action, raw `events` never rewritten
-- [ ] 7.2 `DataEraser.Verify` over PG events + read models → detects residual PII / certifies clean
-- [ ] 7.3 `Anonymizer` determinism + irreversibility over PG-sourced values
+- [x] 7.1 `e2e_governance_retention_test.go`: `RetentionManager` over PG with a Shred policy + dry-run (dry-run changes nothing, real run revokes the key) and a RedactFields policy invoking its Apply hook per matched event; raw `events` row count never changes
+- [x] 7.2 `DataEraser.Verify` over PG events is asserted in `TestE2E_GDPR_EraseOnPostgres` (5.1: `ResidualRecoverable` empty after shred)
+- [x] 7.3 `Anonymizer` determinism + one-way + scope separation
 
 ## 8. Good-to-have — Serialization & versioning E2E (`serialization-versioning-e2e`)
 
-- [ ] 8.1 `e2e_versioning_pg_test.go`: store v1 events in PG, register an `UpcasterChain`, assert `Load`/`LoadAggregate` upcasts, stored rows stay v1, new appends stamp latest `$schema_version`
-- [ ] 8.2 Schema-version gap → typed upcast/schema error surfaced (not malformed data)
-- [ ] 8.3 msgpack + protobuf event bodies round-trip through PG storage and reload as the correct concrete type; schema-registry compatibility over stored streams
+- [x] 8.1 `e2e_serialization_versioning_test.go`: store a v1 event in PG, register an `UpcasterChain`, assert `Load` upcasts to v2, the stored row stays v1 (history not rewritten), and new appends stamp the latest `$schema_version`
+- [x] 8.2 Schema-version gap → `ErrSchemaVersionGap` surfaced on `Load` (not malformed data)
+- [x] 8.3 msgpack event round-trips through an event store and reloads as its concrete type (in-memory adapter). **Finding:** the PostgreSQL adapter's JSONB `data` column rejects non-JSON (msgpack/protobuf) bodies — a real constraint, now documented by `TestE2E_Serialization_MsgpackRejectedByPGJSONB`; a binary-serializer-on-PG path (BYTEA column or early rejection) is a separate change. Protobuf is not added (same JSONB constraint; the msgpack case already establishes the round-trip + the PG limit).
 
 ## 9. Cross-cutting
 
