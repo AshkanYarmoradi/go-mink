@@ -472,6 +472,32 @@ func (s *EventStore) ProcessStoredEvent(ctx context.Context, stored StoredEvent)
 	return s.deserializeWithUpcast(ctx, stored)
 }
 
+// DecryptStoredEvent returns stored with its field-encrypted Data decrypted, reusing the
+// same decrypt + WithDecryptionErrorHandler path as the deserializing read paths
+// (Load/LoadAggregate/DataExporter). It is the StoredEvent-preserving counterpart to
+// ProcessStoredEvent (which returns a deserialized Event): the value stays a StoredEvent
+// and only its Data changes. Upcasting is intentionally NOT applied here — raw fields are
+// preserved for Type-based consumers (projections, subscriptions).
+//
+// It is the single primitive every raw-StoredEvent delivery surface (the projection
+// engine, event subscriptions, live catch-up) routes through, so decryption transparency
+// is defined in exactly one place. Passthrough with zero overhead when no encryption is
+// configured or the event is not encrypted. A crypto-shredded subject is handled exactly
+// as elsewhere: decryptFields consults WithDecryptionErrorHandler; a handler that returns
+// nil yields the event with its fields left as stored and no error. A hard, unhandled
+// decryption error is returned for the caller to decide (retry / poison / fail).
+func (s *EventStore) DecryptStoredEvent(ctx context.Context, stored StoredEvent) (StoredEvent, error) {
+	if s.encryption == nil || !IsEncrypted(stored.Metadata) {
+		return stored, nil
+	}
+	dec, err := s.encryption.decryptFields(ctx, stored.StreamID, stored.Type, stored.Data, stored.Metadata)
+	if err != nil {
+		return StoredEvent{}, err
+	}
+	stored.Data = dec
+	return stored, nil
+}
+
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.
 // Decryption happens before upcasting so that upcasters receive plaintext.
 // If no encryption or upcasters are registered, it falls back to the standard

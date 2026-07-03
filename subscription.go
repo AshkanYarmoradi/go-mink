@@ -230,6 +230,12 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 			break // Caught up, switch to polling
 		}
 
+		events, err = s.decryptEvents(ctx, events)
+		if err != nil {
+			s.setErr(err)
+			return
+		}
+
 		for _, event := range events {
 			if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
 				s.setPosition(event.GlobalPosition)
@@ -289,6 +295,12 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 			}
 			consecutiveErrors = 0
 
+			events, err = s.decryptEvents(ctx, events)
+			if err != nil {
+				s.setErr(err)
+				return
+			}
+
 			for _, event := range events {
 				if s.opts.Filter != nil && !s.opts.Filter.Matches(event) {
 					s.setPosition(event.GlobalPosition)
@@ -307,6 +319,25 @@ func (s *CatchupSubscription) run(ctx context.Context, pollInterval time.Duratio
 			}
 		}
 	}
+}
+
+// decryptEvents makes field encryption transparent for subscribers: it returns the events
+// with their encrypted Data decrypted (the same path as Load/DataExporter), or an error on
+// a hard, unhandled decryption failure — surfaced via Err(), never silently swallowed. A
+// crypto-shredded subject whose DecryptionErrorHandler returns nil yields the event with
+// its fields left as stored and no error. Zero overhead when no encryption is configured.
+func (s *CatchupSubscription) decryptEvents(ctx context.Context, events []StoredEvent) ([]StoredEvent, error) {
+	if s.store.EncryptionConfig() == nil {
+		return events, nil
+	}
+	for i := range events {
+		dec, err := s.store.DecryptStoredEvent(ctx, events[i])
+		if err != nil {
+			return nil, err
+		}
+		events[i] = dec
+	}
+	return events, nil
 }
 
 // Events returns the channel for receiving events.
@@ -646,6 +677,19 @@ func (s *EventStore) subscribeViaAdapter(ctx context.Context, opts []Subscriptio
 					return
 				}
 				event := convertStoredEventFromAdapter(e)
+				// Field encryption is transparent on read: deliver decrypted events (so a
+				// Filter also matches on plaintext), matching Load. A hard, unhandled
+				// decryption error stops the subscription with Err() set rather than being
+				// silently swallowed. No-op when encryption is unconfigured.
+				if s.encryption != nil {
+					dec, derr := s.DecryptStoredEvent(subCtx, event)
+					if derr != nil {
+						sub.setErr(derr)
+						reportStop()
+						return
+					}
+					event = dec
+				}
 				if options.Filter != nil && !options.Filter.Matches(event) {
 					continue
 				}

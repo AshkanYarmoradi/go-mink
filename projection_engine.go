@@ -598,6 +598,14 @@ func (e *ProjectionEngine) ProcessInlineProjections(ctx context.Context, events 
 	e.inlineMu.RUnlock()
 
 	for _, event := range events {
+		// Decrypt field-encrypted events so inline projections see the same plaintext as
+		// the async path (and as Load). No-op when encryption is unconfigured / the event
+		// is not encrypted; a hard error fails this append's inline-projection step.
+		decrypted, err := e.store.DecryptStoredEvent(ctx, event)
+		if err != nil {
+			return fmt.Errorf("inline projection decrypt event at position %d: %w", event.GlobalPosition, err)
+		}
+		event = decrypted
 		for _, projection := range projections {
 			if !shouldHandleEvent(projection, event.Type) {
 				continue
@@ -631,6 +639,25 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 		workers = append(workers, worker)
 	}
 	e.liveMu.RUnlock()
+
+	// Field encryption is transparent on read: decrypt each event once before fan-out so
+	// live projections see the same plaintext as Load/async/inline. Best-effort — live
+	// delivery has no error channel, so an event that fails to decrypt is logged and
+	// skipped (consistent with the drop-on-full live semantics). Guarded on encryption
+	// being configured, so unencrypted stores incur zero overhead.
+	if e.store.EncryptionConfig() != nil {
+		decrypted := make([]StoredEvent, 0, len(events))
+		for _, ev := range events {
+			dec, err := e.store.DecryptStoredEvent(ctx, ev)
+			if err != nil {
+				e.logger.Warn("Live projection: skipping event that failed to decrypt",
+					"position", ev.GlobalPosition, "error", err)
+				continue
+			}
+			decrypted = append(decrypted, dec)
+		}
+		events = decrypted
+	}
 
 	for _, worker := range workers {
 		worker.stateMu.RLock()
@@ -1104,7 +1131,22 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 // loadEventsFromPosition loads events starting from the given global position.
 // Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
 func (e *ProjectionEngine) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	return e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	events, err := e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Field encryption is transparent on read: decrypt each event's Data before it
+	// reaches a projection, matching Load/LoadAggregate/DataExporter. A hard (unhandled)
+	// decryption error surfaces here — the cycle does not advance the checkpoint, so it
+	// retries rather than skipping silently. No-op when encryption is unconfigured.
+	for i := range events {
+		dec, derr := e.store.DecryptStoredEvent(ctx, events[i])
+		if derr != nil {
+			return nil, fmt.Errorf("decrypt event at position %d: %w", events[i].GlobalPosition, derr)
+		}
+		events[i] = dec
+	}
+	return events, nil
 }
 
 // liveProjectionWorker manages a live projection's real-time processing.
