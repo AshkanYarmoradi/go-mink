@@ -17,6 +17,19 @@ type Serializer interface {
 	Deserialize(data []byte, eventType string) (interface{}, error)
 }
 
+// EventTypeRegistrar is an optional serializer capability: reporting which event types are
+// registered. The default JSONSerializer implements it. The aggregate replay-safety checks
+// (unregistered-type detection, WithStrictReplay, EventStore.RegisteredEventTypes, and the
+// stream audit) use it when the configured serializer provides it; a serializer that does
+// not implement it simply disables those checks (they no-op) rather than failing.
+type EventTypeRegistrar interface {
+	// IsRegistered reports whether eventType resolves to a concrete registered Go type
+	// (rather than the untyped map fallback used for unknown types).
+	IsRegistered(eventType string) bool
+	// RegisteredEventTypes returns the names of all registered event types.
+	RegisteredEventTypes() []string
+}
+
 // EventRegistry maps event type names to Go types.
 // It is used by the JSONSerializer to deserialize events to the correct type.
 type EventRegistry struct {
@@ -124,6 +137,18 @@ func (s *JSONSerializer) RegisterAll(examples ...interface{}) {
 // Registry returns the underlying EventRegistry.
 func (s *JSONSerializer) Registry() *EventRegistry {
 	return s.registry
+}
+
+// IsRegistered reports whether eventType resolves to a concrete registered Go type (rather
+// than the map[string]interface{} fallback Deserialize returns for unknown types).
+func (s *JSONSerializer) IsRegistered(eventType string) bool {
+	_, ok := s.registry.Lookup(eventType)
+	return ok
+}
+
+// RegisteredEventTypes returns the names of all registered event types.
+func (s *JSONSerializer) RegisteredEventTypes() []string {
+	return s.registry.RegisteredTypes()
 }
 
 // Serialize converts an event to JSON bytes.

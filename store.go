@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"go-mink.dev/adapters"
@@ -22,6 +23,11 @@ type EventStore struct {
 	maxEventSize  int                    // 0 = unlimited
 	subjectTagger SubjectTagger          // nil by default — zero overhead when unused
 	subjectIndex  SubjectIndexWriter     // nil by default — zero overhead when unused
+
+	// Aggregate replay-safety (replay-type-safety); zero overhead when unused.
+	strictReplay bool     // WithStrictReplay: fail LoadAggregate on an unregistered type
+	autoRegister bool     // WithAutoRegisterOnAppend: register concrete types at append time
+	replayWarned sync.Map // dedups the default WARN to once per (stream|type|version)
 }
 
 // Logger defines the logging interface for the event store.
@@ -148,6 +154,75 @@ func (s *EventStore) RegisterEvents(events ...interface{}) {
 	}
 }
 
+// RegisterAggregateEvents registers a set of event types in one call. It is an alias of
+// RegisterEvents named for the common, important case: register every event type an
+// aggregate applies so LoadAggregate never silently drops one. Pre-flight it in a test with
+// RegisteredEventTypes.
+func (s *EventStore) RegisterAggregateEvents(events ...interface{}) {
+	s.RegisterEvents(events...)
+}
+
+// RegisteredEventTypes returns the event type names registered with the serializer, or nil
+// if the serializer does not support introspection. Use it to assert, in a test, that every
+// event type your aggregates apply is registered — a pre-flight against silent replay drops.
+func (s *EventStore) RegisteredEventTypes() []string {
+	if r, ok := s.serializer.(EventTypeRegistrar); ok {
+		return r.RegisteredEventTypes()
+	}
+	return nil
+}
+
+// WithStrictReplay makes LoadAggregate return an *UnregisteredEventTypeError when it
+// encounters an event whose type is not registered (which would otherwise deserialize to the
+// map fallback and be silently dropped from the rebuilt aggregate state). The default is
+// lenient — such an event is logged (WARN, once per stream/type/version) and skipped,
+// preserving existing v1.x behavior; use this to fail fast in dev/CI. Zero overhead unset.
+func WithStrictReplay() Option {
+	return func(es *EventStore) { es.strictReplay = true }
+}
+
+// WithAutoRegisterOnAppend registers each event's concrete type with the serializer the
+// first time it is appended/saved in this process, so a save-then-load round-trip in the same
+// process does not require a separate RegisterEvents call. In-process only: a cold process
+// that only loads historical events still needs explicit registration. Off by default to keep
+// registration explicit and discoverable.
+func WithAutoRegisterOnAppend() Option {
+	return func(es *EventStore) { es.autoRegister = true }
+}
+
+// isUnresolvedReplayType reports whether a stored event deserialized to the untyped map
+// fallback (its Type is not registered), so an aggregate's concrete-type ApplyEvent switch
+// cannot apply it — the silent-drop condition WithStrictReplay guards against.
+func (s *EventStore) isUnresolvedReplayType(stored StoredEvent, data interface{}) bool {
+	if r, ok := s.serializer.(EventTypeRegistrar); ok {
+		return !r.IsRegistered(stored.Type)
+	}
+	_, isMap := data.(map[string]interface{})
+	return isMap
+}
+
+// warnUnresolvedReplayType logs one WARN per (stream, type, version) for an unregistered
+// replay event, so the otherwise-silent state loss is observable without flooding the log.
+func (s *EventStore) warnUnresolvedReplayType(streamID, eventType string, version int64) {
+	key := fmt.Sprintf("%s|%s|%d", streamID, eventType, version)
+	if _, loaded := s.replayWarned.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	s.logger.Warn("mink: unregistered event type on aggregate replay — event skipped, aggregate state may be incomplete (register it via RegisterEvents/RegisterAggregateEvents, or use WithStrictReplay to fail fast)",
+		"stream", streamID, "eventType", eventType, "version", version)
+}
+
+// autoRegisterEvents registers the concrete types of events being appended when
+// WithAutoRegisterOnAppend is set (JSON serializer only; no-op otherwise).
+func (s *EventStore) autoRegisterEvents(events []interface{}) {
+	if !s.autoRegister {
+		return
+	}
+	if js, ok := s.serializer.(*JSONSerializer); ok {
+		js.RegisterAll(events...)
+	}
+}
+
 // AppendOption configures an append operation.
 type AppendOption func(*appendConfig)
 
@@ -180,6 +255,10 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 	if len(events) == 0 {
 		return ErrNoEvents
 	}
+
+	// Optionally register these events' concrete types (WithAutoRegisterOnAppend) so a
+	// save-then-load round-trip in this process resolves them to concrete types.
+	s.autoRegisterEvents(events)
 
 	config := &appendConfig{
 		expectedVersion: AnyVersion,
@@ -296,6 +375,10 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 		return nil // Nothing to save
 	}
 
+	// Optionally register these events' concrete types (WithAutoRegisterOnAppend) so a
+	// subsequent LoadAggregate in this process resolves them rather than dropping them.
+	s.autoRegisterEvents(events)
+
 	streamID := fmt.Sprintf("%s-%s", agg.AggregateType(), agg.AggregateID())
 
 	// Convert events to EventRecords
@@ -374,6 +457,17 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		event, err := s.deserializeWithUpcast(ctx, minkStored)
 		if err != nil {
 			return fmt.Errorf("mink: failed to deserialize event %d: %w", i, err)
+		}
+
+		// An unregistered event type deserializes to the map fallback, which the
+		// aggregate's concrete-type ApplyEvent switch cannot match — silently dropping it
+		// from the rebuilt state. Surface it (WARN by default, once per stream/type/version)
+		// or fail fast under WithStrictReplay.
+		if s.isUnresolvedReplayType(minkStored, event.Data) {
+			if s.strictReplay {
+				return &UnregisteredEventTypeError{StreamID: streamID, EventType: minkStored.Type, Version: minkStored.Version}
+			}
+			s.warnUnresolvedReplayType(streamID, minkStored.Type, minkStored.Version)
 		}
 
 		if err := agg.ApplyEvent(event.Data); err != nil {

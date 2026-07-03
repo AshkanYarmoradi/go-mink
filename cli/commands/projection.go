@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -255,12 +256,14 @@ func NewStreamCommand() *cobra.Command {
 Examples:
   mink stream list                    # List all streams
   mink stream events order-123        # Show events for a stream
+  mink stream types order-123         # List distinct event types in a stream
   mink stream export order-123        # Export stream to JSON
   mink stream stats                   # Show event store statistics`,
 	}
 
 	cmd.AddCommand(newStreamListCommand())
 	cmd.AddCommand(newStreamEventsCommand())
+	cmd.AddCommand(newStreamTypesCommand())
 	cmd.AddCommand(newStreamExportCommand())
 	cmd.AddCommand(newStreamStatsCommand())
 
@@ -377,6 +380,66 @@ func newStreamEventsCommand() *cobra.Command {
 	cmd.Flags().IntVarP(&maxEvents, "max-events", "n", 20, "Maximum events to show")
 	cmd.Flags().Int64VarP(&from, "from", "f", 0, "Start from version")
 
+	return cmd
+}
+
+func newStreamTypesCommand() *cobra.Command {
+	var maxEvents int
+
+	cmd := &cobra.Command{
+		Use:   "types <stream-id>",
+		Short: "List the distinct event types present in a stream",
+		Long: `List the distinct event types stored in a stream, with a count of each.
+
+The CLI does not load your application's serializer registry, so it cannot know which
+types you registered — it reports what is present in storage so you can check each
+against your RegisterEvents / RegisterAggregateEvents calls. An event type an aggregate
+applies but was never registered is silently dropped on replay (use the library helper
+EventStore.UnregisteredStreamTypes, or WithStrictReplay, to catch this in code).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			streamID := args[0]
+			ctx := cmd.Context()
+
+			adapter, cleanup, err := getAdapter(ctx)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			events, err := adapter.GetStreamEvents(ctx, streamID, 0, maxEvents)
+			if err != nil {
+				return err
+			}
+			if len(events) == 0 {
+				fmt.Println(styles.FormatInfo(fmt.Sprintf("No events in stream '%s'", streamID)))
+				return nil
+			}
+
+			counts := make(map[string]int)
+			for _, e := range events {
+				counts[e.Type]++
+			}
+			types := make([]string, 0, len(counts))
+			for t := range counts {
+				types = append(types, t)
+			}
+			sort.Strings(types)
+
+			fmt.Println()
+			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Event types in %s", styles.IconStream, streamID)))
+			fmt.Println()
+			table := ui.NewTable("Event Type", "Count")
+			for _, t := range types {
+				table.AddRow(t, fmt.Sprintf("%d", counts[t]))
+			}
+			fmt.Println(table.Render())
+			fmt.Println(styles.Muted.Render("Check each type is registered in your app; unregistered types are silently dropped on aggregate replay."))
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVarP(&maxEvents, "max-events", "n", 100000, "Maximum events to scan")
 	return cmd
 }
 

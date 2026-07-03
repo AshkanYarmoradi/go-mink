@@ -29,6 +29,11 @@ var (
 	// ErrEventTypeNotRegistered indicates an unknown event type was encountered.
 	ErrEventTypeNotRegistered = errors.New("mink: event type not registered")
 
+	// ErrUnregisteredEventType indicates an aggregate-replay event whose type is not
+	// registered, so it deserialized to the map fallback and would be silently dropped
+	// from the rebuilt aggregate state. Returned by LoadAggregate under WithStrictReplay.
+	ErrUnregisteredEventType = errors.New("mink: unregistered event type on aggregate replay")
+
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
 
@@ -349,4 +354,26 @@ func NewProjectionError(projectionName, eventType string, position uint64, cause
 		Position:       position,
 		Cause:          cause,
 	}
+}
+
+// UnregisteredEventTypeError reports an event type encountered during aggregate replay
+// (LoadAggregate) that is not registered with the serializer, so it deserialized to the
+// map fallback and the aggregate's ApplyEvent could not apply it — the event would be
+// silently dropped from the rebuilt state. Register the type (RegisterEvents /
+// RegisterAggregateEvents) or use WithStrictReplay to fail fast. errors.Is(err,
+// ErrUnregisteredEventType) holds.
+type UnregisteredEventTypeError struct {
+	StreamID  string
+	EventType string
+	Version   int64
+}
+
+// Error returns the error message.
+func (e *UnregisteredEventTypeError) Error() string {
+	return fmt.Sprintf("mink: unregistered event type %q on stream %q at version %d — the aggregate cannot apply it (register it via RegisterEvents/RegisterAggregateEvents); replay would silently drop it from state", e.EventType, e.StreamID, e.Version)
+}
+
+// Is reports whether this error matches the target error.
+func (e *UnregisteredEventTypeError) Is(target error) bool {
+	return target == ErrUnregisteredEventType
 }
