@@ -184,6 +184,25 @@ and `ActionAnonymize` **cannot** mutate event rows, so they delegate to the poli
 **Scheduling is yours.** `Apply` performs a single sweep and returns — go-mink does not
 run it on a timer. Wire it to your own cron/gocron at your SLA's cadence.
 
+**Bounded, resumable sweeps (opt-in).** A plain `Apply` scans the whole store on every
+run. On a large, ever-growing log that means a scheduled sweep keeps re-scanning history
+it already handled. Two opt-in options fix that with no change to default behavior:
+
+```go
+mgr := mink.NewRetentionManager(store, policies,
+    mink.WithRetentionCheckpoint(checkpointStore, "__mink_retention__"), // resume across runs
+    mink.WithRetentionMaxScan(200_000),                                  // bound a single run
+)
+```
+
+`WithRetentionCheckpoint` persists a **safe-resume frontier** — the highest position below
+which no event can *newly* match — through the same `CheckpointStore` your projections use,
+so each sweep resumes instead of re-scanning from 0. Steady-state cost then tracks the
+retention window, not total history. `WithRetentionMaxScan(n)` caps a single sweep to `n`
+events and resumes the remainder next run (it needs a checkpoint; without one it is
+reported loudly and runs unbounded) — which bounds the first run after enabling retention
+on an already-large store. A capped run sets `report.Truncated`.
+
 **Fail-loud validation.** A `RedactFields`/`Anonymize` policy with *no* `Apply` hook can
 never act. `mgr.Validate()` (or `policy.Validate()`) surfaces this up front, and every
 `Apply`/`DryRun` reports it via `report.Errors` / `report.Failed()` rather than silently
