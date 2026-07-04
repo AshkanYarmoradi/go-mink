@@ -352,7 +352,14 @@ scan:
 				}
 			}
 			position = se.GlobalPosition
-			if maxScan > 0 && report.Scanned >= maxScan {
+			// Only truncate once the frontier has advanced past where we resumed, so the
+			// next run is guaranteed to make forward progress. If a pending event has frozen
+			// the frontier at startPos, truncating here would persist nothing and re-scan
+			// this same window every run — permanently starving aged events beyond the cap
+			// when timestamps are not monotonic in global position (which the frontier is
+			// explicitly designed to tolerate). In that case fall through and scan to HEAD,
+			// matching the unbounded behavior, until the boundary event ages.
+			if maxScan > 0 && report.Scanned >= maxScan && frontier > startPos {
 				report.Truncated = true
 				break scan
 			}

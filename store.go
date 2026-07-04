@@ -731,8 +731,9 @@ func (s *EventStore) EncryptStoredEvent(ctx context.Context, stored StoredEvent)
 // encryption after it already had data, making that PII crypto-shreddable; contrast
 // with ReEncryptStream, which copies to a NEW stream (for rotation).
 //
-// It is idempotent — an event already encrypted, or of a type with no configured
-// fields, is skipped — so a re-run or a resume after a mid-stream failure is safe.
+// It is idempotent — an event already encrypted, of a type with no configured fields,
+// or whose configured field is absent from this particular event, is skipped — so a
+// re-run or a resume after a mid-stream failure is safe.
 // Returns the number of events re-encrypted and the distinct wrapping key ids used.
 // Requires an adapter implementing adapters.EventRewriteAdapter (else
 // ErrRewriteNotSupported); a no-op with zero overhead when no encryption is
@@ -758,6 +759,14 @@ func (s *EventStore) ReEncryptStreamInPlace(ctx context.Context, streamID string
 		enc, err := s.EncryptStoredEvent(ctx, ev)
 		if err != nil {
 			return n, sortedSet(keySet), err // partial progress; resumable
+		}
+		if !IsEncrypted(enc.Metadata) {
+			// EncryptStoredEvent is a passthrough when this event's configured field is
+			// absent from its payload (an optional field this instance didn't set), so
+			// nothing was sealed. Skip it: rewriting would be a no-op, counting it would
+			// overstate what was sealed, and — because it never becomes IsEncrypted — it
+			// would be reprocessed on every future run, breaking idempotency.
+			continue
 		}
 		if err := rw.RewriteEventData(ctx, streamID, ev.Version, enc.Data, convertMetadataToAdapter(enc.Metadata)); err != nil {
 			return n, sortedSet(keySet), err

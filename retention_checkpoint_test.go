@@ -194,6 +194,38 @@ func TestRetention_MaxScanBoundsAndResumes(t *testing.T) {
 	assert.Equal(t, head, pos, "across capped runs the checkpoint advances to HEAD")
 }
 
+// A per-run cap must not permanently stall when the frontier freezes at the resume
+// boundary. If the oldest un-settled event is pending (statically matches a policy but is
+// not yet aged), truncating at the cap would persist no progress and re-scan the same
+// window every run — starving any aged events behind it (possible when timestamps are not
+// monotonic in global position). Instead the sweep falls back to scanning to HEAD until
+// the boundary event ages.
+func TestRetention_MaxScanDoesNotStallAtPendingFrontier(t *testing.T) {
+	ctx := context.Background()
+	store := newPlainRetentionStore(t)
+	cp := memory.NewCheckpointStore()
+
+	// Freshly appended ⇒ every event is younger than MaxAge ⇒ each is "pending" (statically
+	// matches, not yet aged). The first scanned event freezes the frontier at 0.
+	appendUsers(t, ctx, store, "A-", 5)
+
+	mgr := NewRetentionManager(store,
+		[]RetentionPolicy{{Name: "users", StreamPrefix: "A-", MaxAge: time.Hour, Action: ActionShred}},
+		WithRetentionCheckpoint(cp, retentionCP),
+		WithRetentionMaxScan(2))
+
+	rep, err := mgr.Apply(ctx)
+	require.NoError(t, err)
+
+	assert.False(t, rep.Truncated, "a frozen-frontier run must not truncate — it would never make progress")
+	assert.Equal(t, 5, rep.Scanned, "the sweep scans to HEAD instead of stalling at the cap")
+	assert.Equal(t, 0, rep.Matched, "every event is still young, so none are acted on yet")
+
+	pos, err := cp.GetCheckpoint(ctx, retentionCP)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), pos, "the frontier stays at 0 while the boundary event is pending")
+}
+
 // A cap set without a checkpoint is a loud, non-fatal misconfiguration: the report carries
 // ErrRetentionMaxScanNeedsCheckpoint and the sweep runs unbounded rather than silently
 // capping and never reaching the tail.

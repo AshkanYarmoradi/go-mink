@@ -18,6 +18,14 @@ type reencEvent struct {
 	Name   string `json:"name"`
 }
 
+// reencOptionalEvent's encrypted field ("name") is a pointer with omitempty, so a nil
+// value is omitted from the instance's JSON entirely — the case where re-encryption finds
+// no field to seal and must skip the event rather than count/rewrite it.
+type reencOptionalEvent struct {
+	UserID string  `json:"userId"`
+	Name   *string `json:"name,omitempty"`
+}
+
 func newReencProvider(t *testing.T) *local.Provider {
 	t.Helper()
 	key := make([]byte, 32)
@@ -105,6 +113,46 @@ func TestReEncryptStreamInPlace(t *testing.T) {
 		n2, _, err := enc.ReEncryptStreamInPlace(ctx, stream)
 		require.NoError(t, err)
 		require.Equal(t, 0, n2, "already-encrypted events are skipped")
+	})
+
+	t.Run("event whose configured field is absent is skipped, not counted, and stays idempotent", func(t *testing.T) {
+		adapter := memory.NewAdapter()
+
+		// Append (plaintext) one event WITH the encrypted field and one WITHOUT it.
+		plain := New(adapter)
+		plain.RegisterEvents(reencOptionalEvent{})
+		name := "Ada"
+		require.NoError(t, plain.Append(ctx, stream, []interface{}{
+			reencOptionalEvent{UserID: "u1", Name: &name}, // field present → sealable
+			reencOptionalEvent{UserID: "u2"},              // field absent  → nothing to seal
+		}))
+
+		provider := newReencProvider(t)
+		enc := New(adapter, WithFieldEncryption(NewFieldEncryptionConfig(
+			WithEncryptionProvider(provider),
+			WithDefaultKeyID("k"),
+			WithEncryptedFields("reencOptionalEvent", "name"),
+		)))
+		enc.RegisterEvents(reencOptionalEvent{})
+
+		// Only the event that actually carried the field is sealed and counted; the
+		// field-absent event is skipped (no no-op rewrite, not counted).
+		n, keys, err := enc.ReEncryptStreamInPlace(ctx, stream)
+		require.NoError(t, err)
+		require.Equal(t, 1, n, "only the event with the field present is sealed")
+		require.Equal(t, []string{"k"}, keys)
+
+		// A re-run seals nothing AND must not reprocess the field-absent event (which never
+		// becomes IsEncrypted) — otherwise the sweep would never be idempotent.
+		n2, _, err := enc.ReEncryptStreamInPlace(ctx, stream)
+		require.NoError(t, err)
+		require.Equal(t, 0, n2, "field-absent events must not be reprocessed on every run")
+
+		// The field-absent event remains plaintext (it had no PII in that field to seal).
+		raw, err := enc.LoadRaw(ctx, stream, 0)
+		require.NoError(t, err)
+		require.True(t, IsEncrypted(raw[0].Metadata))
+		require.False(t, IsEncrypted(raw[1].Metadata), "field-absent event is left untouched")
 	})
 
 	t.Run("no encryption configured is a zero-overhead no-op", func(t *testing.T) {

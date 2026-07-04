@@ -253,6 +253,15 @@ type FeedFilter struct {
 	Category string
 }
 
+// CategoryStreamPrefix returns the stream-id prefix shared by every stream in a
+// category: a stream belongs to category iff its id begins with this prefix. It is the
+// single source of truth for the category feed-filter predicate across backends — the
+// in-memory FeedFilter.Matches and the PostgreSQL LIKE builder both derive from it — so
+// the two cannot drift on how a category maps to stream ids.
+func CategoryStreamPrefix(category string) string {
+	return category + "-"
+}
+
 // IsEmpty reports whether the filter imposes no predicate (selects every event).
 func (f FeedFilter) IsEmpty() bool {
 	return len(f.EventTypes) == 0 && len(f.StreamIDs) == 0 && f.Category == ""
@@ -268,7 +277,7 @@ func (f FeedFilter) Matches(ev StoredEvent) bool {
 	if len(f.StreamIDs) > 0 && !slices.Contains(f.StreamIDs, ev.StreamID) {
 		return false
 	}
-	if f.Category != "" && !strings.HasPrefix(ev.StreamID, f.Category+"-") {
+	if f.Category != "" && !strings.HasPrefix(ev.StreamID, CategoryStreamPrefix(f.Category)) {
 		return false
 	}
 	return true
@@ -290,11 +299,14 @@ type FilteredFeedAdapter interface {
 // EventRewriteAdapter is an optional adapter capability: it replaces the data and
 // metadata of a single already-stored event, addressed by (streamID, version),
 // preserving every other column (id, type, global position, timestamp). This is the
-// in-place, data-governance write an append-only store otherwise disallows — used
-// only by EventStore.ReEncryptStreamInPlace to bring historical events under the
-// current field-encryption scheme (the same category of mutation as retention
-// RedactFields). EventStore detects it via a type assertion and otherwise returns
-// ErrRewriteNotSupported, so adapters that do not implement it are unaffected.
+// in-place, data-governance write an append-only store otherwise disallows — a narrow,
+// opt-in exception to the append-only invariant, used only by
+// EventStore.ReEncryptStreamInPlace to bring historical events under the current
+// field-encryption scheme. Only the at-rest encoding changes (ciphertext for plaintext);
+// the decrypted content is unchanged. (Contrast retention RedactFields, which never
+// rewrites the log; it runs a caller-supplied hook against read models.) EventStore
+// detects it via a type assertion and otherwise returns ErrRewriteNotSupported, so
+// adapters that do not implement it are unaffected.
 type EventRewriteAdapter interface {
 	// RewriteEventData replaces the data and metadata of the event at
 	// (streamID, version). It MUST return an error if no such event exists, rather

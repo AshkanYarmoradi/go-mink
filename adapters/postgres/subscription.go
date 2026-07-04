@@ -255,7 +255,10 @@ func buildFeedFilterWhere(filter adapters.FeedFilter, startIdx int) (string, []a
 	if filter.Category != "" {
 		b.WriteString(" AND stream_id LIKE $")
 		b.WriteString(strconv.Itoa(idx))
-		args = append(args, escapeLikePattern(filter.Category)+"-%")
+		// LIKE '<category>-%': the same "<category>-" prefix FeedFilter.Matches uses (via
+		// adapters.CategoryStreamPrefix), escaped so metacharacters in the category are
+		// matched literally rather than over-matching adjacent categories.
+		args = append(args, escapeLikePattern(adapters.CategoryStreamPrefix(filter.Category))+"%")
 		idx++
 	}
 
