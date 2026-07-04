@@ -106,16 +106,33 @@ We provide a `Serializer` interface for alternatives:
 
 ```go
 type Serializer interface {
-    Serialize(event interface{}) ([]byte, string, error)
+    Serialize(event interface{}) ([]byte, error)
     Deserialize(data []byte, eventType string) (interface{}, error)
 }
 
-// MessagePack for performance
-store := mink.New(adapter, mink.WithSerializer(msgpack.NewSerializer(registry)))
+// MessagePack for performance (binary — see the compatibility note below)
+store := mink.New(adapter, mink.WithSerializer(msgpack.NewSerializer()))
 
 // Custom serializer
 store := mink.New(adapter, mink.WithSerializer(mySerializer))
 ```
+
+:::warning Binary serializers and the JSONB store
+The PostgreSQL adapter persists event data in a `JSONB` column, so it requires a
+serializer that emits valid JSON text. The built-in binary serializers
+(`serializer/msgpack`, `serializer/protobuf`) produce non-JSON bytes that a
+`JSONB` column rejects. Pairing one with the PostgreSQL adapter makes `mink.New`
+**panic** at construction with an error wrapping
+`mink.ErrBinarySerializerUnsupported`, rather than failing later on the first
+`Append` with a cryptic `invalid input syntax for type json`.
+
+Use a binary serializer only with a store that accepts raw bytes — the in-memory
+adapter, or an event-store adapter whose data column is `BYTEA`. The guard is
+opt-in and structural: an adapter advertises its requirement via
+`adapters.JSONDataAdapter` (`RequiresJSONData() bool`) and a serializer its
+format via `mink.BinaryFormatReporter` (`BinaryFormat() bool`), so custom
+JSON-emitting serializers are unaffected.
+:::
 
 ## Consequences
 
@@ -138,7 +155,7 @@ store := mink.New(adapter, mink.WithSerializer(mySerializer))
 ### Neutral
 
 1. **Compression**: Can use database compression to reduce size
-2. **Alternatives Available**: MessagePack, Protobuf can be used if needed
+2. **Alternatives Available**: MessagePack and Protobuf can be used with byte-oriented stores (the in-memory adapter, or a `BYTEA`-backed adapter); the JSONB PostgreSQL store requires a JSON serializer (see the compatibility note above)
 
 ## Schema Evolution
 

@@ -132,8 +132,28 @@ func runPollingLoop[P any](
 	}
 }
 
-// LoadFromPosition loads events starting from a global position.
-// This is used by projection engines to catch up on historical events.
+// safePositionClause restricts a load-from-position query to the gapless "safe"
+// watermark: only rows whose inserting transaction is older than every transaction still
+// in flight. global_position (BIGSERIAL) is assigned at INSERT but a row becomes visible
+// only at COMMIT, so a naive `global_position > cursor` poll can advance past a lower
+// position whose transaction commits later, permanently skipping it (and, for async
+// projections/sagas, checkpointing past it). This clause holds the cursor back until such
+// a lower-positioned transaction commits or aborts, so subscriptions, projections, and
+// sagas never skip a committed event. At-least-once is preserved; only at-most-once loss
+// is removed.
+//
+// Robustness: age() makes the xid comparison wraparound-safe; a read-only transaction
+// never holds a real xid, so long reporting queries / pg_dump do NOT stall delivery — only
+// an in-flight *write* transaction does (append transactions are short). Known narrow
+// residual: a concurrent first-event of two *new* streams has a microsecond window where a
+// transaction's xid and global_position can be assigned out of order (existing-stream
+// appends assign both atomically at the events INSERT and are always safe). A long-running
+// unrelated *write* transaction in the same database can delay delivery until it ends.
+const safePositionClause = ` AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)`
+
+// LoadFromPosition loads events starting from a global position, up to the gapless safe
+// watermark (see safePositionClause). This is the shared read path for SubscribeAll,
+// async projections, and the saga manager, so all three inherit the no-skip guarantee.
 func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
 	if a.closed.Load() {
 		return nil, ErrAdapterClosed
@@ -145,7 +165,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM ` + schemaQ + `.events
-		WHERE global_position > $1
+		WHERE global_position > $1` + safePositionClause + `
 		ORDER BY global_position ASC
 		LIMIT $2`
 
@@ -249,11 +269,13 @@ func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category strin
 	query := `
 		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
 		FROM ` + schemaQ + `.events
-		WHERE global_position > $1 AND stream_id LIKE $2
+		WHERE global_position > $1` + safePositionClause + ` AND stream_id LIKE $2
 		ORDER BY global_position ASC
 		LIMIT $3`
 
-	rows, err := a.db.QueryContext(ctx, query, fromPosition, category+"-%", limit)
+	// Escape LIKE metacharacters in the category so a name containing % or _ matches
+	// only its own streams (the trailing -% stays the intended wildcard).
+	rows, err := a.db.QueryContext(ctx, query, fromPosition, escapeLikePattern(category)+"-%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("mink/postgres: failed to load category events: %w", err)
 	}

@@ -1360,10 +1360,9 @@ func TestBuildWhereClause(t *testing.T) {
 			wantArgs:  []interface{}{`"premium"`},
 		},
 		{
-			name:      "unknown field is skipped",
-			filters:   []mink.Filter{{Field: "does_not_exist", Op: mink.FilterOpEq, Value: "x"}},
-			wantWhere: "",
-			wantArgs:  nil,
+			name:    "unknown field returns ErrUnknownFilterField (no silent whole-table match)",
+			filters: []mink.Filter{{Field: "does_not_exist", Op: mink.FilterOpEq, Value: "x"}},
+			wantErr: true,
 		},
 		{
 			name: "multiple filters combine with AND and sequential params",

@@ -288,14 +288,18 @@ func (e *DataExporter) validateRequest(req ExportRequest) error {
 }
 
 func (e *DataExporter) processEvents(ctx context.Context, req ExportRequest, handler ExportHandler) error {
+	// One revocation-status cache per export: IsRevoked is a remote call for KMS/Vault
+	// providers, and an export is the "many events, few keys" shape, so memoizing by key id
+	// turns N per-event round-trips into one lookup per distinct key. Confined to this export.
+	revokedCache := make(map[string]bool)
 	if len(req.Streams) > 0 {
-		return e.exportFromStreams(ctx, req, handler)
+		return e.exportFromStreams(ctx, req, handler, revokedCache)
 	}
-	return e.exportFromScan(ctx, req, handler)
+	return e.exportFromScan(ctx, req, handler, revokedCache)
 }
 
 // exportFromStreams loads events from specific streams.
-func (e *DataExporter) exportFromStreams(ctx context.Context, req ExportRequest, handler ExportHandler) error {
+func (e *DataExporter) exportFromStreams(ctx context.Context, req ExportRequest, handler ExportHandler, revokedCache map[string]bool) error {
 	for _, streamID := range req.Streams {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -320,7 +324,7 @@ func (e *DataExporter) exportFromStreams(ctx context.Context, req ExportRequest,
 				continue
 			}
 
-			exported, err := e.processStoredEvent(ctx, se)
+			exported, err := e.processStoredEvent(ctx, se, revokedCache)
 			if err != nil {
 				return err
 			}
@@ -334,7 +338,7 @@ func (e *DataExporter) exportFromStreams(ctx context.Context, req ExportRequest,
 }
 
 // exportFromScan scans all events in global position order and applies the filter.
-func (e *DataExporter) exportFromScan(ctx context.Context, req ExportRequest, handler ExportHandler) error {
+func (e *DataExporter) exportFromScan(ctx context.Context, req ExportRequest, handler ExportHandler, revokedCache map[string]bool) error {
 	if _, ok := e.store.Adapter().(adapters.SubscriptionAdapter); !ok {
 		return ErrExportScanNotSupported
 	}
@@ -366,7 +370,7 @@ func (e *DataExporter) exportFromScan(ctx context.Context, req ExportRequest, ha
 				continue
 			}
 
-			exported, err := e.processStoredEvent(ctx, se)
+			exported, err := e.processStoredEvent(ctx, se, revokedCache)
 			if err != nil {
 				return err
 			}
@@ -399,7 +403,7 @@ func (e *DataExporter) matchesRequest(se StoredEvent, req ExportRequest) bool {
 // processStoredEvent converts a StoredEvent into an ExportedEvent.
 // It handles decryption, upcasting, and deserialization via the event store's pipeline.
 // If the encryption key has been revoked (crypto-shredding), the event is marked as redacted.
-func (e *DataExporter) processStoredEvent(ctx context.Context, se StoredEvent) (ExportedEvent, error) {
+func (e *DataExporter) processStoredEvent(ctx context.Context, se StoredEvent, revokedCache map[string]bool) (ExportedEvent, error) {
 	exported := ExportedEvent{
 		StreamID:       se.StreamID,
 		EventType:      se.Type,
@@ -408,6 +412,34 @@ func (e *DataExporter) processStoredEvent(ctx context.Context, se StoredEvent) (
 		Version:        se.Version,
 		GlobalPosition: se.GlobalPosition,
 		Timestamp:      se.Timestamp,
+	}
+
+	// Independently redact crypto-shredded events. A WithDecryptionErrorHandler that
+	// returns nil (the recommended shred setup) makes ProcessStoredEvent report success
+	// with still-encrypted data, which would otherwise leak ciphertext into the export.
+	// If the event is encrypted under a revoked key, redact regardless of the handler.
+	// Revocation status is memoized by key id (revokedCache) so a KMS/Vault provider is
+	// queried at most once per distinct key across the whole export, not once per event.
+	if enc := e.store.EncryptionConfig(); enc != nil && IsEncrypted(se.Metadata) {
+		keyID := GetEncryptionKeyID(se.Metadata)
+		revoked, cached := revokedCache[keyID]
+		if !cached {
+			if r, rerr := enc.IsRevoked(keyID); rerr == nil {
+				revoked = r
+				revokedCache[keyID] = r
+			}
+			// On an IsRevoked error, leave uncached and treat as not-revoked (fall through to
+			// the ProcessStoredEvent path below, which handles ErrKeyRevoked/ErrKeyNotFound).
+		}
+		if revoked {
+			e.logger.Info("event redacted: encrypted under a revoked key",
+				"streamID", se.StreamID, "eventType", se.Type, "position", se.GlobalPosition)
+			exported.Redacted = true
+			exported.Data = nil
+			// RawData keeps the (unrecoverable) ciphertext, consistent with the
+			// ErrKeyRevoked/ErrKeyNotFound redaction branches below.
+			return exported, nil
+		}
 	}
 
 	event, err := e.store.ProcessStoredEvent(ctx, se)

@@ -1591,15 +1591,52 @@ func TestProjectionEngine_AsyncWorker_CheckpointGetError(t *testing.T) {
 	_ = engine.RegisterAsync(projection, opts)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	_ = engine.Start(ctx)
 
-	time.Sleep(100 * time.Millisecond)
+	// Wait past the bounded checkpoint-read retries (checkpointReadBackoff*(1+2)) plus margin.
+	time.Sleep(400 * time.Millisecond)
 
-	cancel()
+	// A persistent checkpoint load error faults the worker (after retries) instead of
+	// silently restarting from 0.
+	assert.True(t, logger.hasLogMessage("error", "Failed to get checkpoint after retries; faulting worker instead of restarting from 0"))
+	status, statusErr := engine.GetStatus("AsyncCheckpointGetErr")
+	require.NoError(t, statusErr)
+	assert.Equal(t, ProjectionStateFaulted, status.State)
+
 	_ = engine.Stop(context.Background())
+}
 
-	// Logger should have recorded the error
-	assert.True(t, logger.hasLogMessage("error", "Failed to get checkpoint"))
+// TestProjectionEngine_AsyncWorker_CheckpointGetTransientError verifies that a transient
+// checkpoint-read failure at startup is retried and recovers, rather than permanently
+// faulting the worker (which a persistent error does).
+func TestProjectionEngine_AsyncWorker_CheckpointGetTransientError(t *testing.T) {
+	engine, store, checkpoint := newTestEngineWithStore()
+	// Fail the first two GetCheckpoint calls, then succeed — within the retry budget.
+	checkpoint.getFailN = 2
+	logger := newTestLogger()
+	engine.logger = logger
+
+	_ = store.Append(context.Background(), "Order-tce", []interface{}{&ProjectionTestEvent{OrderID: "tce"}})
+
+	projection := newTestAsyncProjection("AsyncCheckpointTransient", "ProjectionTestEvent")
+	opts := DefaultAsyncOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	_ = engine.RegisterAsync(projection, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	// Allow the retries (2 x backoff) to elapse and the worker to reach Running.
+	time.Sleep(400 * time.Millisecond)
+
+	status, statusErr := engine.GetStatus("AsyncCheckpointTransient")
+	require.NoError(t, statusErr)
+	assert.NotEqual(t, ProjectionStateFaulted, status.State, "transient checkpoint error should recover, not fault")
+	assert.True(t, logger.hasLogMessage("warn", "Checkpoint read failed; retrying"), "expected a retry warning")
+
+	_ = engine.Stop(context.Background())
 }
 
 func TestProjectionEngine_AsyncWorker_InterruptDuringBackoff(t *testing.T) {

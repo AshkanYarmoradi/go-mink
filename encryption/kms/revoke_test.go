@@ -66,6 +66,26 @@ func TestProvider_RevokeMakesDecryptFail(t *testing.T) {
 	providertest.AssertRevokeMakesDecryptFail(t, p, "k")
 }
 
+func TestProvider_RevokeKey_DisabledKeyIsScheduledForDeletion(t *testing.T) {
+	// A merely-Disabled CMK is reversible (EnableKey), so it must NOT count as revoked:
+	// RevokeKey schedules its deletion, and IsRevoked reports false until then. Otherwise
+	// an erasure would certify a still-recoverable key as permanently shredded.
+	rc := &mockKMSRevocationClient{mockKMSClient: &mockKMSClient{}, state: types.KeyStateDisabled}
+	p := New(WithKMSClient(rc))
+	defer func() { _ = p.Close() }()
+
+	revoked, err := p.IsRevoked("k")
+	require.NoError(t, err)
+	assert.False(t, revoked, "a disabled (reversible) key must not be reported as revoked")
+
+	require.NoError(t, p.RevokeKey("k"))
+	assert.Equal(t, 1, rc.scheduled, "RevokeKey must schedule deletion for a disabled key")
+
+	revoked, err = p.IsRevoked("k")
+	require.NoError(t, err)
+	assert.True(t, revoked, "after scheduling deletion the key is revoked")
+}
+
 func TestWithPendingDeletionWindow_Clamps(t *testing.T) {
 	// AWS accepts only 7–30 days; out-of-range values are clamped so RevokeKey can't fail.
 	assert.Equal(t, int32(7), New(WithKMSClient(&mockKMSClient{}), WithPendingDeletionWindow(3)).pendingWindowDays)

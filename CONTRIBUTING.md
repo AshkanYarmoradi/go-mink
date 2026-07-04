@@ -145,11 +145,31 @@ make build           # go build ./...
 make test-unit       # unit tests only (no infra, CGO_ENABLED=0 — works everywhere)
 make test-unit-race  # unit tests with the race detector (needs gcc/clang)
 make test            # full suite — auto-starts PostgreSQL + Kafka
+make test-e2e        # end-to-end suites only (TestE2E_*) against real PostgreSQL + Kafka
 make lint            # golangci-lint run ./...
 make fmt             # go fmt ./...
 make test-coverage   # coverage report (excludes examples/ and testing/)
 make help            # list every target
 ```
+
+### End-to-end suite
+
+The `e2e_*_test.go` files (package `mink_test`) exercise each feature through the full stack
+against real infrastructure — command bus → PostgreSQL store → projections; store → outbox →
+Kafka/webhook; field encryption ciphertext-at-rest; and the GDPR erasure/export lifecycle. They
+build on `testing/containers` (`StartPostgres`, `StartKafka`, per-test isolated schemas) and
+self-skip under `-short` or when their env vars are unset:
+
+- **PostgreSQL** — `TEST_DATABASE_URL` (required by every E2E suite).
+- **Kafka** — `TEST_KAFKA_BROKERS` (the outbox→Kafka suite; others don't need it).
+- **Cloud providers (opt-in, not required in CI)** — the SNS, KMS, and Vault suites skip unless
+  their endpoint env var is set. Any AWS-compatible emulator works (no license needed):
+  - **SNS** — `TEST_SNS_ENDPOINT` (e.g. `docker run -d -p 4100:4100 pafortin/goaws` → `http://localhost:4100`)
+  - **KMS** — `TEST_KMS_ENDPOINT` (e.g. `docker run -d -p 8087:8080 nsmithuk/local-kms` → `http://localhost:8087`)
+  - **Vault** — `VAULT_ADDR` (+ `VAULT_TOKEN`, default `root`) (e.g. a `hashicorp/vault` dev container on `http://localhost:8200`; the test provisions the transit key itself)
+
+Run the core suites with `make test-e2e` (auto-starts PostgreSQL + Kafka); set the cloud env vars
+above to also run those. Because every suite self-skips, `make test-unit` stays green everywhere.
 
 To run a single test (integration tests need infra up — `make infra-up`):
 

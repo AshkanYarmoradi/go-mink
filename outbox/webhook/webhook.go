@@ -113,11 +113,18 @@ func (p *Publisher) sendMessage(ctx context.Context, msg *adapters.OutboxMessage
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
+	// Delivery is successful only on a 2xx status. A 3xx (e.g. 300/304, which
+	// net/http does not auto-follow for a POST), 4xx, or 5xx response means the
+	// endpoint did not accept the payload; return an error so the outbox retries
+	// or dead-letters instead of silently marking the message delivered.
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("webhook: server error %d from %s", resp.StatusCode, url)
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook: client error %d from %s", resp.StatusCode, url)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook: unexpected status %d from %s (not 2xx)", resp.StatusCode, url)
 	}
 	return nil
 }

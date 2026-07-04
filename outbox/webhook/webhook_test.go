@@ -216,21 +216,25 @@ func TestPublisher_Publish_EmptyMessages(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestPublisher_Publish_Status399(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(399) // Just below 400 — no error
-	}))
-	defer server.Close()
+func TestPublisher_Publish_Status3xxNotDelivered(t *testing.T) {
+	// A 3xx response that net/http does not auto-follow for a POST (e.g. 300 Multiple
+	// Choices, 304 Not Modified) is NOT a successful delivery: the outbox must retry
+	// / dead-letter, never mark the message completed. Anything outside 2xx is an error.
+	for _, code := range []int{300, 304, 399} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		}))
 
-	p := New()
-	ctx := context.Background()
+		p := New()
+		messages := []*adapters.OutboxMessage{
+			{ID: "msg-1", Destination: "webhook:" + server.URL, Payload: []byte(`{}`)},
+		}
 
-	messages := []*adapters.OutboxMessage{
-		{ID: "msg-1", Destination: "webhook:" + server.URL, Payload: []byte(`{}`)},
+		err := p.Publish(context.Background(), messages)
+		assert.Error(t, err, "status %d must not be treated as delivered", code)
+		assert.Contains(t, err.Error(), "not 2xx")
+		server.Close()
 	}
-
-	err := p.Publish(ctx, messages)
-	assert.NoError(t, err)
 }
 
 func TestPublisher_Publish_Status400(t *testing.T) {

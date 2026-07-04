@@ -49,6 +49,13 @@ test: infra-up
 	TEST_KAFKA_BROKERS="localhost:9092" \
 	go test -race -v ./...
 
+# Run the infrastructure-backed end-to-end suites only (TestE2E_*), against real PostgreSQL +
+# Kafka. Cloud-provider paths (SNS/KMS/Vault) self-skip unless their own env vars are set.
+test-e2e: infra-up
+	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \
+	TEST_KAFKA_BROKERS="localhost:9092" \
+	go test -v -run 'TestE2E_' ./...
+
 # Run tests with coverage report (excludes examples and test utilities)
 test-coverage: infra-up
 	TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable" \

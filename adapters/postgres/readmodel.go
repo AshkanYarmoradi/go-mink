@@ -642,9 +642,9 @@ func buildInClause(quotedCol, keyword string, values []interface{}, paramIdx *in
 // buildWhereClause builds the WHERE clause from filters.
 //
 // Every operator defined by mink.FilterOp is handled. A filter whose field
-// does not resolve to a known column is skipped, but an unrecognized operator
-// returns an error: a query must never silently ignore the caller's intent and
-// return rows it was asked to filter out.
+// does not resolve to a known column returns ErrUnknownFilterField, and an
+// unrecognized operator also returns an error: a query must never silently ignore
+// the caller's intent and return (or delete) rows it was asked to filter out.
 func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string, []interface{}, error) {
 	if len(filters) == 0 {
 		return "", nil, nil
@@ -657,7 +657,10 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 	for _, f := range filters {
 		colName := r.fieldToColumn(f.Field)
 		if colName == "" {
-			continue
+			// A field resolving to no column must NOT be silently skipped: if it were
+			// the only filter, the WHERE would be empty and DeleteMany would wipe the
+			// whole table (Find/Count would scan everything). Reject it instead.
+			return "", nil, &mink.UnknownFilterFieldError{Field: f.Field}
 		}
 		quotedCol := quoteIdentifier(colName)
 

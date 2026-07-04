@@ -17,6 +17,35 @@ type Serializer interface {
 	Deserialize(data []byte, eventType string) (interface{}, error)
 }
 
+// EventTypeRegistrar is an optional serializer capability: reporting which event types are
+// registered. The default JSONSerializer implements it. The aggregate replay-safety checks
+// (unregistered-type detection, WithStrictReplay, EventStore.RegisteredEventTypes, and the
+// stream audit) use it when the configured serializer provides it; a serializer that does
+// not implement it simply disables those checks (they no-op) rather than failing.
+type EventTypeRegistrar interface {
+	// IsRegistered reports whether eventType resolves to a concrete registered Go type
+	// (rather than the untyped map fallback used for unknown types).
+	IsRegistered(eventType string) bool
+	// RegisteredEventTypes returns the names of all registered event types.
+	RegisteredEventTypes() []string
+}
+
+// BinaryFormatReporter is an optional interface a Serializer may implement to
+// declare whether its Serialize output is binary — i.e. not valid JSON text.
+// The shipped serializer/msgpack and serializer/protobuf serializers implement
+// it returning true; the default JSONSerializer returns false.
+//
+// It is consulted by New, together with adapters.JSONDataAdapter, so that
+// pairing a binary serializer with a JSON/JSONB-backed event store (such as the
+// PostgreSQL adapter) fails fast at construction with an actionable error
+// rather than deep in the driver on the first Append. A serializer that does
+// not implement this interface is assumed to produce JSON-compatible text (the
+// historical default), so existing custom serializers are unaffected.
+type BinaryFormatReporter interface {
+	// BinaryFormat reports whether Serialize produces binary (non-JSON-text) output.
+	BinaryFormat() bool
+}
+
 // EventRegistry maps event type names to Go types.
 // It is used by the JSONSerializer to deserialize events to the correct type.
 type EventRegistry struct {
@@ -125,6 +154,22 @@ func (s *JSONSerializer) RegisterAll(examples ...interface{}) {
 func (s *JSONSerializer) Registry() *EventRegistry {
 	return s.registry
 }
+
+// IsRegistered reports whether eventType resolves to a concrete registered Go type (rather
+// than the map[string]interface{} fallback Deserialize returns for unknown types).
+func (s *JSONSerializer) IsRegistered(eventType string) bool {
+	_, ok := s.registry.Lookup(eventType)
+	return ok
+}
+
+// RegisteredEventTypes returns the names of all registered event types.
+func (s *JSONSerializer) RegisteredEventTypes() []string {
+	return s.registry.RegisteredTypes()
+}
+
+// BinaryFormat reports that JSON output is textual, not binary. It satisfies
+// BinaryFormatReporter so JSON-backed adapters accept this serializer.
+func (s *JSONSerializer) BinaryFormat() bool { return false }
 
 // Serialize converts an event to JSON bytes.
 func (s *JSONSerializer) Serialize(event interface{}) ([]byte, error) {

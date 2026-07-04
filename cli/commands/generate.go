@@ -80,6 +80,7 @@ Examples:
 func newGenerateAggregateCommand() *cobra.Command {
 	var events []string
 	var nonInteractive bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "aggregate <name>",
@@ -128,7 +129,7 @@ Examples:
 			}
 
 			aggFile := filepath.Join(aggDir, strings.ToLower(name)+".go")
-			if err := generateFile(aggFile, aggregateTemplate, data); err != nil {
+			if err := generateFile(aggFile, aggregateTemplate, data, force); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", aggFile)))
@@ -147,7 +148,7 @@ Examples:
 					Aggregate: data.Name,
 					Events:    data.Events,
 				}
-				if err := generateFile(eventsFile, eventsFileTemplate, eventFileData); err != nil {
+				if err := generateFile(eventsFile, eventsFileTemplate, eventFileData, force); err != nil {
 					return err
 				}
 				fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", eventsFile)))
@@ -155,7 +156,7 @@ Examples:
 
 			// Create test file
 			testFile := filepath.Join(aggDir, strings.ToLower(name)+"_test.go")
-			if err := generateFile(testFile, aggregateTestTemplate, data); err != nil {
+			if err := generateFile(testFile, aggregateTestTemplate, data, force); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
@@ -180,6 +181,7 @@ Next steps:
 
 	cmd.Flags().StringSliceVarP(&events, "events", "e", nil, "Events to generate (comma-separated)")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files")
 
 	return cmd
 }
@@ -198,6 +200,7 @@ type generateWithAggregateParams struct {
 func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.Command {
 	var aggregate string
 	var nonInteractive bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     params.use,
@@ -223,7 +226,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 
 			data := params.makeData(cfg, name, aggregate)
 			outputFile := filepath.Join(outputDir, strings.ToLower(name)+".go")
-			if err := generateFile(outputFile, params.template, data); err != nil {
+			if err := generateFile(outputFile, params.template, data, force); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", outputFile)))
@@ -233,6 +236,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 
 	cmd.Flags().StringVarP(&aggregate, "aggregate", "a", "", "Aggregate this belongs to")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files")
 
 	return cmd
 }
@@ -259,6 +263,7 @@ func newGenerateEventCommand() *cobra.Command {
 func newGenerateProjectionCommand() *cobra.Command {
 	var events []string
 	var nonInteractive bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     "projection <name>",
@@ -295,13 +300,13 @@ func newGenerateProjectionCommand() *cobra.Command {
 			}
 
 			projFile := filepath.Join(projDir, strings.ToLower(name)+".go")
-			if err := generateFile(projFile, projectionTemplate, projData); err != nil {
+			if err := generateFile(projFile, projectionTemplate, projData, force); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", projFile)))
 
 			testFile := filepath.Join(projDir, strings.ToLower(name)+"_test.go")
-			if err := generateFile(testFile, projectionTestTemplate, projData); err != nil {
+			if err := generateFile(testFile, projectionTestTemplate, projData, force); err != nil {
 				return err
 			}
 			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
@@ -311,6 +316,7 @@ func newGenerateProjectionCommand() *cobra.Command {
 
 	cmd.Flags().StringSliceVarP(&events, "events", "e", nil, "Events this projection handles")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts (for scripting)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files")
 
 	return cmd
 }
@@ -397,7 +403,14 @@ func toPascalCase(s string) string {
 	return string(result)
 }
 
-func generateFile(path string, tmpl string, data interface{}) error {
+func generateFile(path string, tmpl string, data interface{}, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("refusing to overwrite existing file %q (use --force to overwrite)", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %q: %w", path, err)
+		}
+	}
 	funcMap := template.FuncMap{
 		"ToLower": strings.ToLower,
 	}
