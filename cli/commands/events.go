@@ -16,6 +16,8 @@ import (
 // feedEvent is the JSON shape emitted by `mink events --json`. Unlike the per-stream
 // StreamEvent export, it carries global_position: the global feed is ordered and paged
 // by that cursor, and it is the value an operator feeds back as --from to page forward.
+// data and metadata are emitted as raw JSON (nested objects), not re-encoded strings, so
+// the output stays queryable with jq (e.g. `.[].metadata.tenantId`).
 type feedEvent struct {
 	GlobalPosition uint64          `json:"global_position"`
 	ID             string          `json:"id"`
@@ -23,7 +25,7 @@ type feedEvent struct {
 	Version        int64           `json:"version"`
 	Type           string          `json:"type"`
 	Data           json.RawMessage `json:"data"`
-	Metadata       string          `json:"metadata,omitempty"`
+	Metadata       json.RawMessage `json:"metadata,omitempty"`
 	Timestamp      time.Time       `json:"timestamp"`
 }
 
@@ -167,7 +169,19 @@ func toFeedEvent(e adapters.StoredEvent) feedEvent {
 		Version:        e.Version,
 		Type:           e.Type,
 		Data:           json.RawMessage(data),
-		Metadata:       formatMetadata(e.Metadata),
+		Metadata:       metadataJSON(e.Metadata),
 		Timestamp:      e.Timestamp,
 	}
+}
+
+// metadataJSON renders event metadata as raw JSON for --json output — a nested object
+// mirroring the data field, not a re-encoded string, so it stays queryable with jq.
+// Empty metadata marshals to "{}", which is dropped to nil so the omitempty field is
+// omitted rather than emitting a noise object on every event.
+func metadataJSON(m adapters.Metadata) json.RawMessage {
+	raw, err := json.Marshal(m)
+	if err != nil || len(raw) == 0 || string(raw) == "{}" {
+		return nil
+	}
+	return json.RawMessage(raw)
 }

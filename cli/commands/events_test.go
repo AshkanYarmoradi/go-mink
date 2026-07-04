@@ -74,6 +74,36 @@ func TestFeedEventsJSON_NonJSONDataStaysValid(t *testing.T) {
 	assert.Equal(t, "\x00not json", s)
 }
 
+func TestFeedEventsJSON_Metadata(t *testing.T) {
+	events := []adapters.StoredEvent{
+		// Populated metadata → emitted as a nested JSON object (like data), so it is
+		// queryable with jq rather than being an escaped string.
+		{ID: "e1", StreamID: "s", Type: "T", Data: []byte(`{}`), Version: 1, GlobalPosition: 1,
+			Metadata: adapters.Metadata{TenantID: "acme", CorrelationID: "c-1"}},
+		// Empty metadata → the omitempty field is dropped, not emitted as "{}".
+		{ID: "e2", StreamID: "s", Type: "T", Data: []byte(`{}`), Version: 2, GlobalPosition: 2},
+	}
+	data, err := feedEventsJSON(events)
+	require.NoError(t, err)
+
+	// metadata is a nested object, so jq-style field access resolves directly.
+	var typed []struct {
+		Metadata struct {
+			TenantID      string `json:"tenantId"`
+			CorrelationID string `json:"correlationId"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(data, &typed))
+	assert.Equal(t, "acme", typed[0].Metadata.TenantID)
+	assert.Equal(t, "c-1", typed[0].Metadata.CorrelationID)
+
+	// The field is present only when metadata is non-empty (omitempty honored).
+	var raw []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw[0], "metadata")
+	assert.NotContains(t, raw[1], "metadata")
+}
+
 func TestRenderFeedTable_Empty(t *testing.T) {
 	assert.Contains(t, renderFeedTable(nil), "No events match the filter")
 }
