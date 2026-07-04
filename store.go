@@ -694,6 +694,91 @@ func (s *EventStore) decryptStoredEvents(ctx context.Context, events []StoredEve
 	return events, nil
 }
 
+// EncryptStoredEvent is the encode counterpart to DecryptStoredEvent: it seals a
+// stored event's configured fields under the current FieldEncryptionConfig and
+// stamps the current envelope in its metadata, exactly as the append path
+// (prepareEventData) would — the configured SubjectTagger runs first so the wrapping
+// key is resolved identically. It is a passthrough (input returned unchanged) when
+// no encryption is configured, the event type has no configured fields, or the event
+// is already encrypted. Zero overhead when unused.
+func (s *EventStore) EncryptStoredEvent(ctx context.Context, stored StoredEvent) (StoredEvent, error) {
+	if s.encryption == nil || IsEncrypted(stored.Metadata) || !s.encryption.HasEncryptedFields(stored.Type) {
+		return stored, nil
+	}
+	md := stored.Metadata
+	// Tag the subject(s) before encryption so resolveKeyID picks the same per-subject
+	// key the live append path would (subject-scoped field keys).
+	if s.subjectTagger != nil {
+		if subjects := s.subjectTagger(stored.Type, stored.Data, md); len(subjects) > 0 {
+			md = setSubjectTags(md, subjects)
+		}
+	}
+	encData, encMeta, err := s.encryption.encryptFields(ctx, stored.StreamID, stored.Type, stored.Data, md)
+	if err != nil {
+		return StoredEvent{}, err
+	}
+	stored.Data = encData
+	stored.Metadata = encMeta
+	return stored, nil
+}
+
+// ReEncryptStreamInPlace brings a stream's existing events under the current
+// field-encryption scheme in place: it seals each not-yet-encrypted event's
+// configured fields under the current key and rewrites the same row, preserving the
+// event's id, type, stream, version, global position, and timestamp (only the
+// at-rest encoding of data/metadata changes — history is not rewritten). It is the
+// opt-in, operator-triggered historical backfill for a consumer that enabled
+// encryption after it already had data, making that PII crypto-shreddable; contrast
+// with ReEncryptStream, which copies to a NEW stream (for rotation).
+//
+// It is idempotent — an event already encrypted, of a type with no configured fields,
+// or whose configured field is absent from this particular event, is skipped — so a
+// re-run or a resume after a mid-stream failure is safe.
+// Returns the number of events re-encrypted and the distinct wrapping key ids used.
+// Requires an adapter implementing adapters.EventRewriteAdapter (else
+// ErrRewriteNotSupported); a no-op with zero overhead when no encryption is
+// configured.
+func (s *EventStore) ReEncryptStreamInPlace(ctx context.Context, streamID string) (int, []string, error) {
+	rw, ok := s.adapter.(adapters.EventRewriteAdapter)
+	if !ok {
+		return 0, nil, ErrRewriteNotSupported
+	}
+	if s.encryption == nil {
+		return 0, nil, nil
+	}
+	events, err := s.LoadRaw(ctx, streamID, 0)
+	if err != nil {
+		return 0, nil, err
+	}
+	keySet := make(map[string]struct{})
+	n := 0
+	for _, ev := range events {
+		if IsEncrypted(ev.Metadata) || !s.encryption.HasEncryptedFields(ev.Type) {
+			continue // already current, or nothing to encrypt (idempotent)
+		}
+		enc, err := s.EncryptStoredEvent(ctx, ev)
+		if err != nil {
+			return n, sortedSet(keySet), err // partial progress; resumable
+		}
+		if !IsEncrypted(enc.Metadata) {
+			// EncryptStoredEvent is a passthrough when this event's configured field is
+			// absent from its payload (an optional field this instance didn't set), so
+			// nothing was sealed. Skip it: rewriting would be a no-op, counting it would
+			// overstate what was sealed, and — because it never becomes IsEncrypted — it
+			// would be reprocessed on every future run, breaking idempotency.
+			continue
+		}
+		if err := rw.RewriteEventData(ctx, streamID, ev.Version, enc.Data, convertMetadataToAdapter(enc.Metadata)); err != nil {
+			return n, sortedSet(keySet), err
+		}
+		if k := GetEncryptionKeyID(enc.Metadata); k != "" {
+			keySet[k] = struct{}{}
+		}
+		n++
+	}
+	return n, sortedSet(keySet), nil
+}
+
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.
 // Decryption happens before upcasting so that upcasters receive plaintext.
 // If no encryption or upcasters are registered, it falls back to the standard
@@ -836,6 +921,44 @@ func (s *EventStore) LoadEventsFromPosition(ctx context.Context, fromPosition ui
 	}
 
 	events, err := subAdapter.LoadFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert adapters.StoredEvent to mink.StoredEvent
+	result := make([]StoredEvent, len(events))
+	for i, e := range events {
+		result[i] = convertStoredEventFromAdapter(e)
+	}
+	return result, nil
+}
+
+// FeedFilter selects events for a filtered load-from-position read by indexed axis
+// (event type, stream id, or category). It is an input DTO with no conversion step,
+// so it is aliased to the adapter type rather than duplicated. See adapters.FeedFilter.
+type FeedFilter = adapters.FeedFilter
+
+// LoadEventsFromPositionFiltered loads events from a global position that match an
+// indexed FeedFilter (event type, stream id, and/or category), pushing the predicate
+// down to storage instead of scanning the whole feed. It returns
+// ErrFilteredFeedNotSupported if the adapter does not implement FilteredFeedAdapter.
+// Results keep the LoadEventsFromPosition contract: ascending global position,
+// exclusive of fromPosition, bounded by limit, and (on the PostgreSQL adapter)
+// subject to the same gapless safe watermark. An empty filter is equivalent to
+// LoadEventsFromPosition.
+//
+// This is an introspection / ops / migration primitive for reading the raw event log
+// by indexed axis (audit browsers, backfill scanners, diagnostics) — NOT an
+// application read path. For queries over unindexed data (payload fields, a tenant in
+// metadata) or for application reads, project a read model instead.
+func (s *EventStore) LoadEventsFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter FeedFilter) ([]StoredEvent, error) {
+	// Check if adapter supports filtered feed reads
+	filterAdapter, ok := s.adapter.(adapters.FilteredFeedAdapter)
+	if !ok {
+		return nil, ErrFilteredFeedNotSupported
+	}
+
+	events, err := filterAdapter.LoadFromPositionFiltered(ctx, fromPosition, limit, filter)
 	if err != nil {
 		return nil, err
 	}

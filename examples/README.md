@@ -1,6 +1,6 @@
 # go-mink Examples
 
-Fifteen self-contained, runnable programs that show every major go-mink feature in action. Each lives in its own folder with a dedicated README explaining what it does, how to run it, and what to look for.
+Sixteen self-contained, runnable programs that show every major go-mink feature in action. Each lives in its own folder with a dedicated README explaining what it does, how to run it, and what to look for.
 
 Most examples need **zero infrastructure** — just `go run`. Two use PostgreSQL (marked 🐘) and start it for you via Docker Compose.
 
@@ -60,6 +60,7 @@ The adapter auto-creates its schema on first use, so there's nothing to migrate 
 | Example | What it shows | Infra |
 |---------|---------------|:-----:|
 | [encryption](encryption) | Field-level encryption at rest, per-tenant keys, crypto-shredding | — |
+| [reencrypt-inplace](reencrypt-inplace) | Backfill encryption onto existing plaintext history in place (idempotent) | — |
 | [export](export) | GDPR data export (right to access / portability) | — |
 | [audit](audit) | An immutable audit trail of every command (who/what/when/outcome) | — |
 
@@ -70,6 +71,7 @@ The adapter auto-creates its schema on first use, so there's nothing to migrate 
 | [metrics](metrics) | Prometheus metrics for commands and event-store operations | — |
 | [tracing](tracing) | OpenTelemetry distributed tracing | — |
 | [bdd-testing](bdd-testing) | Behavior-driven aggregate tests with Given/When/Then | — |
+| [feed-filter](feed-filter) | Read the event feed filtered by type / stream / category — for audit & introspection | — |
 
 ## Suggested learning path
 
@@ -77,7 +79,7 @@ The adapter auto-creates its schema on first use, so there's nothing to migrate 
 2. **[cqrs](cqrs)** — add commands, handlers, and middleware.
 3. **[projections](projections)** — build read models for queries.
 4. **[sagas](sagas)** — orchestrate workflows across aggregates.
-5. Pick the production concerns you care about — **[versioning](versioning)**, **[encryption](encryption)**, **[export](export)**, **[audit](audit)**, **[metrics](metrics)**, **[tracing](tracing)**.
+5. Pick the production concerns you care about — **[versioning](versioning)**, **[encryption](encryption)**, **[export](export)**, **[audit](audit)**, **[metrics](metrics)**, **[tracing](tracing)**, **[feed-filter](feed-filter)**.
 6. **[full-ecommerce](full-ecommerce)** — see how it all composes into one system.
 
 ## Learn more

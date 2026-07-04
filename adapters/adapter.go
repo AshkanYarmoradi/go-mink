@@ -4,6 +4,8 @@ package adapters
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -224,6 +226,92 @@ type SubscriptionAdapter interface {
 	// Events are delivered starting from the specified global position.
 	// Optional SubscriptionOptions can be provided to configure behavior.
 	SubscribeCategory(ctx context.Context, category string, fromPosition uint64, opts ...SubscriptionOptions) (<-chan StoredEvent, error)
+}
+
+// FeedFilter narrows a filtered load-from-position read to events matching indexed
+// columns only. Every field is optional; a zero-value FeedFilter selects all events
+// (identical to an unfiltered LoadFromPosition). Fields AND-compose; a multi-valued
+// field is an OR/IN set.
+//
+// Only columns the event store indexes are exposed: event type (idx_events_type),
+// and exact stream id / stream category (idx_events_stream). There is deliberately
+// no metadata/tenant or payload axis — filtering the raw feed by unindexed criteria
+// belongs in a read-model projection, not here. Keeping it indexed-only makes the
+// filtered read a bounded introspection primitive rather than an ad-hoc query engine
+// over the event log.
+type FeedFilter struct {
+	// EventTypes matches events whose type is any of these (event_type IN (...)).
+	EventTypes []string
+
+	// StreamIDs matches events whose stream id is exactly any of these
+	// (stream_id IN (...)).
+	StreamIDs []string
+
+	// Category matches events whose stream belongs to this category, i.e. whose
+	// stream id has the "<Category>-" prefix (stream_id LIKE '<Category>-%'),
+	// escaped like SubscribeCategory so metacharacters do not over-match.
+	Category string
+}
+
+// CategoryStreamPrefix returns the stream-id prefix shared by every stream in a
+// category: a stream belongs to category iff its id begins with this prefix. It is the
+// single source of truth for the category feed-filter predicate across backends — the
+// in-memory FeedFilter.Matches and the PostgreSQL LIKE builder both derive from it — so
+// the two cannot drift on how a category maps to stream ids.
+func CategoryStreamPrefix(category string) string {
+	return category + "-"
+}
+
+// IsEmpty reports whether the filter imposes no predicate (selects every event).
+func (f FeedFilter) IsEmpty() bool {
+	return len(f.EventTypes) == 0 && len(f.StreamIDs) == 0 && f.Category == ""
+}
+
+// Matches reports whether ev satisfies the filter. Adapters that filter in memory
+// use this; the SQL adapter encodes the same predicate in its WHERE clause. Axes
+// AND-compose; a multi-valued axis matches any member. An empty filter matches all.
+func (f FeedFilter) Matches(ev StoredEvent) bool {
+	if len(f.EventTypes) > 0 && !slices.Contains(f.EventTypes, ev.Type) {
+		return false
+	}
+	if len(f.StreamIDs) > 0 && !slices.Contains(f.StreamIDs, ev.StreamID) {
+		return false
+	}
+	if f.Category != "" && !strings.HasPrefix(ev.StreamID, CategoryStreamPrefix(f.Category)) {
+		return false
+	}
+	return true
+}
+
+// FilteredFeedAdapter is an optional adapter capability: a filtered variant of the
+// load-from-position read that pushes FeedFilter predicates down to storage instead
+// of returning the whole feed. Adapters that can serve indexed feed filtering
+// implement it; EventStore detects it via a type assertion and otherwise returns
+// ErrFilteredFeedNotSupported. Intended for introspection / ops / migration reads of
+// the raw log, not application read paths (project a read model for those).
+type FilteredFeedAdapter interface {
+	// LoadFromPositionFiltered loads events with global_position > fromPosition that
+	// match filter, ordered by ascending global_position, up to limit. An empty
+	// filter behaves identically to LoadFromPosition.
+	LoadFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter FeedFilter) ([]StoredEvent, error)
+}
+
+// EventRewriteAdapter is an optional adapter capability: it replaces the data and
+// metadata of a single already-stored event, addressed by (streamID, version),
+// preserving every other column (id, type, global position, timestamp). This is the
+// in-place, data-governance write an append-only store otherwise disallows — a narrow,
+// opt-in exception to the append-only invariant, used only by
+// EventStore.ReEncryptStreamInPlace to bring historical events under the current
+// field-encryption scheme. Only the at-rest encoding changes (ciphertext for plaintext);
+// the decrypted content is unchanged. (Contrast retention RedactFields, which never
+// rewrites the log; it runs a caller-supplied hook against read models.) EventStore
+// detects it via a type assertion and otherwise returns ErrRewriteNotSupported, so
+// adapters that do not implement it are unaffected.
+type EventRewriteAdapter interface {
+	// RewriteEventData replaces the data and metadata of the event at
+	// (streamID, version). It MUST return an error if no such event exists, rather
+	// than inserting or silently no-oping.
+	RewriteEventData(ctx context.Context, streamID string, version int64, data []byte, metadata Metadata) error
 }
 
 // SnapshotAdapter stores aggregate snapshots for faster loading.

@@ -144,6 +144,40 @@ func (s *EventStore) SubscribeToCategory(
 ) (<-chan StoredEvent, error)
 ```
 
+### Filtered feed reads
+
+`LoadEventsFromPositionFiltered` is a filtered variant of the load-from-position read
+for **introspection** — audit browsers, migration/backfill scanners, and diagnostics
+that read the raw event log by an *indexed* axis instead of loading the whole feed and
+filtering in application code.
+
+```go
+// LoadEventsFromPositionFiltered reads events after a global position that match an
+// indexed FeedFilter, pushing the predicate down to storage.
+func (s *EventStore) LoadEventsFromPositionFiltered(
+    ctx context.Context,
+    fromPosition uint64,
+    limit int,
+    filter FeedFilter, // alias of adapters.FeedFilter
+) ([]StoredEvent, error)
+
+// FeedFilter selects by indexed columns only. Axes AND-compose; a multi-valued axis
+// is an OR/IN set. An empty filter behaves exactly like the unfiltered read.
+type FeedFilter struct {
+    EventTypes []string // event_type IN (...)   — idx_events_type
+    StreamIDs  []string // stream_id  IN (...)   — idx_events_stream
+    Category   string   // stream_id  LIKE '<Category>-%'
+}
+```
+
+Results keep the ordering, `limit`, exclusivity, and gapless safe-watermark
+guarantees of `LoadEventsFromPosition`. Filtering is **indexed-only by design**:
+querying the feed by unindexed data (a tenant in `metadata`, a payload field) belongs
+in a purpose-built read model, not here — which keeps this a bounded introspection
+primitive rather than an ad-hoc query engine over the log. Adapters that cannot serve
+it return `ErrFilteredFeedNotSupported`; the in-memory and PostgreSQL adapters both
+implement it.
+
 ## PostgreSQL Schema
 
 ```sql

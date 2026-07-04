@@ -24,6 +24,7 @@ const (
 var (
 	_ adapters.EventStoreAdapter   = (*MemoryAdapter)(nil)
 	_ adapters.SubscriptionAdapter = (*MemoryAdapter)(nil)
+	_ adapters.FilteredFeedAdapter = (*MemoryAdapter)(nil)
 	_ adapters.SnapshotAdapter     = (*MemoryAdapter)(nil)
 	_ adapters.CheckpointAdapter   = (*MemoryAdapter)(nil)
 	_ adapters.HealthChecker       = (*MemoryAdapter)(nil)
@@ -428,7 +429,19 @@ func (a *MemoryAdapter) Close() error {
 
 // LoadFromPosition loads events starting from a global position.
 // This is used by projection engines to catch up on historical events.
+//
+// An empty FeedFilter matches every event, so this is exactly the unfiltered scan;
+// routing it through LoadFromPositionFiltered keeps the position/limit semantics
+// single-sourced so the two paths cannot drift.
 func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
+	return a.LoadFromPositionFiltered(ctx, fromPosition, limit, adapters.FeedFilter{})
+}
+
+// LoadFromPositionFiltered loads events after a global position that match filter,
+// ordered by ascending global position, up to limit. An empty filter behaves exactly
+// like LoadFromPosition. The predicate mirrors the SQL adapter's WHERE clause via
+// FeedFilter.Matches, so both backends filter identically (see adapters.FeedFilter).
+func (a *MemoryAdapter) LoadFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter adapters.FeedFilter) ([]adapters.StoredEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -444,11 +457,15 @@ func (a *MemoryAdapter) LoadFromPosition(ctx context.Context, fromPosition uint6
 
 	var events []adapters.StoredEvent
 	for _, event := range a.globalEvents {
-		if event.GlobalPosition > fromPosition {
-			events = append(events, event)
-			if len(events) >= limit {
-				break
-			}
+		if event.GlobalPosition <= fromPosition {
+			continue
+		}
+		if !filter.Matches(event) {
+			continue
+		}
+		events = append(events, event)
+		if len(events) >= limit {
+			break
 		}
 	}
 
