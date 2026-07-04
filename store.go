@@ -35,6 +35,12 @@ type EventStore struct {
 	// LoadAggregate path is a single field read + map lookup rather than an interface
 	// type assertion per event. nil when the serializer does not support introspection.
 	eventTypeRegistrar EventTypeRegistrar
+
+	// serializerErr records a fatal serializer/adapter incompatibility detected at
+	// construction (a binary serializer paired with a JSON/JSONB-backed adapter). It is
+	// nil for every valid pairing. When set, the write paths (Append/SaveAggregate) return
+	// it instead of letting the binary payload fail as a cryptic driver error on INSERT.
+	serializerErr error
 }
 
 // Logger defines the logging interface for the event store.
@@ -123,14 +129,14 @@ func WithSubjectIndexWriter(w SubjectIndexWriter) Option {
 
 // New creates a new EventStore with the given adapter and options.
 //
-// New panics if a binary serializer (one whose BinaryFormat reports true, such
-// as serializer/msgpack or serializer/protobuf) is paired with an adapter that
+// If a binary serializer (one whose BinaryFormat reports true, such as
+// serializer/msgpack or serializer/protobuf) is paired with an adapter that
 // stores event data as JSON text (one whose RequiresJSONData reports true, such
-// as the PostgreSQL JSONB adapter). Such a pairing can never succeed — the
-// binary payload is rejected by the JSON column on every Append — so it is
-// reported here, at construction, as a programming error wrapping
-// ErrBinarySerializerUnsupported, rather than as a cryptic driver failure on
-// the first write. Use the default JSON serializer with JSON-backed adapters.
+// as the PostgreSQL JSONB adapter), the pairing can never succeed — the binary
+// payload is rejected by the JSON column on every write. New does not panic on
+// this: it records the incompatibility so the first Append/SaveAggregate returns
+// a clear ErrBinarySerializerUnsupported instead of a cryptic driver error. Use
+// the default JSON serializer with JSON-backed adapters.
 func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 	es := &EventStore{
 		adapter:    adapter,
@@ -148,9 +154,12 @@ func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 		es.eventTypeRegistrar = r
 	}
 
-	if err := checkSerializerAdapterCompatible(es.serializer, adapter); err != nil {
-		panic(err)
-	}
+	// Detect a fatal serializer/adapter incompatibility (a binary serializer with a
+	// JSON/JSONB-backed adapter). Record it rather than panicking — a library constructor
+	// must not panic on a recoverable configuration error, and New's signature cannot
+	// return one without a breaking change. The write paths surface it as a clear
+	// ErrBinarySerializerUnsupported on first use, instead of a cryptic driver error.
+	es.serializerErr = checkSerializerAdapterCompatible(es.serializer, adapter)
 
 	return es
 }
@@ -176,26 +185,14 @@ func checkSerializerAdapterCompatible(s Serializer, adapter adapters.EventStoreA
 	)
 }
 
-// producesBinary reports whether s serializes to a binary (non-JSON-text)
-// format. It honors BinaryFormatReporter and transparently unwraps decorators
-// that expose their wrapped serializer via Inner (such as UpcastingSerializer),
-// so wrapping a binary serializer does not defeat the check.
+// producesBinary reports whether s serializes to a binary (non-JSON-text) format via the
+// optional BinaryFormatReporter interface (a serializer that does not implement it is assumed
+// to emit JSON text). Decorators are responsible for forwarding BinaryFormat to their wrapped
+// serializer — UpcastingSerializer does — so wrapping a binary serializer does not defeat the
+// check without an unbounded interface-chain walk here.
 func producesBinary(s Serializer) bool {
-	for s != nil {
-		if r, ok := s.(BinaryFormatReporter); ok {
-			return r.BinaryFormat()
-		}
-		inner, ok := s.(interface{ Inner() Serializer })
-		if !ok {
-			return false
-		}
-		next := inner.Inner()
-		if next == s {
-			return false
-		}
-		s = next
-	}
-	return false
+	r, ok := s.(BinaryFormatReporter)
+	return ok && r.BinaryFormat()
 }
 
 // Serializer returns the event store's serializer.
@@ -317,6 +314,9 @@ func WithAppendMetadata(m Metadata) AppendOption {
 // Append stores events to the specified stream.
 // Events can be Go structs which will be serialized using the configured serializer.
 func (s *EventStore) Append(ctx context.Context, streamID string, events []interface{}, opts ...AppendOption) error {
+	if s.serializerErr != nil {
+		return s.serializerErr
+	}
 	if streamID == "" {
 		return ErrEmptyStreamID
 	}
@@ -435,6 +435,9 @@ func (s *EventStore) LoadRaw(ctx context.Context, streamID string, fromVersion i
 // is updated to reflect the new stream version (and OriginalVersion is advanced),
 // allowing subsequent modifications without reloading.
 func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
+	if s.serializerErr != nil {
+		return s.serializerErr
+	}
 	if agg == nil {
 		return ErrNilAggregate
 	}

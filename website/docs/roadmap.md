@@ -81,7 +81,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `DataExporter` — right to access / portability (Article 15 / 20)
 - `DataEraser` — right to erasure (Article 17): subject discovery, sibling-store erasure (audit/saga/snapshot/outbox/idempotency), blast-radius guard, and a verification certificate
 - `SubjectResolver` + subject index / `BackfillSubjectIndex`
-- `RetentionManager` — configurable retention (shred / redact / anonymize)
+- `RetentionManager` — configurable retention (shred / redact / anonymize); optionally checkpoint-resumable + per-run bounded so a scheduled sweep's cost tracks the retention window, not total history (`WithRetentionCheckpoint` / `WithRetentionMaxScan`)
 - `Anonymizer` — deterministic one-way pseudonymization
 - `mink gdpr` CLI — discover / verify / erase-plan / retain
 - See the [GDPR & Data Governance guide](/docs/security)

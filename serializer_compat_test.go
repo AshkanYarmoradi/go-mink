@@ -1,6 +1,7 @@
 package mink
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,16 +49,6 @@ type compatPlainSerializer struct{}
 func (compatPlainSerializer) Serialize(interface{}) ([]byte, error)           { return []byte("{}"), nil }
 func (compatPlainSerializer) Deserialize([]byte, string) (interface{}, error) { return nil, nil }
 
-// compatSelfWrappingSerializer's Inner returns itself; it exercises the cycle
-// guard in producesBinary so a pathological decorator cannot loop forever.
-type compatSelfWrappingSerializer struct{}
-
-func (c *compatSelfWrappingSerializer) Serialize(interface{}) ([]byte, error) { return nil, nil }
-func (c *compatSelfWrappingSerializer) Deserialize([]byte, string) (interface{}, error) {
-	return nil, nil
-}
-func (c *compatSelfWrappingSerializer) Inner() Serializer { return c }
-
 // --- producesBinary ----------------------------------------------------------
 
 func TestProducesBinary(t *testing.T) {
@@ -71,16 +62,15 @@ func TestProducesBinary(t *testing.T) {
 		{"plain serializer defaults to textual", compatPlainSerializer{}, false},
 		{"nil serializer", nil, false},
 		{
-			"upcasting decorator unwraps to binary inner",
+			"upcasting decorator forwards binary inner",
 			NewUpcastingSerializer(compatBinarySerializer{}, NewUpcasterChain()),
 			true,
 		},
 		{
-			"upcasting decorator unwraps to json inner",
+			"upcasting decorator forwards json inner",
 			NewUpcastingSerializer(NewJSONSerializer(), NewUpcasterChain()),
 			false,
 		},
-		{"self-wrapping decorator does not loop", &compatSelfWrappingSerializer{}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,11 +109,20 @@ func TestCheckSerializerAdapterCompatible(t *testing.T) {
 
 // --- New integration ---------------------------------------------------------
 
-func TestNew_BinarySerializerWithJSONAdapterPanics(t *testing.T) {
-	assert.PanicsWithError(t,
-		checkSerializerAdapterCompatible(compatBinarySerializer{}, compatJSONAdapter{}).Error(),
-		func() { New(compatJSONAdapter{}, WithSerializer(compatBinarySerializer{})) },
-	)
+func TestNew_BinarySerializerWithJSONAdapterDefersError(t *testing.T) {
+	// New must NOT panic on an incompatible serializer/adapter pairing: a library constructor
+	// must not panic on a recoverable configuration error (CLAUDE.md), and New has no error
+	// return. It records the incompatibility and surfaces it as a clear typed error on first
+	// write — never the cryptic driver error the underlying INSERT would otherwise raise.
+	var store *EventStore
+	require.NotPanics(t, func() {
+		store = New(compatJSONAdapter{}, WithSerializer(compatBinarySerializer{}))
+	})
+	require.NotNil(t, store)
+
+	// The recorded error surfaces on the first write, before the (nil) adapter is touched.
+	err := store.Append(context.Background(), "stream-1", []interface{}{struct{}{}})
+	require.ErrorIs(t, err, ErrBinarySerializerUnsupported)
 }
 
 func TestNew_JSONSerializerWithJSONAdapterOK(t *testing.T) {

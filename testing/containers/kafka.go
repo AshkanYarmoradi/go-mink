@@ -98,13 +98,15 @@ func (k *KafkaContainer) CreateTopic(t *testing.T, topic string) {
 	}); err != nil {
 		t.Fatalf("kafka create topic %q: %v", topic, err)
 	}
+	// Register cleanup as soon as the topic is created — before the visibility poll — so a
+	// poll timeout (topic created but not yet visible) still deletes it rather than leaking it.
+	t.Cleanup(func() { _ = k.deleteTopic(topic) })
 
 	// Poll until the topic's partitions are visible before returning.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		parts, err := conn.ReadPartitions(topic)
 		if err == nil && len(parts) > 0 {
-			t.Cleanup(func() { _ = k.deleteTopic(topic) })
 			return
 		}
 		time.Sleep(200 * time.Millisecond)

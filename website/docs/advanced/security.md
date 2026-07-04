@@ -410,7 +410,11 @@ report, _ := mgr.DryRun(ctx) // preview, no changes
 report, _ = mgr.Apply(ctx)   // report.Matched, report.KeysRevoked, report.Skipped, report.Errors
 ```
 
-`Apply` is a **single sweep** — schedule it yourself (cron/gocron). A `RedactFields` /
+`Apply` is a **single sweep** — schedule it yourself (cron/gocron); for a large store, add
+`WithRetentionCheckpoint(checkpointStore, name)` so the sweep resumes from a persisted
+frontier instead of re-scanning the whole log each run (cost then tracks the retention
+window, not total history), plus `WithRetentionMaxScan(n)` to bound a single run. Both are
+opt-in — unset, `Apply` scans from position 0 as before. A `RedactFields` /
 `Anonymize` policy with no `Apply` hook is surfaced loudly via `mgr.Validate()` /
 `report.Failed()`, never silently skipped. See the
 [Retention section](/docs/security#retention-policies) of the GDPR guide.

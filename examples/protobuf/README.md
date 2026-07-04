@@ -4,7 +4,7 @@
 
 Protocol Buffers give you the smallest binary payloads of go-mink's built-in serializers, plus schema-enforced typing and field-numbered forward/backward compatibility. This example uses the protobuf well-known wrapper types (`wrapperspb`, `timestamppb`) as stand-in events across four demos, from basic round-tripping to building a projection.
 
-> **Compatibility:** Protocol Buffers is a *binary* format. It works with the in-memory adapter (used here) or any `BYTEA`-backed store, but **not** the PostgreSQL event store, whose `events.data` column is `JSONB`. Pairing this serializer with the PostgreSQL adapter makes `mink.New` panic with `mink.ErrBinarySerializerUnsupported` — use the default JSON serializer there.
+> **Compatibility:** Protocol Buffers is a *binary* format. It works with the in-memory adapter (used here) or any `BYTEA`-backed store, but **not** the PostgreSQL event store, whose `events.data` column is `JSONB`. Pairing this serializer with the PostgreSQL adapter makes the first `Append`/`SaveAggregate` fail fast with `mink.ErrBinarySerializerUnsupported` (detected at construction, before any write) — use the default JSON serializer there.
 
 ## What this demonstrates
 
