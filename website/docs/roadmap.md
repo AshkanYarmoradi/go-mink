@@ -28,6 +28,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - PostgreSQL adapter (production) and in-memory adapter (testing)
 - JSON serialization with event registry
 - Stream management with version constants (`AnyVersion`, `NoStream`, `StreamExists`)
+- Filtered feed reads: `LoadEventsFromPositionFiltered` — read the global feed by indexed axis (event type / stream id / category), for audit & introspection tooling
 
 ### Aggregates
 - `Aggregate` interface and `AggregateBase` implementation
