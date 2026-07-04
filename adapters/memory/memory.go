@@ -486,6 +486,12 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	// wedge every writer (Append needs the write lock) until the consumer drains — but the
 	// consumer cannot start draining until this call returns, which the drain itself prevents:
 	// a setup-time deadlock whenever the history past fromPosition exceeds the buffer.
+	//
+	// This buffers up to historyCount events, an accepted trade-off for this in-memory test/dev
+	// adapter: it already holds the entire event log in a.globalEvents, so the channel is at
+	// worst a transient second reference to already-resident data that drains as the consumer
+	// reads. A production adapter that streams history from durable storage would instead page
+	// the backlog behind a bounded buffer rather than materialize it all at subscribe time.
 	historyCount := 0
 	for i := range a.globalEvents {
 		if a.globalEvents[i].GlobalPosition > fromPosition {

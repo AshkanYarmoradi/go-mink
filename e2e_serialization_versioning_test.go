@@ -132,21 +132,17 @@ func TestE2E_Serialization_MsgpackRoundTrip(t *testing.T) {
 
 // TestE2E_Serialization_MsgpackRejectedByPGJSONB locks in the fail-fast contract: because the
 // PostgreSQL adapter stores event data in a JSONB column, pairing it with a binary serializer
-// (msgpack) is rejected at construction — mink.New panics with ErrBinarySerializerUnsupported —
-// instead of failing later on the first Append with a cryptic "invalid input syntax for type json".
+// (msgpack) is rejected with the clear ErrBinarySerializerUnsupported on the first Append —
+// before any INSERT — instead of a cryptic "invalid input syntax for type json" from the driver.
+// mink.New records the incompatibility rather than panicking (a library constructor must not
+// panic on a recoverable misconfiguration), so the real PG adapter here is never actually hit.
 func TestE2E_Serialization_MsgpackRejectedByPGJSONB(t *testing.T) {
 	p := newE2EPGBase(t)
 	s := msgpack.NewSerializer()
 	s.Register("e2eProductMsg", e2eProductMsg{})
 
-	defer func() {
-		r := recover()
-		require.NotNil(t, r, "expected mink.New to panic on msgpack + JSONB PostgreSQL adapter")
-		err, ok := r.(error)
-		require.Truef(t, ok, "panic value should be an error, got %T", r)
-		assert.ErrorIs(t, err, mink.ErrBinarySerializerUnsupported)
-	}()
-
-	_ = mink.New(p.Adapter, mink.WithSerializer(s))
-	t.Fatal("mink.New returned without panicking")
+	store := mink.New(p.Adapter, mink.WithSerializer(s))
+	err := store.Append(p.Ctx, "prod-msg", []interface{}{e2eProductMsg{Name: "widget", Price: 9}})
+	require.Error(t, err, "expected msgpack + JSONB PostgreSQL adapter to reject the append")
+	assert.ErrorIs(t, err, mink.ErrBinarySerializerUnsupported)
 }

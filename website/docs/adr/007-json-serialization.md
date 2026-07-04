@@ -121,10 +121,12 @@ store := mink.New(adapter, mink.WithSerializer(mySerializer))
 The PostgreSQL adapter persists event data in a `JSONB` column, so it requires a
 serializer that emits valid JSON text. The built-in binary serializers
 (`serializer/msgpack`, `serializer/protobuf`) produce non-JSON bytes that a
-`JSONB` column rejects. Pairing one with the PostgreSQL adapter makes `mink.New`
-**panic** at construction with an error wrapping
-`mink.ErrBinarySerializerUnsupported`, rather than failing later on the first
-`Append` with a cryptic `invalid input syntax for type json`.
+`JSONB` column rejects. Pairing one with the PostgreSQL adapter makes the first
+`Append`/`SaveAggregate` **fail fast** with `mink.ErrBinarySerializerUnsupported`
+(detected at construction, surfaced before any write), rather than failing later
+with a cryptic `invalid input syntax for type json`. `mink.New` records the
+incompatibility rather than panicking — a library constructor must not panic on a
+recoverable misconfiguration, and `New` has no error return.
 
 Use a binary serializer only with a store that accepts raw bytes — the in-memory
 adapter, or an event-store adapter whose data column is `BYTEA`. The guard is

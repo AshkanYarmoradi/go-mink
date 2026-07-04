@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
@@ -83,24 +84,45 @@ func TestErasureResult_Failed(t *testing.T) {
 	assert.False(t, (&ErasureResult{SubjectStores: []SubjectErasureOutcome{{Name: "ok", Skipped: false}}}).Failed())
 }
 
-// TestMarkerExists covers the metadata hit, the JSON-Data fallback, and the LoadRaw-error path.
+// TestMarkerExists covers the metadata hit, the JSON-Data fallback, the load-error path, and the
+// once-per-instance cache: the set of marked subjects is loaded once and thereafter maintained by
+// appendMarker, so a bulk erasure does not re-scan the growing marker stream for every subject.
 func TestMarkerExists(t *testing.T) {
 	ctx := context.Background()
 	store := New(memory.NewAdapter())
 	store.RegisterEvents(ErasureMarker{})
-	eraser := NewDataEraser(store, WithErasureMarker("m"))
 
-	// LoadRaw error (the marker stream does not exist yet) -> false.
-	assert.False(t, eraser.markerExists(ctx, "x"))
+	// Empty/absent marker stream: no marker -> false.
+	assert.False(t, NewDataEraser(store, WithErasureMarker("m")).markerExists(ctx, "x"))
 
-	// JSON-Data fallback: a marker appended directly carries no metadata subject tag.
+	// JSON-Data fallback: a marker appended directly carries no metadata subject tag. A fresh
+	// eraser's first (and only) load observes it.
 	require.NoError(t, store.Append(ctx, "m", []interface{}{ErasureMarker{SubjectID: "x"}}))
+	eraser := NewDataEraser(store, WithErasureMarker("m"))
 	assert.True(t, eraser.markerExists(ctx, "x"), "found via the JSON-Data fallback")
 	assert.False(t, eraser.markerExists(ctx, "absent"))
 
-	// Metadata tag: appendMarker stamps the subject in metadata.
+	// Metadata tag: appendMarker stamps the subject in metadata and updates the cache in place,
+	// so the follow-up markerExists is a cache hit (no reload) yet still observes "z".
 	require.NoError(t, eraser.appendMarker(ctx, "z", &ErasureResult{}))
 	assert.True(t, eraser.markerExists(ctx, "z"), "found via the metadata subject tag")
+
+	// Load-error path: markerExists returns false without marking the cache loaded, so a later
+	// call retries the load rather than trusting a half-built set.
+	errAdapter := newMockErrorAdapter()
+	errAdapter.loadErr = errors.New("load boom")
+	errEraser := NewDataEraser(New(errAdapter), WithErasureMarker("m"))
+	assert.False(t, errEraser.markerExists(ctx, "x"), "load error -> false (uncached)")
+	assert.False(t, errEraser.markedLoaded, "a load error must not mark the cache loaded")
+
+	// appendMarker surfaces an Append failure (markerExists first sees an empty stream, then the
+	// Append itself fails).
+	appendErrAdapter := newMockErrorAdapter()
+	appendErrStore := New(appendErrAdapter)
+	appendErrStore.RegisterEvents(ErasureMarker{})
+	appendErrAdapter.appendErr = errors.New("append boom")
+	appendErrEraser := NewDataEraser(appendErrStore, WithErasureMarker("m"))
+	assert.Error(t, appendErrEraser.appendMarker(ctx, "q", &ErasureResult{}))
 }
 
 // TestDecryptStoredEvents_Error covers the error branch of the shared batch decrypt primitive.
