@@ -1,65 +1,32 @@
 package commands
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	mink "go-mink.dev"
-	"go-mink.dev/adapters/postgres"
 	"go-mink.dev/cli/styles"
 )
 
 // TestEventsCommand_PG exercises `mink events` against a real PostgreSQL store seeded
 // with a mix of event types, streams, and categories, asserting each filter axis, the
 // position window, the limit, and JSON output. Self-skips under -short or without
-// TEST_DATABASE_URL. Reuses cliTypeA/cliTypeB from stream_types_pg_test.go.
+// TEST_DATABASE_URL. Reuses cliTypeA/cliTypeB from stream_types_pg_test.go and the shared
+// newPGCLIStore harness.
 func TestEventsCommand_PG(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping PostgreSQL CLI test in short mode")
-	}
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL CLI test")
-	}
-	ctx := context.Background()
-	schema := fmt.Sprintf("clievents_%d", time.Now().UnixNano())
-
-	adapter, err := postgres.NewAdapter(url, postgres.WithSchema(schema))
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = adapter.Close()
-		if db, derr := sql.Open("pgx", url); derr == nil {
-			_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %q CASCADE", schema))
-			_ = db.Close()
-		}
-	})
-	require.NoError(t, adapter.Initialize(ctx))
+	store, ctx := newPGCLIStore(t, "cli_events")
 
 	// Seed a fixed feed (event type = Go type name: cliTypeA / cliTypeB):
 	//   pos 1 order-1/cliTypeA, 2 order-1/cliTypeB, 3 order-2/cliTypeA, 4 user-1/cliTypeB
-	store := mink.New(adapter)
 	store.RegisterEvents(cliTypeA{}, cliTypeB{})
 	require.NoError(t, store.Append(ctx, "order-1", []interface{}{cliTypeA{ID: "1"}, cliTypeB{ID: "1"}}))
 	require.NoError(t, store.Append(ctx, "order-2", []interface{}{cliTypeA{ID: "2"}}))
 	require.NoError(t, store.Append(ctx, "user-1", []interface{}{cliTypeB{ID: "3"}}))
 
-	// Point the CLI at this schema via a mink.yaml in the (chdir'd) temp dir.
-	env := setupTestEnv(t, "cli-events-pg-*")
-	minkYAML := "version: \"1.0\"\n" +
-		"project:\n  name: \"e2e\"\n  module: \"example.com/e2e\"\n" +
-		"database:\n  driver: \"postgres\"\n  url: \"" + url + "\"\n  schema: \"" + schema + "\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(env.tmpDir, "mink.yaml"), []byte(minkYAML), 0o600))
 	styles.DisableColors()
 
 	loadJSON := func(t *testing.T, args ...string) []feedEvent {
