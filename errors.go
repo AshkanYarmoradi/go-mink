@@ -26,8 +26,22 @@ var (
 	// ErrSerializationFailed indicates event serialization/deserialization failed.
 	ErrSerializationFailed = errors.New("mink: serialization failed")
 
+	// ErrBinarySerializerUnsupported indicates a binary serializer (e.g.
+	// serializer/msgpack or serializer/protobuf, whose output is not valid JSON
+	// text) was paired with an event-store adapter that persists event data in a
+	// JSON/JSONB column (see adapters.JSONDataAdapter, implemented by the
+	// PostgreSQL adapter). New panics with an error wrapping this sentinel so the
+	// misconfiguration surfaces at construction time instead of as a cryptic
+	// driver error on the first Append.
+	ErrBinarySerializerUnsupported = errors.New("mink: binary serializer is not supported by a JSON-backed event store adapter")
+
 	// ErrEventTypeNotRegistered indicates an unknown event type was encountered.
 	ErrEventTypeNotRegistered = errors.New("mink: event type not registered")
+
+	// ErrUnregisteredEventType indicates an aggregate-replay event whose type is not
+	// registered, so it deserialized to the map fallback and would be silently dropped
+	// from the rebuilt aggregate state. Returned by LoadAggregate under WithStrictReplay.
+	ErrUnregisteredEventType = errors.New("mink: unregistered event type on aggregate replay")
 
 	// ErrNilAggregate indicates a nil aggregate was passed.
 	ErrNilAggregate = errors.New("mink: nil aggregate")
@@ -349,4 +363,31 @@ func NewProjectionError(projectionName, eventType string, position uint64, cause
 		Position:       position,
 		Cause:          cause,
 	}
+}
+
+// UnregisteredEventTypeError reports an event type encountered during aggregate replay
+// (LoadAggregate) that is not registered with the serializer, so it deserialized to the
+// map fallback and the aggregate's ApplyEvent could not apply it — the event would be
+// silently dropped from the rebuilt state. Register the type (RegisterEvents /
+// RegisterAggregateEvents) or use WithStrictReplay to fail fast. errors.Is(err,
+// ErrUnregisteredEventType) holds.
+type UnregisteredEventTypeError struct {
+	StreamID  string
+	EventType string
+	Version   int64
+}
+
+// Error returns the error message.
+func (e *UnregisteredEventTypeError) Error() string {
+	return fmt.Sprintf("mink: unregistered event type %q on stream %q at version %d — the aggregate cannot apply it (register it via RegisterEvents/RegisterAggregateEvents); replay would silently drop it from state", e.EventType, e.StreamID, e.Version)
+}
+
+// Is reports whether this error matches the target error.
+func (e *UnregisteredEventTypeError) Is(target error) bool {
+	return target == ErrUnregisteredEventType
+}
+
+// Unwrap returns the sentinel this error wraps, so errors.Is/errors.As traverse the chain.
+func (e *UnregisteredEventTypeError) Unwrap() error {
+	return ErrUnregisteredEventType
 }

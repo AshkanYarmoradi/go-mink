@@ -166,7 +166,9 @@ func (p *Provider) DecryptDataKey(ctx context.Context, keyID string, encryptedKe
 // RevokeKey crypto-shreds keyID by scheduling deletion of its KMS CMK. It
 // implements encryption.Revocable. It requires the injected client to implement
 // KMSRevocationClient, otherwise it returns ErrRevocationUnsupported. It is
-// idempotent: a CMK already pending deletion or disabled returns nil.
+// idempotent: a CMK already pending deletion returns nil. A merely-disabled CMK
+// is reversible (EnableKey), so it is NOT treated as already revoked — RevokeKey
+// schedules its deletion so the crypto-shred is actually permanent.
 func (p *Provider) RevokeKey(keyID string) error {
 	rc, err := p.revocationClient()
 	if err != nil {
@@ -192,8 +194,9 @@ func (p *Provider) RevokeKey(keyID string) error {
 	return nil
 }
 
-// IsRevoked reports whether keyID's CMK is pending deletion or disabled.
-// It implements encryption.Revocable.
+// IsRevoked reports whether keyID's CMK is permanently unrecoverable — pending
+// deletion, or already deleted (NotFound). A merely-disabled CMK is reversible
+// via EnableKey, so it is NOT reported as revoked. It implements encryption.Revocable.
 func (p *Provider) IsRevoked(keyID string) (bool, error) {
 	rc, err := p.revocationClient()
 	if err != nil {
@@ -231,8 +234,12 @@ func (p *Provider) revoked(rc KMSRevocationClient, keyID string) (bool, error) {
 	if out.KeyMetadata == nil {
 		return false, nil
 	}
+	// Only PendingDeletion counts as revoked. A merely Disabled CMK is fully
+	// reversible via EnableKey, so treating it as revoked would let RevokeKey skip
+	// scheduling deletion and make IsRevoked/Verify certify an erasure whose data is
+	// still recoverable. RevokeKey schedules deletion for a disabled key instead.
 	st := out.KeyMetadata.KeyState
-	return st == types.KeyStatePendingDeletion || st == types.KeyStateDisabled, nil
+	return st == types.KeyStatePendingDeletion, nil
 }
 
 // Close marks the provider as closed.

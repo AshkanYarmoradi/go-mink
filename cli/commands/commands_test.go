@@ -421,7 +421,7 @@ func TestGenerateFile(t *testing.T) {
 	tmpl := "package {{.Package}}\n"
 	data := struct{ Package string }{Package: "test"}
 
-	err := generateFile(testPath, tmpl, data)
+	err := generateFile(testPath, tmpl, data, true)
 	require.NoError(t, err)
 
 	// Verify file was created
@@ -442,12 +442,32 @@ func TestGenerateFile_Overwrite(t *testing.T) {
 	// Generate new file (should overwrite)
 	tmpl := "package {{.Name}}\n"
 	data := struct{ Name string }{Name: "newtest"}
-	err = generateFile(testPath, tmpl, data)
+	err = generateFile(testPath, tmpl, data, true)
 	require.NoError(t, err)
 
 	fileData, err := os.ReadFile(testPath)
 	require.NoError(t, err)
 	assert.Equal(t, "package newtest\n", string(fileData))
+}
+
+func TestGenerateFile_RefusesOverwriteWithoutForce(t *testing.T) {
+	env := setupTestEnv(t, "mink-cmd-test-*")
+	testPath := filepath.Join(env.tmpDir, "existing.go")
+	require.NoError(t, os.WriteFile(testPath, []byte("hand-written"), 0644))
+
+	tmpl := "package {{.Name}}\n"
+	data := struct{ Name string }{Name: "generated"}
+
+	// Without --force: refuse and leave the file untouched.
+	err := generateFile(testPath, tmpl, data, false)
+	require.Error(t, err)
+	got, _ := os.ReadFile(testPath)
+	assert.Equal(t, "hand-written", string(got), "must not overwrite without --force")
+
+	// With --force: overwrite.
+	require.NoError(t, generateFile(testPath, tmpl, data, true))
+	got, _ = os.ReadFile(testPath)
+	assert.Equal(t, "package generated\n", string(got))
 }
 
 func TestGenerateFile_InvalidTemplate(t *testing.T) {
@@ -456,7 +476,7 @@ func TestGenerateFile_InvalidTemplate(t *testing.T) {
 	testPath := filepath.Join(env.tmpDir, "test.go")
 	tmpl := "{{.Invalid" // Invalid template
 
-	err := generateFile(testPath, tmpl, nil)
+	err := generateFile(testPath, tmpl, nil, true)
 	assert.Error(t, err)
 }
 
@@ -770,7 +790,7 @@ func TestGenerateFile_ExecutionError(t *testing.T) {
 	tmpl := "{{.Missing}}" // Template expects field that doesn't exist
 	data := struct{}{}
 
-	err := generateFile(path, tmpl, data)
+	err := generateFile(path, tmpl, data, true)
 	assert.Error(t, err)
 }
 
@@ -1422,7 +1442,7 @@ type {{.Name}} struct {}
 		Name:    "MyStruct",
 	}
 
-	err := generateFile(filePath, template, data)
+	err := generateFile(filePath, template, data, true)
 	require.NoError(t, err)
 
 	content, err := os.ReadFile(filePath)
@@ -1438,7 +1458,7 @@ func TestGenerateFile_CreateDirectory(t *testing.T) {
 	filePath := filepath.Join(env.tmpDir, "test.go")
 	template := `package test`
 
-	err := generateFile(filePath, template, nil)
+	err := generateFile(filePath, template, nil, true)
 	require.NoError(t, err)
 
 	// Verify file exists
@@ -1452,7 +1472,7 @@ func TestGenerateFile_BadTemplate(t *testing.T) {
 	filePath := filepath.Join(env.tmpDir, "test.go")
 	template := `{{.Invalid`
 
-	err := generateFile(filePath, template, nil)
+	err := generateFile(filePath, template, nil, true)
 	assert.Error(t, err)
 }
 
@@ -2565,7 +2585,7 @@ func TestGenerateFile_ValidTemplate(t *testing.T) {
 	env := setupTestEnv(t, "mink-gen-file-*")
 
 	testFile := filepath.Join(env.tmpDir, "test.txt")
-	err := generateFile(testFile, "Hello {{.Name}}", struct{ Name string }{Name: "World"})
+	err := generateFile(testFile, "Hello {{.Name}}", struct{ Name string }{Name: "World"}, true)
 	assert.NoError(t, err)
 
 	content, _ := os.ReadFile(testFile)
@@ -5391,7 +5411,7 @@ type {{.Name}} struct {}
 `
 	data := struct{ Name string }{"TestStruct"}
 
-	err := generateFile(testFile, testTemplate, data)
+	err := generateFile(testFile, testTemplate, data, true)
 	assert.NoError(t, err)
 	assert.FileExists(t, testFile)
 
@@ -5681,7 +5701,7 @@ func TestInitCommand_WithExistingConfig(t *testing.T) {
 func TestGenerateFile_InvalidPath_Coverage(t *testing.T) {
 	// Use invalid path with null character
 	invalidPath := string([]byte{0}) + "/test.go"
-	err := generateFile(invalidPath, "package test", struct{}{})
+	err := generateFile(invalidPath, "package test", struct{}{}, true)
 	assert.Error(t, err)
 }
 

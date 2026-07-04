@@ -377,10 +377,17 @@ func (r *ProjectionRebuilder) processInlineBatch(ctx context.Context, projection
 	return nil
 }
 
-// loadEventsFromPosition loads events from a global position.
-// Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
+// loadEventsFromPosition loads events from a global position, decrypting field-encrypted
+// events before they reach the projection (matching the async/inline engine paths and Load).
+// Without this, rebuilding a projection over encrypted events would apply ciphertext to the
+// read model. Returns ErrSubscriptionNotSupported if the adapter does not implement
+// SubscriptionAdapter.
 func (r *ProjectionRebuilder) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	return r.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	events, err := r.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.store.decryptStoredEvents(ctx, events)
 }
 
 // ParallelRebuilder rebuilds multiple projections in parallel.

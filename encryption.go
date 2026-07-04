@@ -371,6 +371,28 @@ func IsEncrypted(m Metadata) bool {
 	return ok
 }
 
+// stripEncryptionMetadata returns a copy of m with the four field-encryption markers
+// ($encrypted_fields / $encryption_key_id / $encrypted_dek / $encryption_algorithm)
+// removed, leaving every other Custom entry intact. It is applied after a successful
+// decrypt so a now-plaintext StoredEvent is no longer flagged encrypted (preventing a
+// double-decrypt if the event is re-processed). The input map is not mutated.
+func stripEncryptionMetadata(m Metadata) Metadata {
+	if m.Custom == nil {
+		return m
+	}
+	custom := make(map[string]string, len(m.Custom))
+	for k, v := range m.Custom {
+		switch k {
+		case encryptedFieldsKey, encryptionKeyIDKey, encryptedDEKKey, encryptionAlgorithmKey:
+			// drop the encryption marker
+		default:
+			custom[k] = v
+		}
+	}
+	m.Custom = custom
+	return m
+}
+
 // JSON field encryption helpers
 
 // fieldAAD builds the AES-GCM additional authenticated data for a field, binding

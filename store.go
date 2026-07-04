@@ -1,8 +1,10 @@
 package mink
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"go-mink.dev/adapters"
@@ -22,6 +24,17 @@ type EventStore struct {
 	maxEventSize  int                    // 0 = unlimited
 	subjectTagger SubjectTagger          // nil by default — zero overhead when unused
 	subjectIndex  SubjectIndexWriter     // nil by default — zero overhead when unused
+
+	// Aggregate replay-safety (replay-type-safety); zero overhead when unused.
+	strictReplay bool     // WithStrictReplay: fail LoadAggregate on an unregistered type
+	autoRegister bool     // WithAutoRegisterOnAppend: register concrete types at append time
+	replayWarned sync.Map // dedups the default WARN to once per (stream|type|version)
+
+	// eventTypeRegistrar caches the serializer's optional EventTypeRegistrar view,
+	// resolved once at construction, so the per-event replay-type check on the hot
+	// LoadAggregate path is a single field read + map lookup rather than an interface
+	// type assertion per event. nil when the serializer does not support introspection.
+	eventTypeRegistrar EventTypeRegistrar
 }
 
 // Logger defines the logging interface for the event store.
@@ -109,6 +122,15 @@ func WithSubjectIndexWriter(w SubjectIndexWriter) Option {
 }
 
 // New creates a new EventStore with the given adapter and options.
+//
+// New panics if a binary serializer (one whose BinaryFormat reports true, such
+// as serializer/msgpack or serializer/protobuf) is paired with an adapter that
+// stores event data as JSON text (one whose RequiresJSONData reports true, such
+// as the PostgreSQL JSONB adapter). Such a pairing can never succeed — the
+// binary payload is rejected by the JSON column on every Append — so it is
+// reported here, at construction, as a programming error wrapping
+// ErrBinarySerializerUnsupported, rather than as a cryptic driver failure on
+// the first write. Use the default JSON serializer with JSON-backed adapters.
 func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 	es := &EventStore{
 		adapter:    adapter,
@@ -120,7 +142,60 @@ func New(adapter adapters.EventStoreAdapter, opts ...Option) *EventStore {
 		opt(es)
 	}
 
+	// Cache the serializer's optional introspection view once (the serializer is fixed
+	// after options are applied), so replay-safety checks avoid a per-event type assertion.
+	if r, ok := es.serializer.(EventTypeRegistrar); ok {
+		es.eventTypeRegistrar = r
+	}
+
+	if err := checkSerializerAdapterCompatible(es.serializer, adapter); err != nil {
+		panic(err)
+	}
+
 	return es
+}
+
+// checkSerializerAdapterCompatible rejects a binary serializer paired with an
+// adapter that requires JSON-encoded event data. Both signals are opt-in: an
+// adapter that does not implement adapters.JSONDataAdapter (or returns false)
+// imposes no constraint, and a serializer that does not report a binary format
+// is assumed to emit JSON text. It therefore returns nil for every historical
+// pairing (JSON serializer with any adapter; any serializer with the in-memory
+// adapter).
+func checkSerializerAdapterCompatible(s Serializer, adapter adapters.EventStoreAdapter) error {
+	jsonAdapter, ok := adapter.(adapters.JSONDataAdapter)
+	if !ok || !jsonAdapter.RequiresJSONData() {
+		return nil
+	}
+	if !producesBinary(s) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: this serializer emits binary (non-JSON) event data that the adapter's JSON/JSONB data column cannot store; use the default JSON serializer, or an event-store adapter with a BYTEA data column",
+		ErrBinarySerializerUnsupported,
+	)
+}
+
+// producesBinary reports whether s serializes to a binary (non-JSON-text)
+// format. It honors BinaryFormatReporter and transparently unwraps decorators
+// that expose their wrapped serializer via Inner (such as UpcastingSerializer),
+// so wrapping a binary serializer does not defeat the check.
+func producesBinary(s Serializer) bool {
+	for s != nil {
+		if r, ok := s.(BinaryFormatReporter); ok {
+			return r.BinaryFormat()
+		}
+		inner, ok := s.(interface{ Inner() Serializer })
+		if !ok {
+			return false
+		}
+		next := inner.Inner()
+		if next == s {
+			return false
+		}
+		s = next
+	}
+	return false
 }
 
 // Serializer returns the event store's serializer.
@@ -143,6 +218,75 @@ func (s *EventStore) EncryptionConfig() *FieldEncryptionConfig {
 // RegisterEvents registers event types with the serializer.
 // This is required for deserializing events back to their original types.
 func (s *EventStore) RegisterEvents(events ...interface{}) {
+	if js, ok := s.serializer.(*JSONSerializer); ok {
+		js.RegisterAll(events...)
+	}
+}
+
+// RegisterAggregateEvents registers a set of event types in one call. It is an alias of
+// RegisterEvents named for the common, important case: register every event type an
+// aggregate applies so LoadAggregate never silently drops one. Pre-flight it in a test with
+// RegisteredEventTypes.
+func (s *EventStore) RegisterAggregateEvents(events ...interface{}) {
+	s.RegisterEvents(events...)
+}
+
+// RegisteredEventTypes returns the event type names registered with the serializer, or nil
+// if the serializer does not support introspection. Use it to assert, in a test, that every
+// event type your aggregates apply is registered — a pre-flight against silent replay drops.
+func (s *EventStore) RegisteredEventTypes() []string {
+	if s.eventTypeRegistrar != nil {
+		return s.eventTypeRegistrar.RegisteredEventTypes()
+	}
+	return nil
+}
+
+// WithStrictReplay makes LoadAggregate return an *UnregisteredEventTypeError when it
+// encounters an event whose type is not registered (which would otherwise deserialize to the
+// map fallback and be silently dropped from the rebuilt aggregate state). The default is
+// lenient — such an event is logged (WARN, once per stream/type/version) and skipped,
+// preserving existing v1.x behavior; use this to fail fast in dev/CI. Zero overhead unset.
+func WithStrictReplay() Option {
+	return func(es *EventStore) { es.strictReplay = true }
+}
+
+// WithAutoRegisterOnAppend registers each event's concrete type with the serializer the
+// first time it is appended/saved in this process, so a save-then-load round-trip in the same
+// process does not require a separate RegisterEvents call. In-process only: a cold process
+// that only loads historical events still needs explicit registration. Off by default to keep
+// registration explicit and discoverable.
+func WithAutoRegisterOnAppend() Option {
+	return func(es *EventStore) { es.autoRegister = true }
+}
+
+// isUnresolvedReplayType reports whether a stored event deserialized to the untyped map
+// fallback (its Type is not registered), so an aggregate's concrete-type ApplyEvent switch
+// cannot apply it — the silent-drop condition WithStrictReplay guards against.
+func (s *EventStore) isUnresolvedReplayType(stored StoredEvent, data interface{}) bool {
+	if s.eventTypeRegistrar != nil {
+		return !s.eventTypeRegistrar.IsRegistered(stored.Type)
+	}
+	_, isMap := data.(map[string]interface{})
+	return isMap
+}
+
+// warnUnresolvedReplayType logs one WARN per (stream, type, version) for an unregistered
+// replay event, so the otherwise-silent state loss is observable without flooding the log.
+func (s *EventStore) warnUnresolvedReplayType(streamID, eventType string, version int64) {
+	key := fmt.Sprintf("%s|%s|%d", streamID, eventType, version)
+	if _, loaded := s.replayWarned.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	s.logger.Warn("mink: unregistered event type on aggregate replay — event skipped, aggregate state may be incomplete (register it via RegisterEvents/RegisterAggregateEvents, or use WithStrictReplay to fail fast)",
+		"stream", streamID, "eventType", eventType, "version", version)
+}
+
+// autoRegisterEvents registers the concrete types of events being appended when
+// WithAutoRegisterOnAppend is set (JSON serializer only; no-op otherwise).
+func (s *EventStore) autoRegisterEvents(events []interface{}) {
+	if !s.autoRegister {
+		return
+	}
 	if js, ok := s.serializer.(*JSONSerializer); ok {
 		js.RegisterAll(events...)
 	}
@@ -180,6 +324,10 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 	if len(events) == 0 {
 		return ErrNoEvents
 	}
+
+	// Optionally register these events' concrete types (WithAutoRegisterOnAppend) so a
+	// save-then-load round-trip in this process resolves them to concrete types.
+	s.autoRegisterEvents(events)
 
 	config := &appendConfig{
 		expectedVersion: AnyVersion,
@@ -296,6 +444,10 @@ func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 		return nil // Nothing to save
 	}
 
+	// Optionally register these events' concrete types (WithAutoRegisterOnAppend) so a
+	// subsequent LoadAggregate in this process resolves them rather than dropping them.
+	s.autoRegisterEvents(events)
+
 	streamID := fmt.Sprintf("%s-%s", agg.AggregateType(), agg.AggregateID())
 
 	// Convert events to EventRecords
@@ -374,6 +526,17 @@ func (s *EventStore) LoadAggregate(ctx context.Context, agg Aggregate) error {
 		event, err := s.deserializeWithUpcast(ctx, minkStored)
 		if err != nil {
 			return fmt.Errorf("mink: failed to deserialize event %d: %w", i, err)
+		}
+
+		// An unregistered event type deserializes to the map fallback, which the
+		// aggregate's concrete-type ApplyEvent switch cannot match — silently dropping it
+		// from the rebuilt state. Surface it (WARN by default, once per stream/type/version)
+		// or fail fast under WithStrictReplay.
+		if s.isUnresolvedReplayType(minkStored, event.Data) {
+			if s.strictReplay {
+				return &UnregisteredEventTypeError{StreamID: streamID, EventType: minkStored.Type, Version: minkStored.Version}
+			}
+			s.warnUnresolvedReplayType(streamID, minkStored.Type, minkStored.Version)
 		}
 
 		if err := agg.ApplyEvent(event.Data); err != nil {
@@ -470,6 +633,62 @@ func convertStoredEventFromAdapter(s adapters.StoredEvent) StoredEvent {
 // and need the full processing pipeline.
 func (s *EventStore) ProcessStoredEvent(ctx context.Context, stored StoredEvent) (Event, error) {
 	return s.deserializeWithUpcast(ctx, stored)
+}
+
+// DecryptStoredEvent returns stored with its field-encrypted Data decrypted, reusing the
+// same decrypt + WithDecryptionErrorHandler path as the deserializing read paths
+// (Load/LoadAggregate/DataExporter). It is the StoredEvent-preserving counterpart to
+// ProcessStoredEvent (which returns a deserialized Event): the value stays a StoredEvent
+// and only its Data changes. Upcasting is intentionally NOT applied here — raw fields are
+// preserved for Type-based consumers (projections, subscriptions).
+//
+// It is the single primitive every raw-StoredEvent delivery surface (the projection
+// engine, event subscriptions, live catch-up) routes through, so decryption transparency
+// is defined in exactly one place. Passthrough with zero overhead when no encryption is
+// configured or the event is not encrypted. A crypto-shredded subject is handled exactly
+// as elsewhere: decryptFields consults WithDecryptionErrorHandler; a handler that returns
+// nil yields the event with its fields left as stored and no error. A hard, unhandled
+// decryption error is returned for the caller to decide (retry / poison / fail).
+func (s *EventStore) DecryptStoredEvent(ctx context.Context, stored StoredEvent) (StoredEvent, error) {
+	if s.encryption == nil || !IsEncrypted(stored.Metadata) {
+		return stored, nil
+	}
+	dec, err := s.encryption.decryptFields(ctx, stored.StreamID, stored.Type, stored.Data, stored.Metadata)
+	if err != nil {
+		return StoredEvent{}, err
+	}
+	// If decryption actually transformed the data, clear the encryption markers on a COPY
+	// of the metadata so the returned event is internally consistent: plaintext Data must
+	// not still be flagged $encrypted_fields, or re-processing it (ProcessStoredEvent /
+	// DecryptStoredEvent) would try to decrypt plaintext and fail. When decryptFields is a
+	// crypto-shred no-op (handler swallowed the error, ciphertext left in place), the bytes
+	// are unchanged and the markers are intentionally kept so the event still reports as
+	// encrypted/unrecoverable.
+	if !bytes.Equal(dec, stored.Data) {
+		stored.Metadata = stripEncryptionMetadata(stored.Metadata)
+	}
+	stored.Data = dec
+	return stored, nil
+}
+
+// decryptStoredEvents returns events with each field-encrypted event's Data decrypted, via
+// DecryptStoredEvent. It is the shared batch primitive the pull-based delivery surfaces —
+// async projections, projection rebuild, and catch-up subscriptions — route through, so
+// decryption is applied identically everywhere and a new pull surface inherits it by calling
+// one method. Zero overhead when encryption is unconfigured. A hard, unhandled decryption
+// error aborts the batch and is returned (the caller must not advance its cursor/checkpoint).
+func (s *EventStore) decryptStoredEvents(ctx context.Context, events []StoredEvent) ([]StoredEvent, error) {
+	if s.encryption == nil {
+		return events, nil
+	}
+	for i := range events {
+		dec, err := s.DecryptStoredEvent(ctx, events[i])
+		if err != nil {
+			return nil, fmt.Errorf("decrypt event at position %d: %w", events[i].GlobalPosition, err)
+		}
+		events[i] = dec
+	}
+	return events, nil
 }
 
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.

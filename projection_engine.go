@@ -598,6 +598,22 @@ func (e *ProjectionEngine) ProcessInlineProjections(ctx context.Context, events 
 	e.inlineMu.RUnlock()
 
 	for _, event := range events {
+		// Skip events no inline projection handles — no need to decrypt (or loop) them.
+		if !anyInlineHandles(projections, event.Type) {
+			continue
+		}
+		// Decrypt field-encrypted events so inline projections see the same plaintext as the
+		// async path (and as Load). No-op when encryption is unconfigured / the event is not
+		// encrypted. A hard, unhandled decryption error fails this append's inline-projection
+		// step — deliberately, and consistently with an inline projection Apply error below:
+		// inline projections are synchronous with the write, so silently skipping an event
+		// would leave the read model inconsistent. A crypto-shred handler that swallows the
+		// error is a no-op and does not fail.
+		decrypted, err := e.store.DecryptStoredEvent(ctx, event)
+		if err != nil {
+			return fmt.Errorf("inline projection decrypt event at position %d: %w", event.GlobalPosition, err)
+		}
+		event = decrypted
 		for _, projection := range projections {
 			if !shouldHandleEvent(projection, event.Type) {
 				continue
@@ -632,6 +648,34 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 	}
 	e.liveMu.RUnlock()
 
+	// Field encryption is transparent on read: decrypt each event once before fan-out so live
+	// projections see the same plaintext as Load/async/inline. Only events at least one live
+	// worker handles are decrypted (others are passed through untouched and skipped in
+	// delivery). Best-effort — live delivery has no error channel, so an event that fails to
+	// decrypt is logged (with the projections that lose it) and skipped; those projections can
+	// be rebuilt to backfill, and async projections still receive it via the retrying
+	// checkpoint path. Guarded on encryption being configured, so unencrypted stores incur
+	// zero overhead.
+	if e.store.EncryptionConfig() != nil {
+		out := make([]StoredEvent, 0, len(events))
+		for _, ev := range events {
+			handledBy := liveWorkersHandling(workers, ev.Type)
+			if len(handledBy) == 0 {
+				out = append(out, ev) // no live worker handles it — skip decrypt, will be filtered in delivery
+				continue
+			}
+			dec, err := e.store.DecryptStoredEvent(ctx, ev)
+			if err != nil {
+				e.logger.Error("Live projection: dropping event that failed to decrypt (no live catch-up; rebuild to backfill)",
+					"position", ev.GlobalPosition, "eventType", ev.Type,
+					"affectedProjections", handledBy, "error", err)
+				continue
+			}
+			out = append(out, dec)
+		}
+		events = out
+	}
+
 	for _, worker := range workers {
 		worker.stateMu.RLock()
 		state := worker.state
@@ -639,6 +683,21 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 		worker.stateMu.RUnlock()
 
 		if state != ProjectionStateRunning || eventCh == nil {
+			// A live projection has no catch-up, so events arriving while it is not
+			// Running are lost. Surface the drop (never silent) so the loss is visible
+			// and operators can rebuild/restart to backfill.
+			dropped := 0
+			for _, event := range events {
+				if shouldHandleEvent(worker.projection, event.Type) {
+					dropped++
+				}
+			}
+			if dropped > 0 {
+				e.logger.Warn("Live projection not running; dropping events with no catch-up",
+					"projection", worker.projection.Name(),
+					"state", state,
+					"droppedEvents", dropped)
+			}
 			continue
 		}
 
@@ -670,6 +729,30 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 // shouldHandleEvent checks if a projection should handle the given event type.
 func shouldHandleEvent(projection Projection, eventType string) bool {
 	return ShouldHandleEventType(projection.HandledEvents(), eventType)
+}
+
+// anyInlineHandles reports whether any of the inline projections handles eventType. Used to
+// skip decrypting (and looping over) an event that no inline projection cares about.
+func anyInlineHandles(projections []InlineProjection, eventType string) bool {
+	for _, p := range projections {
+		if shouldHandleEvent(p, eventType) {
+			return true
+		}
+	}
+	return false
+}
+
+// liveWorkersHandling returns the names of the live workers that handle eventType. It drives
+// both the decrypt-only-what-is-handled optimization and the attribution of a live event that
+// is dropped because it failed to decrypt.
+func liveWorkersHandling(workers []*liveProjectionWorker, eventType string) []string {
+	var names []string
+	for _, w := range workers {
+		if shouldHandleEvent(w.projection, eventType) {
+			names = append(names, w.projection.Name())
+		}
+	}
+	return names
 }
 
 // asyncProjectionWorker manages an async projection's background processing.
@@ -806,6 +889,42 @@ func (e *ProjectionEngine) handlePoisonEvent(ctx context.Context, worker *asyncP
 	return true
 }
 
+// checkpointReadRetries / checkpointReadBackoff bound the transient-retry of the initial
+// checkpoint read at async-worker startup, so a momentary checkpoint-store blip does not
+// permanently fault the projection while still never silently restarting from position 0.
+const (
+	checkpointReadRetries = 3
+	checkpointReadBackoff = 50 * time.Millisecond
+)
+
+// getCheckpointWithRetry reads the projection's checkpoint, retrying a transient error up to
+// checkpointReadRetries times with a short linear backoff. A context cancellation/deadline
+// (shutdown) returns immediately without retrying. Returns the last error if every attempt
+// fails, so the caller can distinguish a persistent failure (fault) from a missing checkpoint.
+func (e *ProjectionEngine) getCheckpointWithRetry(ctx context.Context, name string) (uint64, error) {
+	var lastErr error
+	for attempt := 1; attempt <= checkpointReadRetries; attempt++ {
+		pos, err := e.checkpointStore.GetCheckpoint(ctx, name)
+		if err == nil {
+			return pos, nil
+		}
+		lastErr = err
+		if isShutdownError(err) {
+			return 0, err
+		}
+		if attempt < checkpointReadRetries {
+			e.logger.Warn("Checkpoint read failed; retrying",
+				"projection", name, "attempt", attempt, "error", err)
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(checkpointReadBackoff * time.Duration(attempt)):
+			}
+		}
+	}
+	return 0, lastErr
+}
+
 // runAsyncWorker runs the background worker for an async projection.
 func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProjectionWorker) {
 	defer e.wg.Done()
@@ -815,12 +934,23 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 	// Get initial checkpoint
 	var startPosition uint64
 	if !worker.options.StartFromBeginning && e.checkpointStore != nil {
-		pos, err := e.checkpointStore.GetCheckpoint(ctx, worker.projection.Name())
+		pos, err := e.getCheckpointWithRetry(ctx, worker.projection.Name())
 		if err != nil {
-			e.logger.Error("Failed to get checkpoint", "projection", worker.projection.Name(), "error", err)
-		} else {
-			startPosition = pos
+			// A load error is NOT "no checkpoint" — adapters return (0, nil) for a missing
+			// checkpoint. Defaulting to 0 here would replay the entire history into a
+			// non-idempotent projection. The read is retried on a transient error first
+			// (above); only a shutdown or a persistent error reaches here.
+			if isShutdownError(err) {
+				// Engine stopping during startup — stop cleanly rather than fault.
+				worker.setState(ProjectionStateStopped)
+				return
+			}
+			e.logger.Error("Failed to get checkpoint after retries; faulting worker instead of restarting from 0",
+				"projection", worker.projection.Name(), "error", err)
+			worker.setError(fmt.Errorf("load checkpoint: %w", err))
+			return
 		}
+		startPosition = pos
 	}
 	worker.stateMu.Lock()
 	worker.lastPosition = startPosition
@@ -1050,11 +1180,11 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		}
 	} else if err != nil {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), false)
-		// ApplyBatch is opaque about which event failed, so on a poison-skip we
-		// advance past the whole loaded batch (its last position) rather than just
-		// the first filtered event — otherwise the batch tail would be reloaded and
-		// reprocessed on every retry cycle.
-		worker.setFailedEvent(&events[len(events)-1])
+		// ApplyBatch is opaque about which event failed, so on a poison-skip we report
+		// the last APPLIED (filtered) event — never an event the projection does not
+		// handle — as the poison event. Any unhandled trailing events after it are
+		// harmlessly re-loaded and re-filtered on the next cycle.
+		worker.setFailedEvent(&filteredEvents[len(filteredEvents)-1])
 		return err
 	} else {
 		e.metrics.RecordBatchProcessed(worker.projection.Name(), len(filteredEvents), time.Since(start), true)
@@ -1083,7 +1213,16 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 // loadEventsFromPosition loads events starting from the given global position.
 // Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
 func (e *ProjectionEngine) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	return e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	events, err := e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Field encryption is transparent on read: decrypt each event's Data before it reaches a
+	// projection, matching Load/LoadAggregate/DataExporter, via the shared batch primitive so
+	// every pull surface decrypts identically. A hard (unhandled) decryption error surfaces
+	// here — the cycle does not advance the checkpoint, so it retries rather than skipping
+	// silently. No-op when encryption is unconfigured.
+	return e.store.decryptStoredEvents(ctx, events)
 }
 
 // liveProjectionWorker manages a live projection's real-time processing.

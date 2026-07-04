@@ -141,10 +141,10 @@ func defaultPostgresConfig() *postgresConfig {
 // test is skipped (t.Skip) rather than failed, so the suite still passes in
 // environments without the infrastructure.
 //
-// There is no StartKafka counterpart: Kafka integration tests connect directly
-// via TEST_KAFKA_BROKERS and skip when it is unset. To provision real
-// containers from within tests, add testcontainers-go; this package avoids that
-// dependency on purpose.
+// StartKafka (kafka.go) is the analogous helper for Kafka: it connects via
+// TEST_KAFKA_BROKERS and skips when it is unset/unreachable. Neither helper
+// provisions real containers from within tests; to do that add testcontainers-go,
+// a dependency this package avoids on purpose.
 func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresContainer {
 	t.Helper()
 

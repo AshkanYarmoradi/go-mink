@@ -821,6 +821,54 @@ func newExportEncryptedStore(t *testing.T) (context.Context, *local.Provider, *E
 	return context.Background(), provider, store
 }
 
+// countingRevocableProvider wraps a revocable provider and counts IsRevoked calls, to prove
+// the exporter memoizes revocation status per key rather than querying it once per event.
+type countingRevocableProvider struct {
+	*local.Provider
+	isRevokedCalls int
+}
+
+func (p *countingRevocableProvider) IsRevoked(keyID string) (bool, error) {
+	p.isRevokedCalls++
+	return p.Provider.IsRevoked(keyID)
+}
+
+// TestDataExporter_Export_RevocationMemoized verifies IsRevoked is queried at most once per key
+// across a whole export (many events under one key), not once per event.
+func TestDataExporter_Export_RevocationMemoized(t *testing.T) {
+	key := make([]byte, 32)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+	base, err := local.New(local.WithKey("export-key", key))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+	provider := &countingRevocableProvider{Provider: base}
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("export-key"),
+		WithEncryptedFields("exportEncryptedEvent", "email"),
+	)
+	store := New(memory.NewAdapter(), WithFieldEncryption(config))
+	store.RegisterEvents(exportEncryptedEvent{})
+	ctx := context.Background()
+
+	streams := []string{"User-memo-1", "User-memo-2", "User-memo-3", "User-memo-4", "User-memo-5"}
+	for _, s := range streams {
+		require.NoError(t, store.Append(ctx, s, []interface{}{
+			exportEncryptedEvent{UserID: "u1", Name: "Alice", Email: "a@x.com"},
+		}))
+	}
+	require.NoError(t, provider.RevokeKey("export-key"))
+
+	exporter := NewDataExporter(store, WithExportLogger(newTestLogger()))
+	result, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1", Streams: streams})
+	require.NoError(t, err)
+	require.Len(t, result.Events, len(streams))
+	assert.Equal(t, 1, provider.isRevokedCalls,
+		"IsRevoked must be memoized per key: one call for all events under a single key")
+}
+
 func TestDataExporter_Export_CryptoShredding(t *testing.T) {
 	ctx, provider, store := newExportEncryptedStore(t)
 	logger := newTestLogger()
@@ -867,6 +915,45 @@ func TestDataExporter_Export_CryptoShredding(t *testing.T) {
 	assert.Equal(t, "exportEncryptedEvent", result.Events[0].EventType)
 	// RawData should still contain the original (encrypted) bytes
 	assert.NotEmpty(t, result.Events[0].RawData)
+}
+
+func TestDataExporter_Export_CryptoShredding_SwallowingHandler(t *testing.T) {
+	// A WithDecryptionErrorHandler that returns nil (the recommended crypto-shred setup,
+	// so read-model rebuilds get redacted payloads) makes decryptFields return the still-
+	// encrypted data with a nil error. Export must STILL redact — never leak ciphertext
+	// as a non-redacted record. Regression for the reviewed export bug.
+	key := make([]byte, 32)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+	provider, err := local.New(local.WithKey("shred-key", key))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Close() })
+
+	config := NewFieldEncryptionConfig(
+		WithEncryptionProvider(provider),
+		WithDefaultKeyID("shred-key"),
+		WithEncryptedFields("exportEncryptedEvent", "email"),
+		WithDecryptionErrorHandler(func(_ error, _ string, _ Metadata) error {
+			return nil // swallow — crypto-shredding
+		}),
+	)
+	store := New(memory.NewAdapter(), WithFieldEncryption(config))
+	store.RegisterEvents(exportEncryptedEvent{})
+	ctx := context.Background()
+
+	require.NoError(t, store.Append(ctx, "User-shred-2", []interface{}{
+		exportEncryptedEvent{UserID: "u2", Name: "Bob", Email: "bob@secret.com"},
+	}))
+	require.NoError(t, provider.RevokeKey("shred-key"))
+
+	exporter := NewDataExporter(store, WithExportLogger(newTestLogger()))
+	result, err := exporter.Export(ctx, ExportRequest{SubjectID: "u2", Streams: []string{"User-shred-2"}})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 1)
+
+	assert.True(t, result.Events[0].Redacted, "shredded event must be redacted even with a swallowing handler")
+	assert.Nil(t, result.Events[0].Data, "must not leak the ciphertext object as Data")
+	assert.Equal(t, 1, result.RedactedCount)
 }
 
 func TestDataExporter_ExportStream_CryptoShredding(t *testing.T) {

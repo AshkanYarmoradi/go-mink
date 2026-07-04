@@ -107,6 +107,7 @@ var (
 	_ adapters.Migrator            = (*PostgresAdapter)(nil)
 	_ mink.CheckpointStore         = (*PostgresAdapter)(nil)
 	_ adapters.OutboxAppender      = (*PostgresAdapter)(nil)
+	_ adapters.JSONDataAdapter     = (*PostgresAdapter)(nil)
 )
 
 // PostgresAdapter is a PostgreSQL implementation of EventStoreAdapter.
@@ -413,6 +414,13 @@ func (a *PostgresAdapter) MigrationVersion(ctx context.Context) (int, error) {
 	}
 	return 0, nil
 }
+
+// RequiresJSONData reports that the adapter stores event data in a JSONB column
+// and therefore only accepts serializers that emit valid JSON text. It
+// satisfies adapters.JSONDataAdapter, letting mink.New reject a binary
+// serializer (msgpack, protobuf) up front instead of failing on the first
+// Append with a cryptic "invalid input syntax for type json".
+func (a *PostgresAdapter) RequiresJSONData() bool { return true }
 
 // Append stores events to the specified stream with optimistic concurrency control.
 func (a *PostgresAdapter) Append(ctx context.Context, streamID string, events []adapters.EventRecord, expectedVersion int64) ([]adapters.StoredEvent, error) {

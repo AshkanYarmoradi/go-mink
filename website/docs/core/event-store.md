@@ -208,6 +208,15 @@ serializer.RegisterEvent("ItemAdded", ItemAdded{})
 store := go-mink.NewEventStore(adapter, go-mink.WithSerializer(serializer))
 ```
 
+:::warning Binary serializers require a byte-oriented store
+The default `JSONSerializer` emits JSON text, which the PostgreSQL adapter's
+`JSONB` `data` column stores directly. The binary serializers
+(`serializer/msgpack`, `serializer/protobuf`) emit non-JSON bytes, so pairing one
+with the PostgreSQL (JSONB) adapter makes `mink.New` panic at construction with
+`mink.ErrBinarySerializerUnsupported`. Use a binary serializer only with the
+in-memory adapter or a `BYTEA`-backed store.
+:::
+
 ## Metadata
 
 ```go

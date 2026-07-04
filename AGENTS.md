@@ -11,10 +11,11 @@ cd go-mink
 go mod download
 
 # Run tests
-go test -short ./...          # Unit tests only
-go test ./...                 # All tests (needs PostgreSQL)
+go test -short ./...          # Unit tests only (no infra)
+go test ./...                 # All tests (needs PostgreSQL + Kafka)
+make test-e2e                 # End-to-end suites vs real infra (auto-starts PostgreSQL + Kafka)
 
-# Start PostgreSQL for integration tests
+# Start PostgreSQL for integration tests (or `make infra-up` for PostgreSQL + Kafka)
 docker run -d --name mink-pg -e POSTGRES_PASSWORD=mink -p 5432:5432 postgres:16
 export TEST_DATABASE_URL="postgres://postgres:mink@localhost:5432/postgres?sslmode=disable"
 ```
@@ -111,9 +112,10 @@ Use this as the working map before making changes:
 - The memory adapter is for tests and development. It is thread-safe and implements many optional interfaces, but it is not durable; its CLI projection/migration state lives in per-adapter struct fields (no package globals).
 - The PostgreSQL adapter owns production storage, optimistic concurrency via row locking and unique `(stream_id, version)`, snapshots, checkpoints, polling subscriptions, CLI inspection, diagnostics, idempotency, saga storage, read model repositories, and atomic event-plus-outbox writes through `OutboxAppender`.
 - Field-level encryption is JSON-only because it edits JSON object fields before storage. MessagePack and Protobuf serializers are useful alternatives, but they are not compatible with field-level encryption.
+- Binary serializers (MessagePack, Protobuf) are also incompatible with any adapter that stores event data in a JSON/JSONB column — the PostgreSQL adapter's `events.data` is `JSONB`, which rejects non-JSON bytes. `mink.New` detects this pairing at construction (a binary serializer reporting `BinaryFormat() == true` with an adapter reporting `RequiresJSONData() == true`) and panics with `ErrBinarySerializerUnsupported`, rather than letting it fail as a cryptic driver error on the first `Append`. Use the default JSON serializer with the PostgreSQL adapter; binary serializers are for the in-memory adapter or a BYTEA-backed store.
 - Outbox writes are atomic only when the adapter implements `OutboxAppender` (both the PostgreSQL and in-memory adapters do). The fallback path, for adapters without `OutboxAppender`, appends events first and schedules outbox messages separately.
 - Sagas use persisted `SagaState`, per-saga in-memory locks, processed-event tracking for idempotency, and optimistic concurrency retries. Keep saga changes careful around terminal states and version updates.
-- Integration tests rely on `TEST_DATABASE_URL` and `TEST_KAFKA_BROKERS`; short tests skip infrastructure-heavy paths. The local quick health check is `go test -short ./...`.
+- Integration tests rely on `TEST_DATABASE_URL` and `TEST_KAFKA_BROKERS`; short tests skip infrastructure-heavy paths. The local quick health check is `go test -short ./...`. The `e2e_*_test.go` suites (root, `package mink_test`) wire full flows against real infra — see "End-to-End Tests" under Testing Approach and run them with `make test-e2e`. Every integration/E2E test self-skips (under `-short` or when its env var is unset), so unit-only runs stay green everywhere.
 - Keep version and schema declarations synchronized: `go.mod`, the README badge, and the CI matrix should agree on Go support, and PostgreSQL generated DDL should stay aligned with runtime migrations.
 
 ---
@@ -527,6 +529,29 @@ func TestOrderFulfillment(t *testing.T) {
     })
 }
 ```
+
+### End-to-End Tests
+
+The `e2e_*_test.go` files at the repo root (`package mink_test`) exercise each feature through the full stack against real infrastructure — the command bus → PostgreSQL store → projections; store → outbox → Kafka/webhook; field-encryption ciphertext-at-rest; the GDPR erasure/export lifecycle; sagas → outbox → publisher; upcasting; and the KMS/Vault/SNS providers. They build on `testing/containers` (`StartPostgres`, `StartKafka`, per-test isolated schemas) plus a shared PostgreSQL fixture, and **every suite self-skips** under `-short` or when its env var is unset — so the default (`make test-unit`) build stays green with no infra.
+
+The fixture wires a real store on an isolated schema; new E2E suites should reuse it rather than hand-rolling setup:
+
+```go
+func TestE2E_Something(t *testing.T) {
+    p := newE2EPG(t, MyEvent{})            // real PostgreSQL EventStore on a fresh schema; self-skips
+    require.NoError(t, p.Store.Append(p.Ctx, "stream-1", []interface{}{MyEvent{ID: "1"}}))
+    // p.Adapter (also CheckpointStore/SubscriptionAdapter/SnapshotAdapter), p.DB, p.Schema
+    // are available for wiring the projection engine / outbox / saga manager and direct SQL assertions.
+}
+```
+
+Environment variables (each suite skips when its var is unset):
+
+- **PostgreSQL** — `TEST_DATABASE_URL` (required by every E2E suite).
+- **Kafka** — `TEST_KAFKA_BROKERS` (the outbox→Kafka suite).
+- **Cloud providers (opt-in, not required in CI)** — `TEST_SNS_ENDPOINT`, `TEST_KMS_ENDPOINT`, and `VAULT_ADDR` (+`VAULT_TOKEN`). Any AWS-compatible emulator works with no license: `pafortin/goaws` (SNS), `nsmithuk/local-kms` (KMS), a `hashicorp/vault` dev container (Vault). See `CONTRIBUTING.md` for the one-line container commands.
+
+Run the core suites with `make test-e2e` (auto-starts PostgreSQL + Kafka); set the cloud vars to also run those. E2E tests are **test-only** — they do not add runtime behavior; a defect an E2E test surfaces is fixed as a separate change.
 
 ---
 

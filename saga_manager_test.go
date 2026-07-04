@@ -488,6 +488,16 @@ func TestNewSagaManager_WithOptions(t *testing.T) {
 	assert.Equal(t, 2*time.Second, manager.retryDelay)
 }
 
+func TestWithSagaRetryAttempts_ClampsToMinimumOne(t *testing.T) {
+	store := New(memory.NewAdapter())
+	// 0 (or negative) clamps to 1 so an event is always attempted at least once —
+	// otherwise the `attempt < retryAttempts` loop would skip its body, silently
+	// dropping the event while the manager's position still advanced past it.
+	assert.Equal(t, 1, NewSagaManager(store, WithSagaRetryAttempts(0)).retryAttempts)
+	assert.Equal(t, 1, NewSagaManager(store, WithSagaRetryAttempts(-3)).retryAttempts)
+	assert.Equal(t, 4, NewSagaManager(store, WithSagaRetryAttempts(4)).retryAttempts)
+}
+
 // ====================================================================
 // Register Tests
 // ====================================================================
