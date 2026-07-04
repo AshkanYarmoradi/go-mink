@@ -59,6 +59,7 @@ Available Commands:
   migrate     Database migrations
   projection  Manage projections
   stream      Inspect and manage event streams
+  events      Query the global event feed by type, stream, or category
   diagnose    Run diagnostic checks
   schema      Schema management
   gdpr        GDPR data-governance operations
@@ -542,6 +543,70 @@ Top Event Types:
   ItemAdded:       123,456 (33.5%)
   OrderShipped:    34,567 (9.4%)
 ```
+
+---
+
+### `mink events`
+
+Query the **global** event feed by indexed axis — event type, stream id, or stream
+category — starting after a global position. Where `mink stream events` walks a *single*
+stream by version, `mink events` scans *across all* streams by global position.
+
+This is an **introspection / ops / migration** tool over the raw log (audit browsers,
+backfill scanners, diagnostics) — not an application read path. For unindexed criteria (a
+tenant in metadata, a payload field) or application queries, project a read model instead.
+
+```bash
+# Every OrderPlaced across all streams, from the start
+$ mink events --type OrderPlaced
+
+Event Feed
+
+┌──────────┬──────────────┬───────────────┬─────────────────────┐
+│ Position │ Stream       │ Type          │ Time                │
+├──────────┼──────────────┼───────────────┼─────────────────────┤
+│ 42       │ Order-abc123 │ OrderPlaced   │ 2026-01-05 10:00:00 │
+│ 87       │ Order-def456 │ OrderPlaced   │ 2026-01-06 16:45:00 │
+└──────────┴──────────────┴───────────────┴─────────────────────┘
+
+Showing 2 event(s)
+
+# Either type — repeatable or comma-separated (an OR set)
+$ mink events --type OrderPlaced --type OrderShipped
+$ mink events --type OrderPlaced,OrderShipped
+
+# Exact stream set
+$ mink events --stream Order-abc123 --stream Order-def456
+
+# A whole category (Order-*), after position 1000, capped at 100
+$ mink events --category Order --from 1000 --limit 100
+
+# Machine-readable output for scripts / CSV pipelines (jq-friendly)
+$ mink events --type OrderPlaced --json
+```
+
+**Flags**
+
+| Flag | Short | Description |
+| --- | --- | --- |
+| `--type` | `-t` | Event type(s); repeatable or comma-separated (`event_type IN …`) |
+| `--stream` | `-s` | Exact stream id(s); repeatable or comma-separated (`stream_id IN …`) |
+| `--category` | `-c` | Stream category (`stream_id LIKE '<category>-%'`) |
+| `--from` | `-f` | Start **after** this global position (exclusive; default `0`) |
+| `--limit` | `-n` | Maximum events to return (default `50`; `0` = adapter cap) |
+| `--json` |  | Emit a JSON array instead of a table |
+
+Axes **AND**-compose; a multi-valued axis is an **OR** set; an empty filter walks the whole
+feed (like an unfiltered load-from-position). Results are ordered by ascending global
+position, exclusive of `--from`, and bounded by `--limit`.
+
+:::note Indexed-only by design
+The filter covers only columns the event store indexes (`event_type`, `stream_id` /
+category). There is deliberately **no** metadata/tenant or payload axis — those belong in a
+read-model projection, keeping this a bounded introspection primitive rather than an ad-hoc
+query engine over the event log. Field-encrypted `data` is shown as stored (the CLI holds no
+keys), so use `--json` and decrypt downstream if needed.
+:::
 
 ---
 

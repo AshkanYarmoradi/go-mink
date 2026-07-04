@@ -94,7 +94,7 @@ Everything below is included, works together, and is covered by tests (**CI enfo
 | 🧹 **GDPR Toolkit** | Data **export** (Art. 15/20), **erasure** (Art. 17) via crypto-shredding, **retention** policies, **anonymization**, subject discovery |
 | 📝 **Audit Logging** | Immutable, queryable audit trail of every command (who/what/when/outcome) |
 | 📈 **Observability** | First-class **Prometheus** metrics and **OpenTelemetry** tracing |
-| 🛠️ **CLI** | `mink` — project init, code generation, migrations, projection & stream inspection, diagnostics, GDPR ops |
+| 🛠️ **CLI** | `mink` — project init, code generation, migrations, projection / stream / feed inspection, diagnostics, GDPR ops |
 | 🧪 **Testing** | BDD fixtures, event assertions, projection/saga test harnesses, and Docker test containers |
 
 ## Installation
