@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+# This workflow only inspects github.head_ref and echoes a message; it never uses the
+# GITHUB_TOKEN. Drop all token permissions (principle of least privilege).
+permissions: {}
+
 jobs:
   check-source-branch:
     runs-on: ubuntu-latest
