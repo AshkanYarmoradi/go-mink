@@ -103,6 +103,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `mink migrate` -- Schema management (up, down, create, status)
 - `mink projection` -- Projection management (list, status, pause, resume, rebuild)
 - `mink stream` -- Stream inspection (list, events, stats, export)
+- `mink events` -- Global-feed inspection by indexed axis (type / stream / category), table or `--json`
 - `mink diagnose` -- Health checks and diagnostics
 - `mink schema` -- Event schema generation
 - `mink gdpr` -- Data governance (discover, verify, erase-plan, retain dry-run)

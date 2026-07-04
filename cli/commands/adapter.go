@@ -21,6 +21,10 @@ type CLIAdapter interface {
 	adapters.MigrationAdapter
 	adapters.SchemaProvider
 	adapters.DiagnosticAdapter
+	// FilteredFeedAdapter backs `mink events` (the filtered global-feed read).
+	// Both built-in adapters (postgres, memory) implement it, so the CLI gets the
+	// capability by compile-time composition rather than a runtime type assertion.
+	adapters.FilteredFeedAdapter
 }
 
 // AdapterFactory creates the appropriate adapter based on configuration.
