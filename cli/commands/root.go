@@ -56,6 +56,7 @@ It provides a complete solution for building event-driven systems.
 	rootCmd.AddCommand(NewMigrateCommand())
 	rootCmd.AddCommand(NewProjectionCommand())
 	rootCmd.AddCommand(NewStreamCommand())
+	rootCmd.AddCommand(NewEventsCommand())
 	rootCmd.AddCommand(NewDiagnoseCommand())
 	rootCmd.AddCommand(NewSchemaCommand())
 	rootCmd.AddCommand(NewGdprCommand())
