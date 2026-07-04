@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"go-mink.dev/adapters"
@@ -185,6 +187,79 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 	defer func() { _ = rows.Close() }()
 
 	return a.scanEvents(rows)
+}
+
+// LoadFromPositionFiltered is the filtered variant of LoadFromPosition: it pushes an
+// indexed FeedFilter (event type, stream id, category) into the shared position-scan
+// query, so a narrow read touches only matching rows via an index rather than
+// scanning the whole feed. Because it reuses positionScanQuery, it inherits the same
+// gapless safe watermark — a filtered read keeps the no-skip guarantee. An empty
+// filter produces exactly the LoadFromPosition query.
+func (a *PostgresAdapter) LoadFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter adapters.FeedFilter) ([]adapters.StoredEvent, error) {
+	if a.closed.Load() {
+		return nil, ErrAdapterClosed
+	}
+
+	limit = adapters.DefaultLimit(limit, 1000)
+
+	// Placeholders: $1 is fromPosition; filter predicates start at $2; limit is last.
+	extraWhere, filterArgs, nextIdx := buildFeedFilterWhere(filter, 2)
+	query := positionScanQuery(a.schemaQ, extraWhere, "$"+strconv.Itoa(nextIdx))
+
+	args := make([]any, 0, len(filterArgs)+2)
+	args = append(args, fromPosition)
+	args = append(args, filterArgs...)
+	args = append(args, limit)
+
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mink/postgres: failed to load filtered events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return a.scanEvents(rows)
+}
+
+// buildFeedFilterWhere renders the AND-composed WHERE fragment for a FeedFilter with
+// positional placeholders starting at startIdx. It returns the fragment (a leading
+// " AND ..."; empty when the filter is empty), the ordered args, and the next free
+// placeholder index. Indexed axes only: event_type IN (...), stream_id IN (...), and
+// a category prefix (stream_id LIKE '<category>-%') escaped like SubscribeCategory.
+func buildFeedFilterWhere(filter adapters.FeedFilter, startIdx int) (string, []any, int) {
+	var b strings.Builder
+	args := make([]any, 0, len(filter.EventTypes)+len(filter.StreamIDs)+1)
+	idx := startIdx
+
+	writeInClause := func(column string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		b.WriteString(" AND ")
+		b.WriteString(column)
+		b.WriteString(" IN (")
+		for i, v := range values {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(idx))
+			args = append(args, v)
+			idx++
+		}
+		b.WriteByte(')')
+	}
+
+	writeInClause("event_type", filter.EventTypes)
+	writeInClause("stream_id", filter.StreamIDs)
+
+	if filter.Category != "" {
+		b.WriteString(" AND stream_id LIKE $")
+		b.WriteString(strconv.Itoa(idx))
+		args = append(args, escapeLikePattern(filter.Category)+"-%")
+		idx++
+	}
+
+	return b.String(), args, idx
 }
 
 // SubscribeAll subscribes to all events across all streams.

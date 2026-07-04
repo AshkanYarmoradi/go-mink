@@ -847,3 +847,41 @@ func (s *EventStore) LoadEventsFromPosition(ctx context.Context, fromPosition ui
 	}
 	return result, nil
 }
+
+// FeedFilter selects events for a filtered load-from-position read by indexed axis
+// (event type, stream id, or category). It is an input DTO with no conversion step,
+// so it is aliased to the adapter type rather than duplicated. See adapters.FeedFilter.
+type FeedFilter = adapters.FeedFilter
+
+// LoadEventsFromPositionFiltered loads events from a global position that match an
+// indexed FeedFilter (event type, stream id, and/or category), pushing the predicate
+// down to storage instead of scanning the whole feed. It returns
+// ErrFilteredFeedNotSupported if the adapter does not implement FilteredFeedAdapter.
+// Results keep the LoadEventsFromPosition contract: ascending global position,
+// exclusive of fromPosition, bounded by limit, and (on the PostgreSQL adapter)
+// subject to the same gapless safe watermark. An empty filter is equivalent to
+// LoadEventsFromPosition.
+//
+// This is an introspection / ops / migration primitive for reading the raw event log
+// by indexed axis (audit browsers, backfill scanners, diagnostics) — NOT an
+// application read path. For queries over unindexed data (payload fields, a tenant in
+// metadata) or for application reads, project a read model instead.
+func (s *EventStore) LoadEventsFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter FeedFilter) ([]StoredEvent, error) {
+	// Check if adapter supports filtered feed reads
+	filterAdapter, ok := s.adapter.(adapters.FilteredFeedAdapter)
+	if !ok {
+		return nil, ErrFilteredFeedNotSupported
+	}
+
+	events, err := filterAdapter.LoadFromPositionFiltered(ctx, fromPosition, limit, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert adapters.StoredEvent to mink.StoredEvent
+	result := make([]StoredEvent, len(events))
+	for i, e := range events {
+		result[i] = convertStoredEventFromAdapter(e)
+	}
+	return result, nil
+}

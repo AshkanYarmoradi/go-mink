@@ -81,6 +81,10 @@ var (
 	// ErrSubscriptionNotSupported indicates the adapter does not support subscriptions.
 	ErrSubscriptionNotSupported = errors.New("mink: adapter does not support subscriptions")
 
+	// ErrFilteredFeedNotSupported indicates the adapter does not implement
+	// FilteredFeedAdapter (the filtered load-from-position read).
+	ErrFilteredFeedNotSupported = errors.New("mink: adapter does not support filtered feed reads")
+
 	// Command and handler related errors
 
 	// ErrHandlerNotFound indicates no handler is registered for a command type.
