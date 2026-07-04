@@ -694,6 +694,82 @@ func (s *EventStore) decryptStoredEvents(ctx context.Context, events []StoredEve
 	return events, nil
 }
 
+// EncryptStoredEvent is the encode counterpart to DecryptStoredEvent: it seals a
+// stored event's configured fields under the current FieldEncryptionConfig and
+// stamps the current envelope in its metadata, exactly as the append path
+// (prepareEventData) would — the configured SubjectTagger runs first so the wrapping
+// key is resolved identically. It is a passthrough (input returned unchanged) when
+// no encryption is configured, the event type has no configured fields, or the event
+// is already encrypted. Zero overhead when unused.
+func (s *EventStore) EncryptStoredEvent(ctx context.Context, stored StoredEvent) (StoredEvent, error) {
+	if s.encryption == nil || IsEncrypted(stored.Metadata) || !s.encryption.HasEncryptedFields(stored.Type) {
+		return stored, nil
+	}
+	md := stored.Metadata
+	// Tag the subject(s) before encryption so resolveKeyID picks the same per-subject
+	// key the live append path would (subject-scoped field keys).
+	if s.subjectTagger != nil {
+		if subjects := s.subjectTagger(stored.Type, stored.Data, md); len(subjects) > 0 {
+			md = setSubjectTags(md, subjects)
+		}
+	}
+	encData, encMeta, err := s.encryption.encryptFields(ctx, stored.StreamID, stored.Type, stored.Data, md)
+	if err != nil {
+		return StoredEvent{}, err
+	}
+	stored.Data = encData
+	stored.Metadata = encMeta
+	return stored, nil
+}
+
+// ReEncryptStreamInPlace brings a stream's existing events under the current
+// field-encryption scheme in place: it seals each not-yet-encrypted event's
+// configured fields under the current key and rewrites the same row, preserving the
+// event's id, type, stream, version, global position, and timestamp (only the
+// at-rest encoding of data/metadata changes — history is not rewritten). It is the
+// opt-in, operator-triggered historical backfill for a consumer that enabled
+// encryption after it already had data, making that PII crypto-shreddable; contrast
+// with ReEncryptStream, which copies to a NEW stream (for rotation).
+//
+// It is idempotent — an event already encrypted, or of a type with no configured
+// fields, is skipped — so a re-run or a resume after a mid-stream failure is safe.
+// Returns the number of events re-encrypted and the distinct wrapping key ids used.
+// Requires an adapter implementing adapters.EventRewriteAdapter (else
+// ErrRewriteNotSupported); a no-op with zero overhead when no encryption is
+// configured.
+func (s *EventStore) ReEncryptStreamInPlace(ctx context.Context, streamID string) (int, []string, error) {
+	rw, ok := s.adapter.(adapters.EventRewriteAdapter)
+	if !ok {
+		return 0, nil, ErrRewriteNotSupported
+	}
+	if s.encryption == nil {
+		return 0, nil, nil
+	}
+	events, err := s.LoadRaw(ctx, streamID, 0)
+	if err != nil {
+		return 0, nil, err
+	}
+	keySet := make(map[string]struct{})
+	n := 0
+	for _, ev := range events {
+		if IsEncrypted(ev.Metadata) || !s.encryption.HasEncryptedFields(ev.Type) {
+			continue // already current, or nothing to encrypt (idempotent)
+		}
+		enc, err := s.EncryptStoredEvent(ctx, ev)
+		if err != nil {
+			return n, sortedSet(keySet), err // partial progress; resumable
+		}
+		if err := rw.RewriteEventData(ctx, streamID, ev.Version, enc.Data, convertMetadataToAdapter(enc.Metadata)); err != nil {
+			return n, sortedSet(keySet), err
+		}
+		if k := GetEncryptionKeyID(enc.Metadata); k != "" {
+			keySet[k] = struct{}{}
+		}
+		n++
+	}
+	return n, sortedSet(keySet), nil
+}
+
 // deserializeWithUpcast deserializes a stored event, applying decryption and upcasting if configured.
 // Decryption happens before upcasting so that upcasters receive plaintext.
 // If no encryption or upcasters are registered, it falls back to the standard

@@ -287,6 +287,21 @@ type FilteredFeedAdapter interface {
 	LoadFromPositionFiltered(ctx context.Context, fromPosition uint64, limit int, filter FeedFilter) ([]StoredEvent, error)
 }
 
+// EventRewriteAdapter is an optional adapter capability: it replaces the data and
+// metadata of a single already-stored event, addressed by (streamID, version),
+// preserving every other column (id, type, global position, timestamp). This is the
+// in-place, data-governance write an append-only store otherwise disallows — used
+// only by EventStore.ReEncryptStreamInPlace to bring historical events under the
+// current field-encryption scheme (the same category of mutation as retention
+// RedactFields). EventStore detects it via a type assertion and otherwise returns
+// ErrRewriteNotSupported, so adapters that do not implement it are unaffected.
+type EventRewriteAdapter interface {
+	// RewriteEventData replaces the data and metadata of the event at
+	// (streamID, version). It MUST return an error if no such event exists, rather
+	// than inserting or silently no-oping.
+	RewriteEventData(ctx context.Context, streamID string, version int64, data []byte, metadata Metadata) error
+}
+
 // SnapshotAdapter stores aggregate snapshots for faster loading.
 type SnapshotAdapter interface {
 	// SaveSnapshot stores a snapshot for the given stream.

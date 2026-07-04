@@ -228,6 +228,29 @@ pseudo := anon.Pseudonymize("email", "alice@example.com") // stable, irreversibl
   source stream and its old-key-recoverable PII survive until you retire the source and
   revoke the returned `oldKeyIDs`. Re-running against an existing destination errors
   rather than duplicating the copy.
+- **In-place backfill** of a stream that already has data — for a consumer that turned
+  encryption on *after* accumulating history — is
+  `store.ReEncryptStreamInPlace(ctx, streamID) (reEncrypted int, keyIDs []string, err error)`.
+  It seals each not-yet-encrypted event's configured fields under the current key and
+  **rewrites the same rows**, preserving id/type/stream/version/global-position/timestamp
+  — only the at-rest encoding changes, so history is not rewritten (the same category of
+  consumer-owned mutation as retention `RedactFields`). Use it when your aggregates read
+  **fixed** stream ids (`ReEncryptStream`'s copy-to-new-stream doesn't fit those). It is:
+  - **idempotent / resumable** — already-encrypted events are skipped, so a re-run or a
+    resume after a mid-stream failure is safe;
+  - **opt-in** — requires an adapter implementing `adapters.EventRewriteAdapter` (postgres
+    + memory ship it), else `ErrRewriteNotSupported`; a no-op with zero overhead when no
+    encryption is configured;
+  - the historical counterpart to crypto-shredding: once backfilled, revoking a subject's
+    key shreds their previously-plaintext events too.
+
+  ```go
+  // One-off, operator-triggered, in a maintenance window. Idempotent.
+  n, keyIDs, err := store.ReEncryptStreamInPlace(ctx, "user-"+userID)
+  ```
+
+  `store.EncryptStoredEvent(ctx, stored)` is the underlying encode primitive (the
+  counterpart to `DecryptStoredEvent`) if you need to seal a `StoredEvent` yourself.
 
 ## Erasure completeness (hardening)
 

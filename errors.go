@@ -85,6 +85,11 @@ var (
 	// FilteredFeedAdapter (the filtered load-from-position read).
 	ErrFilteredFeedNotSupported = errors.New("mink: adapter does not support filtered feed reads")
 
+	// ErrRewriteNotSupported indicates the adapter does not implement
+	// adapters.EventRewriteAdapter (the in-place event data/metadata rewrite that
+	// ReEncryptStreamInPlace needs).
+	ErrRewriteNotSupported = errors.New("mink: adapter does not support in-place event rewrite")
+
 	// Command and handler related errors
 
 	// ErrHandlerNotFound indicates no handler is registered for a command type.
