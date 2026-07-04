@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"go-mink.dev/adapters"
@@ -40,6 +41,14 @@ type DataEraser struct {
 	allowSharedKey       bool
 	strictAccountability bool
 	subjectStores        []SubjectErasable
+
+	// markerMu guards the marker-subject cache. markedSubjects holds the subject ids already
+	// present in the marker stream, loaded once (markedLoaded) so a bulk erasure does not
+	// re-scan the whole growing marker stream on every Erase (turning an O(subjects^2) run
+	// into O(subjects)). Best-effort/per-instance: matches the marker idempotency contract.
+	markerMu       sync.Mutex
+	markedSubjects map[string]struct{}
+	markedLoaded   bool
 }
 
 // DataEraserOption configures a DataEraser.
@@ -500,30 +509,48 @@ func (e *DataEraser) appendMarker(ctx context.Context, subjectID string, result 
 	// Stamp the subject in event metadata so markerExists can detect this marker under any
 	// serializer (metadata lives in its own column, not the serializer-encoded Data).
 	md := Metadata{Custom: map[string]string{erasureMarkerSubjectKey: subjectID}}
-	return e.store.Append(ctx, e.markerStream, []interface{}{marker}, WithAppendMetadata(md))
+	if err := e.store.Append(ctx, e.markerStream, []interface{}{marker}, WithAppendMetadata(md)); err != nil {
+		return err
+	}
+	// Record it in the cache so a subsequent markerExists in this process is O(1).
+	e.markerMu.Lock()
+	if e.markedSubjects == nil {
+		e.markedSubjects = make(map[string]struct{})
+	}
+	e.markedSubjects[subjectID] = struct{}{}
+	e.markerMu.Unlock()
+	return nil
 }
 
 // markerExists reports whether the marker stream already holds an ErasureMarker for
-// subjectID. Best-effort: a read failure returns false so the marker is (re)written. It is
-// serializer-agnostic — the primary check reads the subject tag stamped in event metadata
-// (its own column), with a JSON-Data fallback for markers written before the tag existed.
+// subjectID. It loads the marker stream at most ONCE per eraser (caching the set of marked
+// subjects), so a bulk erasure is O(subjects) rather than O(subjects^2). Best-effort: a read
+// failure returns false (and does not cache) so the marker is (re)written and the next call
+// retries. Serializer-agnostic — the primary key is the metadata subject tag, with a JSON-Data
+// fallback for markers written before the tag existed.
 func (e *DataEraser) markerExists(ctx context.Context, subjectID string) bool {
-	stored, err := e.store.LoadRaw(ctx, e.markerStream, 0)
-	if err != nil {
-		return false
-	}
-	for i := range stored {
-		// Primary, serializer-agnostic check: the metadata subject tag.
-		if stored[i].Metadata.Custom[erasureMarkerSubjectKey] == subjectID {
-			return true
+	e.markerMu.Lock()
+	defer e.markerMu.Unlock()
+	if !e.markedLoaded {
+		stored, err := e.store.LoadRaw(ctx, e.markerStream, 0)
+		if err != nil {
+			return false // best-effort: retry the load on the next call
 		}
-		// Backward-compatible fallback for pre-tag markers (default JSON serializer only).
-		var m ErasureMarker
-		if json.Unmarshal(stored[i].Data, &m) == nil && m.SubjectID == subjectID {
-			return true
+		e.markedSubjects = make(map[string]struct{}, len(stored))
+		for i := range stored {
+			if s := stored[i].Metadata.Custom[erasureMarkerSubjectKey]; s != "" {
+				e.markedSubjects[s] = struct{}{}
+				continue
+			}
+			var m ErasureMarker // fallback for pre-tag markers (default JSON serializer only)
+			if json.Unmarshal(stored[i].Data, &m) == nil && m.SubjectID != "" {
+				e.markedSubjects[m.SubjectID] = struct{}{}
+			}
 		}
+		e.markedLoaded = true
 	}
-	return false
+	_, ok := e.markedSubjects[subjectID]
+	return ok
 }
 
 // redactReadModels runs the configured in-place redactors then rebuilders,

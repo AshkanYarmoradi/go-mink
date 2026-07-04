@@ -338,6 +338,15 @@ func (m *SagaManager) Start(ctx context.Context) error {
 				// Continue processing - don't stop on individual event failures
 			}
 
+			// If the manager is shutting down (ctx cancelled, possibly mid-dispatch — see
+			// isShutdownError), do NOT advance the cursor past this event: leave it on the
+			// event so a restart from the persisted position re-delivers it and the
+			// shutdown-interrupted saga resumes. Re-delivery is idempotent (per-saga
+			// processed-event tracking), so a fully-processed event is safely skipped on replay.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
 			m.mu.Lock()
 			m.position = event.GlobalPosition + 1
 			m.mu.Unlock()

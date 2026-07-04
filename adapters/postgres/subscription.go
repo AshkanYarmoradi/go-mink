@@ -151,6 +151,21 @@ func runPollingLoop[P any](
 // unrelated *write* transaction in the same database can delay delivery until it ends.
 const safePositionClause = ` AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)`
 
+// positionScanQuery builds the shared "load events after $1, up to the gapless safe watermark"
+// SELECT used by every position-based read path (SubscribeAll, categories, async projections,
+// the saga manager). Routing all callers through one builder guarantees none can omit
+// safePositionClause — dropping it silently reintroduces the at-most-once skip it exists to
+// prevent. extraWhere is appended inside the WHERE (e.g. " AND stream_id LIKE $2"); limitParam
+// is the LIMIT placeholder ("$2" with no extraWhere, "$3" with one).
+func positionScanQuery(schemaQ, extraWhere, limitParam string) string {
+	return `
+		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
+		FROM ` + schemaQ + `.events
+		WHERE global_position > $1` + safePositionClause + extraWhere + `
+		ORDER BY global_position ASC
+		LIMIT ` + limitParam
+}
+
 // LoadFromPosition loads events starting from a global position, up to the gapless safe
 // watermark (see safePositionClause). This is the shared read path for SubscribeAll,
 // async projections, and the saga manager, so all three inherit the no-skip guarantee.
@@ -161,13 +176,7 @@ func (a *PostgresAdapter) LoadFromPosition(ctx context.Context, fromPosition uin
 
 	limit = adapters.DefaultLimit(limit, 1000)
 
-	schemaQ := a.schemaQ
-	query := `
-		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
-		FROM ` + schemaQ + `.events
-		WHERE global_position > $1` + safePositionClause + `
-		ORDER BY global_position ASC
-		LIMIT $2`
+	query := positionScanQuery(a.schemaQ, "", "$2")
 
 	rows, err := a.db.QueryContext(ctx, query, fromPosition, limit)
 	if err != nil {
@@ -265,13 +274,7 @@ func (a *PostgresAdapter) SubscribeCategory(ctx context.Context, category string
 
 // loadCategoryEvents loads events for a specific category from a position.
 func (a *PostgresAdapter) loadCategoryEvents(ctx context.Context, category string, fromPosition uint64, limit int) ([]adapters.StoredEvent, error) {
-	schemaQ := a.schemaQ
-	query := `
-		SELECT event_id, stream_id, version, event_type, data, metadata, global_position, timestamp
-		FROM ` + schemaQ + `.events
-		WHERE global_position > $1` + safePositionClause + ` AND stream_id LIKE $2
-		ORDER BY global_position ASC
-		LIMIT $3`
+	query := positionScanQuery(a.schemaQ, " AND stream_id LIKE $2", "$3")
 
 	// Escape LIKE metacharacters in the category so a name containing % or _ matches
 	// only its own streams (the trailing -% stays the intended wildcard).
