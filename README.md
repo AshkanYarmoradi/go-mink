@@ -79,7 +79,7 @@ Everything below is included, works together, and is covered by tests (**CI enfo
 
 | Area | What you get |
 |------|--------------|
-| 🎯 **Event Store** | Append-only storage, optimistic concurrency, global ordering, snapshots, catch-up subscriptions |
+| 🎯 **Event Store** | Append-only storage, optimistic concurrency, global ordering, snapshots, catch-up subscriptions, **filtered feed reads** (by type / stream / category) |
 | 🔌 **Adapters** | Production **PostgreSQL** adapter and an **in-memory** adapter for tests — swap with one line |
 | 🧱 **Aggregates** | `AggregateBase` with event application & uncommitted-event tracking |
 | 📋 **Command Bus** | Full CQRS dispatch with a composable **middleware** pipeline |

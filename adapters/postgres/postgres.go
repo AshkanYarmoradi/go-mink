@@ -101,6 +101,7 @@ var (
 var (
 	_ adapters.EventStoreAdapter   = (*PostgresAdapter)(nil)
 	_ adapters.SubscriptionAdapter = (*PostgresAdapter)(nil)
+	_ adapters.FilteredFeedAdapter = (*PostgresAdapter)(nil)
 	_ adapters.SnapshotAdapter     = (*PostgresAdapter)(nil)
 	_ adapters.CheckpointAdapter   = (*PostgresAdapter)(nil)
 	_ adapters.HealthChecker       = (*PostgresAdapter)(nil)

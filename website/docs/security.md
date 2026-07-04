@@ -184,6 +184,25 @@ and `ActionAnonymize` **cannot** mutate event rows, so they delegate to the poli
 **Scheduling is yours.** `Apply` performs a single sweep and returns — go-mink does not
 run it on a timer. Wire it to your own cron/gocron at your SLA's cadence.
 
+**Bounded, resumable sweeps (opt-in).** A plain `Apply` scans the whole store on every
+run. On a large, ever-growing log that means a scheduled sweep keeps re-scanning history
+it already handled. Two opt-in options fix that with no change to default behavior:
+
+```go
+mgr := mink.NewRetentionManager(store, policies,
+    mink.WithRetentionCheckpoint(checkpointStore, "__mink_retention__"), // resume across runs
+    mink.WithRetentionMaxScan(200_000),                                  // bound a single run
+)
+```
+
+`WithRetentionCheckpoint` persists a **safe-resume frontier** — the highest position below
+which no event can *newly* match — through the same `CheckpointStore` your projections use,
+so each sweep resumes instead of re-scanning from 0. Steady-state cost then tracks the
+retention window, not total history. `WithRetentionMaxScan(n)` caps a single sweep to `n`
+events and resumes the remainder next run (it needs a checkpoint; without one it is
+reported loudly and runs unbounded) — which bounds the first run after enabling retention
+on an already-large store. A capped run sets `report.Truncated`.
+
 **Fail-loud validation.** A `RedactFields`/`Anonymize` policy with *no* `Apply` hook can
 never act. `mgr.Validate()` (or `policy.Validate()`) surfaces this up front, and every
 `Apply`/`DryRun` reports it via `report.Errors` / `report.Failed()` rather than silently
@@ -209,6 +228,29 @@ pseudo := anon.Pseudonymize("email", "alice@example.com") // stable, irreversibl
   source stream and its old-key-recoverable PII survive until you retire the source and
   revoke the returned `oldKeyIDs`. Re-running against an existing destination errors
   rather than duplicating the copy.
+- **In-place backfill** of a stream that already has data — for a consumer that turned
+  encryption on *after* accumulating history — is
+  `store.ReEncryptStreamInPlace(ctx, streamID) (reEncrypted int, keyIDs []string, err error)`.
+  It seals each not-yet-encrypted event's configured fields under the current key and
+  **rewrites the same rows**, preserving id/type/stream/version/global-position/timestamp
+  — only the at-rest encoding changes, so history is not rewritten (the same category of
+  consumer-owned mutation as retention `RedactFields`). Use it when your aggregates read
+  **fixed** stream ids (`ReEncryptStream`'s copy-to-new-stream doesn't fit those). It is:
+  - **idempotent / resumable** — already-encrypted events are skipped, so a re-run or a
+    resume after a mid-stream failure is safe;
+  - **opt-in** — requires an adapter implementing `adapters.EventRewriteAdapter` (postgres
+    + memory ship it), else `ErrRewriteNotSupported`; a no-op with zero overhead when no
+    encryption is configured;
+  - the historical counterpart to crypto-shredding: once backfilled, revoking a subject's
+    key shreds their previously-plaintext events too.
+
+  ```go
+  // One-off, operator-triggered, in a maintenance window. Idempotent.
+  n, keyIDs, err := store.ReEncryptStreamInPlace(ctx, "user-"+userID)
+  ```
+
+  `store.EncryptStoredEvent(ctx, stored)` is the underlying encode primitive (the
+  counterpart to `DecryptStoredEvent`) if you need to seal a `StoredEvent` yourself.
 
 ## Erasure completeness (hardening)
 
