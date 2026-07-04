@@ -43,6 +43,18 @@ func (s *UpcastingSerializer) DeserializeWithVersion(data []byte, eventType stri
 	return s.inner.Deserialize(data, eventType)
 }
 
+// BinaryFormat reports whether the wrapped serializer emits a binary (non-JSON) format,
+// forwarding to the inner serializer's BinaryFormatReporter if it implements one (msgpack/
+// protobuf report true; the JSON serializer reports false). Forwarding here lets mink.New's
+// serializer/adapter compatibility guard see through this decorator with a single interface
+// check instead of an unbounded chain walk. Satisfies mink.BinaryFormatReporter.
+func (s *UpcastingSerializer) BinaryFormat() bool {
+	if r, ok := s.inner.(BinaryFormatReporter); ok {
+		return r.BinaryFormat()
+	}
+	return false
+}
+
 // Inner returns the wrapped serializer.
 func (s *UpcastingSerializer) Inner() Serializer {
 	return s.inner

@@ -265,10 +265,11 @@ func (a *PostgresAdapter) Initialize(ctx context.Context) error {
 :::note Serializer compatibility
 The adapter stores event `data` in a `JSONB` column, so it requires a serializer
 that emits JSON text. It advertises this via `adapters.JSONDataAdapter`
-(`RequiresJSONData() bool`), and `mink.New` rejects a binary serializer
-(`serializer/msgpack`, `serializer/protobuf`) up front by panicking with an error
-wrapping `mink.ErrBinarySerializerUnsupported`. Use the default JSON serializer
-with this adapter.
+(`RequiresJSONData() bool`), and `mink.New` detects a binary serializer
+(`serializer/msgpack`, `serializer/protobuf`) up front and returns
+`mink.ErrBinarySerializerUnsupported` from the first `Append`/`SaveAggregate`
+(before any write), rather than the cryptic driver error the `INSERT` would
+otherwise raise. Use the default JSON serializer with this adapter.
 :::
 
 ## MongoDB Adapter
