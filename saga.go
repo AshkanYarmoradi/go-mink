@@ -28,6 +28,16 @@ var (
 
 	// ErrNoSagaHandler indicates no handler is registered for the event type.
 	ErrNoSagaHandler = errors.New("mink: no saga handler for event")
+
+	// ErrSagaNotRetryable indicates a saga cannot be re-driven by
+	// SagaManager.RetrySaga / ResumeStalled. This is returned when the saga is in a
+	// non-retryable status — a terminal Completed, or an in-flight
+	// Started/Running/Compensating owned by the event loop or timeout sweep (see
+	// SagaStatus.IsRetryable) — or when it has no captured trigger event to replay
+	// (e.g. a saga created before this capability existed). Match it with
+	// errors.Is(err, ErrSagaNotRetryable); inspect a *SagaNotRetryableError for the
+	// saga id, its status, and the human-readable reason.
+	ErrSagaNotRetryable = errors.New("mink: saga is not retryable")
 )
 
 // Type aliases for adapter types - these provide the public API
@@ -155,6 +165,7 @@ type SagaBase struct {
 	startedAt     time.Time
 	completedAt   *time.Time
 	version       int64
+	steps         []SagaStep
 }
 
 // NewSagaBase creates a new SagaBase with the given ID and type.
@@ -252,6 +263,26 @@ func (s *SagaBase) IncrementVersion() {
 	s.version++
 }
 
+// Steps returns the saga's recorded step history. The SagaManager persists this to
+// SagaState.Steps on save and restores it on hydrate, so the history survives across
+// events; it is currently used to record operator re-drives (see
+// SagaManager.RetrySaga). A saga type that does not embed SagaBase simply has no
+// persisted step history.
+func (s *SagaBase) Steps() []SagaStep {
+	return s.steps
+}
+
+// SetSteps replaces the saga's recorded step history (used by the manager during
+// hydration).
+func (s *SagaBase) SetSteps(steps []SagaStep) {
+	s.steps = steps
+}
+
+// RecordStep appends a step to the saga's history.
+func (s *SagaBase) RecordStep(step SagaStep) {
+	s.steps = append(s.steps, step)
+}
+
 // Complete marks the saga as completed.
 func (s *SagaBase) Complete() {
 	s.status = SagaStatusCompleted
@@ -315,6 +346,31 @@ func NewSagaFailedError(sagaID, sagaType string, failedStep int, reason string, 
 // SagaNotFoundError provides detailed information about a missing saga.
 // This is a type alias to adapters.SagaNotFoundError for consistency.
 type SagaNotFoundError = adapters.SagaNotFoundError
+
+// SagaNotRetryableError is the typed form of ErrSagaNotRetryable, carrying the
+// saga's id, the status it was in when the re-drive was refused, and a
+// human-readable reason. Match with errors.Is(err, ErrSagaNotRetryable); type-assert
+// to *SagaNotRetryableError for the details.
+type SagaNotRetryableError struct {
+	SagaID string
+	Status SagaStatus
+	Reason string
+}
+
+// Error returns the error message.
+func (e *SagaNotRetryableError) Error() string {
+	return fmt.Sprintf("mink: saga %q (status=%s) is not retryable: %s", e.SagaID, e.Status, e.Reason)
+}
+
+// Is reports whether this error matches the target error.
+func (e *SagaNotRetryableError) Is(target error) bool {
+	return target == ErrSagaNotRetryable
+}
+
+// Unwrap returns the underlying sentinel for errors.Is / errors.Unwrap.
+func (e *SagaNotRetryableError) Unwrap() error {
+	return ErrSagaNotRetryable
+}
 
 // SagaCorrelation provides strategies for correlating events to sagas.
 type SagaCorrelation struct {
