@@ -166,6 +166,7 @@ type SagaBase struct {
 	completedAt   *time.Time
 	version       int64
 	steps         []SagaStep
+	lastEvent     *StoredEvent
 }
 
 // NewSagaBase creates a new SagaBase with the given ID and type.
@@ -281,6 +282,24 @@ func (s *SagaBase) SetSteps(steps []SagaStep) {
 // RecordStep appends a step to the saga's history.
 func (s *SagaBase) RecordStep(step SagaStep) {
 	s.steps = append(s.steps, step)
+}
+
+// lastTriggerEvent / setLastTriggerEvent hold the manager-owned last trigger event
+// that SagaManager.RetrySaga re-delivers (captured only when WithSagaRetryCapture is
+// enabled). They are intentionally UNEXPORTED: the capture is library machinery,
+// invisible to saga authors — it is persisted by the manager into the reserved slot
+// of the saga's stored state and never surfaces through Data()/SetData(). Any saga
+// that embeds SagaBase gets this for free; the manager reaches it via an internal
+// interface, so it works regardless of how the saga implements Data()/SetData().
+func (s *SagaBase) lastTriggerEvent() (StoredEvent, bool) {
+	if s.lastEvent == nil {
+		return StoredEvent{}, false
+	}
+	return *s.lastEvent, true
+}
+
+func (s *SagaBase) setLastTriggerEvent(e StoredEvent) {
+	s.lastEvent = &e
 }
 
 // Complete marks the saga as completed.

@@ -97,6 +97,7 @@ func newRetryHarness(t *testing.T, store SagaStore, startingEvent string, compen
 	base := []SagaManagerOption{
 		WithSagaStore(store),
 		WithCommandBus(bus),
+		WithSagaRetryCapture(), // capture is opt-in; enable it for the retry tests
 		WithSagaRetryAttempts(1),
 		WithSagaRetryDelay(time.Millisecond),
 	}
@@ -665,19 +666,35 @@ func TestDecodeLastEvent(t *testing.T) {
 	})
 }
 
-func TestStampLastEvent_SkipsZeroEvent(t *testing.T) {
-	m := NewSagaManager(New(memory.NewAdapter()))
-	saga := &retryTestSaga{SagaBase: NewSagaBase("s1", "RetrySaga")}
-
-	// A zero-value event carries nothing worth capturing and must be skipped.
-	m.stampLastEvent(saga, StoredEvent{})
-	assert.NotContains(t, saga.Data(), reservedLastEventKey)
-
-	// A real event is captured under the reserved key.
+func TestCaptureTriggerEvent(t *testing.T) {
 	ev := retryEvent("e1", "s1", "StepB", 1)
-	m.stampLastEvent(saga, ev)
-	require.Contains(t, saga.Data(), reservedLastEventKey)
-	assert.Equal(t, ev, saga.Data()[reservedLastEventKey])
+
+	t.Run("off by default: nothing captured, author Data untouched", func(t *testing.T) {
+		m := NewSagaManager(New(memory.NewAdapter())) // no WithSagaRetryCapture
+		saga := &retryTestSaga{SagaBase: NewSagaBase("s1", "RetrySaga")}
+		m.captureTriggerEvent(saga, ev)
+		_, ok := saga.lastTriggerEvent()
+		assert.False(t, ok, "capture is opt-in; nothing is recorded when disabled")
+		assert.NotContains(t, saga.Data(), reservedLastEventKey, "the saga's own Data must never hold the reserved key")
+	})
+
+	t.Run("on: recorded to the manager-owned carrier slot, never in Data", func(t *testing.T) {
+		m := NewSagaManager(New(memory.NewAdapter()), WithSagaRetryCapture())
+		saga := &retryTestSaga{SagaBase: NewSagaBase("s1", "RetrySaga")}
+		m.captureTriggerEvent(saga, ev)
+		got, ok := saga.lastTriggerEvent()
+		require.True(t, ok)
+		assert.Equal(t, ev, got)
+		assert.NotContains(t, saga.Data(), reservedLastEventKey)
+	})
+
+	t.Run("zero-value event is skipped", func(t *testing.T) {
+		m := NewSagaManager(New(memory.NewAdapter()), WithSagaRetryCapture())
+		saga := &retryTestSaga{SagaBase: NewSagaBase("s1", "RetrySaga")}
+		m.captureTriggerEvent(saga, StoredEvent{})
+		_, ok := saga.lastTriggerEvent()
+		assert.False(t, ok)
+	})
 }
 
 func TestRetryOutcome_String(t *testing.T) {
@@ -688,21 +705,181 @@ func TestRetryOutcome_String(t *testing.T) {
 	assert.Equal(t, "unknown", RetryOutcome(99).String())
 }
 
-func TestClassifyRetried(t *testing.T) {
+// projectionSaga models the idiomatic pattern where Data() is a FRESH projection of
+// typed fields and SetData() reads only known keys — so it does NOT round-trip
+// arbitrary keys. A key written into its Data() map is dropped by SetData(). This is
+// the pattern the repo's own OrderFulfillmentSaga uses, and capturing the last event
+// into the author's Data map (rather than the manager-owned slot) would silently lose
+// it here, making RetrySaga non-functional.
+type projectionSaga struct {
+	SagaBase
+	orderID  string
+	complete bool
+}
+
+func newProjectionSaga(id string) Saga {
+	return &projectionSaga{SagaBase: NewSagaBase(id, "ProjectionSaga")}
+}
+
+func (s *projectionSaga) HandledEvents() []string { return []string{"StepB"} }
+
+func (s *projectionSaga) HandleEvent(_ context.Context, _ StoredEvent) ([]Command, error) {
+	s.complete = true
+	return []Command{&testCommand{commandType: "CmdB", valid: true}}, nil
+}
+
+func (s *projectionSaga) Compensate(_ context.Context, _ int, _ error) ([]Command, error) {
+	return nil, errors.New("no compensation") // settle Failed
+}
+
+func (s *projectionSaga) IsComplete() bool { return s.complete }
+
+func (s *projectionSaga) Data() map[string]interface{} {
+	return map[string]interface{}{"orderId": s.orderID} // fresh projection every call
+}
+
+func (s *projectionSaga) SetData(data map[string]interface{}) {
+	if v, ok := data["orderId"].(string); ok {
+		s.orderID = v // only known keys are read; unknown keys (e.g. the reserved key) are dropped
+	}
+}
+
+func TestRetrySaga_WorksForProjectionStyleSaga(t *testing.T) {
 	ctx := context.Background()
-	store := newMockSagaStore()
-	m := NewSagaManager(New(memory.NewAdapter()), WithSagaStore(store))
+	store := memory.NewSagaStore()
 
-	require.NoError(t, store.Save(ctx, &SagaState{ID: "s-done", Type: "T", Status: SagaStatusCompleted, StartedAt: time.Now()}))
-	assert.Equal(t, RetrySucceeded, m.classifyRetried(ctx, "s-done"))
+	var cmdBFails atomic.Bool
+	bus := NewCommandBus()
+	bus.Register(&mockCommandHandler{cmdType: "CmdB", handleFunc: func(_ context.Context, _ Command) (CommandResult, error) {
+		if cmdBFails.Load() {
+			return NewErrorResult(errors.New("down")), errors.New("down")
+		}
+		return NewSuccessResult("", 0), nil
+	}})
+	manager := NewSagaManager(New(memory.NewAdapter()),
+		WithSagaStore(store), WithCommandBus(bus), WithSagaRetryCapture(),
+		WithSagaRetryAttempts(1), WithSagaRetryDelay(time.Millisecond))
+	manager.RegisterSimple("ProjectionSaga", newProjectionSaga, "StepB")
+	sagaID := "ProjectionSaga-order-1"
 
-	require.NoError(t, store.Save(ctx, &SagaState{ID: "s-fail", Type: "T", Status: SagaStatusFailed, StartedAt: time.Now()}))
-	assert.Equal(t, RetryFailedAgain, m.classifyRetried(ctx, "s-fail"))
+	cmdBFails.Store(true)
+	require.NoError(t, manager.ProcessEvent(ctx, retryEvent("e1", "order-1", "StepB", 1)))
+	failed, err := store.Load(ctx, sagaID)
+	require.NoError(t, err)
+	require.Equal(t, SagaStatusFailed, failed.Status)
 
-	// If the post-drive status can't be read, the re-drive returned no error, so it
-	// is treated as applied rather than inventing a failure.
-	store.loadError = errors.New("boom")
-	assert.Equal(t, RetrySucceeded, m.classifyRetried(ctx, "s-done"))
+	// The capture must have survived despite SetData dropping unknown keys — because
+	// the manager owns it, not the saga's Data projection.
+	cmdBFails.Store(false)
+	require.NoError(t, manager.RetrySaga(ctx, sagaID),
+		"re-drive must work for a projection-style saga whose SetData drops unknown keys")
+
+	completed, err := store.Load(ctx, sagaID)
+	require.NoError(t, err)
+	assert.Equal(t, SagaStatusCompleted, completed.Status)
+}
+
+// leakProbeSaga is map-preserving (Data()/SetData() round-trip the whole map) and
+// records, via a shared flag, whether it ever observed the reserved capture key in
+// its own Data() during HandleEvent.
+type leakProbeSaga struct {
+	SagaBase
+	data        map[string]interface{}
+	sawReserved *bool
+	complete    bool
+}
+
+func (s *leakProbeSaga) HandledEvents() []string { return []string{"StepA", "StepB"} }
+
+func (s *leakProbeSaga) HandleEvent(_ context.Context, event StoredEvent) ([]Command, error) {
+	if _, ok := s.Data()[reservedLastEventKey]; ok {
+		*s.sawReserved = true
+	}
+	if event.Type == "StepB" {
+		s.complete = true
+	}
+	return nil, nil
+}
+
+func (s *leakProbeSaga) Compensate(_ context.Context, _ int, _ error) ([]Command, error) {
+	return nil, nil
+}
+func (s *leakProbeSaga) IsComplete() bool { return s.complete }
+func (s *leakProbeSaga) Data() map[string]interface{} {
+	if s.data == nil {
+		s.data = map[string]interface{}{}
+	}
+	return s.data
+}
+func (s *leakProbeSaga) SetData(d map[string]interface{}) { s.data = d }
+
+func TestRetrySaga_DoesNotLeakReservedKeyIntoAuthorData(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewSagaStore()
+	var saw bool
+	bus := NewCommandBus()
+	manager := NewSagaManager(New(memory.NewAdapter()),
+		WithSagaStore(store), WithCommandBus(bus), WithSagaRetryCapture())
+	manager.RegisterSimple("LeakProbe", func(id string) Saga {
+		return &leakProbeSaga{SagaBase: NewSagaBase(id, "LeakProbe"), sawReserved: &saw}
+	}, "StepA")
+
+	// First event captures the trigger; the saga is then re-hydrated for the second.
+	require.NoError(t, manager.ProcessEvent(ctx, retryEvent("evA", "order-1", "StepA", 1)))
+	require.NoError(t, manager.ProcessEvent(ctx, retryEvent("evB", "order-1", "StepB", 2)))
+
+	assert.False(t, saw, "the reserved capture key must never appear in the saga's own Data() during HandleEvent")
+
+	// And it is present in the persisted state (manager-owned), proving capture worked.
+	st, err := store.Load(ctx, "LeakProbe-order-1")
+	require.NoError(t, err)
+	assert.Contains(t, st.Data, reservedLastEventKey)
+}
+
+func TestRetrySaga_CaptureOffByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewSagaStore()
+	bus := NewCommandBus()
+	bus.Register(&mockCommandHandler{cmdType: "CmdB", err: errors.New("down")})
+	// No WithSagaRetryCapture: nothing is captured, so re-drive has no event to replay.
+	manager := NewSagaManager(New(memory.NewAdapter()), WithSagaStore(store), WithCommandBus(bus),
+		WithSagaRetryAttempts(1), WithSagaRetryDelay(time.Millisecond))
+	manager.RegisterSimple("RetrySaga", retrySagaFactory(errors.New("no comp")), "StepB")
+
+	require.NoError(t, manager.ProcessEvent(ctx, retryEvent("e1", "order-1", "StepB", 1)))
+
+	failed, err := store.Load(ctx, "RetrySaga-order-1")
+	require.NoError(t, err)
+	require.Equal(t, SagaStatusFailed, failed.Status)
+	assert.NotContains(t, failed.Data, reservedLastEventKey, "no capture when the option is off (zero overhead)")
+
+	err = manager.RetrySaga(ctx, "RetrySaga-order-1")
+	require.ErrorIs(t, err, ErrSagaNotRetryable)
+	var typed *SagaNotRetryableError
+	require.ErrorAs(t, err, &typed)
+	assert.Contains(t, typed.Reason, "WithSagaRetryCapture")
+}
+
+func TestRetrySaga_ObserverSeesResultStatusOnReFailure(t *testing.T) {
+	ctx := context.Background()
+	var got RetryEvent
+	var seen int
+	h := newRetryHarness(t, memory.NewSagaStore(), "StepB", nil, // Compensate returns nil → Compensated on re-failure
+		WithSagaRetryObserver(func(ev RetryEvent) { got = ev; seen++ }))
+	sagaID := "RetrySaga-order-1"
+
+	// Settle Compensated (retryable) with CmdB down.
+	h.cmdBFails.Store(true)
+	require.NoError(t, h.manager.ProcessEvent(ctx, retryEvent("e1", "order-1", "StepB", 1)))
+	require.Equal(t, 0, seen)
+
+	// Re-drive while CmdB is STILL down: it fails again and re-compensates. The
+	// re-drive "ran", so Err is nil, but ResultStatus reflects the re-failure.
+	require.NoError(t, h.manager.RetrySaga(ctx, sagaID))
+	require.Equal(t, 1, seen)
+	assert.NoError(t, got.Err, "a business re-failure is not an operational error")
+	assert.Equal(t, SagaStatusCompensated, got.ResultStatus, "ResultStatus must reveal the re-failure")
+	assert.Equal(t, SagaStatusCompensated, got.FromStatus)
 }
 
 func TestResumeStalled_RequiresConfiguredTimeout(t *testing.T) {
