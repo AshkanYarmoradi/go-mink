@@ -8,11 +8,11 @@ sagas — but **no `RetrySaga` / re-drive entry point** for intentional, operato
 recovery. The only options today are to hand-mutate the saga row (dangerous) or to
 re-emit a synthetic trigger event (fragile, and it races the running manager).
 
-This was surfaced in the huisscan "Operations Panel" review as finding **§6.3**: the panel
+This was surfaced in a production operations-panel review as finding **§6.3**: the panel
 can now *inspect* a stuck `UserRegistration` / `OrganizationRegistration` saga (via
 `FindSagasByType` + `GetSaga`), but the operator's natural next action — "the transient
 cause is fixed, **re-drive this saga**" (e.g. recover a *user-without-workspace* whose
-`CreateWorkspaceCommand` failed) — has no safe API to call. huisscan deliberately shipped
+`CreateWorkspaceCommand` failed) — has no safe API to call. The consuming application shipped
 inspection-only and deferred retry precisely because a naive retry can double-dispatch
 non-idempotent commands or race the manager.
 
@@ -106,9 +106,9 @@ change adds it.
 - **Docs**: doc comments on all new APIs (retryable-status matrix, idempotency contract,
   reserved `Data` key); `saga-orchestration` spec; `website/docs/roadmap.md` /
   `CHANGELOG`.
-- **Downstream (out of scope here; separate follow-up after a go-mink release)**: huisscan
-  wires `RetrySaga` behind `POST /api/ops/sagas/:id/retry` (`ops:sync:run`, audited) on the
-  existing ops saga-inspection panel (§6.3), turning inspection-only into inspect-and-recover.
+- **Downstream (out of scope here; separate follow-up after a go-mink release)**: a consuming
+  application wires `RetrySaga` behind an audited ops endpoint on its existing
+  saga-inspection panel, turning inspection-only into inspect-and-recover.
 - **Compatibility**: fully additive and opt-in — the last-event capture is a single map
   write in the existing save path (no schema, no new required config), and no existing
   behavior changes unless `RetrySaga` / `ResumeStalled` is called.

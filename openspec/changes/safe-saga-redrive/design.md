@@ -98,7 +98,7 @@ machine.
 
 - **D7 — auditable retry.** `RetrySaga` appends a `SagaStep` marking the re-drive (from
   status → outcome) and invokes an optional `WithSagaRetryObserver(func(RetryEvent))` hook
-  (saga id, type, from-status, at, error). huisscan routes this to its audit log; the
+  (saga id, type, from-status, at, error). A consumer can route this to its audit log; the
   default (no observer) still records the `Steps` entry, so a re-drive is never invisible.
 
 ## Edge cases
