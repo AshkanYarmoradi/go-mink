@@ -96,6 +96,6 @@ events predate tag adoption.
   schedule/cancel-deletion, but implementing recoverable revocation on the cloud
   providers is deferred; this change only makes their *absence* explicit
   (`ErrRevocationUnsupported`) rather than a silent fall-through to hard revoke.
-- **The huisscan-side integration audit.** Whether huisscan configures tagging,
+- **The consumer-side integration audit.** Whether the application configures tagging,
   encryption, and sibling-store erasers for its Clerk saga / audit recorder is a
   separate follow-up in that repo.

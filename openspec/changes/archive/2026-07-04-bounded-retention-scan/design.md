@@ -35,7 +35,7 @@ Everything older than the aged frontier was already crypto-shredded on an earlie
 ### D1: Resume via the existing `CheckpointStore`, passed explicitly
 `WithRetentionCheckpoint(store CheckpointStore, name string)` mirrors the projection
 engine's `WithCheckpointStore(store)` exactly. The Postgres adapter already implements
-`CheckpointStore`; consumers (e.g. huisscan) already surface it as
+`CheckpointStore`; consumers already surface it as
 `EventStoreResult.CheckpointStore`, so wiring is ~2 lines and needs no schema change. The
 store is passed in rather than type-asserted off `m.store.Adapter()` so it is explicit,
 testable with `memory.NewCheckpointStore()`, and lets a caller point retention at a
@@ -114,7 +114,7 @@ A persisted frontier is only valid for the policy set that produced it. Reasonin
 - **Changing `MaxAge` is safe.** Lengthening it matches fewer/older events — everything
   below `F` was already shredded. Shortening it makes *younger* events eligible, but those
   are **above** `F` (nearer HEAD) and get scanned normally. Either way nothing below `F` is
-  wrongly skipped. (huisscan only ever changes `RETENTION_MAX_AGE_DAYS`, so it is always safe.)
+  wrongly skipped. (a typical consumer only ever changes the retention window, so it is always safe.)
 - **Broadening a static matcher is NOT safe.** Adding a policy (or widening
   category/prefix/type/tenant) that now targets *old* events sitting below `F` would skip
   them, because `F` advanced past them when no policy matched. Such a change requires
