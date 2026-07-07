@@ -37,4 +37,4 @@
 - [x] 7.1 `CHANGELOG` `[Unreleased]`: new optional filtered feed read (indexed axes; default readers unchanged)
 - [x] 7.2 Noted the filtered feed read under Core Event Store in `website/docs/roadmap.md`; added a "Filtered feed reads" section to `website/docs/core/event-store.md`, a feature-table mention in `README.md`, and a runnable `examples/feed-filter` (registered in `examples/README.md`)
 - [x] 7.3 `gofmt` clean; `go vet ./...` clean; `go test ./...` green (root + adapters, incl. PostgreSQL integration against docker-compose.test.yml); `openspec validate filtered-feed-read --strict` passes
-- [x] 7.4 Downstream note only (no code here): huisscan re-points `eventsource.LoadFilteredEvents` at the go-mink read for type/stream, keeps its workspace `data::text LIKE` fallback local — captured for the post-release follow-up
+- [x] 7.4 Downstream note only (no code here): the consumer re-points its filtered-load call at the go-mink read for the type/stream axes, keeping its workspace text-LIKE fallback local — captured for the post-release follow-up

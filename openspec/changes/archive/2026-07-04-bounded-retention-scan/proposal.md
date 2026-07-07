@@ -9,8 +9,8 @@ to act on the *newly-aged tail* since the last run. Everything below the aged fr
 was already handled (crypto-shredded) on a prior run; re-scanning it every night is pure
 waste, and the waste compounds for the life of the product.
 
-This was surfaced in the huisscan "Operation Panel" review as efficiency finding **EF2**.
-It is **low urgency** — retention is opt-in and off by default (huisscan gates the sweep
+This was surfaced in a production operations-panel review as efficiency finding **EF2**.
+It is **low urgency** — retention is opt-in and off by default (a consumer gates the sweep
 on `RETENTION_MAX_AGE_DAYS`) — but it is exactly the kind of cost that only bites once
 someone enables it on a large store, so it is worth closing before then.
 
@@ -36,7 +36,7 @@ projection engine to resume). Retention should resume the same way projections d
 ### Good-to-have
 
 - **Bounded per-run scan** — an optional `WithRetentionMaxScan(n int)` cap (mirroring the
-  huisscan audit handler's `auditMaxScan`) that stops a single sweep after `n` events and
+  an audit handler's bounded-scan cap) that stops a single sweep after `n` events and
   resumes on the next run via the checkpoint. This bounds *any single run* — most
   importantly the **first run after enabling retention on an already-large store**, which
   the checkpoint alone does not (the first run must still reach the aged tail once). It is
@@ -78,9 +78,7 @@ projection engine to resume). Retention should resume the same way projections d
   cap-bounds-and-resumes, cap-without-checkpoint-is-loud.
 - **Docs**: doc comments on the new APIs; a note on the retention scan's cost and the
   checkpoint-vs-policy-set validity rule; `website/docs/roadmap.md` / `CHANGELOG`.
-- **Downstream (out of scope here; separate follow-up after a go-mink release)**: huisscan
-  passes its already-available `EventStoreResult.CheckpointStore` + a stable name into the
-  retention manager in `internal/di/provider.go`; still gated on `RETENTION_MAX_AGE_DAYS`,
+- **Downstream (out of scope here; separate follow-up after a go-mink release)**: a consuming application passes an already-available checkpoint store + a stable name into the retention manager in its DI wiring; still gated on its retention-window config,
   still off by default.
 - **Compatibility**: fully additive and opt-in — zero overhead and zero behavior change
   when the new options are not used.

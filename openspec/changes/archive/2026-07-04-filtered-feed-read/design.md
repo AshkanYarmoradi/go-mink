@@ -17,7 +17,7 @@ func positionScanQuery(schemaQ, extraWhere, limitParam string) string {
 `SubscribeCategory`) calls it with `" AND stream_id LIKE $2"`. The `extraWhere` seam
 therefore **already exists for predicate pushdown** — it is just not exposed as a
 general, positional (non-subscription) read. Consumers that want "the feed, but only
-these types/streams" (audit browsers, migration scanners, the `mink` CLI, huisscan's
+these types/streams" (audit browsers, migration scanners, the `mink` CLI, a consumer's
 ops panel) have to `LoadFromPosition` the whole feed and filter in Go: O(total
 history) per query, plus transfer + deserialize of discarded rows.
 
@@ -81,7 +81,7 @@ predicate" is a projected read model; its answer for tenant scoping is first-cla
 grew a `data LIKE` or `metadata->>` axis, it would (a) invite unindexed full scans
 wearing a "filter" label, and (b) tempt consumers to query the log where they should
 project. Restricting to indexed axes keeps the primitive honestly bounded and keeps
-the CQRS boundary intact. Consumers with unindexed needs (huisscan's best-effort
+the CQRS boundary intact. Consumers with unindexed needs (a consumer's best-effort
 workspace-in-payload match) keep that logic in their own layer — which is the correct
 split of "go-mink owns the indexed primitive, the consumer owns the policy."
 
@@ -110,7 +110,7 @@ one-element slice.
 
 ### D5: `IN`-list with explicit placeholders, not driver array binding
 `extraWhere` renders `event_type IN ($2,$3,…)` / `stream_id IN (…)` with one
-placeholder per value (as huisscan's local builder does), rather than
+placeholder per value (as a local builder might), rather than
 `= ANY($2::text[])`. This avoids depending on a specific driver's array codec and
 keeps the SQL uniform with the rest of the adapter. (A future `ANY(array)` form is a
 safe internal swap if desired; it changes no behavior.) A sane cap on set size can be
