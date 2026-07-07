@@ -109,5 +109,5 @@ surface — closing it makes field encryption safe to actually turn on end to en
   corrupts read models, completing the `subject-scoped-field-keys` →
   `data-erasure` story (encrypt per subject → project plaintext → crypto-shred +
   read-model redact on erase).
-- Downstream: huisscan can enable `ENCRYPTION_ENABLED` for clerk-user and property
+- Downstream: a consumer can enable field encryption for user and property
   PII without breaking its read-model projections.

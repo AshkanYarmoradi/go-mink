@@ -11,11 +11,11 @@ handful of rows still pays an **O(total history)** scan that grows for the life 
 the store, plus per-row (de)serialization and transfer of events it immediately
 discards.
 
-This was surfaced in the huisscan "Operation Panel" review as efficiency finding
+This was surfaced in a production operations-panel review as efficiency finding
 **EF1** (sibling of EF2, the `bounded-retention-scan` change): the ops audit panel
 filters the event feed by type / stream / workspace, and each filtered list or CSV
 export walked up to 200k events in Go per request to return ~20 matching rows.
-huisscan closed EF1 locally by reaching into the physical `events` table with a
+the consumer closed EF1 locally by reaching into the physical `events` table with a
 hand-rolled filtered query — **duplicating machinery go-mink already owns** (the
 `safePositionClause` gapless watermark, `escapeLikePattern`, `scanEvents`, and the
 `positionScanQuery(schemaQ, extraWhere, limitParam)` builder whose `extraWhere` slot
@@ -72,7 +72,7 @@ to query the log where they should be projecting.
   axis. Tenant/workspace scoping is a *consumer* concern: attribute it in `metadata`
   and add an expression index, or project a read model. Keeping the primitive
   indexed-only is deliberate — it prevents an ad-hoc event-log query engine and keeps
-  go-mink's "project read models for queries" model intact. (huisscan therefore keeps
+  go-mink's "project read models for queries" model intact. (the consumer therefore keeps
   its best-effort `data::text LIKE` workspace fallback local; see Impact.)
 - **No change to existing readers.** `LoadFromPosition`, `SubscribeAll`,
   `SubscribeCategory`, projections, and the saga loop are untouched. The new interface
@@ -113,11 +113,7 @@ to query the log where they should be projecting.
 - **Docs**: doc comments framing the read as **introspection / ops / migration
   tooling, not an application read path**; `CHANGELOG` `[Unreleased]`;
   `website/docs/roadmap.md`.
-- **Downstream (out of scope here; follow-up after a go-mink release)**: huisscan
-  re-points its shipped `eventsource.LoadFilteredEvents` at the go-mink read for the
-  indexed type/stream axes (dropping its copied `safePositionClause` and `scanEvents`),
-  while keeping its **app-specific, best-effort workspace `data::text LIKE` fallback
-  local** — the correct split (go-mink owns the indexed primitive; huisscan owns the
+- **Downstream (out of scope here; follow-up after a go-mink release)**: a consuming application re-points its shipped filtered-load call at the go-mink read for the indexed type/stream axes (dropping its copied safe-position clause and scan helper), while keeping its **app-specific, best-effort workspace text-LIKE fallback local** — the correct split (go-mink owns the indexed primitive; the consumer owns the
   policy).
 - **Compatibility**: fully additive and optional. No existing signature, adapter, or
   behavior changes; the new interface is capability-detected exactly like

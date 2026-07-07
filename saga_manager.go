@@ -16,6 +16,19 @@ import (
 // still providing sufficient history for retry scenarios.
 const maxProcessedEventsToTrack = 100
 
+// reservedLastEventKey is the reserved key under which the manager persists the raw
+// last trigger event, so an operator can re-drive a settled saga (see
+// SagaManager.RetrySaga) without re-reading the event store. It rides the existing
+// persisted SagaState.Data JSON — no schema change — but is written and read only by
+// the manager: it is stamped into the persisted state in saveSaga and stripped in
+// hydrateSaga, so it NEVER appears in the saga's own Data()/SetData() and works
+// regardless of how a saga projects its Data. It is populated only when
+// WithSagaRetryCapture is enabled, so it adds zero overhead when re-drive is unused.
+//
+// The "__mink_" prefix is reserved for the library; saga authors MUST NOT read or
+// write Data keys with this prefix.
+const reservedLastEventKey = "__mink_last_event"
+
 // SagaManagerOption configures a SagaManager.
 type SagaManagerOption func(*SagaManager)
 
@@ -97,6 +110,74 @@ func WithSagaRetryDelay(d time.Duration) SagaManagerOption {
 	}
 }
 
+// WithSagaRetryCapture enables capturing each saga's last trigger event so a
+// settled saga can later be re-driven by RetrySaga / ResumeStalled. It is opt-in
+// and OFF by default: when unset the manager captures nothing and adds zero
+// overhead (honoring the library's zero-overhead-when-unconfigured invariant), and
+// RetrySaga on a saga with no captured event returns ErrSagaNotRetryable. Enable it
+// on managers whose sagas you may need to recover operationally.
+//
+// The captured event is stored in the manager-owned reserved slot of the saga's
+// persisted state (SagaState.Data under reservedLastEventKey). The manager stamps
+// and reads it itself and strips it before the saga's own SetData ever sees it, so
+// it never leaks into saga-author code and it works regardless of how a saga
+// implements Data()/SetData() — including projection-style sagas that rebuild Data
+// from typed fields (which would otherwise silently drop a key written into Data).
+func WithSagaRetryCapture() SagaManagerOption {
+	return func(m *SagaManager) {
+		m.captureLastEvent = true
+	}
+}
+
+// WithSagaRetryObserver registers a hook invoked once per operator-initiated
+// re-drive attempt (RetrySaga / ResumeStalled / RetrySagasByType), with the saga
+// id, saga type, the status it was re-driven from, the status it reached, the
+// attempt time, and the attempt's error. It makes a re-drive auditable — route it
+// to an audit log or metrics. It is additive and opt-in: with no observer
+// configured a re-drive is still recorded as a SagaStep on the saga's history, so
+// it is never a silent state change.
+//
+// The observer is called synchronously on the caller's goroutine while the
+// per-saga lock is NOT held; keep it fast and non-blocking, and do not call back
+// into the SagaManager from it.
+func WithSagaRetryObserver(fn func(RetryEvent)) SagaManagerOption {
+	return func(m *SagaManager) {
+		m.retryObserver = fn
+	}
+}
+
+// RetryEvent describes a single operator-initiated saga re-drive attempt reported
+// to a WithSagaRetryObserver.
+//
+// Err reports an OPERATIONAL failure of the attempt — the re-drive could not be
+// applied — e.g. ErrConcurrencyConflict, a store error, or a failure to decode the
+// captured event. It is nil when the re-drive ran to a persisted outcome. A re-drive
+// that RAN but whose saga failed again (its command re-failed, driving compensation)
+// is NOT reported via Err — the whole saga machinery treats compensation as handled;
+// inspect ResultStatus (or the saga's persisted status) to see the business outcome.
+type RetryEvent struct {
+	// SagaID is the id of the re-driven saga.
+	SagaID string
+
+	// SagaType is the saga's type.
+	SagaType string
+
+	// FromStatus is the status the saga was in when the re-drive was initiated.
+	FromStatus SagaStatus
+
+	// ResultStatus is the status the saga reached after the re-drive (meaningful
+	// when Err is nil): SagaStatusCompleted on a clean recovery, or a settled
+	// unsuccessful status (Failed / Compensated / CompensationFailed) if it failed
+	// again. Zero-valued when the attempt did not run to a persisted outcome.
+	ResultStatus SagaStatus
+
+	// At is when the attempt was made.
+	At time.Time
+
+	// Err is the attempt's operational error, or nil (see the type doc).
+	Err error
+}
+
 // SagaManager orchestrates saga lifecycle and event processing.
 // It subscribes to events, routes them to appropriate sagas,
 // and dispatches resulting commands.
@@ -144,6 +225,17 @@ type SagaManager struct {
 	retryDelay        time.Duration
 	sagaTimeout       time.Duration
 	sagaSweepInterval time.Duration
+
+	// retryObserver, when set via WithSagaRetryObserver, is invoked once per
+	// operator-initiated re-drive attempt (RetrySaga / ResumeStalled). It is nil by
+	// default, so re-drive adds no observability overhead unless configured.
+	retryObserver func(RetryEvent)
+
+	// captureLastEvent, enabled via WithSagaRetryCapture, makes the manager record
+	// each saga's last trigger event so RetrySaga / ResumeStalled can re-deliver it.
+	// It is false by default: when unset the manager captures nothing and adds zero
+	// overhead, honoring the library's zero-overhead-when-unconfigured invariant.
+	captureLastEvent bool
 
 	// State
 	mu       sync.RWMutex
@@ -741,6 +833,30 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		return nil
 	}
 
+	// Drive the saga forward with this event. RetrySaga re-drives a settled saga
+	// through the very same path, so the two share identical semantics.
+	return m.redrive(ctx, saga, event)
+}
+
+// redrive delivers a single event to a saga and drives the resulting work:
+// HandleEvent -> dispatch its commands -> mark complete / compensate -> persist.
+// It is the shared per-saga drive used both by the live event loop
+// (attemptProcessSagaEvent) and by operator re-drive (RetrySaga / ResumeStalled),
+// so a re-drive behaves exactly like a fresh delivery of the event — on success the
+// saga reaches Completed; on a fresh failure it follows the same compensation path
+// as a first-time failure.
+//
+// The caller is responsible for the terminal-state and idempotency checks and, for
+// re-drive, for holding the per-saga lock and resetting the retried event's
+// idempotency key beforehand.
+func (m *SagaManager) redrive(ctx context.Context, saga Saga, event StoredEvent) error {
+	// Capture the trigger event (only when WithSagaRetryCapture is enabled) so a
+	// settled saga can later be re-driven without the event store. Recorded on the
+	// manager-owned carrier slot before any dispatch, so it is captured even if the
+	// saga fails and follows the compensation save path — and persisted by saveSaga
+	// independently of the saga's own Data()/SetData().
+	m.captureTriggerEvent(saga, event)
+
 	// Handle the event
 	saga.SetStatus(SagaStatusRunning)
 	commands, err := saga.HandleEvent(ctx, event)
@@ -786,10 +902,62 @@ func (m *SagaManager) attemptProcessSagaEvent(
 	// We pass the current event to saveSaga so it can be included in the
 	// ProcessedEvents that are persisted. The in-memory cache is only updated
 	// AFTER the save succeeds to avoid false-positive idempotency checks on retry.
-	if err := m.saveSaga(ctx, saga, &event); err != nil {
-		return err
+	return m.saveSaga(ctx, saga, &event)
+}
+
+// lastEventCarrier is the manager-owned capability (satisfied by any saga embedding
+// SagaBase, via its unexported promoted methods) for stashing the last trigger event
+// used by RetrySaga. It is deliberately NOT the saga's Data map: keeping the captured
+// event here means the manager can persist and recover it itself (see saveSaga /
+// hydrateSaga) without depending on how the saga round-trips Data()/SetData(), and
+// without ever exposing the reserved key to saga-author code.
+type lastEventCarrier interface {
+	lastTriggerEvent() (StoredEvent, bool)
+	setLastTriggerEvent(StoredEvent)
+}
+
+// captureTriggerEvent records the trigger event on the saga's manager-owned carrier
+// slot, so a settled saga can be re-driven later without re-reading the event store.
+// It is a no-op unless WithSagaRetryCapture is enabled (zero overhead when unused),
+// for a zero-value event (nothing meaningful to capture), or for a saga that does
+// not embed SagaBase (no carrier).
+func (m *SagaManager) captureTriggerEvent(saga Saga, event StoredEvent) {
+	if !m.captureLastEvent {
+		return
 	}
-	return nil
+	if event.ID == "" && event.Type == "" {
+		return
+	}
+	if c, ok := saga.(lastEventCarrier); ok {
+		c.setLastTriggerEvent(event)
+	}
+}
+
+// cloneSagaData shallow-copies a saga Data map into a new map (never nil), with room
+// for one extra key. Used to stamp the reserved capture key into the persisted state
+// without mutating the saga's own Data map.
+func cloneSagaData(data map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(data)+1)
+	for k, v := range data {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneSagaDataWithout shallow-copies data omitting key. Used on hydrate to hand the
+// saga its Data without the reserved capture key. Returns nil when the result is
+// empty and the input was the only carrier, matching Data()'s nil-for-empty idiom.
+func cloneSagaDataWithout(data map[string]interface{}, key string) map[string]interface{} {
+	if len(data) <= 1 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(data)-1)
+	for k, v := range data {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // eventAlreadyProcessed checks if the saga has already processed this event.
@@ -909,6 +1077,18 @@ func (m *SagaManager) dispatchCommand(ctx context.Context, saga Saga, cmd Comman
 		cmd.CommandType(), m.retryAttempts, lastErr)
 }
 
+// stepRecordingSaga is the optional capability — satisfied by any saga embedding
+// SagaBase — that lets the manager persist and restore the saga's SagaStep history.
+// It is intentionally NOT part of the Saga interface, so it stays backward
+// compatible: a saga type that implements neither method simply has no persisted
+// step history (and a re-drive of it is not recorded as a step, though it is still
+// reported to any WithSagaRetryObserver).
+type stepRecordingSaga interface {
+	Steps() []SagaStep
+	SetSteps([]SagaStep)
+	RecordStep(SagaStep)
+}
+
 // saveSaga persists the saga state.
 // The currentEvent parameter is optional - if non-nil, the event will be added to
 // ProcessedEvents when saving, and the in-memory cache will be updated only after
@@ -938,18 +1118,39 @@ func (m *SagaManager) saveSaga(ctx context.Context, saga Saga, currentEvent *Sto
 		processedEvents = processedEvents[len(processedEvents)-maxProcessedEventsToTrack:]
 	}
 
+	// Build the persisted Data. When retry-capture is on and the saga carries a last
+	// trigger event, stamp it under the reserved key into a COPY of the saga's Data —
+	// never mutating the saga's own map, and independent of how the saga implements
+	// Data()/SetData() — so re-drive works even for projection-style sagas and the
+	// reserved key never leaks back into saga-author code (hydrateSaga strips it).
+	persistData := saga.Data()
+	if m.captureLastEvent {
+		if c, ok := saga.(lastEventCarrier); ok {
+			if ev, ok := c.lastTriggerEvent(); ok {
+				persistData = cloneSagaData(saga.Data())
+				persistData[reservedLastEventKey] = ev
+			}
+		}
+	}
+
 	state := &SagaState{
 		ID:              saga.SagaID(),
 		Type:            saga.SagaType(),
 		CorrelationID:   saga.CorrelationID(),
 		Status:          saga.Status(),
 		CurrentStep:     saga.CurrentStep(),
-		Data:            saga.Data(),
+		Data:            persistData,
 		ProcessedEvents: processedEvents,
 		StartedAt:       saga.StartedAt(),
 		UpdatedAt:       time.Now(),
 		CompletedAt:     saga.CompletedAt(),
 		Version:         saga.Version(),
+	}
+
+	// Persist the saga's step history when the saga supports it (SagaBase does).
+	// Used to record operator re-drives; empty for sagas that never record a step.
+	if sr, ok := saga.(stepRecordingSaga); ok {
+		state.Steps = sr.Steps()
 	}
 
 	err := m.store.Save(ctx, state)
@@ -983,7 +1184,25 @@ func (m *SagaManager) hydrateSaga(saga Saga, state *SagaState) error {
 	saga.SetStartedAt(state.StartedAt)
 	saga.SetCompletedAt(state.CompletedAt)
 	saga.SetVersion(state.Version)
-	saga.SetData(state.Data)
+
+	// Recover the manager-owned captured trigger event (if present) onto the saga's
+	// carrier slot, and hand the saga a Data map WITHOUT the reserved key — so the
+	// library-internal capture never appears in the saga's own Data()/SetData().
+	data := state.Data
+	if raw, ok := data[reservedLastEventKey]; ok {
+		if c, ok := saga.(lastEventCarrier); ok {
+			if ev, ok := decodeLastEvent(raw); ok {
+				c.setLastTriggerEvent(ev)
+			}
+		}
+		data = cloneSagaDataWithout(data, reservedLastEventKey)
+	}
+	saga.SetData(data)
+
+	// Restore the step history when the saga supports it (SagaBase does).
+	if sr, ok := saga.(stepRecordingSaga); ok {
+		sr.SetSteps(state.Steps)
+	}
 
 	// Restore processed events for idempotency tracking
 	if len(state.ProcessedEvents) > 0 {
@@ -1023,6 +1242,446 @@ func (m *SagaManager) FindSagaByCorrelationID(ctx context.Context, correlationID
 // Running or CompensationFailed sagas that need operator attention).
 func (m *SagaManager) FindSagasByType(ctx context.Context, sagaType string, statuses ...SagaStatus) ([]*SagaState, error) {
 	return m.store.FindByType(ctx, sagaType, statuses...)
+}
+
+// RetrySaga re-drives a settled-but-unsuccessful saga once its underlying cause is
+// fixed — the operator-initiated recovery counterpart to the automatic timeout
+// sweep. It re-delivers the saga's last trigger event through the normal processing
+// path, so a retry has identical semantics to a fresh delivery: on success the saga
+// reaches Completed; on a fresh failure it follows the same compensation path as a
+// first-time failure.
+//
+// # Which statuses are retryable
+//
+// RetrySaga accepts exactly the settled-but-unsuccessful statuses
+// (SagaState.IsRetryable):
+//
+//	Failed              re-drive the forward path (no compensation ran)
+//	Compensated         rolled back to a clean state — safe to re-drive forward
+//	CompensationFailed  stuck after a partial rollback — re-drive is the recovery
+//
+// It rejects, with a typed *SagaNotRetryableError (matching
+// errors.Is(err, ErrSagaNotRetryable)):
+//
+//	Completed                       terminal success — never re-run
+//	Started / Running / Compensating in-flight — the event loop / timeout sweep owns it
+//
+// A missing saga returns the existing ErrSagaNotFound. To re-drive a stalled
+// Running saga whose worker died mid-dispatch, use ResumeStalled instead.
+//
+// # Idempotency
+//
+// Re-drive re-delivers a single event: only that event's idempotency key is
+// cleared before re-delivery, so already-succeeded earlier steps (recorded in
+// ProcessedEvents) are NOT re-dispatched. Beyond that, re-drive relies on the same
+// contract as the store's at-least-once delivery — saga command handlers MUST be
+// idempotent. A retry that fails again lands in the normal failure/compensation
+// path and may be retried again once the cause is truly fixed.
+//
+// # Concurrency
+//
+// The load -> re-drive -> save runs under the same per-saga lock the event loop
+// uses (so it cannot race an in-flight event for that saga), and the save uses
+// optimistic concurrency on the loaded version. A concurrent modification surfaces
+// as ErrConcurrencyConflict and is NOT silently swallowed or retried internally —
+// an operator action fails loudly and can be re-issued.
+//
+// # Mechanism
+//
+// The last trigger event is recovered from the manager-owned reserved slot of the
+// saga's stored state, captured during normal processing when WithSagaRetryCapture
+// is enabled (see reservedLastEventKey) — no event-store re-read and no schema
+// change. Capture is opt-in and zero-overhead when off; a retryable-status saga with
+// no captured event (capture disabled, or the saga last ran before it was enabled)
+// is rejected with a clear reason rather than guessing.
+//
+// # Observed outcome
+//
+// The returned error reports an OPERATIONAL failure (ErrConcurrencyConflict, a store
+// error, or an undecodable captured event). A re-drive that RAN but whose saga
+// failed again (driving compensation) returns nil — inspect the saga's status, or a
+// WithSagaRetryObserver's RetryEvent.ResultStatus, for the business outcome
+// (RetrySagasByType classifies this for you). The re-drive is auditable: it is
+// recorded as a SagaStep on the saga's history and reported to any observer.
+func (m *SagaManager) RetrySaga(ctx context.Context, sagaID string) error {
+	_, err := m.retrySaga(ctx, sagaID)
+	return err
+}
+
+// retrySaga is RetrySaga returning the saga's resulting status (meaningful when the
+// error is nil) so the batch path can classify the outcome without an extra load.
+func (m *SagaManager) retrySaga(ctx context.Context, sagaID string) (SagaStatus, error) {
+	// Cheap pre-check outside the per-saga lock: reject an obviously non-retryable
+	// or missing saga without taking the lock. The authoritative check is repeated
+	// under the lock (against a fresh reload) inside reDriveUnderLock.
+	pre, err := m.store.Load(ctx, sagaID)
+	if err != nil {
+		return 0, err // ErrSagaNotFound (typed) surfaces unchanged
+	}
+	if pre == nil {
+		return 0, &SagaNotFoundError{SagaID: sagaID}
+	}
+	if !pre.Status.IsRetryable() {
+		return 0, &SagaNotRetryableError{
+			SagaID: sagaID, Status: pre.Status,
+			Reason: "status is not retryable (expected Failed, Compensated, or CompensationFailed)",
+		}
+	}
+
+	return m.reDriveUnderLock(ctx, sagaID, func(state *SagaState) error {
+		if !state.Status.IsRetryable() {
+			return &SagaNotRetryableError{
+				SagaID: sagaID, Status: state.Status,
+				Reason: "status is not retryable (expected Failed, Compensated, or CompensationFailed)",
+			}
+		}
+		return nil
+	})
+}
+
+// ResumeStalled re-drives a Running saga whose worker died mid-dispatch, now,
+// instead of waiting for the WithSagaTimeout sweep to compensate it. It accepts
+// only a Running saga (any other status is rejected with *SagaNotRetryableError /
+// ErrSagaNotRetryable) and, to avoid fighting a live worker, requires the saga's
+// UpdatedAt to be older than the configured saga timeout (WithSagaTimeout); a saga
+// updated more recently, or a manager with no timeout configured, is refused.
+//
+// It reuses RetrySaga's machinery exactly: the same per-saga lock, optimistic
+// concurrency, single-event idempotency reset, SagaStep record, and
+// WithSagaRetryObserver reporting.
+func (m *SagaManager) ResumeStalled(ctx context.Context, sagaID string) error {
+	pre, err := m.store.Load(ctx, sagaID)
+	if err != nil {
+		return err
+	}
+	if pre == nil {
+		return &SagaNotFoundError{SagaID: sagaID}
+	}
+	if pre.Status != SagaStatusRunning {
+		return &SagaNotRetryableError{
+			SagaID: sagaID, Status: pre.Status,
+			Reason: "only a Running saga can be resumed",
+		}
+	}
+
+	_, err = m.reDriveUnderLock(ctx, sagaID, func(state *SagaState) error {
+		if state.Status != SagaStatusRunning {
+			return &SagaNotRetryableError{
+				SagaID: sagaID, Status: state.Status,
+				Reason: "only a Running saga can be resumed",
+			}
+		}
+		if m.sagaTimeout <= 0 {
+			return &SagaNotRetryableError{
+				SagaID: sagaID, Status: state.Status,
+				Reason: "ResumeStalled requires a configured saga timeout (WithSagaTimeout) to judge staleness",
+			}
+		}
+		if time.Since(state.UpdatedAt) < m.sagaTimeout {
+			return &SagaNotRetryableError{
+				SagaID: sagaID, Status: state.Status,
+				Reason: "saga was updated more recently than the timeout; it is not stalled",
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// RetryOutcome classifies the result of re-driving one saga within a batch
+// (RetrySagasByType).
+type RetryOutcome int
+
+const (
+	// RetrySucceeded means the re-drive was applied and the saga reached Completed.
+	RetrySucceeded RetryOutcome = iota
+
+	// RetryFailedAgain means the re-drive ran but the saga did not complete — it hit
+	// a fresh failure and followed the compensation path again, or the attempt
+	// returned a non-conflict operational error (see SagaRetryResult.Err).
+	RetryFailedAgain
+
+	// RetryConflicted means an optimistic-concurrency conflict prevented the
+	// re-drive; the saga is unchanged and the operation can be re-issued.
+	RetryConflicted
+
+	// RetrySkipped means the saga was not re-driven because it was not retryable
+	// (e.g. its status changed under the lock, or it has no captured trigger event).
+	RetrySkipped
+)
+
+// String returns a lower-case label for the outcome.
+func (o RetryOutcome) String() string {
+	switch o {
+	case RetrySucceeded:
+		return "succeeded"
+	case RetryFailedAgain:
+		return "failed_again"
+	case RetryConflicted:
+		return "conflicted"
+	case RetrySkipped:
+		return "skipped"
+	default:
+		return "unknown"
+	}
+}
+
+// SagaRetryResult is the outcome of re-driving a single saga in a batch.
+type SagaRetryResult struct {
+	// SagaID is the saga this result is for.
+	SagaID string
+
+	// Outcome classifies what happened.
+	Outcome RetryOutcome
+
+	// Err is the attempt's error, when any (nil for a clean RetrySucceeded).
+	Err error
+}
+
+// RetryReport is the aggregate result of RetrySagasByType, one entry per saga.
+type RetryReport struct {
+	// Results holds the per-saga outcomes, in the order the sagas were processed.
+	Results []SagaRetryResult
+}
+
+// Count returns how many sagas ended with the given outcome.
+func (r RetryReport) Count(o RetryOutcome) int {
+	n := 0
+	for _, res := range r.Results {
+		if res.Outcome == o {
+			n++
+		}
+	}
+	return n
+}
+
+// RetrySagasByType finds sagas of the given type in the given statuses (via
+// FindByType) and applies RetrySaga to each, sequentially, returning a per-saga
+// RetryReport. It is a pure composition of the single-saga primitive: each saga is
+// re-driven under its own per-saga lock, and a failure of one does NOT abort the
+// batch — every matched saga is attempted and its individual outcome recorded.
+//
+// Pass the retryable statuses to target (e.g. SagaStatusFailed,
+// SagaStatusCompensationFailed); a matched saga that is not retryable when its turn
+// comes is reported as RetrySkipped rather than failing the batch. The returned
+// error is non-nil only if the initial FindByType lookup fails.
+func (m *SagaManager) RetrySagasByType(ctx context.Context, sagaType string, statuses ...SagaStatus) (RetryReport, error) {
+	sagas, err := m.store.FindByType(ctx, sagaType, statuses...)
+	if err != nil {
+		return RetryReport{}, err
+	}
+
+	report := RetryReport{Results: make([]SagaRetryResult, 0, len(sagas))}
+	for _, s := range sagas {
+		res := SagaRetryResult{SagaID: s.ID}
+		// retrySaga returns the resulting status, so a re-failure is classified without
+		// an extra store load (the drive already reloaded and re-persisted the saga).
+		status, retryErr := m.retrySaga(ctx, s.ID)
+		switch {
+		case retryErr == nil:
+			if status == SagaStatusCompleted {
+				res.Outcome = RetrySucceeded
+			} else {
+				res.Outcome = RetryFailedAgain
+			}
+		case errors.Is(retryErr, ErrConcurrencyConflict):
+			res.Outcome, res.Err = RetryConflicted, retryErr
+		case errors.Is(retryErr, ErrSagaNotRetryable):
+			res.Outcome, res.Err = RetrySkipped, retryErr
+		default:
+			res.Outcome, res.Err = RetryFailedAgain, retryErr
+		}
+		report.Results = append(report.Results, res)
+	}
+	return report, nil
+}
+
+// reDriveUnderLock is the shared re-drive machinery behind RetrySaga and
+// ResumeStalled. It runs the load -> re-drive -> save critical section under the
+// saga's per-saga lock (see driveLocked), then — outside the lock — reports the
+// attempt to any WithSagaRetryObserver and returns the saga's resulting status
+// (meaningful when the returned error is nil).
+func (m *SagaManager) reDriveUnderLock(ctx context.Context, sagaID string, accept func(*SagaState) error) (SagaStatus, error) {
+	saga, fromStatus, driveErr, setupErr := m.driveLocked(ctx, sagaID, accept)
+	if setupErr != nil {
+		// The re-drive never ran (rejected on status/missing event/etc.); no attempt
+		// to report and no resulting status.
+		return 0, setupErr
+	}
+
+	resultStatus := saga.Status()
+
+	// Notify outside the lock (released by driveLocked's defer) so a slow observer
+	// cannot block other work for this saga.
+	m.notifyRetry(RetryEvent{
+		SagaID:       sagaID,
+		SagaType:     saga.SagaType(),
+		FromStatus:   fromStatus,
+		ResultStatus: resultStatus,
+		At:           time.Now(),
+		Err:          driveErr,
+	})
+
+	return resultStatus, driveErr
+}
+
+// driveLocked performs the re-drive critical section under the per-saga lock: fresh
+// reload (never a stale pre-read), accept re-validation, captured-event recovery +
+// single-event idempotency reset, hydrate, SagaStep record, and redrive. It returns
+// the hydrated saga, the status it was re-driven from, the re-drive's own error
+// (driveErr — nil, ErrConcurrencyConflict, or a shutdown error), and a setupErr for
+// a rejection that never ran (bad status, missing/undecodable event, unknown type).
+// On a non-nil setupErr the saga is nil.
+func (m *SagaManager) driveLocked(ctx context.Context, sagaID string, accept func(*SagaState) error) (saga Saga, fromStatus SagaStatus, driveErr, setupErr error) {
+	lock := m.getSagaLock(sagaID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Fresh (re)load under the lock — never act on a stale pre-read.
+	state, err := m.store.Load(ctx, sagaID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if state == nil {
+		return nil, 0, nil, &SagaNotFoundError{SagaID: sagaID}
+	}
+
+	// Re-validate under the lock: status may have changed since the pre-check.
+	if err := accept(state); err != nil {
+		return nil, 0, nil, err
+	}
+
+	// Recover the captured trigger event to re-deliver.
+	raw, ok := state.Data[reservedLastEventKey]
+	if !ok {
+		return nil, 0, nil, &SagaNotRetryableError{
+			SagaID: sagaID, Status: state.Status,
+			Reason: "no captured trigger event to re-drive (enable WithSagaRetryCapture, or the saga last ran before it was enabled)",
+		}
+	}
+	event, ok := decodeLastEvent(raw)
+	if !ok {
+		return nil, 0, nil, &SagaNotRetryableError{
+			SagaID: sagaID, Status: state.Status,
+			Reason: "captured trigger event could not be decoded",
+		}
+	}
+
+	fromStatus = state.Status
+
+	// Reset idempotency for ONLY the retried event; keep every earlier key so
+	// already-succeeded steps are not re-dispatched on re-delivery.
+	eventKey := fmt.Sprintf("%s:%d", event.ID, event.GlobalPosition)
+	state.ProcessedEvents = removeProcessedEventKey(state.ProcessedEvents, eventKey)
+
+	// Reset the settled status so the normal drive logic applies on re-delivery.
+	state.Status = SagaStatusRunning
+	state.FailureReason = ""
+	state.CompletedAt = nil
+
+	// Rebuild and hydrate the saga instance from the adjusted state.
+	m.mu.RLock()
+	factory := m.registry[state.Type]
+	m.mu.RUnlock()
+	if factory == nil {
+		return nil, 0, nil, fmt.Errorf("mink: saga factory not found for type %q", state.Type)
+	}
+	saga = factory(state.ID)
+	if err := m.hydrateSaga(saga, state); err != nil {
+		return nil, 0, nil, fmt.Errorf("mink: failed to hydrate saga for re-drive: %w", err)
+	}
+
+	// hydrateSaga repopulates the idempotency cache only when ProcessedEvents is
+	// non-empty; when the reset left it empty, set it explicitly here to clear any
+	// stale entry (notably the just-removed retried key) that would otherwise let
+	// saveSaga re-append or eventAlreadyProcessed short-circuit incorrectly.
+	if len(state.ProcessedEvents) == 0 {
+		m.processedEvents.Store(sagaID, state.ProcessedEvents)
+	}
+
+	// Record the re-drive on the saga's history so it is auditable even with no
+	// observer configured; the saga's resulting status after the drive is the outcome.
+	m.recordRetryStep(saga, fromStatus)
+
+	// Re-deliver through the normal drive path — identical semantics to a fresh
+	// delivery, persisted under optimistic concurrency (ErrConcurrencyConflict on a
+	// concurrent change; not retried internally).
+	driveErr = m.redrive(ctx, saga, event)
+	return saga, fromStatus, driveErr, nil
+}
+
+// recordRetryStep appends a SagaStep marking an operator re-drive to the saga's
+// history (persisted by the subsequent save), so a re-drive is auditable even with
+// no WithSagaRetryObserver configured. The step records the re-drive action itself —
+// which completes here — noting the status the saga was re-driven from; the saga's
+// resulting status after the drive (and any observer's RetryEvent.ResultStatus) is
+// the business outcome. It is a no-op for a saga that does not embed SagaBase.
+func (m *SagaManager) recordRetryStep(saga Saga, fromStatus SagaStatus) {
+	sr, ok := saga.(stepRecordingSaga)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	sr.RecordStep(SagaStep{
+		Name:        fmt.Sprintf("operator re-drive (from %s)", fromStatus),
+		Index:       saga.CurrentStep(),
+		Status:      SagaStepCompleted,
+		CompletedAt: &now,
+	})
+}
+
+// notifyRetry reports a re-drive attempt to the configured observer, if any.
+func (m *SagaManager) notifyRetry(ev RetryEvent) {
+	if m.retryObserver != nil {
+		m.retryObserver(ev)
+	}
+}
+
+// decodeLastEvent recovers a StoredEvent captured under reservedLastEventKey. The
+// in-memory saga store round-trips the value as a StoredEvent; a JSON-backed store
+// (e.g. PostgreSQL) round-trips it as a map[string]interface{}, so fall back to a
+// JSON re-decode. It returns false when the value is missing or unusable.
+func decodeLastEvent(raw interface{}) (StoredEvent, bool) {
+	switch v := raw.(type) {
+	case StoredEvent:
+		return v, true
+	case *StoredEvent:
+		if v == nil {
+			return StoredEvent{}, false
+		}
+		return *v, true
+	default:
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return StoredEvent{}, false
+		}
+		var ev StoredEvent
+		if err := json.Unmarshal(b, &ev); err != nil {
+			return StoredEvent{}, false
+		}
+		// A usable event must at least identify itself (idempotency keys on its ID).
+		if ev.ID == "" && ev.Type == "" {
+			return StoredEvent{}, false
+		}
+		return ev, true
+	}
+}
+
+// removeProcessedEventKey returns events with every occurrence of key removed,
+// preserving order. Used by re-drive to clear only the retried event's idempotency
+// key while leaving already-succeeded earlier keys intact. The input slice is not
+// mutated.
+func removeProcessedEventKey(events []string, key string) []string {
+	if len(events) == 0 {
+		return events
+	}
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		if e != key {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // SagaStateToJSON converts saga state to JSON for persistence.

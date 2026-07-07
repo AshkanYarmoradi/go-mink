@@ -36,8 +36,7 @@ which until now offered no first-class way to *query* that log by type.
 ### Good-to-have
 
 - **`--json` output.** A JSON array (each event with `global_position`, ids, type,
-  decoded `data`, metadata, timestamp) for scripting / CSV pipelines — the huisscan
-  "Operation Panel" export motivation behind the underlying primitive. Delivered here;
+  decoded `data`, metadata, timestamp) for scripting / CSV pipelines — an operations-panel export motivation behind the underlying primitive. Delivered here;
   the table stays the default.
 
 ### Non-Goals

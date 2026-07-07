@@ -696,6 +696,22 @@ func (s SagaStatus) IsTerminal() bool {
 	return s == SagaStatusCompleted || s == SagaStatusFailed || s == SagaStatusCompensated || s == SagaStatusCompensationFailed
 }
 
+// IsRetryable returns true if a saga in this status can be safely re-driven
+// forward by an operator (see mink.SagaManager.RetrySaga). These are exactly the
+// settled-but-unsuccessful states — Failed, Compensated, and CompensationFailed:
+// a Failed saga never compensated, a Compensated saga rolled back to a clean
+// state, and a CompensationFailed saga is stuck after a partial rollback and can
+// only be recovered by re-driving. It deliberately excludes:
+//   - Completed  — terminal success; re-running would repeat non-idempotent work
+//   - Started / Running — in-flight; owned by the event loop / timeout sweep
+//   - Compensating — a rollback is in progress; owned by the loop / sweep
+//
+// It is the retry counterpart of IsTerminal: every retryable status is terminal,
+// but Completed is terminal yet not retryable.
+func (s SagaStatus) IsRetryable() bool {
+	return s == SagaStatusFailed || s == SagaStatusCompensated || s == SagaStatusCompensationFailed
+}
+
 // SagaStepStatus represents the status of a saga step.
 type SagaStepStatus int
 
@@ -808,6 +824,14 @@ type SagaState struct {
 // IsTerminal returns true if the saga is in a terminal state.
 func (s *SagaState) IsTerminal() bool {
 	return s.Status == SagaStatusCompleted || s.Status == SagaStatusFailed || s.Status == SagaStatusCompensated || s.Status == SagaStatusCompensationFailed
+}
+
+// IsRetryable returns true if the saga can be safely re-driven forward by an
+// operator (see mink.SagaManager.RetrySaga). It mirrors IsTerminal and delegates
+// to SagaStatus.IsRetryable: true for exactly Failed, Compensated, and
+// CompensationFailed.
+func (s *SagaState) IsRetryable() bool {
+	return s.Status.IsRetryable()
 }
 
 // SagaStore defines the interface for saga persistence.

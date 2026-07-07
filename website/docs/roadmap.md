@@ -52,6 +52,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 - `Saga` interface and `SagaBase` implementation
 - `SagaManager` for orchestration with event correlation and idempotency
 - Compensation handling for rollback workflows
+- Operator-initiated safe re-drive of a settled saga (`RetrySaga`, plus `ResumeStalled` / `RetrySagasByType`) — concurrency-safe, idempotent, and auditable via `WithSagaRetryObserver`
 - `SagaStore` with PostgreSQL and in-memory implementations
 
 ### Outbox Pattern
