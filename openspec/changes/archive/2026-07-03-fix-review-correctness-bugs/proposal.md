@@ -55,7 +55,7 @@ semantics, never event mutation.
   (transaction-snapshot or gap-detection; **no DB-schema change**) so all three consumers
   benefit. The in-memory `SubscribeAll` already snapshots history and registers the
   subscriber atomically (done). (Findings 2, 5 — scope broadened after confirming async
-  projections and sagas share the gap and the production consumer huisscan is exposed;
+  projections and sagas share the gap and the production consumer is exposed;
   interim mitigations: the gap-free outbox for must-not-miss delivery, projection
   rebuild-from-0 to recover missed events.)
 - **Saga reliability** (`saga-orchestration`, NEW). `WithSagaRetryAttempts` SHALL

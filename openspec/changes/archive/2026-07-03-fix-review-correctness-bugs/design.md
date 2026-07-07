@@ -34,7 +34,7 @@ advanced position, so a skip is permanent) **and** the saga manager's event loop
 fix must live at the **shared load-from-position layer**, not in `subscription.go` alone,
 and all three consumers inherit it.
 
-Production context: the live consumer (huisscan) runs async projections + a saga with
+Production context: the live consumer runs async projections + a saga with
 concurrent, unserialized writers, so it is exposed today (silently missed read-model
 updates and un-fired saga steps under load). Interim mitigations while this ships: the
 **outbox is gap-free** (it claims rows with `FOR UPDATE SKIP LOCKED`, no position

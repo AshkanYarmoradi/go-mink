@@ -94,5 +94,5 @@ mechanism that lets callers **avoid** shared keys, complementing
   Stores with no encryption, no tagger, or no resolver are unaffected.
 - **Unblocks** per-subject field encryption of aggregate PII, completing per-subject
   crypto-shred for `SaveAggregate`-sourced identity data.
-- Downstream: huisscan can then encrypt clerk/user identity fields per subject and
+- Downstream: a consumer can then encrypt user identity fields per subject and
   erase them via `DataEraser` + `RevokeKey` with a clean `Verify`.

@@ -23,4 +23,4 @@
 
 ## 5. Good-to-have — machine-readable output (delivered here)
 
-- [x] 5.1 `--json` array output (each event with `global_position`, ids, `type`, decoded `data`, `metadata`, `timestamp`) for scripting / CSV pipelines (the huisscan Operation Panel export path). The table stays the default; encrypted `data` is emitted as stored (the CLI holds no keys), consistent with `mink stream export`
+- [x] 5.1 `--json` array output (each event with `global_position`, ids, `type`, decoded `data`, `metadata`, `timestamp`) for scripting / CSV pipelines (an operations-panel export path). The table stays the default; encrypted `data` is emitted as stored (the CLI holds no keys), consistent with `mink stream export`
