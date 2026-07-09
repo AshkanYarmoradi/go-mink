@@ -38,6 +38,11 @@ distinguishable `NULL` is expressed with a pointer field.
 - **WHEN** a read model persists a scalar field whose value is the Go zero value (`""`, `0`, `false`, zero time)
 - **THEN** the column stores that zero value, not `NULL` (persistence semantics are unchanged; the read-side coalescing does not leak into writes)
 
+#### Scenario: A non-NULL value that overflows the destination field is a typed error
+
+- **WHEN** a `nullable` numeric column holds a non-`NULL` value that does not fit its destination field — a value beyond the field's range (e.g. `int8`) or a negative value read into an unsigned field, written out of band
+- **THEN** the read fails with a typed `*ColumnValueRangeError` (matching `errors.Is(err, ErrColumnValueRange)`) naming the column and field, rather than silently truncating or wrapping the value — preserving the fail-loud behavior of a direct `database/sql` scan (which coalescing through a wide `int64`/`float64` intermediate would otherwise lose)
+
 ### Requirement: A NULL in a non-nullable column yields a typed, actionable error
 
 The read-model store SHALL, when a column **not** declared `nullable` nonetheless

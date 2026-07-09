@@ -34,6 +34,17 @@ type nullableAllKinds struct {
 	Blob    []byte    `mink:"blob,nullable"` // BYTEA -> already NULL-safe
 }
 
+// nullableNarrow has nullable fields whose Go type is narrower than the SQL
+// column can hold, so an out-of-range non-NULL value must fail loudly (a
+// *mink.ColumnValueRangeError) instead of silently truncating/wrapping on read.
+type nullableNarrow struct {
+	ID  string  `mink:"id,pk"`
+	I8  int8    `mink:"i8,nullable"`  // SMALLINT can hold values beyond int8
+	U8  uint8   `mink:"u8,nullable"`  // SMALLINT can hold values beyond uint8
+	U64 uint64  `mink:"u64,nullable"` // BIGINT is signed; a negative wraps
+	F32 float32 `mink:"f32,nullable"` // DOUBLE PRECISION can exceed float32
+}
+
 func columnIndex(cols []string, name string) int {
 	for i, c := range cols {
 		if c == name {
@@ -149,7 +160,7 @@ func TestGetScanTargets_NonNullCoalesce(t *testing.T) {
 	setHolder[float64](t, sc, repo.columns, "f64", 2.5)
 	setHolder[time.Time](t, sc, repo.columns, "when", when)
 
-	sc.run()
+	require.NoError(t, sc.run())
 
 	assert.Equal(t, "hello", m.Str)
 	assert.True(t, m.Flag)
@@ -174,7 +185,7 @@ func TestGetScanTargets_NullCoalesce(t *testing.T) {
 	}
 	sc := repo.getScanTargets(m)
 	// Leave every holder zero/Valid=false (simulating a scanned NULL) and run.
-	sc.run()
+	require.NoError(t, sc.run())
 
 	assert.Equal(t, "", m.Str)
 	assert.False(t, m.Flag)
@@ -204,6 +215,61 @@ func TestGetScanTargets_UnwrappedFieldsDirect(t *testing.T) {
 		_, wrapped := sc.ptrs[idx].(*sql.Null[string])
 		assert.Falsef(t, wrapped, "column %q must not be wrapped", col)
 	}
+}
+
+// TestGetScanTargets_RangeError proves a non-NULL value that does not fit a
+// nullable numeric field fails loudly with a typed *mink.ColumnValueRangeError
+// (matching a direct database/sql scan) instead of silently truncating/wrapping.
+func TestGetScanTargets_RangeError(t *testing.T) {
+	repo, err := NewPostgresRepository[nullableNarrow](nil,
+		WithAutoMigrate(false), WithTableName("nullable_narrow"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		column  string
+		field   string
+		ival    int64
+		fval    float64
+		isFloat bool
+	}{
+		{name: "int8 overflow", column: "i8", field: "I8", ival: 200},
+		{name: "uint8 overflow", column: "u8", field: "U8", ival: 300},
+		{name: "negative into unsigned", column: "u64", field: "U64", ival: -1},
+		{name: "float32 overflow", column: "f32", field: "F32", fval: 1e40, isFloat: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := repo.getScanTargets(&nullableNarrow{})
+			if tt.isFloat {
+				setHolder[float64](t, sc, repo.columns, tt.column, tt.fval)
+			} else {
+				setHolder[int64](t, sc, repo.columns, tt.column, tt.ival)
+			}
+
+			err := sc.run()
+			require.Error(t, err)
+			require.ErrorIs(t, err, mink.ErrColumnValueRange)
+			var rangeErr *mink.ColumnValueRangeError
+			require.ErrorAs(t, err, &rangeErr)
+			assert.Equal(t, tt.column, rangeErr.Column)
+			assert.Equal(t, tt.field, rangeErr.Field)
+		})
+	}
+
+	t.Run("in-range values succeed", func(t *testing.T) {
+		m := &nullableNarrow{}
+		sc := repo.getScanTargets(m)
+		setHolder[int64](t, sc, repo.columns, "i8", 100)
+		setHolder[int64](t, sc, repo.columns, "u8", 200)
+		setHolder[int64](t, sc, repo.columns, "u64", 5)
+		setHolder[float64](t, sc, repo.columns, "f32", 1.5)
+		require.NoError(t, sc.run())
+		assert.Equal(t, int8(100), m.I8)
+		assert.Equal(t, uint8(200), m.U8)
+		assert.Equal(t, uint64(5), m.U64)
+		assert.Equal(t, float32(1.5), m.F32)
+	})
 }
 
 func TestParseScanErrorColumn(t *testing.T) {
@@ -247,6 +313,8 @@ func TestMapScanError(t *testing.T) {
 		assert.Equal(t, "string", nce.GoType)
 		assert.Equal(t, driverErr, errors.Unwrap(nce))
 		assert.Contains(t, nce.Error(), "nullable")
+		// Sentinel match, mirroring the other typed errors in this package.
+		assert.ErrorIs(t, mapped, mink.ErrNullColumn)
 	})
 
 	t.Run("passes through unrelated error", func(t *testing.T) {
@@ -365,6 +433,25 @@ func TestPostgresRepository_NullableScalarReads(t *testing.T) {
 		assert.True(t, got.When.IsZero())
 	})
 
+	t.Run("TxRepository read coalesces NULL to zero", func(t *testing.T) {
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		txRepo := repo.WithTx(tx)
+
+		got, err := txRepo.Get(ctx, "nulls")
+		require.NoError(t, err)
+		assert.Equal(t, "", got.Str)
+		assert.True(t, got.When.IsZero())
+
+		list, err := txRepo.Find(ctx, mink.Query{
+			Filters: []mink.Filter{{Field: "id", Op: mink.FilterOpEq, Value: "nulls"}},
+		})
+		require.NoError(t, err)
+		require.Len(t, list, 1)
+		assert.Equal(t, "", list[0].Str)
+	})
+
 	t.Run("persisting a zero value stores the zero value, not NULL", func(t *testing.T) {
 		require.NoError(t, repo.Insert(ctx, &nullableAllKinds{ID: "zero", NonNull: "nn"}))
 		var strIsNull, whenIsNull bool
@@ -386,10 +473,49 @@ func TestPostgresRepository_NullableScalarReads(t *testing.T) {
 
 		_, err = repo.Get(ctx, "badnonnull")
 		require.Error(t, err)
+		require.ErrorIs(t, err, mink.ErrNullColumn)
 		var nce *mink.NullColumnError
 		require.Truef(t, errors.As(err, &nce), "want *NullColumnError, got %T: %v", err, err)
 		assert.Equal(t, "non_null", nce.Column)
 		assert.Equal(t, "NonNull", nce.Field)
 		assert.Contains(t, errors.Unwrap(nce).Error(), "converting NULL to")
 	})
+}
+
+// TestPostgresRepository_NullableRangeError confirms end-to-end that a real
+// out-of-range value in a nullable column (written out of band into a wider SQL
+// column) surfaces a typed *mink.ColumnValueRangeError on read, rather than the
+// silent truncation the sql.Null[int64] intermediate would otherwise cause.
+func TestPostgresRepository_NullableRangeError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	db := getTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	schema := createReadModelTestSchema(t, db)
+	ctx := context.Background()
+
+	repo, err := NewPostgresRepository[nullableNarrow](db,
+		WithReadModelSchema(schema),
+		WithTableName("nullable_narrow"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = repo.DropTable(ctx) }()
+
+	tableQ := quoteQualifiedTable(schema, "nullable_narrow")
+	require.NoError(t, repo.Insert(ctx, &nullableNarrow{ID: "x"}))
+	// Write 200 (valid SMALLINT, out of int8 range) straight into the column.
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET i8 = 200 WHERE id='x'`, tableQ))
+	require.NoError(t, err)
+
+	_, err = repo.Get(ctx, "x")
+	require.Error(t, err)
+	require.ErrorIs(t, err, mink.ErrColumnValueRange)
+	var rangeErr *mink.ColumnValueRangeError
+	require.ErrorAs(t, err, &rangeErr)
+	assert.Equal(t, "i8", rangeErr.Column)
+	assert.Equal(t, "I8", rangeErr.Field)
+	assert.Equal(t, "200", rangeErr.Value)
 }

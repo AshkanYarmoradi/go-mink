@@ -48,13 +48,19 @@ func (e *UnknownFilterFieldError) Unwrap() error {
 	return ErrUnknownFilterField
 }
 
+// ErrNullColumn indicates a stored SQL NULL was read into a non-pointer scalar
+// field whose column is not declared `nullable`. errors.Is(err, ErrNullColumn)
+// holds for a *NullColumnError; use errors.As to recover the column/field.
+var ErrNullColumn = errors.New("mink: NULL read into a non-nullable scalar column")
+
 // NullColumnError reports that a stored SQL NULL was read into a non-pointer
 // scalar struct field whose column is NOT declared `nullable`. A column tagged
 // `mink:"...,nullable"` reads a NULL as the field's Go zero value; this error is
 // the actionable replacement for the driver's opaque "converting NULL to <type>
 // is unsupported" when the tag is missing. Resolve it by tagging the field
-// `nullable` (NULL -> zero value) or making it a pointer (NULL -> nil). The
-// underlying driver error is retrievable via errors.Unwrap.
+// `nullable` (NULL -> zero value) or making it a pointer (NULL -> nil).
+// errors.Is(err, ErrNullColumn) matches it; the underlying driver error is
+// retrievable via errors.Unwrap.
 type NullColumnError struct {
 	Column string // SQL column that held NULL
 	Field  string // destination struct field (empty if unresolved)
@@ -77,9 +83,61 @@ func (e *NullColumnError) Error() string {
 	)
 }
 
+// Is reports a match against the ErrNullColumn sentinel, so callers can write
+// errors.Is(err, mink.ErrNullColumn) as well as errors.As for the details.
+func (e *NullColumnError) Is(target error) bool {
+	return target == ErrNullColumn
+}
+
 // Unwrap returns the underlying driver error so errors.Is/As can reach it.
 func (e *NullColumnError) Unwrap() error {
 	return e.Err
+}
+
+// ErrColumnValueRange indicates a non-NULL column value does not fit its
+// destination struct field's numeric type — a value outside the field's range
+// (e.g. beyond int8) or a negative value read into an unsigned field.
+// errors.Is(err, ErrColumnValueRange) holds for a *ColumnValueRangeError.
+var ErrColumnValueRange = errors.New("mink: column value out of range for destination field")
+
+// ColumnValueRangeError reports that a non-NULL value read from a `nullable`
+// scalar column overflows its destination field's Go type. The NULL-safe read
+// path scans nullable integers/floats through a wide intermediate (int64 /
+// float64) and copies the value back with reflection, which would otherwise
+// silently truncate or wrap an out-of-range value; this error preserves the
+// fail-loud behavior database/sql applies on a direct scan. Widen the field
+// type (e.g. int8 -> int32, or a signed type for a value that can be negative)
+// to resolve it.
+type ColumnValueRangeError struct {
+	Column string // SQL column
+	Field  string // destination struct field (empty if unresolved)
+	GoType string // Go type of the field (empty if unresolved)
+	Value  string // the out-of-range value as read from the column
+}
+
+func (e *ColumnValueRangeError) Error() string {
+	field := e.Field
+	if field == "" {
+		field = "?"
+	}
+	goType := e.GoType
+	if goType == "" {
+		goType = "the field type"
+	}
+	return fmt.Sprintf(
+		"mink: column %q value %s is out of range for field %s (%s); widen the destination field type",
+		e.Column, e.Value, field, goType,
+	)
+}
+
+// Is reports a match against the ErrColumnValueRange sentinel.
+func (e *ColumnValueRangeError) Is(target error) bool {
+	return target == ErrColumnValueRange
+}
+
+// Unwrap returns the ErrColumnValueRange sentinel.
+func (e *ColumnValueRangeError) Unwrap() error {
+	return ErrColumnValueRange
 }
 
 // ReadModelRepository provides generic CRUD operations for read models.

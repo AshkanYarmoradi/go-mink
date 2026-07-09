@@ -34,3 +34,20 @@ Required before Good-to-have; ordered by dependency.
   scalar column yields `NULL`, with a message that names the column/field and suggests the
   `nullable` tag. Table-driven test for the mapping; keep the underlying error via
   `Unwrap`.
+
+## Review hardening (post-PR-review #183)
+
+- [x] 3.1 Range-check nullable integer/float coalescing: since values are read through a
+  wide `int64`/`float64` intermediate, an out-of-range non-`NULL` value (beyond the field's
+  range, or negative into an unsigned field) now fails with a typed `*ColumnValueRangeError`
+  (sentinel `ErrColumnValueRange`) instead of silently truncating/wrapping — restoring the
+  fail-loud parity of a direct `database/sql` scan. Finalizers return an error; unit +
+  integration tests for each kind.
+- [x] 3.2 Add sentinel `ErrNullColumn` + `Is()` on `*NullColumnError`, matching the
+  package's sentinel-plus-typed-error convention (`errors.Is(err, ErrNullColumn)`).
+- [x] 3.3 Surface the typed `*NullColumnError` consistently from `Find` and `Get` (Get no
+  longer wraps the typed error in `get failed:`, matching the `scanRows` path).
+- [x] 3.4 Precompute the field→column mapping (`columnField`) at construction alongside the
+  scan kinds, removing per-row `newFieldMapper`/`getColumnName` reflection from the scan path.
+- [x] 3.5 Add a `TxRepository` nullable-read test asserting NULL coalescing through a
+  transaction.
