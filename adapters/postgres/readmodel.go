@@ -111,6 +111,11 @@ type PostgresRepository[T any] struct {
 	// exported field maps to it (the column then gets a discard destination).
 	scanKinds   []scalarScanKind
 	columnField []int
+	// modelType is the resolved (pointer-dereferenced) struct type of T, set
+	// once by buildTableSchema after it validates T is a struct. buildScanPlan
+	// and fieldForColumn reuse it instead of re-deriving and re-validating the
+	// type, so the struct-type resolution lives in exactly one place.
+	modelType reflect.Type
 }
 
 // scalarScanKind identifies how a NULL is coalesced when read into a nullable
@@ -287,6 +292,9 @@ func (r *PostgresRepository[T]) buildTableSchema() (*TableSchema, error) {
 	if typ.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("type must be a struct, got %s", typ.Kind())
 	}
+	// Record the resolved struct type so buildScanPlan / fieldForColumn reuse it
+	// rather than re-deriving and re-validating T.
+	r.modelType = typ
 
 	schema := &TableSchema{
 		TableName: r.config.tableName,
@@ -1015,15 +1023,7 @@ func (r *PostgresRepository[T]) buildScanPlan() {
 		r.columnField[i] = -1
 	}
 
-	var t T
-	typ := reflect.TypeOf(t)
-	if typ != nil && typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	if typ == nil || typ.Kind() != reflect.Struct {
-		return
-	}
-
+	typ := r.modelType
 	mapper := newFieldMapper(r.columns)
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
@@ -1034,13 +1034,11 @@ func (r *PostgresRepository[T]) buildScanPlan() {
 		if skip {
 			continue
 		}
-		idx, ok := mapper.colToIdx[colName]
-		if !ok {
-			continue
-		}
-		r.columnField[idx] = i
-		if r.tableSchema.Columns[idx].Nullable {
-			r.scanKinds[idx] = scalarKindForType(field.Type)
+		if idx, ok := mapper.colToIdx[colName]; ok {
+			r.columnField[idx] = i
+			if r.tableSchema.Columns[idx].Nullable {
+				r.scanKinds[idx] = scalarKindForType(field.Type)
+			}
 		}
 	}
 }
@@ -1220,14 +1218,7 @@ func parseScanErrorColumn(msg string) string {
 // type for error messages. Cold path (scan-error only), so it re-derives the
 // mapping by reflection rather than caching. Empty strings if unresolved.
 func (r *PostgresRepository[T]) fieldForColumn(colName string) (field, goType string) {
-	var t T
-	typ := reflect.TypeOf(t)
-	if typ != nil && typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	if typ == nil || typ.Kind() != reflect.Struct {
-		return "", ""
-	}
+	typ := r.modelType
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
 		if !f.IsExported() {

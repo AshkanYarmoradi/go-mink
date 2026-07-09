@@ -45,6 +45,24 @@ type nullableNarrow struct {
 	F32 float32 `mink:"f32,nullable"` // DOUBLE PRECISION can exceed float32
 }
 
+// nullableWithSkips has a `-`-tagged field and an unexported field, so both the
+// scan plan and fieldForColumn must skip them when enumerating struct fields.
+type nullableWithSkips struct {
+	ID      string `mink:"id,pk"`
+	Name    string `mink:"name,nullable"`
+	Skipped string `mink:"-"` // `-` tag: exercises the getColumnName skip path
+	hidden  int    //nolint:unused // unexported: exercises the IsExported() skip path
+}
+
+// dupColumnModel maps two fields to the same column name, so buildTableSchema
+// emits a duplicate column that no single field uniquely feeds — exercising the
+// discard scan target for an unmapped column index.
+type dupColumnModel struct {
+	ID string `mink:"id,pk"`
+	A  string `mink:"dup,nullable"`
+	B  string `mink:"dup,nullable"`
+}
+
 func columnIndex(cols []string, name string) int {
 	for i, c := range cols {
 		if c == name {
@@ -288,12 +306,73 @@ func TestParseScanErrorColumn(t *testing.T) {
 			msg:  "some other error",
 			want: "",
 		},
+		{
+			name: "unterminated name fragment",
+			msg:  `sql: Scan error on column index 3, name "non_null`, // no closing quote
+			want: "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, parseScanErrorColumn(tt.msg))
 		})
 	}
+}
+
+// TestBuildScanPlan_SkipsUnexportedAndDashFields covers the scan-plan builder's
+// handling of `-`-tagged and unexported fields (both excluded from columns).
+func TestBuildScanPlan_SkipsUnexportedAndDashFields(t *testing.T) {
+	repo, err := NewPostgresRepository[nullableWithSkips](nil,
+		WithAutoMigrate(false), WithTableName("skips"))
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{"id", "name"}, repo.columns)
+	nameIdx := columnIndex(repo.columns, "name")
+	require.GreaterOrEqual(t, nameIdx, 0)
+	assert.Equal(t, scanKindString, repo.scanKinds[nameIdx]) // nullable string is wrapped
+}
+
+// TestFieldForColumn covers the reverse column->field lookup used in error
+// messages, including iterating past skipped/unexported fields to "not found".
+func TestFieldForColumn(t *testing.T) {
+	repo, err := NewPostgresRepository[nullableWithSkips](nil,
+		WithAutoMigrate(false), WithTableName("skips"))
+	require.NoError(t, err)
+
+	t.Run("resolves a mapped field", func(t *testing.T) {
+		field, goType := repo.fieldForColumn("name")
+		assert.Equal(t, "Name", field)
+		assert.Equal(t, "string", goType)
+	})
+
+	t.Run("returns empty for an unresolved column", func(t *testing.T) {
+		// Walks past the `-`-tagged and unexported fields, then falls through.
+		field, goType := repo.fieldForColumn("does_not_exist")
+		assert.Empty(t, field)
+		assert.Empty(t, goType)
+	})
+}
+
+// TestGetScanTargets_DiscardUnmappedColumn covers the discard scan target for a
+// column that no struct field feeds (a duplicate column name leaves one column
+// index unmapped).
+func TestGetScanTargets_DiscardUnmappedColumn(t *testing.T) {
+	repo, err := NewPostgresRepository[dupColumnModel](nil,
+		WithAutoMigrate(false), WithTableName("dup_col"))
+	require.NoError(t, err)
+
+	sc := repo.getScanTargets(&dupColumnModel{})
+	require.Len(t, sc.ptrs, len(repo.columns))
+
+	discarded := 0
+	for idx, fieldIdx := range repo.columnField {
+		if fieldIdx < 0 {
+			_, isDiscard := sc.ptrs[idx].(*interface{})
+			assert.Truef(t, isDiscard, "unmapped column %d should get a discard target", idx)
+			discarded++
+		}
+	}
+	assert.Equal(t, 1, discarded, "exactly one duplicate column is left unmapped")
 }
 
 // TestMapScanError checks the Good-to-have mapping: a NULL-in-non-nullable
