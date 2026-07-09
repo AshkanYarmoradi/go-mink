@@ -723,3 +723,70 @@ func TestInMemoryRepository_GetAll(t *testing.T) {
 		assert.Equal(t, "b", results[0].ID)
 	})
 }
+
+func TestNullColumnError(t *testing.T) {
+	driverErr := errors.New(`converting NULL to string is unsupported`)
+
+	t.Run("message names the column, field and type and suggests the tag", func(t *testing.T) {
+		err := &NullColumnError{Column: "status", Field: "Status", GoType: "string", Err: driverErr}
+		msg := err.Error()
+		assert.Contains(t, msg, `"status"`)
+		assert.Contains(t, msg, "Status")
+		assert.Contains(t, msg, "string")
+		assert.Contains(t, msg, "nullable")
+		assert.Contains(t, msg, driverErr.Error())
+	})
+
+	t.Run("message degrades gracefully when field/type are unresolved", func(t *testing.T) {
+		err := &NullColumnError{Column: "status", Err: driverErr}
+		msg := err.Error()
+		assert.Contains(t, msg, "?")
+		assert.Contains(t, msg, "a non-nullable scalar")
+	})
+
+	t.Run("Is matches the ErrNullColumn sentinel only", func(t *testing.T) {
+		err := &NullColumnError{Column: "status", Err: driverErr}
+		require.ErrorIs(t, err, ErrNullColumn)
+		assert.False(t, errors.Is(err, ErrColumnValueRange))
+	})
+
+	t.Run("Unwrap yields the underlying driver error", func(t *testing.T) {
+		err := &NullColumnError{Column: "status", Err: driverErr}
+		assert.Equal(t, driverErr, errors.Unwrap(err))
+		require.ErrorIs(t, err, driverErr) // reachable via the chain
+
+		var nce *NullColumnError
+		require.ErrorAs(t, err, &nce)
+		assert.Equal(t, "status", nce.Column)
+	})
+}
+
+func TestColumnValueRangeError(t *testing.T) {
+	t.Run("message names the column, value, field and type", func(t *testing.T) {
+		err := &ColumnValueRangeError{Column: "qty", Field: "Qty", GoType: "int8", Value: "200"}
+		msg := err.Error()
+		assert.Contains(t, msg, `"qty"`)
+		assert.Contains(t, msg, "200")
+		assert.Contains(t, msg, "Qty")
+		assert.Contains(t, msg, "int8")
+		assert.Contains(t, msg, "out of range")
+	})
+
+	t.Run("message degrades gracefully when field/type are unresolved", func(t *testing.T) {
+		err := &ColumnValueRangeError{Column: "qty", Value: "200"}
+		msg := err.Error()
+		assert.Contains(t, msg, "?")
+		assert.Contains(t, msg, "the field type")
+	})
+
+	t.Run("Is and Unwrap resolve to the ErrColumnValueRange sentinel", func(t *testing.T) {
+		err := &ColumnValueRangeError{Column: "qty", Value: "200"}
+		require.ErrorIs(t, err, ErrColumnValueRange)
+		assert.False(t, errors.Is(err, ErrNullColumn))
+		assert.Equal(t, ErrColumnValueRange, errors.Unwrap(err))
+
+		var re *ColumnValueRangeError
+		require.ErrorAs(t, err, &re)
+		assert.Equal(t, "qty", re.Column)
+	})
+}
