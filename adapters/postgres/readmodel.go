@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	mink "go-mink.dev"
 )
@@ -96,6 +97,53 @@ type PostgresRepository[T any] struct {
 	tableSchema *TableSchema
 	columns     []string
 	idIndex     int
+	// scanKinds is parallel to columns: it records, for each column, how a NULL
+	// must be coalesced on read. A column is non-scanKindNone only when it is
+	// declared `nullable` AND its destination struct field is a non-pointer
+	// scalar kind — the exact case database/sql cannot scan a NULL into. Every
+	// other column stays scanKindNone and is scanned straight into the field
+	// address, unchanged. Computed once at construction (see computeScanKinds).
+	scanKinds []scalarScanKind
+}
+
+// scalarScanKind identifies how a NULL is coalesced when read into a nullable
+// scalar column's destination field: the stored NULL becomes the field's Go
+// zero value instead of failing rows.Scan. time.Time is distinguished from
+// other structs (which map to JSONB) so only real scalar destinations wrap.
+type scalarScanKind uint8
+
+const (
+	scanKindNone   scalarScanKind = iota // not a nullable scalar; scan directly
+	scanKindString                       // string
+	scanKindBool                         // bool
+	scanKindInt                          // Int, Int8..Int64
+	scanKindUint                         // Uint, Uint8..Uint64 (read through int64)
+	scanKindFloat                        // Float32, Float64
+	scanKindTime                         // time.Time
+)
+
+// scalarKindForType returns the NULL-coalescing scan kind for a non-pointer
+// scalar type, or scanKindNone for anything else — pointers (already NULL-safe
+// to nil), []byte/slices/maps and non-time structs (scanned as BYTEA/JSONB,
+// also NULL-safe to nil). Only these scalar kinds fail a direct NULL scan.
+func scalarKindForType(t reflect.Type) scalarScanKind {
+	switch t.Kind() {
+	case reflect.String:
+		return scanKindString
+	case reflect.Bool:
+		return scanKindBool
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return scanKindInt
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return scanKindUint
+	case reflect.Float32, reflect.Float64:
+		return scanKindFloat
+	case reflect.Struct:
+		if t == reflect.TypeOf(time.Time{}) {
+			return scanKindTime
+		}
+	}
+	return scanKindNone
 }
 
 // NewPostgresRepository creates a new PostgreSQL-backed repository for read models.
@@ -107,8 +155,18 @@ type PostgresRepository[T any] struct {
 //   - `mink:"column_name,pk"` - Primary key
 //   - `mink:"column_name,index"` - Create index
 //   - `mink:"column_name,unique"` - Unique constraint
-//   - `mink:"column_name,nullable"` - Allow NULL values
+//   - `mink:"column_name,nullable"` - Allow NULL values (see nullability note below)
 //   - `mink:"column_name,default=value"` - Default value
+//
+// Nullability: `nullable` governs both DDL and reads. On the write side the
+// column is emitted without NOT NULL. On the read side, a stored NULL in a
+// nullable non-pointer scalar column (string, the int/uint kinds, float, bool,
+// time.Time) is coalesced to the field's Go zero value ("", 0, false, zero
+// time) instead of failing the scan — so a single NULL never aborts a Find/Get.
+// The write path is unaffected: persisting a zero-value scalar stores that zero
+// value, never NULL. To persist and read back a distinguishable NULL, use a
+// pointer field (*string, …), which reads NULL as nil. A NULL in a column that
+// is NOT tagged nullable surfaces a typed *mink.NullColumnError.
 //
 // Example:
 //
@@ -190,6 +248,11 @@ func NewPostgresRepositoryContext[T any](ctx context.Context, db *sql.DB, opts .
 			repo.idIndex = i
 		}
 	}
+
+	// Precompute NULL-coalescing scan kinds (parallel to columns). This is the
+	// only place field types are classified for reads, so the per-row scan path
+	// is a slice lookup rather than repeated reflection.
+	repo.scanKinds = repo.computeScanKinds()
 
 	// Auto-migrate if enabled
 	if config.autoMigrate {
@@ -880,11 +943,12 @@ func (r *PostgresRepository[T]) scanRows(rows *sql.Rows) ([]*T, error) {
 
 	for rows.Next() {
 		model := new(T)
-		ptrs := r.getScanPointers(model)
+		sc := r.getScanTargets(model)
 
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+		if err := rows.Scan(sc.ptrs...); err != nil {
+			return nil, r.mapScanError(err)
 		}
+		sc.run()
 
 		results = append(results, model)
 	}
@@ -925,12 +989,71 @@ func getColumnName(field reflect.StructField) (string, bool) {
 	return colName, false
 }
 
-// getScanPointers returns pointers to struct fields for scanning.
-func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
+// computeScanKinds classifies every column for NULL-safe scanning, returning a
+// slice parallel to r.columns. A column gets a non-scanKindNone kind only when
+// it is declared `nullable` (from r.tableSchema.Columns) AND its destination
+// struct field is a non-pointer scalar. It resolves fields to columns with the
+// same getColumnName + fieldMapper logic as getScanTargets, so the two never
+// disagree about which field maps to which column.
+func (r *PostgresRepository[T]) computeScanKinds() []scalarScanKind {
+	kinds := make([]scalarScanKind, len(r.columns))
+
+	var t T
+	typ := reflect.TypeOf(t)
+	if typ != nil && typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ == nil || typ.Kind() != reflect.Struct {
+		return kinds
+	}
+
+	mapper := newFieldMapper(r.columns)
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		colName, skip := getColumnName(field)
+		if skip {
+			continue
+		}
+		idx, ok := mapper.colToIdx[colName]
+		if !ok || !r.tableSchema.Columns[idx].Nullable {
+			continue
+		}
+		kinds[idx] = scalarKindForType(field.Type)
+	}
+	return kinds
+}
+
+// rowScan holds the scan destinations for one row plus any finalizers that copy
+// a NULL-coalescing sql.Null[T] holder back into its struct field after Scan.
+type rowScan struct {
+	ptrs     []interface{}
+	finalize []func()
+}
+
+// run applies every finalizer, coalescing each wrapped nullable scalar column
+// (NULL -> the field's zero value; otherwise the scanned value). Call it only
+// after a successful rows.Scan / row.Scan.
+func (rs rowScan) run() {
+	for _, fn := range rs.finalize {
+		fn()
+	}
+}
+
+// getScanTargets builds the scan destinations for one row. A nullable scalar
+// column contributes a kind-matched sql.Null[T] holder plus a finalizer that
+// copies it back into the field (sql.Null[T]'s zero V already IS the Go zero
+// value, so a NULL naturally coalesces without inspecting Valid). Every other
+// column scans straight into the field address exactly as before, so models
+// with no nullable scalar columns allocate no finalizers and take the old path.
+func (r *PostgresRepository[T]) getScanTargets(model *T) rowScan {
 	val := reflect.ValueOf(model).Elem()
 	typ := val.Type()
 	mapper := newFieldMapper(r.columns)
 	ptrs := make([]interface{}, len(r.columns))
+	var finalize []func()
 
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
@@ -941,8 +1064,43 @@ func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
 		if skip {
 			continue
 		}
-		if idx, ok := mapper.colToIdx[colName]; ok {
-			ptrs[idx] = val.Field(i).Addr().Interface()
+		idx, ok := mapper.colToIdx[colName]
+		if !ok {
+			continue
+		}
+
+		f := val.Field(i)
+		kind := scanKindNone
+		if idx < len(r.scanKinds) {
+			kind = r.scanKinds[idx]
+		}
+		switch kind {
+		case scanKindString:
+			h := new(sql.Null[string])
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.SetString(h.V) })
+		case scanKindBool:
+			h := new(sql.Null[bool])
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.SetBool(h.V) })
+		case scanKindInt:
+			h := new(sql.Null[int64])
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.SetInt(h.V) })
+		case scanKindUint:
+			h := new(sql.Null[int64]) // driver surfaces integers as int64
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.SetUint(uint64(h.V)) })
+		case scanKindFloat:
+			h := new(sql.Null[float64])
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.SetFloat(h.V) })
+		case scanKindTime:
+			h := new(sql.Null[time.Time])
+			ptrs[idx] = h
+			finalize = append(finalize, func() { f.Set(reflect.ValueOf(h.V)) })
+		default:
+			ptrs[idx] = f.Addr().Interface()
 		}
 	}
 
@@ -953,7 +1111,7 @@ func (r *PostgresRepository[T]) getScanPointers(model *T) []interface{} {
 			ptrs[i] = &discard
 		}
 	}
-	return ptrs
+	return rowScan{ptrs: ptrs, finalize: finalize}
 }
 
 // extractValues extracts field values from a model.
@@ -977,6 +1135,73 @@ func (r *PostgresRepository[T]) extractValues(model *T) []interface{} {
 		}
 	}
 	return values
+}
+
+// mapScanError turns database/sql's opaque "converting NULL to <type> is
+// unsupported" failure — raised when a NULL lands in a non-nullable scalar
+// column scanned directly — into a typed *mink.NullColumnError that names the
+// offending column and struct field and suggests the `nullable` tag. The
+// nullable-scalar case is already handled by getScanTargets, so this only
+// improves the diagnostic for the remaining misconfiguration; it never
+// substitutes a value. Any other error (and the case where the column cannot be
+// identified) is returned unchanged, and the driver error is preserved via
+// Unwrap.
+func (r *PostgresRepository[T]) mapScanError(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "converting NULL to") {
+		return err
+	}
+	col := parseScanErrorColumn(err.Error())
+	if col == "" {
+		return err
+	}
+	field, goType := r.fieldForColumn(col)
+	return &mink.NullColumnError{Column: col, Field: field, GoType: goType, Err: err}
+}
+
+// parseScanErrorColumn extracts the column name from database/sql's
+// `Scan error on column index N, name "col": ...` message. Column names are
+// validated identifiers, so the first `name "…"` fragment is unambiguous.
+// Returns "" when the fragment is absent (e.g. a future message format).
+func parseScanErrorColumn(msg string) string {
+	const marker = `name "`
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// fieldForColumn resolves a column name back to its struct field name and Go
+// type for error messages. Cold path (scan-error only), so it re-derives the
+// mapping by reflection rather than caching. Empty strings if unresolved.
+func (r *PostgresRepository[T]) fieldForColumn(colName string) (field, goType string) {
+	var t T
+	typ := reflect.TypeOf(t)
+	if typ != nil && typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ == nil || typ.Kind() != reflect.Struct {
+		return "", ""
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, skip := getColumnName(f)
+		if skip {
+			continue
+		}
+		if name == colName {
+			return f.Name, f.Type.String()
+		}
+	}
+	return "", ""
 }
 
 // Helper functions
@@ -1191,13 +1416,14 @@ func (r *PostgresRepository[T]) getWithExecutor(ctx context.Context, exec dbExec
 
 	row := exec.QueryRowContext(ctx, query, id)
 	model := new(T)
-	ptrs := r.getScanPointers(model)
+	sc := r.getScanTargets(model)
 
-	if err := row.Scan(ptrs...); err == sql.ErrNoRows {
+	if err := row.Scan(sc.ptrs...); err == sql.ErrNoRows {
 		return nil, mink.ErrNotFound
 	} else if err != nil {
-		return nil, fmt.Errorf("mink/postgres/readmodel: get failed: %w", err)
+		return nil, fmt.Errorf("mink/postgres/readmodel: get failed: %w", r.mapScanError(err))
 	}
+	sc.run()
 
 	return model, nil
 }

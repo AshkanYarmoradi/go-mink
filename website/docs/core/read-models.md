@@ -409,11 +409,13 @@ orders, err := repo.Find(ctx, query.Build())
 | `mink:"col,pk"` | Primary key |
 | `mink:"col,index"` | Create index on column |
 | `mink:"col,unique"` | Unique constraint (also creates index) |
-| `mink:"col,nullable"` | Allow NULL values |
+| `mink:"col,nullable"` | Allow NULL values (see nullability note below) |
 | `mink:"col,default=value"` | Default value (see security note below) |
 | `mink:"col,type=VARCHAR(100)"` | Override SQL type (see security note below) |
 
 > **Security Note**: The `default=` and `type=` values are validated against common SQL injection patterns but are interpolated into DDL statements. Only use static, hardcoded values in your source code. Never construct these tag values from user input or external sources.
+
+> **Nullability Note**: `nullable` governs both the schema and reads. The column is emitted without `NOT NULL`, and a stored `NULL` in a nullable **non-pointer scalar** field (`string`, the `int`/`uint` kinds, `float32/64`, `bool`, `time.Time`) is read back as that field's Go zero value (`""`, `0`, `false`, zero time) — one `NULL` cell never aborts a `Find`/`Get`. Writes are unaffected: persisting a zero-value scalar stores that zero value, **not** `NULL`. To persist and read back a value distinguishable from the zero value, use a **pointer** field (`*string`, …), which reads `NULL` as `nil`. A `NULL` in a column that is *not* tagged `nullable` (e.g. an external write) surfaces a typed `*mink.NullColumnError` naming the column and field, instead of the driver's opaque `converting NULL to <type>` message.
 
 #### Go Type to SQL Mapping
 

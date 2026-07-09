@@ -48,6 +48,40 @@ func (e *UnknownFilterFieldError) Unwrap() error {
 	return ErrUnknownFilterField
 }
 
+// NullColumnError reports that a stored SQL NULL was read into a non-pointer
+// scalar struct field whose column is NOT declared `nullable`. A column tagged
+// `mink:"...,nullable"` reads a NULL as the field's Go zero value; this error is
+// the actionable replacement for the driver's opaque "converting NULL to <type>
+// is unsupported" when the tag is missing. Resolve it by tagging the field
+// `nullable` (NULL -> zero value) or making it a pointer (NULL -> nil). The
+// underlying driver error is retrievable via errors.Unwrap.
+type NullColumnError struct {
+	Column string // SQL column that held NULL
+	Field  string // destination struct field (empty if unresolved)
+	GoType string // Go type of the field, e.g. "string" (empty if unresolved)
+	Err    error  // underlying driver error
+}
+
+func (e *NullColumnError) Error() string {
+	field := e.Field
+	if field == "" {
+		field = "?"
+	}
+	goType := e.GoType
+	if goType == "" {
+		goType = "a non-nullable scalar"
+	}
+	return fmt.Sprintf(
+		"mink: column %q (field %s, %s) is NULL but not declared nullable; tag the field `mink:\"...,nullable\"` to read NULL as the zero value, or use a pointer field to read it as nil: %v",
+		e.Column, field, goType, e.Err,
+	)
+}
+
+// Unwrap returns the underlying driver error so errors.Is/As can reach it.
+func (e *NullColumnError) Unwrap() error {
+	return e.Err
+}
+
 // ReadModelRepository provides generic CRUD operations for read models.
 // T is the read model type.
 type ReadModelRepository[T any] interface {
