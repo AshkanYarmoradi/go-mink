@@ -17,6 +17,10 @@ type ProjectionEngine struct {
 	metrics         ProjectionMetrics
 	logger          Logger
 
+	// stateObserver, if set, is invoked (outside any worker lock) on every async/live
+	// projection state transition — see WithProjectionStateObserver. nil ⇒ no callback.
+	stateObserver func(name string, oldState, newState ProjectionState, err error)
+
 	// Inline projections (synchronous)
 	inlineProjections []InlineProjection
 	inlineMu          sync.RWMutex
@@ -34,6 +38,10 @@ type ProjectionEngine struct {
 	stopping atomic.Bool
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
+	// lifecycleMu serializes the stopping-transition against the guarded wg.Add in
+	// launchSupervisor, so a manual Restart can never add to the wait group after Stop
+	// has begun joining workers (which would race/panic the wait group).
+	lifecycleMu sync.Mutex
 }
 
 // ProjectionEngineOption configures a ProjectionEngine.
@@ -57,6 +65,29 @@ func WithProjectionMetrics(metrics ProjectionMetrics) ProjectionEngineOption {
 func WithProjectionLogger(logger Logger) ProjectionEngineOption {
 	return func(e *ProjectionEngine) {
 		e.logger = logger
+	}
+}
+
+// WithProjectionStateObserver registers a callback invoked on every async/live projection
+// state transition (oldState → newState), carrying the fault error when a worker enters
+// ProjectionStateFaulted (nil otherwise). Use it to push an alert on Faulted / Restarting
+// and on recovery instead of polling GetStatus. The callback runs outside the worker's
+// state lock, so it may safely call back into the engine (e.g. GetStatus) without deadlock
+// or reentrancy; it should not block for long, as it runs on the worker's goroutine. nil
+// (the default) means no callback and zero overhead. This does not change or extend the
+// ProjectionMetrics interface.
+func WithProjectionStateObserver(fn func(name string, oldState, newState ProjectionState, err error)) ProjectionEngineOption {
+	return func(e *ProjectionEngine) {
+		e.stateObserver = fn
+	}
+}
+
+// notifyStateObserver invokes the registered state observer, if any, for a transition.
+// It is always called after the caller has released the worker's state lock, so the
+// observer can re-enter the engine safely. A nil observer is a zero-overhead no-op.
+func (e *ProjectionEngine) notifyStateObserver(name string, oldState, newState ProjectionState, err error) {
+	if e.stateObserver != nil {
+		e.stateObserver(name, oldState, newState, err)
 	}
 }
 
@@ -93,14 +124,25 @@ type AsyncOptions struct {
 	// Default: 100ms
 	PollInterval time.Duration
 
-	// RetryPolicy defines how to handle errors.
+	// RetryPolicy defines how to handle errors. When set, its ShouldRetry method governs
+	// the retry budget and MaxRetries is ignored.
 	RetryPolicy RetryPolicy
 
-	// MaxRetries is the maximum number of retries for a failing (poison) event
-	// before the engine gives up on it. It is used when RetryPolicy is nil.
-	// When RetryPolicy is set, its ShouldRetry method governs instead.
+	// MaxRetries bounds retries for a failing (poison) event before the engine gives up
+	// on it, and is used only when RetryPolicy is nil. A positive value gives up after
+	// that many attempts; a non-positive value (0 or negative) retries indefinitely — the
+	// same convention the built-in ExponentialBackoffRetry/RetryForever policies follow.
 	// Default: 3
 	MaxRetries int
+
+	// ErrorClassifier optionally classifies a processing error as transient or poison. An
+	// error classified ErrorClassTransient is retried with backoff but does not consume
+	// the poison budget (MaxRetries / RetryPolicy), so it never reaches OnPoisonEvent and
+	// never faults the worker — infrastructure blips self-heal instead of exhausting the
+	// budget. An ErrorClassPoison error is accounted exactly as before. nil (the default)
+	// classifies every error as poison, making behavior and overhead identical to the
+	// prior release. See DefaultErrorClassifier for a batteries-included implementation.
+	ErrorClassifier func(error) ErrorClass
 
 	// OnPoisonEvent, if set, is invoked when an event keeps failing after the
 	// retry budget is exhausted. Returning nil tells the engine to skip the event
@@ -108,7 +150,16 @@ type AsyncOptions struct {
 	// nil, the worker stops in the Faulted state after the retries are exhausted.
 	OnPoisonEvent func(ctx context.Context, event StoredEvent, err error) error
 
-	// StartFromBeginning starts processing from the beginning of the event stream.
+	// RestartPolicy optionally restarts a Faulted worker with backoff, resuming strictly
+	// from its persisted checkpoint (never reprocessing from position 0). nil (the
+	// default) leaves a fault terminal — the worker goroutine exits, exactly as before —
+	// so this is opt-in and zero-overhead when unset. Reprocessing history remains the
+	// exclusive job of Rebuild.
+	RestartPolicy RestartPolicy
+
+	// StartFromBeginning starts processing from the beginning of the event stream on the
+	// worker's first boot when no checkpoint exists. It never applies to a supervised or
+	// manual restart, which always resume from the checkpoint.
 	// If false, starts from the last checkpoint.
 	// Default: false
 	StartFromBeginning bool
@@ -156,7 +207,12 @@ type exponentialBackoffRetry struct {
 	maxDelay   time.Duration
 }
 
-// ExponentialBackoffRetry creates a new retry policy with exponential backoff.
+// ExponentialBackoffRetry creates a RetryPolicy with exponential backoff. A positive
+// maxRetries caps the attempts (retry while attempt < maxRetries); a non-positive
+// maxRetries (0 or negative) means retry indefinitely — the same "non-positive = retry
+// forever" convention AsyncOptions.MaxRetries uses, and the basis of RetryForever. To
+// never retry, use NoRetry rather than a zero count. baseDelay is the first backoff and
+// maxDelay caps it.
 func ExponentialBackoffRetry(maxRetries int, baseDelay, maxDelay time.Duration) RetryPolicy {
 	return &exponentialBackoffRetry{
 		maxRetries: maxRetries,
@@ -165,25 +221,48 @@ func ExponentialBackoffRetry(maxRetries int, baseDelay, maxDelay time.Duration) 
 	}
 }
 
+// RetryForever returns a RetryPolicy that retries on every non-nil error, without limit,
+// using exponential backoff between attempts capped at maxDelay. It is the
+// self-documenting spelling of ExponentialBackoffRetry(0, baseDelay, maxDelay) — prefer
+// it when the intent is "retry forever with backoff." Use NoRetry to never retry.
+func RetryForever(baseDelay, maxDelay time.Duration) RetryPolicy {
+	return ExponentialBackoffRetry(0, baseDelay, maxDelay)
+}
+
+// ShouldRetry reports whether another attempt should be made. It returns false on a nil
+// error. For a non-nil error it retries indefinitely when maxRetries <= 0 (the "retry
+// forever" convention shared with AsyncOptions.MaxRetries and RetryForever), and
+// otherwise retries while attempt < maxRetries.
 func (r *exponentialBackoffRetry) ShouldRetry(attempt int, err error) bool {
 	if err == nil {
 		return false
+	}
+	if r.maxRetries <= 0 {
+		return true
 	}
 	return attempt < r.maxRetries
 }
 
 func (r *exponentialBackoffRetry) Delay(attempt int) time.Duration {
-	// Clamp attempt to valid range to avoid integer overflow
-	if attempt < 0 {
-		attempt = 0
+	return expBackoff(attempt, r.baseDelay, r.maxDelay)
+}
+
+// expBackoff computes an exponential backoff delay of baseDelay * 2^shift, clamped to
+// [baseDelay, maxDelay]. A negative shift clamps to 0; a shift large enough to overflow
+// returns maxDelay. Shared by the retry and restart policies so both back off identically.
+func expBackoff(shift int, baseDelay, maxDelay time.Duration) time.Duration {
+	// Clamp shift to a valid range to avoid integer overflow.
+	if shift < 0 {
+		shift = 0
 	}
-	// Cap the shift amount to prevent overflow (max 62 for int64 duration)
-	if attempt > 62 {
-		return r.maxDelay
+	// Cap the shift amount to prevent overflow (max 62 for int64 duration).
+	if shift > 62 {
+		return maxDelay
 	}
-	delay := r.baseDelay * (1 << uint(attempt)) // #nosec G115 - attempt is clamped to 0-62
-	if delay > r.maxDelay {
-		delay = r.maxDelay
+	delay := baseDelay * (1 << uint(shift)) // #nosec G115 - shift is clamped to 0-62
+	if delay <= 0 || delay > maxDelay {
+		// delay <= 0 catches a base*2^shift multiplication overflow.
+		return maxDelay
 	}
 	return delay
 }
@@ -191,7 +270,9 @@ func (r *exponentialBackoffRetry) Delay(attempt int) time.Duration {
 // noRetry is a retry policy that never retries.
 type noRetry struct{}
 
-// NoRetry returns a retry policy that never retries.
+// NoRetry returns a retry policy that never retries. It is the single canonical way to
+// stop on the first error; prefer it over ExponentialBackoffRetry(0, …), which now means
+// "retry forever."
 func NoRetry() RetryPolicy {
 	return &noRetry{}
 }
@@ -202,6 +283,112 @@ func (r *noRetry) ShouldRetry(attempt int, err error) bool {
 
 func (r *noRetry) Delay(attempt int) time.Duration {
 	return 0
+}
+
+// ErrorClass classifies a projection processing error for retry accounting. Its zero
+// value is ErrorClassPoison, so an unclassified error behaves exactly as before this
+// type existed. See AsyncOptions.ErrorClassifier and DefaultErrorClassifier.
+type ErrorClass int
+
+const (
+	// ErrorClassPoison is the zero value: the error counts against the poison retry
+	// budget (AsyncOptions.MaxRetries / RetryPolicy) and, once the budget is exhausted,
+	// reaches OnPoisonEvent or faults the worker — the classic poison-event path.
+	ErrorClassPoison ErrorClass = iota
+
+	// ErrorClassTransient marks a retryable infrastructure error: it is retried with
+	// backoff but does NOT consume the poison budget, so it never trips OnPoisonEvent and
+	// never faults the worker. Use it for errors that a later attempt can succeed on
+	// (dropped connections, failovers), letting the worker self-heal when infra returns.
+	ErrorClassTransient
+)
+
+// DefaultErrorClassifier classifies err as ErrorClassTransient when err, or any error in
+// its Unwrap chain, (a) satisfies errors.Is(err, ErrTransient), (b) implements
+// Retryable() bool returning true, or (c) implements interface{ Temporary() bool }
+// returning true (the net.Error idiom); otherwise it returns ErrorClassPoison. It
+// deliberately does NOT treat context.DeadlineExceeded as transient (even though that
+// error reports Temporary() == true), so a genuinely hung poison event is not retried
+// forever behind a batch timeout; a caller who wants deadlines treated as transient must
+// classify them explicitly. Exported so a custom classifier can wrap or compose it, e.g.
+// to add driver-specific transient codes.
+func DefaultErrorClassifier(err error) ErrorClass {
+	if err == nil {
+		return ErrorClassPoison
+	}
+	// An explicit transient marker always wins.
+	if errors.Is(err, ErrTransient) {
+		return ErrorClassTransient
+	}
+	// A context deadline is NOT auto-classified transient: context.DeadlineExceeded
+	// satisfies Temporary() == true, but treating a batch timeout as transient would
+	// retry a genuinely hung poison event forever. Guard it before the behavioral-
+	// interface checks below.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorClassPoison
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if r, ok := e.(Retryable); ok && r.Retryable() {
+			return ErrorClassTransient
+		}
+		if t, ok := e.(interface{ Temporary() bool }); ok && t.Temporary() {
+			return ErrorClassTransient
+		}
+	}
+	return ErrorClassPoison
+}
+
+// RestartPolicy decides whether and how long to wait before restarting a Faulted async
+// projection worker. The engine's supervising loop consults it after a worker exits into
+// Faulted; see AsyncOptions.RestartPolicy. A restart always resumes from the worker's
+// persisted checkpoint (never from position 0).
+type RestartPolicy interface {
+	// ShouldRestart reports whether a worker that has now faulted restartCount times
+	// (1 for the first restart) should be restarted again. lastErr is the fault cause.
+	ShouldRestart(restartCount int, lastErr error) bool
+
+	// Delay returns how long to wait before the given restart attempt (restartCount
+	// starts at 1). It should grow with restartCount and be capped, to avoid hot-looping.
+	Delay(restartCount int) time.Duration
+}
+
+// exponentialBackoffRestart implements RestartPolicy with exponential backoff.
+type exponentialBackoffRestart struct {
+	maxRestarts int
+	baseDelay   time.Duration
+	maxDelay    time.Duration
+}
+
+// ExponentialBackoffRestart returns a RestartPolicy that restarts a Faulted worker with
+// exponential backoff. A positive maxRestarts caps the number of restarts (after which
+// the worker stays Faulted); a non-positive maxRestarts (0 or negative) restarts
+// indefinitely — the same "non-positive = unlimited" convention as ExponentialBackoffRetry
+// and RetryForever. baseDelay is the first backoff and maxDelay caps it.
+func ExponentialBackoffRestart(maxRestarts int, baseDelay, maxDelay time.Duration) RestartPolicy {
+	return &exponentialBackoffRestart{
+		maxRestarts: maxRestarts,
+		baseDelay:   baseDelay,
+		maxDelay:    maxDelay,
+	}
+}
+
+// RestartForever returns a RestartPolicy that restarts a Faulted worker without limit,
+// with exponential backoff capped at maxDelay. It is the self-documenting spelling of
+// ExponentialBackoffRestart(0, baseDelay, maxDelay).
+func RestartForever(baseDelay, maxDelay time.Duration) RestartPolicy {
+	return ExponentialBackoffRestart(0, baseDelay, maxDelay)
+}
+
+func (r *exponentialBackoffRestart) ShouldRestart(restartCount int, _ error) bool {
+	if r.maxRestarts <= 0 {
+		return true
+	}
+	return restartCount <= r.maxRestarts
+}
+
+func (r *exponentialBackoffRestart) Delay(restartCount int) time.Duration {
+	// restartCount starts at 1, so the first restart waits baseDelay (shift 0).
+	return expBackoff(restartCount-1, r.baseDelay, r.maxDelay)
 }
 
 // validateProjection checks if a projection is valid for registration.
@@ -369,11 +556,12 @@ func (e *ProjectionEngine) Start(ctx context.Context) error {
 	e.stopping.Store(false)
 	e.stopCh = make(chan struct{})
 
-	// Start async projection workers
+	// Start async projection workers under a supervising loop. resumeFirst is false on
+	// first boot so StartFromBeginning is honored; a later restart forces a checkpoint
+	// resume.
 	e.asyncMu.RLock()
 	for _, worker := range e.asyncProjections {
-		e.wg.Add(1)
-		go e.runAsyncWorker(ctx, worker)
+		e.launchSupervisor(ctx, worker, false)
 	}
 	e.asyncMu.RUnlock()
 
@@ -395,8 +583,12 @@ func (e *ProjectionEngine) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	// Serialize the stopping transition with launchSupervisor's guarded wg.Add so a
+	// concurrent Restart cannot add to the wait group after we begin joining.
+	e.lifecycleMu.Lock()
 	e.stopping.Store(true)
 	close(e.stopCh)
+	e.lifecycleMu.Unlock()
 
 	// Wait for all workers to stop with context timeout
 	done := make(chan struct{})
@@ -521,6 +713,43 @@ func (e *ProjectionEngine) Rebuild(ctx context.Context, name string, opts ...Reb
 	worker.stateMu.Lock()
 	worker.lastPosition = pos
 	worker.stateMu.Unlock()
+	return nil
+}
+
+// Restart relaunches a Faulted async projection worker, resuming strictly from its
+// persisted checkpoint (never reprocessing from position 0, regardless of
+// StartFromBeginning). It is the operator counterpart to a configured RestartPolicy and
+// is symmetric with Pause/Resume/Rebuild. It is idempotent: a no-op returning nil when the
+// named worker is not Faulted (or when the engine is not running), and it returns
+// ErrProjectionNotFound for an unknown name. Concurrent Restart calls — and a race with an
+// automatic policy-driven restart — relaunch at most one worker goroutine.
+func (e *ProjectionEngine) Restart(ctx context.Context, name string) error {
+	e.asyncMu.RLock()
+	worker, ok := e.asyncProjections[name]
+	e.asyncMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrProjectionNotFound, name)
+	}
+
+	// Only a running, non-stopping engine can supervise a restart. Outside that window
+	// Restart is an idempotent no-op (Start launches workers; Stop joins them).
+	if !e.running.Load() || e.stopping.Load() {
+		return nil
+	}
+
+	// Only a Faulted worker needs a restart; otherwise no-op (idempotent on a healthy,
+	// paused, or rebuilding worker).
+	worker.stateMu.RLock()
+	faulted := worker.state == ProjectionStateFaulted
+	worker.stateMu.RUnlock()
+	if !faulted {
+		return nil
+	}
+
+	// launchSupervisor CASes the per-worker guard, so concurrent Restarts (or a race with
+	// an in-flight supervisor) launch at most one goroutine. resumeFirst is true so the
+	// relaunched worker resumes from its checkpoint even if StartFromBeginning is set.
+	e.launchSupervisor(ctx, worker, true)
 	return nil
 }
 
@@ -766,6 +995,10 @@ type asyncProjectionWorker struct {
 	state     ProjectionState
 	stateMu   sync.RWMutex
 	paused    atomic.Bool
+	// supervising is true while a supervising goroutine is alive for this worker. It
+	// guarantees at most one supervisor per worker across Start and manual Restart, and a
+	// race between them (see launchSupervisor).
+	supervising atomic.Bool
 	// processingMu serializes a worker's batch processing with a concurrent
 	// Rebuild, so the rebuilder never calls Apply on the projection while the
 	// worker is mid-batch (and vice versa).
@@ -800,24 +1033,55 @@ func (w *asyncProjectionWorker) getStatus() *ProjectionStatus {
 
 func (w *asyncProjectionWorker) setState(state ProjectionState) {
 	w.stateMu.Lock()
+	old := w.state
 	w.state = state
 	w.stateMu.Unlock()
+	if old != state {
+		w.engine.notifyStateObserver(w.projection.Name(), old, state, nil)
+	}
 }
 
 func (w *asyncProjectionWorker) setError(err error) {
 	w.stateMu.Lock()
+	old := w.state
 	w.lastError = err
 	if err != nil {
 		w.state = ProjectionStateFaulted
 	}
+	newState := w.state
+	w.stateMu.Unlock()
+	if old != newState {
+		w.engine.notifyStateObserver(w.projection.Name(), old, newState, err)
+	}
+}
+
+// setTransientError records a transient (retryable) processing error for observability
+// without faulting the worker: unlike setError it does not change the projection state,
+// so a transient outage is retried without ever showing as Faulted or firing a state
+// transition. Only reached when an ErrorClassifier classifies the error as transient.
+func (w *asyncProjectionWorker) setTransientError(err error) {
+	w.stateMu.Lock()
+	w.lastError = err
 	w.stateMu.Unlock()
 }
 
 func (w *asyncProjectionWorker) clearError() {
 	w.stateMu.Lock()
+	old := w.state
 	w.lastError = nil
 	w.state = ProjectionStateRunning
 	w.stateMu.Unlock()
+	if old != ProjectionStateRunning {
+		w.engine.notifyStateObserver(w.projection.Name(), old, ProjectionStateRunning, nil)
+	}
+}
+
+// getLastError returns the worker's last recorded error under the state lock. Used by the
+// supervising loop to pass the fault cause to RestartPolicy.ShouldRestart.
+func (w *asyncProjectionWorker) getLastError() error {
+	w.stateMu.RLock()
+	defer w.stateMu.RUnlock()
+	return w.lastError
 }
 
 func (w *asyncProjectionWorker) setFailedEvent(event *StoredEvent) {
@@ -925,15 +1189,100 @@ func (e *ProjectionEngine) getCheckpointWithRetry(ctx context.Context, name stri
 	return 0, lastErr
 }
 
-// runAsyncWorker runs the background worker for an async projection.
-func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProjectionWorker) {
+// exitReason reports why a single run of runAsyncWorkerOnce returned, so the supervising
+// loop can distinguish a clean stop from a fault eligible for restart.
+type exitReason int
+
+const (
+	// exitStopped: the worker stopped cleanly (engine stop, worker stop, or context
+	// cancellation). The supervisor must not restart it.
+	exitStopped exitReason = iota
+	// exitFaulted: the worker entered Faulted (persistent checkpoint-read failure or
+	// poison-budget exhaustion with no skip). The supervisor may restart it if a
+	// RestartPolicy permits.
+	exitFaulted
+)
+
+// launchSupervisor starts a supervising goroutine for the worker under the wait group,
+// unless one is already alive (the per-worker supervising guard) or the engine is
+// stopping. It returns true when it launched one. resumeFirst forces the first run to
+// resume from the checkpoint (used by manual Restart); Start passes false so the first
+// boot honors StartFromBeginning. Centralizing the guarded wg.Add here keeps Stop's join
+// race-free.
+func (e *ProjectionEngine) launchSupervisor(ctx context.Context, worker *asyncProjectionWorker, resumeFirst bool) bool {
+	if !worker.supervising.CompareAndSwap(false, true) {
+		return false // a supervisor is already alive for this worker
+	}
+	e.lifecycleMu.Lock()
+	if e.stopping.Load() {
+		e.lifecycleMu.Unlock()
+		worker.supervising.Store(false)
+		return false
+	}
+	e.wg.Add(1)
+	e.lifecycleMu.Unlock()
+
+	go func() {
+		defer worker.supervising.Store(false)
+		e.superviseAsyncWorker(ctx, worker, resumeFirst)
+	}()
+	return true
+}
+
+// superviseAsyncWorker runs an async worker under a supervising loop that owns the single
+// wg.Done for this launch. It runs the worker once; on a clean stop, or on a fault with no
+// RestartPolicy, it returns (today's terminal behavior). With a RestartPolicy that permits
+// restart, it marks the worker ProjectionStateRestarting, waits the policy's interruptible
+// backoff, and re-runs it — always resuming from the checkpoint, so a restart never
+// reprocesses from position 0.
+func (e *ProjectionEngine) superviseAsyncWorker(ctx context.Context, worker *asyncProjectionWorker, resumeFirst bool) {
 	defer e.wg.Done()
 
+	restarts := 0
+	for {
+		reason := e.runAsyncWorkerOnce(ctx, worker, resumeFirst || restarts > 0)
+		if reason != exitFaulted {
+			return // clean stop
+		}
+		policy := worker.options.RestartPolicy
+		if policy == nil {
+			return // no supervisor configured → fault is terminal, exactly as before
+		}
+		restarts++
+		if !policy.ShouldRestart(restarts, worker.getLastError()) {
+			return // policy gave up → remain Faulted (terminal)
+		}
+		worker.setState(ProjectionStateRestarting)
+
+		// Wait the restart backoff, still responding to stop/cancel signals so Stop can
+		// join a worker that is waiting to restart.
+		select {
+		case <-e.stopCh:
+			worker.setState(ProjectionStateStopped)
+			return
+		case <-worker.stopCh:
+			worker.setState(ProjectionStateStopped)
+			return
+		case <-ctx.Done():
+			worker.setState(ProjectionStateStopped)
+			return
+		case <-time.After(policy.Delay(restarts)):
+		}
+	}
+}
+
+// runAsyncWorkerOnce runs a single lifetime of the async worker: catch up from the
+// checkpoint, then poll and process batches until it stops (exitStopped) or faults
+// (exitFaulted). resumeFromCheckpoint forces the checkpoint read even when
+// StartFromBeginning is set — true on every restart, so a restart never reprocesses from
+// position 0 (StartFromBeginning governs only the first boot, when no checkpoint exists).
+func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *asyncProjectionWorker, resumeFromCheckpoint bool) exitReason {
 	worker.setState(ProjectionStateCatchingUp)
 
-	// Get initial checkpoint
+	// Get initial checkpoint. On a restart we always read it (resumeFromCheckpoint);
+	// StartFromBeginning is honored only on the first boot.
 	var startPosition uint64
-	if !worker.options.StartFromBeginning && e.checkpointStore != nil {
+	if (resumeFromCheckpoint || !worker.options.StartFromBeginning) && e.checkpointStore != nil {
 		pos, err := e.getCheckpointWithRetry(ctx, worker.projection.Name())
 		if err != nil {
 			// A load error is NOT "no checkpoint" — adapters return (0, nil) for a missing
@@ -943,12 +1292,15 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 			if isShutdownError(err) {
 				// Engine stopping during startup — stop cleanly rather than fault.
 				worker.setState(ProjectionStateStopped)
-				return
+				return exitStopped
 			}
+			// A persistent checkpoint-read failure faults (never defaults to 0). It is a
+			// fault like any other, so a configured RestartPolicy will retry it — a
+			// checkpoint-store outage that later heals self-recovers.
 			e.logger.Error("Failed to get checkpoint after retries; faulting worker instead of restarting from 0",
 				"projection", worker.projection.Name(), "error", err)
 			worker.setError(fmt.Errorf("load checkpoint: %w", err))
-			return
+			return exitFaulted
 		}
 		startPosition = pos
 	}
@@ -961,20 +1313,26 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 	ticker := time.NewTicker(worker.options.PollInterval)
 	defer ticker.Stop()
 
-	var consecutiveErrors int
+	// poisonErrors drives the retry budget (shouldRetry / OnPoisonEvent / fault) and counts
+	// only ErrorClassPoison errors. backoffErrors counts every error (any class) and drives
+	// only the backoff delay, so a transient outage still backs off. With no ErrorClassifier
+	// every error is poison, so the two counters stay equal and the arithmetic is identical
+	// to the pre-classification behavior.
+	var poisonErrors int
+	var backoffErrors int
 	var firstErrorAt time.Time
 
 	for {
 		select {
 		case <-e.stopCh:
 			worker.setState(ProjectionStateStopped)
-			return
+			return exitStopped
 		case <-worker.stopCh:
 			worker.setState(ProjectionStateStopped)
-			return
+			return exitStopped
 		case <-ctx.Done():
 			worker.setState(ProjectionStateStopped)
-			return
+			return exitStopped
 		case <-ticker.C:
 			// Skip processing while paused, but keep the worker alive.
 			if worker.paused.Load() {
@@ -988,50 +1346,67 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					worker.setState(ProjectionStateStopped)
-					return
+					return exitStopped
 				}
 
-				consecutiveErrors++
-				if consecutiveErrors == 1 {
+				backoffErrors++
+				if backoffErrors == 1 {
 					firstErrorAt = time.Now()
 				}
 
-				// Log only at power-of-2 counts (1, 2, 4, 8, 16...) to reduce noise
-				if consecutiveErrors&(consecutiveErrors-1) == 0 {
+				// Classify the error. Poison (the default, and the only class when no
+				// classifier is set) consumes the retry budget; transient does not.
+				isPoison := true
+				if worker.options.ErrorClassifier != nil {
+					isPoison = worker.options.ErrorClassifier(err) != ErrorClassTransient
+				}
+				if isPoison {
+					poisonErrors++
+				}
+
+				// Log only at power-of-2 counts (1, 2, 4, 8, 16...) to reduce noise. Driven
+				// by total consecutive errors so a transient outage is still visible.
+				if backoffErrors&(backoffErrors-1) == 0 {
 					e.logger.Error("Async projection error",
 						"projection", worker.projection.Name(),
 						"error", err,
-						"consecutive_errors", consecutiveErrors,
+						"consecutive_errors", backoffErrors,
 					)
 				}
 
-				worker.setError(err)
+				// Surface the error: a poison error faults the worker (as before); a
+				// transient error is recorded for visibility but never faults.
+				if isPoison {
+					worker.setError(err)
+				} else {
+					worker.setTransientError(err)
+				}
 				e.metrics.RecordError(worker.projection.Name(), err)
 
-				// If the retry budget for this (poison) event is exhausted, either
-				// skip it via the configured handler or stop the worker.
-				if !worker.shouldRetry(consecutiveErrors, err) {
+				// Only a poison error consumes the budget and can trip OnPoisonEvent/fault.
+				if isPoison && !worker.shouldRetry(poisonErrors, err) {
 					if e.handlePoisonEvent(ctx, worker, err) {
-						consecutiveErrors = 0
+						poisonErrors = 0
+						backoffErrors = 0
 						worker.clearError()
 						continue
 					}
 					e.logger.Error("Async projection giving up after exhausting retries",
 						"projection", worker.projection.Name(),
-						"consecutive_errors", consecutiveErrors,
+						"consecutive_errors", poisonErrors,
 						"error", err,
 					)
 					worker.setError(err) // remain Faulted
-					return
+					return exitFaulted
 				}
 
-				// Compute backoff delay
+				// Compute backoff delay from the total consecutive-error count.
 				var delay time.Duration
 				if worker.options.RetryPolicy != nil {
-					delay = worker.options.RetryPolicy.Delay(consecutiveErrors - 1)
+					delay = worker.options.RetryPolicy.Delay(backoffErrors - 1)
 				} else {
 					// Built-in fallback: exponential backoff, 100ms base, 30s cap
-					shift := consecutiveErrors - 1
+					shift := backoffErrors - 1
 					if shift > 18 {
 						shift = 18
 					}
@@ -1045,24 +1420,25 @@ func (e *ProjectionEngine) runAsyncWorker(ctx context.Context, worker *asyncProj
 				select {
 				case <-e.stopCh:
 					worker.setState(ProjectionStateStopped)
-					return
+					return exitStopped
 				case <-worker.stopCh:
 					worker.setState(ProjectionStateStopped)
-					return
+					return exitStopped
 				case <-ctx.Done():
 					worker.setState(ProjectionStateStopped)
-					return
+					return exitStopped
 				case <-time.After(delay):
 				}
-			} else if consecutiveErrors > 0 {
+			} else if backoffErrors > 0 {
 				// Recovered from errors
 				outageDuration := time.Since(firstErrorAt)
 				e.logger.Info("Async projection recovered",
 					"projection", worker.projection.Name(),
-					"consecutive_errors", consecutiveErrors,
+					"consecutive_errors", backoffErrors,
 					"outage_duration", outageDuration,
 				)
-				consecutiveErrors = 0
+				poisonErrors = 0
+				backoffErrors = 0
 				worker.clearError()
 			}
 		}
@@ -1256,8 +1632,12 @@ func (w *liveProjectionWorker) getStatus() *ProjectionStatus {
 
 func (w *liveProjectionWorker) setState(state ProjectionState) {
 	w.stateMu.Lock()
+	old := w.state
 	w.state = state
 	w.stateMu.Unlock()
+	if old != state {
+		w.engine.notifyStateObserver(w.projection.Name(), old, state, nil)
+	}
 }
 
 // runLiveWorker runs the background worker for a live projection.
