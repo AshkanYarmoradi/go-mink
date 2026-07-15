@@ -542,3 +542,35 @@ func TestProjectionEngine_Supervision_StopJoinsWorkerMidBackoff(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ProjectionStateStopped, status.State)
 }
+
+// --- Engine reuse: Start after Stop must relaunch workers ---
+
+func TestProjectionEngine_StartStopStart_Reuse(t *testing.T) {
+	engine, store, _ := newTestEngineWithStore()
+	require.NoError(t, store.Append(context.Background(), "Order-reuse-1",
+		[]interface{}{&ProjectionTestEvent{OrderID: "reuse"}}))
+
+	projection := newTestAsyncProjection("ReuseProj", "ProjectionTestEvent")
+	require.NoError(t, engine.RegisterAsync(projection, fastAsyncOpts()))
+
+	// The engine must be reusable: each Start after a Stop must relaunch the worker (reach
+	// Running). Reaching Running proves the supervisor goroutine was launched — it pins that
+	// the per-worker supervising guard is fully reset by the time Stop's join returns,
+	// otherwise a back-to-back Stop→Start could lose the CAS and silently never relaunch.
+	for cycle := 0; cycle < 5; cycle++ {
+		require.NoError(t, engine.Start(context.Background()))
+		require.Eventually(t, func() bool {
+			status, err := engine.GetStatus("ReuseProj")
+			return err == nil && status.State == ProjectionStateRunning
+		}, 2*time.Second, 5*time.Millisecond, "worker should relaunch and reach Running on cycle %d", cycle)
+		require.NoError(t, engine.Stop(context.Background()))
+	}
+
+	// And the reused worker is functional, not merely Running: a final run (left going long
+	// enough to tick a batch) processes the event.
+	require.NoError(t, engine.Start(context.Background()))
+	defer func() { _ = engine.Stop(context.Background()) }()
+	require.Eventually(t, func() bool {
+		return len(projection.Events()) >= 1
+	}, 2*time.Second, 5*time.Millisecond, "the reused worker should process events")
+}

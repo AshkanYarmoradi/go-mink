@@ -1223,21 +1223,24 @@ func (e *ProjectionEngine) launchSupervisor(ctx context.Context, worker *asyncPr
 	e.lifecycleMu.Unlock()
 
 	go func() {
+		// Deferred LIFO order matters: reset the supervising guard BEFORE wg.Done, so that
+		// once Stop's wg.Wait returns every supervising flag is already false. Otherwise a
+		// Start after Stop (engine reuse) could race a lingering flag, fail the CAS, and
+		// silently not relaunch the worker.
+		defer e.wg.Done()
 		defer worker.supervising.Store(false)
 		e.superviseAsyncWorker(ctx, worker, resumeFirst)
 	}()
 	return true
 }
 
-// superviseAsyncWorker runs an async worker under a supervising loop that owns the single
-// wg.Done for this launch. It runs the worker once; on a clean stop, or on a fault with no
-// RestartPolicy, it returns (today's terminal behavior). With a RestartPolicy that permits
-// restart, it marks the worker ProjectionStateRestarting, waits the policy's interruptible
-// backoff, and re-runs it — always resuming from the checkpoint, so a restart never
-// reprocesses from position 0.
+// superviseAsyncWorker runs an async worker under a supervising loop. It runs the worker
+// once; on a clean stop, or on a fault with no RestartPolicy, it returns (today's terminal
+// behavior). With a RestartPolicy that permits restart, it marks the worker
+// ProjectionStateRestarting, waits the policy's interruptible backoff, and re-runs it —
+// always resuming from the checkpoint, so a restart never reprocesses from position 0.
+// The wait-group accounting and the supervising guard are owned by launchSupervisor.
 func (e *ProjectionEngine) superviseAsyncWorker(ctx context.Context, worker *asyncProjectionWorker, resumeFirst bool) {
-	defer e.wg.Done()
-
 	restarts := 0
 	for {
 		reason := e.runAsyncWorkerOnce(ctx, worker, resumeFirst || restarts > 0)
@@ -1375,7 +1378,8 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 				}
 
 				// Surface the error: a poison error faults the worker (as before); a
-				// transient error is recorded for visibility but never faults.
+				// transient error is recorded for visibility but never faults. The worker
+				// stays Faulted from here on the terminal give-up path below.
 				if isPoison {
 					worker.setError(err)
 				} else {
@@ -1391,12 +1395,12 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 						worker.clearError()
 						continue
 					}
+					// The worker is already Faulted from setError above; give up terminally.
 					e.logger.Error("Async projection giving up after exhausting retries",
 						"projection", worker.projection.Name(),
 						"consecutive_errors", poisonErrors,
 						"error", err,
 					)
-					worker.setError(err) // remain Faulted
 					return exitFaulted
 				}
 
