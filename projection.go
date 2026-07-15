@@ -75,6 +75,13 @@ const (
 
 	// ProjectionStateCatchingUp indicates the projection is catching up to current events.
 	ProjectionStateCatchingUp ProjectionState = "catching_up"
+
+	// ProjectionStateRestarting indicates a Faulted async worker is waiting for its
+	// configured RestartPolicy to relaunch it (see AsyncOptions.RestartPolicy). It marks
+	// the backoff window between a fault and a policy-driven restart. Additive; the
+	// existing states are unchanged, and a projection without a RestartPolicy never
+	// enters this state.
+	ProjectionStateRestarting ProjectionState = "restarting"
 )
 
 // ProjectionStatus provides detailed information about a projection's current state.

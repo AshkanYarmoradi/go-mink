@@ -44,6 +44,7 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 ### Projection Engine & Read Models
 - Inline, async, and live projections
 - `ProjectionEngine` with worker pool, checkpointing, and rebuilding
+- Async worker resilience: transient-vs-poison error classification (`AsyncOptions.ErrorClassifier` / `DefaultErrorClassifier` / `ErrTransient`) so infrastructure blips retry independently of the poison budget, plus Faulted-worker supervision (`AsyncOptions.RestartPolicy`, `ProjectionEngine.Restart`) with checkpoint-safe resume and a push-based `WithProjectionStateObserver` fault alert
 - `ReadModelRepository[T]` generic interface with fluent query builder
 - Event subscriptions: `SubscribeAll`, `SubscribeStream`, `SubscribeCategory`
 - Catch-up and polling subscriptions with event filters
@@ -138,9 +139,9 @@ go-mink v1.0.0 is the first stable release, providing a complete toolkit for bui
 ### Future
 
 **Reliability**
-- [ ] Dead letter queue improvements
+- [ ] Dead letter queue improvements _(partial: async projections support `OnPoisonEvent` skip/dead-letter and transient-error classification)_
 - [ ] Circuit breaker pattern
-- [ ] Graceful degradation
+- [~] Graceful degradation _(async projection fault supervision landed: `RestartPolicy` with checkpoint-safe restart, manual `Restart`, and `WithProjectionStateObserver` fault alerting)_
 
 **Advanced Projections**
 - [ ] Projection versioning

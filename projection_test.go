@@ -35,6 +35,55 @@ func fastAsyncOpts() AsyncOptions {
 	return opts
 }
 
+// startEngine starts the engine under a cancelable context and registers cleanup that stops
+// it, so tests avoid repeating the Start / defer-Stop boilerplate. The returned context can
+// be ignored by callers that don't need it.
+func startEngine(t *testing.T, engine *ProjectionEngine) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, engine.Start(ctx))
+	t.Cleanup(func() {
+		_ = engine.Stop(context.Background())
+		cancel()
+	})
+	return ctx
+}
+
+// waitForState blocks until the named projection reaches want, failing the test on timeout.
+func waitForState(t *testing.T, engine *ProjectionEngine, name string, want ProjectionState) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		status, err := engine.GetStatus(name)
+		return err == nil && status.State == want
+	}, 2*time.Second, 5*time.Millisecond, "projection %q should reach state %s", name, want)
+}
+
+// appendTestEvents appends n single-event streams, yielding global positions 1..n.
+func appendTestEvents(t *testing.T, store *EventStore, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		require.NoError(t, store.Append(context.Background(),
+			"Order-evt-"+string(rune('a'+i)),
+			[]interface{}{&ProjectionTestEvent{OrderID: "evt"}}))
+	}
+}
+
+// poisonCountingOpts returns fast async options with a small poison budget (MaxRetries 2 /
+// ExponentialBackoffRetry(2, …)) and an OnPoisonEvent that increments — then skips via — the
+// returned counter. It is the shared setup of the retry/classification engine tests; callers
+// override RetryPolicy / ErrorClassifier / OnPoisonEvent as needed.
+func poisonCountingOpts() (AsyncOptions, *atomic.Int32) {
+	poisonCalls := &atomic.Int32{}
+	opts := fastAsyncOpts()
+	opts.MaxRetries = 2
+	opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
+	opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
+		poisonCalls.Add(1)
+		return nil
+	}
+	return opts, poisonCalls
+}
+
 // --- Projection Tests ---
 
 func TestProjectionBase(t *testing.T) {

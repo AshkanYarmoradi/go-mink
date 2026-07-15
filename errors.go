@@ -338,7 +338,25 @@ var (
 
 	// ErrProjectionFailed indicates a projection failed to process an event.
 	ErrProjectionFailed = errors.New("mink: projection failed")
+
+	// ErrTransient marks an error as a transient (retryable) infrastructure failure —
+	// e.g. a dropped database connection or a mid-failover read — as opposed to a
+	// deterministic "poison" failure that will never succeed on replay. A projection's
+	// Apply/ApplyBatch may wrap an infrastructure error with it
+	// (fmt.Errorf("...: %w", mink.ErrTransient)) to request retry independently of the
+	// poison budget; DefaultErrorClassifier honors it via errors.Is. It carries no
+	// behavior on its own — an AsyncOptions.ErrorClassifier must be configured for it to
+	// take effect.
+	ErrTransient = errors.New("mink: transient error")
 )
+
+// Retryable is an error that can declare itself retryable. DefaultErrorClassifier
+// classifies an error whose Unwrap chain implements Retryable and returns true as
+// ErrorClassTransient. It mirrors the net.Error "Temporary() bool" idiom, but is
+// exported so callers can mark their own errors without depending on the net package.
+type Retryable interface {
+	Retryable() bool
+}
 
 // ProjectionError provides detailed information about a projection failure.
 type ProjectionError struct {
