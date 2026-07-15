@@ -222,9 +222,11 @@ if err := engine.RegisterInline(summaryProjection); err != nil {
 analyticsProjection := NewAnalyticsProjection(db)
 if err := engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
     BatchSize:    100,
-    Interval:     time.Second,
-    Workers:      4,
-    RetryPolicy:  mink.NewExponentialBackoffRetry(100*time.Millisecond, 5*time.Second, 3),
+    PollInterval: time.Second,
+    // ExponentialBackoffRetry(maxRetries, baseDelay, maxDelay) — see "Retry Policy" below.
+    RetryPolicy:  mink.ExponentialBackoffRetry(3, 100*time.Millisecond, 5*time.Second),
+    // Optional resilience knobs (see the subsections below): ErrorClassifier for
+    // transient-vs-poison classification, RestartPolicy for Faulted-worker self-healing.
 }); err != nil {
     log.Fatal(err)
 }
@@ -258,7 +260,6 @@ stop the worker.
 ```go
 engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
     BatchSize:   100,
-    Workers:     4,
     MaxRetries:  3,
     OnPoisonEvent: func(ctx context.Context, event mink.StoredEvent, cause error) error {
         // Record it for later inspection, then skip so the projection continues.
@@ -268,6 +269,62 @@ engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
         return nil // returning a non-nil error would stop the worker instead
     },
 })
+```
+
+### Transient vs. poison errors
+
+By default every processing error counts against the same retry budget, so a brief
+infrastructure blip (a dropped connection, a database failover) is indistinguishable
+from a genuine *poison* event whose `Apply` fails deterministically — and a long-enough
+outage can exhaust the budget and fault the projection over an event that was never
+poison.
+
+Set `AsyncOptions.ErrorClassifier` to retry transient infrastructure errors
+**independently of the poison budget**. An error classified `ErrorClassTransient` is
+retried with backoff but never consumes the budget, so it never reaches `OnPoisonEvent`
+and never faults the worker; an `ErrorClassPoison` error is accounted exactly as before.
+When the classifier is `nil` (the default) every error is poison — identical to prior
+behavior, with zero overhead.
+
+`DefaultErrorClassifier` is a batteries-included classifier: it treats an error as
+transient when the error, or anything in its `Unwrap` chain, matches
+`errors.Is(err, mink.ErrTransient)`, implements the exported `Retryable() bool` returning
+`true`, or implements `interface{ Temporary() bool }` returning `true` (the `net.Error`
+idiom). It deliberately does **not** treat `context.DeadlineExceeded` as transient, so a
+genuinely hung poison event is not retried forever behind a batch timeout.
+
+```go
+engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
+    MaxRetries:      3,                          // poison budget — poison errors only
+    ErrorClassifier: mink.DefaultErrorClassifier, // transient errors retry off-budget
+})
+```
+
+Mark your own infrastructure errors transient so the default classifier retries them
+independently of the budget:
+
+```go
+func (p *AnalyticsProjection) Apply(ctx context.Context, e mink.StoredEvent) error {
+    if err := p.db.ExecContext(ctx, /* ... */); err != nil {
+        // A dropped connection is infrastructure, not a poison event — retry it without
+        // spending the poison budget. errors.Is(returned, mink.ErrTransient) holds.
+        return fmt.Errorf("write analytics row: %w", errors.Join(err, mink.ErrTransient))
+    }
+    return nil
+}
+```
+
+To recognize your driver's transient error codes, wrap or compose `DefaultErrorClassifier`
+in a custom classifier:
+
+```go
+ErrorClassifier: func(err error) mink.ErrorClass {
+    var pgErr *pgconn.PgError
+    if errors.As(err, &pgErr) && strings.HasPrefix(pgErr.Code, "08") { // connection exceptions
+        return mink.ErrorClassTransient
+    }
+    return mink.DefaultErrorClassifier(err)
+},
 ```
 
 ### Projection Status
@@ -315,6 +372,62 @@ if err := engine.Rebuild(ctx, "Analytics"); err != nil {
     log.Fatal(err)
 }
 ```
+
+### Fault supervision & self-healing
+
+Without a restart policy a projection that exhausts its budget stops in `Faulted` and
+its worker goroutine exits — recovery then needs a process restart or a manual `Rebuild`.
+Set `AsyncOptions.RestartPolicy` to have the engine **restart a Faulted worker with
+backoff, resuming strictly from its checkpoint** (never from position 0, even with
+`StartFromBeginning`). `RestartForever` restarts without limit;
+`ExponentialBackoffRestart(maxRestarts, base, max)` gives up after `maxRestarts` restarts
+(a non-positive `maxRestarts` means unlimited) and then leaves the worker `Faulted`. A
+persistent checkpoint-read failure faults but is itself restartable, so a checkpoint-store
+outage that heals self-recovers. When `RestartPolicy` is `nil` (the default) a fault stays
+terminal, exactly as before. A worker waiting to restart is reported in the new
+`ProjectionStateRestarting` state, and the engine's graceful `Stop` still joins one parked
+in restart backoff.
+
+```go
+engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{
+    ErrorClassifier: mink.DefaultErrorClassifier,
+    // Restart a Faulted worker from its checkpoint, backing off 1s→1m, without limit.
+    RestartPolicy:   mink.RestartForever(time.Second, time.Minute),
+})
+```
+
+**Manual restart.** `Restart` relaunches a Faulted worker from its checkpoint on demand —
+the operator counterpart to `RestartPolicy`, symmetric with `Pause`/`Resume`/`Rebuild`. It
+is idempotent (a no-op on a worker that is not Faulted) and returns
+`mink.ErrProjectionNotFound` for an unknown name.
+
+```go
+if err := engine.Restart(ctx, "Analytics"); err != nil {
+    log.Fatal(err)
+}
+```
+
+**Push-based fault alerting.** Register `WithProjectionStateObserver` to be *pushed* every
+state transition instead of polling `GetStatus`. The callback receives the projection name,
+the old and new state, and the fault error when a worker enters `Faulted`. It runs outside
+the worker's state lock, so it may safely call back into the engine (e.g. `GetStatus`); keep
+it non-blocking, since it runs on the worker's goroutine. With no observer registered there
+is no callback and zero overhead.
+
+```go
+engine := mink.NewProjectionEngine(store,
+    mink.WithCheckpointStore(checkpointStore),
+    mink.WithProjectionStateObserver(func(name string, old, new mink.ProjectionState, err error) {
+        if new == mink.ProjectionStateFaulted {
+            alerting.Fire("projection faulted", "projection", name, "error", err)
+        }
+    }),
+)
+```
+
+A supervised recovery is observable as
+`Running → Faulted → Restarting → CatchingUp → Running`, so a self-heal is distinguishable
+from a permanent fault.
 
 ## Read Model Repository
 
@@ -724,20 +837,41 @@ func (p *OrderSummaryProjection) Clear(ctx context.Context) error {
 
 ## Retry Policy
 
-Configure retry behavior for async projections:
+Configure how an async projection retries a failing event. `ExponentialBackoffRetry`
+takes the retry budget first, then the backoff bounds:
 
 ```go
-// Exponential backoff with jitter
-retryPolicy := mink.NewExponentialBackoffRetry(
-    100*time.Millisecond,  // Initial delay
-    5*time.Second,         // Max delay
-    3,                     // Max attempts
+// ExponentialBackoffRetry(maxRetries, baseDelay, maxDelay)
+retryPolicy := mink.ExponentialBackoffRetry(
+    3,                     // max attempts before the event is treated as poison
+    100*time.Millisecond,  // base delay
+    5*time.Second,         // max delay (backoff is capped here)
 )
 
 engine.RegisterAsync(projection, mink.AsyncOptions{
     RetryPolicy: retryPolicy,
 })
 ```
+
+**One retry-count convention.** A **positive** budget means "that many attempts, then
+stop"; a **non-positive** budget (`0` or negative) means **retry indefinitely**. The same
+convention holds for `ExponentialBackoffRetry`, for the nil-policy `AsyncOptions.MaxRetries`
+path, and for `RetryForever` — so the three can never disagree. When a `RetryPolicy` is set
+it governs the budget and `MaxRetries` is ignored.
+
+```go
+mink.RetryForever(time.Second, time.Minute) // retry forever, with capped backoff
+mink.NoRetry()                              // never retry — stop on the first error
+```
+
+Prefer `RetryForever` for unlimited retry and `NoRetry` for never; both read better than
+relying on a `0` count.
+
+:::warning Behavior change
+`ExponentialBackoffRetry(0, …)` previously meant *never retry*; it now means *retry
+forever*, matching the `MaxRetries` convention. If you passed a non-positive count to mean
+"never," switch to `NoRetry()`.
+:::
 
 ## Checkpoint Storage
 
