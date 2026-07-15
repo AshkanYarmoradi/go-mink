@@ -145,27 +145,16 @@ func TestDefaultAsyncOptions_RetryUnchanged(t *testing.T) {
 
 func TestProjectionEngine_ExponentialBackoffRetryZero_RetriesForever(t *testing.T) {
 	engine, store, _ := newTestEngineWithStore()
-	ctx := context.Background()
-	require.NoError(t, store.Append(ctx, "Order-rf-1", []interface{}{&ProjectionTestEvent{OrderID: "rf1"}}))
+	appendTestEvents(t, store, 1)
 
 	projection := newRetryProbeProjection("RetryForeverProbe", "ProjectionTestEvent")
 	projection.setErr(assert.AnError) // persistent failure
 
-	var poisonCalls atomic.Int32
-	opts := fastAsyncOpts()
-	// Before the fix this meant "never retry" → give up on the first error. It must now
-	// keep retrying.
+	opts, poisonCalls := poisonCountingOpts()
+	// Before the fix this meant "never retry" → give up on the first error. It must now keep retrying.
 	opts.RetryPolicy = ExponentialBackoffRetry(0, 2*time.Millisecond, 5*time.Millisecond)
-	opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
-		poisonCalls.Add(1)
-		return nil
-	}
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// The worker must retry the failing event many times rather than giving up at once.
 	require.Eventually(t, func() bool {

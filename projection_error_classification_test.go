@@ -95,27 +95,15 @@ func TestProjectionEngine_TransientError_RetriesPastBudgetWithoutFaulting(t *tes
 	engine, store, _ := newTestEngineWithStore()
 	metrics := newTestProjectionMetrics()
 	engine.metrics = metrics
-	ctx := context.Background()
-	require.NoError(t, store.Append(ctx, "Order-tr-1", []interface{}{&ProjectionTestEvent{OrderID: "tr1"}}))
+	appendTestEvents(t, store, 1)
 
 	projection := newRetryProbeProjection("TransientProbe", "ProjectionTestEvent")
 	projection.setErr(fmt.Errorf("connection reset: %w", ErrTransient))
 
-	var poisonCalls atomic.Int32
-	opts := fastAsyncOpts()
+	opts, poisonCalls := poisonCountingOpts() // MaxRetries 2 — the transient error must NOT exhaust it
 	opts.ErrorClassifier = DefaultErrorClassifier
-	opts.MaxRetries = 2 // tiny poison budget the transient error must NOT exhaust
-	opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
-	opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
-		poisonCalls.Add(1)
-		return nil
-	}
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// It keeps retrying well past MaxRetries (=2).
 	require.Eventually(t, func() bool {
@@ -136,29 +124,17 @@ func TestProjectionEngine_TransientError_RetriesPastBudgetWithoutFaulting(t *tes
 }
 
 func TestProjectionEngine_PoisonError_ExhaustsBudget(t *testing.T) {
-	ctx := context.Background()
-
 	t.Run("skips via OnPoisonEvent when handler returns nil", func(t *testing.T) {
 		engine, store, _ := newTestEngineWithStore()
-		require.NoError(t, store.Append(ctx, "Order-po-1", []interface{}{&ProjectionTestEvent{OrderID: "po1"}}))
+		appendTestEvents(t, store, 1)
 
 		projection := newRetryProbeProjection("PoisonSkipProbe", "ProjectionTestEvent")
 		projection.setErr(errors.New("deterministic apply failure")) // poison: matches no transient signal
 
-		var poisonCalls atomic.Int32
-		opts := fastAsyncOpts()
+		opts, poisonCalls := poisonCountingOpts()
 		opts.ErrorClassifier = DefaultErrorClassifier
-		opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
-		opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
-			poisonCalls.Add(1)
-			return nil // skip
-		}
 		require.NoError(t, engine.RegisterAsync(projection, opts))
-
-		runCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		require.NoError(t, engine.Start(runCtx))
-		defer func() { _ = engine.Stop(context.Background()) }()
+		startEngine(t, engine)
 
 		require.Eventually(t, func() bool {
 			return poisonCalls.Load() >= 1
@@ -167,32 +143,24 @@ func TestProjectionEngine_PoisonError_ExhaustsBudget(t *testing.T) {
 
 	t.Run("faults when no handler is set", func(t *testing.T) {
 		engine, store, _ := newTestEngineWithStore()
-		require.NoError(t, store.Append(ctx, "Order-po-2", []interface{}{&ProjectionTestEvent{OrderID: "po2"}}))
+		appendTestEvents(t, store, 1)
 
 		projection := newRetryProbeProjection("PoisonFaultProbe", "ProjectionTestEvent")
 		projection.setErr(errors.New("deterministic apply failure"))
 
-		opts := fastAsyncOpts()
+		opts, _ := poisonCountingOpts()
 		opts.ErrorClassifier = DefaultErrorClassifier
-		opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
+		opts.OnPoisonEvent = nil // no skip handler → the worker faults
 		require.NoError(t, engine.RegisterAsync(projection, opts))
+		startEngine(t, engine)
 
-		runCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		require.NoError(t, engine.Start(runCtx))
-		defer func() { _ = engine.Stop(context.Background()) }()
-
-		require.Eventually(t, func() bool {
-			status, err := engine.GetStatus("PoisonFaultProbe")
-			return err == nil && status.State == ProjectionStateFaulted
-		}, 2*time.Second, 5*time.Millisecond, "a poison error with no handler must fault the worker")
+		waitForState(t, engine, "PoisonFaultProbe", ProjectionStateFaulted)
 	})
 }
 
 func TestProjectionEngine_InterleavedTransientAndPoison_OnlyCountsPoison(t *testing.T) {
 	engine, store, _ := newTestEngineWithStore()
-	ctx := context.Background()
-	require.NoError(t, store.Append(ctx, "Order-mix-1", []interface{}{&ProjectionTestEvent{OrderID: "mix1"}}))
+	appendTestEvents(t, store, 1)
 
 	transient := fmt.Errorf("blip: %w", ErrTransient)
 	poison := errors.New("deterministic failure")
@@ -202,21 +170,10 @@ func TestProjectionEngine_InterleavedTransientAndPoison_OnlyCountsPoison(t *test
 	behaviors := []error{transient, transient, transient, poison}
 	projection := newScriptedProjection("InterleavedProbe", behaviors, "ProjectionTestEvent")
 
-	var poisonCalls atomic.Int32
-	opts := fastAsyncOpts()
+	opts, poisonCalls := poisonCountingOpts()
 	opts.ErrorClassifier = DefaultErrorClassifier
-	opts.MaxRetries = 2
-	opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
-	opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
-		poisonCalls.Add(1)
-		return nil
-	}
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// The event is eventually applied — only the single poison error advanced the budget
 	// (to 1 < 2), so the worker never gave up.
@@ -232,27 +189,15 @@ func TestProjectionEngine_InterleavedTransientAndPoison_OnlyCountsPoison(t *test
 
 func TestProjectionEngine_NilClassifier_ReproducesCurrentBehavior(t *testing.T) {
 	engine, store, _ := newTestEngineWithStore()
-	ctx := context.Background()
-	require.NoError(t, store.Append(ctx, "Order-nc-1", []interface{}{&ProjectionTestEvent{OrderID: "nc1"}}))
+	appendTestEvents(t, store, 1)
 
 	projection := newRetryProbeProjection("NilClassifierProbe", "ProjectionTestEvent")
 	// Even an error that WOULD classify transient must be treated as poison with no classifier.
 	projection.setErr(fmt.Errorf("would-be transient: %w", ErrTransient))
 
-	var poisonCalls atomic.Int32
-	opts := fastAsyncOpts()
-	opts.ErrorClassifier = nil // the default
-	opts.RetryPolicy = ExponentialBackoffRetry(2, 2*time.Millisecond, 5*time.Millisecond)
-	opts.OnPoisonEvent = func(_ context.Context, _ StoredEvent, _ error) error {
-		poisonCalls.Add(1)
-		return nil
-	}
+	opts, poisonCalls := poisonCountingOpts() // ErrorClassifier defaults to nil
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// With no classifier every error is poison, so the budget still exhausts and the event
 	// reaches OnPoisonEvent — identical to the pre-classification behavior.

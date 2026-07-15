@@ -144,14 +144,21 @@ func newObservedEngine(rec *stateRecorder) (*ProjectionEngine, *EventStore) {
 	return engine, store
 }
 
-// appendTestEvents appends n single-event streams, yielding global positions 1..n.
-func appendTestEvents(t *testing.T, store *EventStore, n int) {
+// waitForTransitions blocks until at least atLeast transitions into state have been recorded
+// for the named projection.
+func (r *stateRecorder) waitForTransitions(t *testing.T, name string, state ProjectionState, atLeast int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
-		require.NoError(t, store.Append(context.Background(),
-			"Order-sup-"+string(rune('a'+i)),
-			[]interface{}{&ProjectionTestEvent{OrderID: "sup"}}))
-	}
+	require.Eventually(t, func() bool {
+		return r.countInto(name, state) >= atLeast
+	}, 3*time.Second, 5*time.Millisecond, "projection %q should enter %s at least %d time(s)", name, state, atLeast)
+}
+
+// waitForApplied blocks until the supervised projection has applied at least atLeast events.
+func waitForApplied(t *testing.T, p *supervisedProjection, atLeast int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return len(p.appliedPositions()) >= atLeast
+	}, 3*time.Second, 5*time.Millisecond, "worker should apply at least %d event(s)", atLeast)
 }
 
 func supervisionOpts() AsyncOptions {
@@ -176,27 +183,17 @@ func TestProjectionEngine_Supervision_RestartResumesFromCheckpoint(t *testing.T)
 	opts := supervisionOpts()
 	opts.RestartPolicy = RestartForever(2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// Wait until it has faulted and been restarted at least once.
-	require.Eventually(t, func() bool {
-		return rec.countInto("ResumeFromCheckpoint", ProjectionStateRestarting) >= 1
-	}, 2*time.Second, 5*time.Millisecond, "worker should fault and enter Restarting")
+	rec.waitForTransitions(t, "ResumeFromCheckpoint", ProjectionStateRestarting, 1)
 
 	// Heal: the next restart resumes from checkpoint 1 and finishes positions 2 and 3.
 	projection.heal()
-
-	require.Eventually(t, func() bool {
-		return len(projection.appliedPositions()) == 3
-	}, 2*time.Second, 5*time.Millisecond, "worker should resume and apply all three events after healing")
+	waitForApplied(t, projection, 3)
 
 	// Never reprocessed from 0: position 1 was applied exactly once despite the restarts.
-	positions := projection.appliedPositions()
-	assert.Equal(t, []uint64{1, 2, 3}, positions, "must resume from the checkpoint, not replay from 0")
+	assert.Equal(t, []uint64{1, 2, 3}, projection.appliedPositions(), "must resume from the checkpoint, not replay from 0")
 }
 
 // --- Bounded restart policy eventually stays Faulted ---
@@ -211,22 +208,11 @@ func TestProjectionEngine_Supervision_BoundedRestartStaysFaulted(t *testing.T) {
 	opts := supervisionOpts()
 	opts.RestartPolicy = ExponentialBackoffRestart(3, 2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
+	startEngine(t, engine)
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
-
-	// Exactly 3 restarts, then terminal Faulted.
-	require.Eventually(t, func() bool {
-		return rec.countInto("BoundedRestart", ProjectionStateRestarting) == 3
-	}, 2*time.Second, 5*time.Millisecond, "a bounded policy should restart exactly maxRestarts times")
-
-	// It settles into Faulted and does not restart again.
-	require.Eventually(t, func() bool {
-		status, err := engine.GetStatus("BoundedRestart")
-		return err == nil && status.State == ProjectionStateFaulted
-	}, 2*time.Second, 5*time.Millisecond, "after exhausting restarts the worker stays Faulted")
+	// It restarts up to the bound (3), then settles into terminal Faulted.
+	rec.waitForTransitions(t, "BoundedRestart", ProjectionStateRestarting, 3)
+	waitForState(t, engine, "BoundedRestart", ProjectionStateFaulted)
 
 	// Give it a moment to prove no further restart fires.
 	time.Sleep(60 * time.Millisecond)
@@ -247,16 +233,10 @@ func TestProjectionEngine_Supervision_RestartForeverKeepsRestarting(t *testing.T
 	opts := supervisionOpts()
 	opts.RestartPolicy = RestartForever(2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// An unlimited policy keeps restarting well past any finite bound.
-	require.Eventually(t, func() bool {
-		return rec.countInto("RestartForever", ProjectionStateRestarting) >= 6
-	}, 3*time.Second, 5*time.Millisecond, "RestartForever should keep restarting with backoff")
+	rec.waitForTransitions(t, "RestartForever", ProjectionStateRestarting, 6)
 }
 
 // --- Manual Restart primitive ---
@@ -270,24 +250,15 @@ func TestProjectionEngine_Restart(t *testing.T) {
 		// No RestartPolicy: the fault is terminal until a manual Restart.
 		projection := newSupervisedProjection("ManualRestart", 1, assert.AnError, "ProjectionTestEvent")
 		require.NoError(t, engine.RegisterAsync(projection, supervisionOpts()))
+		runCtx := startEngine(t, engine)
 
-		runCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		require.NoError(t, engine.Start(runCtx))
-		defer func() { _ = engine.Stop(context.Background()) }()
-
-		require.Eventually(t, func() bool {
-			status, err := engine.GetStatus("ManualRestart")
-			return err == nil && status.State == ProjectionStateFaulted
-		}, 2*time.Second, 5*time.Millisecond, "worker should fault terminally with no RestartPolicy")
+		waitForState(t, engine, "ManualRestart", ProjectionStateFaulted)
 
 		// Fix the underlying condition, then manually restart.
 		projection.heal()
 		require.NoError(t, engine.Restart(runCtx, "ManualRestart"))
 
-		require.Eventually(t, func() bool {
-			return len(projection.appliedPositions()) == 1
-		}, 2*time.Second, 5*time.Millisecond, "a manual Restart should relaunch and resume the worker")
+		waitForApplied(t, projection, 1)
 		assert.Equal(t, []uint64{1}, projection.appliedPositions())
 	})
 
@@ -297,16 +268,9 @@ func TestProjectionEngine_Restart(t *testing.T) {
 
 		projection := newTestAsyncProjection("HealthyRestart", "ProjectionTestEvent")
 		require.NoError(t, engine.RegisterAsync(projection, fastAsyncOpts()))
+		runCtx := startEngine(t, engine)
 
-		runCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		require.NoError(t, engine.Start(runCtx))
-		defer func() { _ = engine.Stop(context.Background()) }()
-
-		require.Eventually(t, func() bool {
-			status, err := engine.GetStatus("HealthyRestart")
-			return err == nil && status.State == ProjectionStateRunning
-		}, 2*time.Second, 5*time.Millisecond)
+		waitForState(t, engine, "HealthyRestart", ProjectionStateRunning)
 
 		// Restart on a Running worker is a no-op returning nil.
 		require.NoError(t, engine.Restart(runCtx, "HealthyRestart"))
@@ -327,16 +291,9 @@ func TestProjectionEngine_Restart(t *testing.T) {
 
 		projection := newSupervisedProjection("ConcurrentRestart", 1, assert.AnError, "ProjectionTestEvent")
 		require.NoError(t, engine.RegisterAsync(projection, supervisionOpts()))
+		runCtx := startEngine(t, engine)
 
-		runCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		require.NoError(t, engine.Start(runCtx))
-		defer func() { _ = engine.Stop(context.Background()) }()
-
-		require.Eventually(t, func() bool {
-			status, err := engine.GetStatus("ConcurrentRestart")
-			return err == nil && status.State == ProjectionStateFaulted
-		}, 2*time.Second, 5*time.Millisecond)
+		waitForState(t, engine, "ConcurrentRestart", ProjectionStateFaulted)
 
 		// Heal, then fire a burst of concurrent Restarts. The per-worker guard must ensure
 		// exactly one supervisor relaunches, so the event applies exactly once.
@@ -351,9 +308,7 @@ func TestProjectionEngine_Restart(t *testing.T) {
 		}
 		wg.Wait()
 
-		require.Eventually(t, func() bool {
-			return len(projection.appliedPositions()) == 1
-		}, 2*time.Second, 5*time.Millisecond, "the worker should recover")
+		waitForApplied(t, projection, 1)
 		// Give any erroneous second supervisor a chance to double-apply before asserting.
 		time.Sleep(60 * time.Millisecond)
 		assert.Equal(t, []uint64{1}, projection.appliedPositions(), "at most one supervisor may run, so no duplicate apply")
@@ -371,20 +326,12 @@ func TestProjectionEngine_Supervision_ObserverSeesFaultAndRecovery(t *testing.T)
 	opts := supervisionOpts()
 	opts.RestartPolicy = RestartForever(2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
+	startEngine(t, engine)
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
-
-	require.Eventually(t, func() bool {
-		return rec.countInto("ObservedRecovery", ProjectionStateRestarting) >= 1
-	}, 2*time.Second, 5*time.Millisecond, "observer should see a Restarting transition")
+	rec.waitForTransitions(t, "ObservedRecovery", ProjectionStateRestarting, 1)
 
 	projection.heal()
-	require.Eventually(t, func() bool {
-		return len(projection.appliedPositions()) == 1
-	}, 2*time.Second, 5*time.Millisecond, "worker should recover after healing")
+	waitForApplied(t, projection, 1)
 
 	// The fault transition carried the fault error.
 	assert.True(t, rec.sawFaultError("ObservedRecovery"), "the Faulted transition must carry the fault error")
@@ -418,11 +365,7 @@ func TestProjectionEngine_Supervision_ObserverCanQueryEngineWithoutDeadlock(t *t
 	)
 
 	require.NoError(t, engine.RegisterAsync(newTestAsyncProjection("ObserverQuery", "ProjectionTestEvent"), fastAsyncOpts()))
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	require.Eventually(t, queried.Load, 2*time.Second, 5*time.Millisecond,
 		"observer must be able to call GetStatus without deadlock")
@@ -454,16 +397,10 @@ func TestProjectionEngine_Supervision_CheckpointReadFaultIsRestartable(t *testin
 	opts.StartFromBeginning = false
 	opts.RestartPolicy = RestartForever(2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
-	defer func() { _ = engine.Stop(context.Background()) }()
+	startEngine(t, engine)
 
 	// It faults on the checkpoint read and enters the restart cycle.
-	require.Eventually(t, func() bool {
-		return rec.countInto("CheckpointFault", ProjectionStateRestarting) >= 1
-	}, 3*time.Second, 10*time.Millisecond, "a persistent checkpoint-read failure should fault and be restarted")
+	rec.waitForTransitions(t, "CheckpointFault", ProjectionStateRestarting, 1)
 
 	// It never defaulted the position to 0, so nothing was processed during the outage.
 	assert.Empty(t, projection.appliedPositions(), "must not process from 0 while the checkpoint is unreadable")
@@ -473,9 +410,7 @@ func TestProjectionEngine_Supervision_CheckpointReadFaultIsRestartable(t *testin
 	checkpoint.getErr = nil
 	checkpoint.mu.Unlock()
 
-	require.Eventually(t, func() bool {
-		return len(projection.appliedPositions()) >= 1
-	}, 3*time.Second, 10*time.Millisecond, "a checkpoint-store outage that heals should self-recover")
+	waitForApplied(t, projection, 1)
 }
 
 // --- Composition with Rebuild ---
@@ -494,10 +429,7 @@ func TestProjectionEngine_Supervision_ComposesWithRebuild(t *testing.T) {
 	opts := fastAsyncOpts()
 	opts.RestartPolicy = RestartForever(2*time.Millisecond, 10*time.Millisecond)
 	require.NoError(t, engine.RegisterAsync(proj, opts))
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
+	startEngine(t, engine)
 
 	time.Sleep(40 * time.Millisecond) // let the worker get busy
 	// A Rebuild holds processingMu; the supervised loop honors it, so Apply never runs
@@ -520,15 +452,10 @@ func TestProjectionEngine_Supervision_StopJoinsWorkerMidBackoff(t *testing.T) {
 	// A long backoff parks the worker in the restart window, so Stop must interrupt it.
 	opts.RestartPolicy = RestartForever(10*time.Second, 10*time.Second)
 	require.NoError(t, engine.RegisterAsync(projection, opts))
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	require.NoError(t, engine.Start(runCtx))
+	startEngine(t, engine)
 
 	// Wait until the worker is parked in its (10s) restart backoff.
-	require.Eventually(t, func() bool {
-		return rec.countInto("StopMidBackoff", ProjectionStateRestarting) >= 1
-	}, 2*time.Second, 5*time.Millisecond, "worker should enter the restart backoff window")
+	rec.waitForTransitions(t, "StopMidBackoff", ProjectionStateRestarting, 1)
 
 	// Stop must return promptly — the backoff wait unblocks on the stop signal rather than
 	// blocking for the full 10s.
