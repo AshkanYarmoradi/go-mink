@@ -1,8 +1,19 @@
 {
-  "extends": "@docusaurus/tsconfig",
+  // Inlined from @docusaurus/tsconfig (v3.10.x) because that shared config still
+  // sets `baseUrl`, which TypeScript 7 removed (error TS5102). `paths` no longer
+  // needs `baseUrl` since TS 5.0 — mappings resolve relative to this file.
   "compilerOptions": {
-    "baseUrl": ".",
+    "allowJs": true,
+    "esModuleInterop": true,
     "jsx": "react-jsx",
-    "ignoreDeprecations": "6.0"
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "noEmit": true,
+    "paths": {
+      "@site/*": ["./*"]
+    },
+    "skipLibCheck": true
   }
 }
