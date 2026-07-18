@@ -33,7 +33,7 @@
     "@tailwindcss/postcss": "^4.3.2",
     "autoprefixer": "^10.5.2",
     "tailwindcss": "^4.3.2",
-    "typescript": "~6.0.3"
+    "typescript": "~7.0.2"
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
