@@ -8,8 +8,8 @@ github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 h1:xM/Is9cKMHa8Jj8zk
 github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30/go.mod h1:WueJeNDZvK1fMYEWJIkcivBfEzUkTpBhzlrUKKY8EuA=
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 h1:jn46zC9LdsVR/ZpMIJqMqb8hHv31BlLx3ulVqNspUOk=
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30/go.mod h1:1hTMsAgbdS/AtUi4bw8+gUuh1pceo+eXRLfpSuSQj3M=
-github.com/aws/aws-sdk-go-v2/service/kms v1.54.0 h1:XOfYhrscVxDr0fLbgA4lE5UbQh5w9t+eva8bZu4q6wY=
-github.com/aws/aws-sdk-go-v2/service/kms v1.54.0/go.mod h1:0RXNc6Yf3AvSMldGD6Lcch96Ojlw2TtGnHsqfD/L4u8=
+github.com/aws/aws-sdk-go-v2/service/kms v1.54.1 h1:aeJAJyvWS3gQ679pJbz8ZdOh3MViD1zvEdoZMVEawbg=
+github.com/aws/aws-sdk-go-v2/service/kms v1.54.1/go.mod h1:0RXNc6Yf3AvSMldGD6Lcch96Ojlw2TtGnHsqfD/L4u8=
 github.com/aws/aws-sdk-go-v2/service/sns v1.41.0 h1:GT6QdvVfByxl1/AJQe7PNbLtQDj0kmFTgx0eU2tLrKo=
 github.com/aws/aws-sdk-go-v2/service/sns v1.41.0/go.mod h1:5EnTxMpMVeiY0vcjjN/a958FFaHrS6XfXcyRBzDKDCE=
 github.com/aws/smithy-go v1.27.3 h1:F3Zb497UhhskkfpJmfkXswyo+t0sh9OTBnIHjogWbVY=
