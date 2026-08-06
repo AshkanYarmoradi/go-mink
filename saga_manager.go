@@ -579,6 +579,30 @@ func isShutdownError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// decryptEvent makes field encryption transparent for sagas, returning the event with
+// its encrypted Data decrypted via the same shared EventStore primitive every other
+// read surface routes through (Load, catch-up subscriptions, projections, the exporter).
+//
+// It exists because the saga manager subscribes through the RAW adapter
+// (Adapter().SubscribeAll) rather than through the EventStore's own read path, so it
+// does not inherit the store's transparent-decryption behavior. Without this, a saga is
+// handed ciphertext for every configured field — and since an encrypted field is stored
+// as a base64 string in place of its real shape, unmarshalling the payload into the
+// event's Go type fails on the first encrypted field, silently dead-ending every saga
+// started by an encrypted event.
+//
+// Zero overhead when no encryption is configured, when the event carries no encryption
+// markers, or when the manager was built without an event store (nil-guard: tests and
+// callers may drive ProcessEvent directly). A crypto-shredded subject whose configured
+// DecryptionErrorHandler returns nil yields the event with its fields left as stored and
+// no error, matching every other read surface.
+func (m *SagaManager) decryptEvent(ctx context.Context, event StoredEvent) (StoredEvent, error) {
+	if m.eventStore == nil {
+		return event, nil
+	}
+	return m.eventStore.DecryptStoredEvent(ctx, event)
+}
+
 // processEvent routes an event to appropriate sagas.
 func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error {
 	m.mu.RLock()
@@ -586,9 +610,31 @@ func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error
 	m.mu.RUnlock()
 
 	if len(sagaTypes) == 0 {
-		// No saga handles this event type
+		// No saga handles this event type — skip decrypting it too.
 		return nil
 	}
+
+	// Decrypt once, before any saga sees the event, so every saga observes the same
+	// plaintext a Load or a projection would. Done after the handler lookup so an event
+	// no saga cares about is never decrypted (mirrors the projection engine's
+	// decrypt-only-what-is-handled optimization).
+	//
+	// Note for GDPR: when WithSagaRetryCapture is enabled the captured trigger event is
+	// persisted into saga state, which therefore holds decrypted fields — the same
+	// property SagaState.Data has always had, and the reason NewSagaSubjectEraser exists.
+	// Register it with DataEraser.WithSubjectStore to purge saga-derived PII on erasure.
+	decrypted, err := m.decryptEvent(ctx, event)
+	if err != nil {
+		// Hard, unhandled decryption failure: report it rather than handing sagas
+		// ciphertext they cannot parse. The caller logs and continues, as it does for
+		// any other per-event failure.
+		m.logger.Error("Failed to decrypt event for saga delivery",
+			"eventType", event.Type,
+			"globalPosition", event.GlobalPosition,
+			"error", err)
+		return fmt.Errorf("mink: decrypt event at position %d for saga delivery: %w", event.GlobalPosition, err)
+	}
+	event = decrypted
 
 	for _, sagaType := range sagaTypes {
 		if err := m.processSagaEvent(ctx, sagaType, event); err != nil {
@@ -1565,6 +1611,16 @@ func (m *SagaManager) driveLocked(ctx context.Context, sagaID string, accept fun
 			SagaID: sagaID, Status: state.Status,
 			Reason: "captured trigger event could not be decoded",
 		}
+	}
+
+	// An event captured before field decryption reached the saga path — i.e. by a
+	// version of the library that handed sagas ciphertext — is still encrypted in saga
+	// state, so decrypt it and re-drive with the same plaintext a live delivery gives.
+	// A no-op (no markers) for an event captured after decryption, which is already
+	// plaintext, so this costs nothing on the normal path.
+	event, err = m.decryptEvent(ctx, event)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("mink: decrypt captured trigger event for saga %q: %w", sagaID, err)
 	}
 
 	fromStatus = state.Status
