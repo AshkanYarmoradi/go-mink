@@ -624,7 +624,7 @@ Mink
 Running Diagnostics
 
   Checking Go Version... OK
-    go1.25.0
+    go1.26.0
   Checking Configuration... OK
     Project: minkshop, Driver: postgres
   Checking Database Connection... OK
@@ -800,7 +800,7 @@ Mink
 │ Version   │ v1.0.0                      │
 │ Commit    │ abc123def                   │
 │ Built     │ 2026-01-07                  │
-│ Go        │ go1.25.0                    │
+│ Go        │ go1.26.0                    │
 │ OS/Arch   │ darwin/arm64                │
 └───────────┴─────────────────────────────┘
 ```

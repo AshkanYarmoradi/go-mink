@@ -6,7 +6,7 @@ Most examples need **zero infrastructure** — just `go run`. Two use PostgreSQL
 
 ## Prerequisites
 
-- **Go 1.25+**
+- **Go 1.26+**
 - **Docker** (only for the 🐘 PostgreSQL examples)
 
 ## Running an example

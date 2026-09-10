@@ -28,7 +28,7 @@ What actually happened. Include the full error message and stack trace if there 
 
 **Environment**
  - go-mink version: [e.g. v1.0.0 — run `go list -m go-mink.dev`]
- - Go version: [e.g. 1.25 — run `go version`]
+ - Go version: [e.g. 1.26 — run `go version`]
  - Adapter: [e.g. PostgreSQL 16, in-memory]
  - OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
 
