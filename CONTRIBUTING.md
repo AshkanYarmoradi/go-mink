@@ -132,7 +132,7 @@ Please follow these steps to have your contribution considered by the maintainer
 
 ### Prerequisites
 
-- **Go 1.25+** — the module targets Go 1.25; CI builds on Go 1.25 and 1.26.
+- **Go 1.26+** — the module targets Go 1.26; CI builds on Go 1.26 and 1.27.
 - **Docker** — used by `make test` to spin up PostgreSQL + Kafka for integration tests.
 - **golangci-lint** — for `make lint` ([installation guide](https://golangci-lint.run/welcome/install/)).
 

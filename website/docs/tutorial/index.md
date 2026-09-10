@@ -75,7 +75,7 @@ By the end, you'll have a production-ready foundation demonstrating:
 
 Before starting, ensure you have:
 
-- **Go 1.21+** installed ([download](https://go.dev/dl/))
+- **Go 1.26+** installed ([download](https://go.dev/dl/))
 - **Docker** for PostgreSQL ([download](https://www.docker.com/products/docker-desktop))
 - **Basic Go knowledge** — structs, interfaces, error handling
 - **A code editor** — VS Code with Go extension recommended
@@ -85,7 +85,7 @@ Before starting, ensure you have:
 ```bash
 # Check Go version
 go version
-# Expected: go version go1.21.x or higher
+# Expected: go version go1.26.x or higher
 
 # Check Docker
 docker --version

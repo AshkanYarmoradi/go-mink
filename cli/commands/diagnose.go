@@ -136,16 +136,16 @@ type DiagnosticCheck struct {
 
 func checkGoVersion() CheckResult {
 	version := runtime.Version()
-	if major, minor, ok := parseGoMinor(version); ok && (major < 1 || (major == 1 && minor < 21)) {
+	if major, minor, ok := parseGoMinor(version); ok && (major < 1 || (major == 1 && minor < 26)) {
 		return newCheckResult("Go Version", StatusWarning, version).
-			withRecommendation("Upgrade to Go 1.21 or later for best performance")
+			withRecommendation("Upgrade to Go 1.26 or later (go-mink requires Go 1.26+)")
 	}
 	return newCheckResult("Go Version", StatusOK, version)
 }
 
 // parseGoMinor extracts the major and minor version from a runtime.Version()
-// string like "go1.25.1" or "go1.21". It avoids lexicographic comparison bugs
-// (e.g. "go1.9" < "go1.21" is false as strings). Returns ok=false for non-release
+// string like "go1.26.1" or "go1.26". It avoids lexicographic comparison bugs
+// (e.g. "go1.9" < "go1.26" is false as strings). Returns ok=false for non-release
 // version strings (e.g. "devel ..."), which are treated as OK (not flagged).
 func parseGoMinor(version string) (major, minor int, ok bool) {
 	v := strings.TrimPrefix(version, "go")

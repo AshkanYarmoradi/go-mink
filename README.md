@@ -8,7 +8,7 @@
   <a href="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml"><img src="https://github.com/AshkanYarmoradi/go-mink/actions/workflows/test.yml/badge.svg" alt="Build Status"></a>
   <a href="https://codecov.io/gh/AshkanYarmoradi/go-mink"><img src="https://codecov.io/gh/AshkanYarmoradi/go-mink/graph/badge.svg?token=ZCB3IDSI2Q" alt="codecov"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
 </p>
 
 <p align="center">
@@ -99,7 +99,7 @@ Everything below is included, works together, and is covered by tests (**CI enfo
 
 ## Installation
 
-Requires **Go 1.25+** (matches `go.mod`; CI builds on Go 1.25 and 1.26).
+Requires **Go 1.26+** (matches `go.mod`; CI builds on Go 1.26 and 1.27).
 
 ```bash
 go get go-mink.dev                      # core library (memory adapter included)

@@ -45,7 +45,7 @@ This comprehensive example demonstrates all major go-mink features working toget
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - PostgreSQL 16+ running locally
 - Database credentials: `postgres:postgres@localhost:5432/mink_test`
 

@@ -44,7 +44,7 @@ make benchmark-adapters         # Memory adapter benchmarks (no infra)
 make benchmark-adapters-pg      # PostgreSQL adapter benchmarks (requires infra)
 ```
 
-**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.25. CI runs coverage tests on the go.mod version (1.25, ubuntu), lints on Go 1.25, and builds + runs `-short` unit tests on Go 1.25 & 1.26 across Linux, macOS, Windows. Scale tests enabled in CI via `MINK_SCALE_TESTS=1`; SonarQube Cloud analysis runs after the test job. The lint job also fails on unformatted code (`go fmt ./...`).
+**CI enforces 90% code coverage** (excludes `examples/` and `testing/`). Go version: go.mod targets 1.26. CI runs coverage tests on the go.mod version (1.26, ubuntu), lints on Go 1.26, and builds + runs `-short` unit tests on Go 1.26 & 1.27 across Linux, macOS, Windows. Scale tests enabled in CI via `MINK_SCALE_TESTS=1`; SonarQube Cloud analysis runs after the test job. The lint job also fails on unformatted code (`go fmt ./...`).
 
 **Branching & Releases**: Feature branches target `develop`. Each merge to `develop` auto-creates an RC pre-release (`v1.0.4-rc.1`, `v1.0.4-rc.2`, ...). Merging `develop` into `main` auto-creates the next stable release (`v1.0.4`). CI (test/lint/build) runs on both `main` and `develop`. Documentation deploys to GitHub Pages on push to `main` when `website/**` changes (via `.github/workflows/docs.yml`).
 
