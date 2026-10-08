@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 	"unicode"
@@ -94,7 +95,7 @@ Examples:
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			cfg, _, err := loadConfigOrDefault()
+			cfg, root, _, err := loadConfigOrDefaultWithRoot()
 			if err != nil {
 				return err
 			}
@@ -109,21 +110,52 @@ Examples:
 				events = parseCommaSeparated(eventsInput)
 			}
 
+			// Validate everything that ends up in generated Go source or in a
+			// file location before touching the filesystem: mink.yaml is not
+			// trusted input.
+			aggDir := cfg.Generation.AggregatePackage
+			if err := checkOutputDir(root, "aggregate_package", aggDir); err != nil {
+				return err
+			}
+			aggPkg, err := packageNameFromPath("aggregate_package", aggDir)
+			if err != nil {
+				return err
+			}
+			aggName := toPascalCase(name)
+			if err := validateIdentifier("aggregate", aggName); err != nil {
+				return err
+			}
+
 			data := AggregateData{
-				Name:    toPascalCase(name),
+				Name:    aggName,
 				Module:  cfg.Project.Module,
-				Package: filepath.Base(cfg.Generation.AggregatePackage),
+				Package: aggPkg,
 				Events:  make([]EventData, 0, len(events)),
 			}
 			for _, e := range events {
+				eventName := toPascalCase(e)
+				if err := validateIdentifier("event", eventName); err != nil {
+					return err
+				}
 				data.Events = append(data.Events, EventData{
-					Name:          toPascalCase(e),
+					Name:          eventName,
 					AggregateName: data.Name,
 				})
 			}
 
+			var eventsDir, eventPkg string
+			if len(events) > 0 {
+				eventsDir = cfg.Generation.EventPackage
+				if err := checkOutputDir(root, "event_package", eventsDir); err != nil {
+					return err
+				}
+				eventPkg, err = packageNameFromPath("event_package", eventsDir)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Create aggregate file
-			aggDir := cfg.Generation.AggregatePackage
 			if err := os.MkdirAll(aggDir, 0755); err != nil {
 				return err
 			}
@@ -136,7 +168,6 @@ Examples:
 
 			// Create events file if events provided
 			if len(events) > 0 {
-				eventsDir := cfg.Generation.EventPackage
 				if err := os.MkdirAll(eventsDir, 0755); err != nil {
 					return err
 				}
@@ -144,7 +175,7 @@ Examples:
 				eventsFile := filepath.Join(eventsDir, strings.ToLower(name)+"_events.go")
 				eventFileData := EventFileData{
 					Module:    cfg.Project.Module,
-					Package:   filepath.Base(cfg.Generation.EventPackage),
+					Package:   eventPkg,
 					Aggregate: data.Name,
 					Events:    data.Events,
 				}
@@ -188,13 +219,20 @@ Next steps:
 
 // generateWithAggregate is a helper that creates generator commands that need an aggregate reference.
 type generateWithAggregateParams struct {
-	use            string
-	short          string
-	aliases        []string
+	use     string
+	short   string
+	aliases []string
+	// kind names the generated artifact ("event", "command") in error messages.
+	kind           string
 	aggregateLabel string
+	// packageSetting is the mink.yaml generation.* key that supplies the
+	// output directory; it is named in validation errors.
+	packageSetting string
 	getOutputDir   func(*config.Config) string
 	template       string
-	makeData       func(cfg *config.Config, name, aggregate string) interface{}
+	// makeData builds the template data from already-validated inputs: pkg is
+	// the package identifier, name and aggregate are PascalCase identifiers.
+	makeData func(cfg *config.Config, pkg, name, aggregate string) interface{}
 }
 
 func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.Command {
@@ -209,7 +247,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			cfg, _, err := loadConfigOrDefault()
+			cfg, root, _, err := loadConfigOrDefaultWithRoot()
 			if err != nil {
 				return err
 			}
@@ -219,12 +257,30 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 				return err
 			}
 
+			// Validate the identifiers spliced into the template and the
+			// output location (from mink.yaml) before writing anything.
+			typeName := toPascalCase(name)
+			if err := validateIdentifier(params.kind, typeName); err != nil {
+				return err
+			}
+			aggregateName := toPascalCase(aggregate)
+			if err := validateIdentifier("aggregate", aggregateName); err != nil {
+				return err
+			}
+
 			outputDir := params.getOutputDir(cfg)
+			if err := checkOutputDir(root, params.packageSetting, outputDir); err != nil {
+				return err
+			}
+			pkg, err := packageNameFromPath(params.packageSetting, outputDir)
+			if err != nil {
+				return err
+			}
 			if err := os.MkdirAll(outputDir, 0755); err != nil {
 				return err
 			}
 
-			data := params.makeData(cfg, name, aggregate)
+			data := params.makeData(cfg, pkg, typeName, aggregateName)
 			outputFile := filepath.Join(outputDir, strings.ToLower(name)+".go")
 			if err := generateFile(outputFile, params.template, data, force); err != nil {
 				return err
@@ -246,15 +302,17 @@ func newGenerateEventCommand() *cobra.Command {
 		use:            "event <name>",
 		short:          "Generate an event",
 		aliases:        []string{"evt", "e"},
+		kind:           "event",
 		aggregateLabel: "The aggregate this event belongs to",
+		packageSetting: "event_package",
 		getOutputDir:   func(cfg *config.Config) string { return cfg.Generation.EventPackage },
 		template:       singleEventTemplate,
-		makeData: func(cfg *config.Config, name, aggregate string) interface{} {
+		makeData: func(cfg *config.Config, pkg, name, aggregate string) interface{} {
 			return SingleEventData{
 				Module:    cfg.Project.Module,
-				Package:   filepath.Base(cfg.Generation.EventPackage),
-				Name:      toPascalCase(name),
-				Aggregate: toPascalCase(aggregate),
+				Package:   pkg,
+				Name:      name,
+				Aggregate: aggregate,
 			}
 		},
 	})
@@ -272,7 +330,7 @@ func newGenerateProjectionCommand() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			cfg, _, err := loadConfigOrDefault()
+			cfg, root, _, err := loadConfigOrDefaultWithRoot()
 			if err != nil {
 				return err
 			}
@@ -287,16 +345,42 @@ func newGenerateProjectionCommand() *cobra.Command {
 				events = parseCommaSeparated(eventsInput)
 			}
 
+			projName := toPascalCase(name)
+			if err := validateIdentifier("projection", projName); err != nil {
+				return err
+			}
+			// Handled event types are spliced into method names and string
+			// literals. Each entry is PascalCased first — exactly as the aggregate
+			// generator treats its --events, so kebab/snake-case inputs such as
+			// order-created are accepted and yield the Go type name OrderCreated
+			// that a registered event type carries — and must then be a plain
+			// identifier.
+			handled := make([]string, 0, len(events))
+			for _, e := range events {
+				eventName := toPascalCase(e)
+				if err := validateIdentifier("event", eventName); err != nil {
+					return err
+				}
+				handled = append(handled, eventName)
+			}
+
 			projDir := cfg.Generation.ProjectionPackage
+			if err := checkOutputDir(root, "projection_package", projDir); err != nil {
+				return err
+			}
+			projPkg, err := packageNameFromPath("projection_package", projDir)
+			if err != nil {
+				return err
+			}
 			if err := os.MkdirAll(projDir, 0755); err != nil {
 				return err
 			}
 
 			projData := ProjectionData{
 				Module:  cfg.Project.Module,
-				Package: filepath.Base(cfg.Generation.ProjectionPackage),
-				Name:    toPascalCase(name),
-				Events:  events,
+				Package: projPkg,
+				Name:    projName,
+				Events:  handled,
 			}
 
 			projFile := filepath.Join(projDir, strings.ToLower(name)+".go")
@@ -326,15 +410,17 @@ func newGenerateCommandCommand() *cobra.Command {
 		use:            "command <name>",
 		short:          "Generate a command and handler",
 		aliases:        []string{"cmd", "c"},
+		kind:           "command",
 		aggregateLabel: "The aggregate this command operates on",
+		packageSetting: "command_package",
 		getOutputDir:   func(cfg *config.Config) string { return cfg.Generation.CommandPackage },
 		template:       commandTemplate,
-		makeData: func(cfg *config.Config, name, aggregate string) interface{} {
+		makeData: func(cfg *config.Config, pkg, name, aggregate string) interface{} {
 			return CommandData{
 				Module:    cfg.Project.Module,
-				Package:   filepath.Base(cfg.Generation.CommandPackage),
-				Name:      toPascalCase(name),
-				Aggregate: toPascalCase(aggregate),
+				Package:   pkg,
+				Name:      name,
+				Aggregate: aggregate,
 			}
 		},
 	})
@@ -380,6 +466,48 @@ type CommandData struct {
 	Package   string
 	Name      string
 	Aggregate string
+}
+
+var (
+	// goPackageNameRe matches the identifiers accepted in the package clause
+	// of generated files.
+	goPackageNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	// goIdentifierRe matches the identifiers accepted for generated type,
+	// method and function names.
+	goIdentifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// packageNameFromPath derives the Go package identifier for a configured
+// output package path (its last path element) and validates it, so that a
+// hostile or mistyped mink.yaml cannot inject arbitrary text into the package
+// clause of generated files. setting names the mink.yaml key in the error.
+func packageNameFromPath(setting, pkgPath string) (string, error) {
+	name := filepath.Base(pkgPath)
+	if !goPackageNameRe.MatchString(name) {
+		return "", fmt.Errorf("generation.%s: %q does not end in a valid Go package name (last path element must match %s)",
+			setting, pkgPath, goPackageNameRe)
+	}
+	return name, nil
+}
+
+// validateIdentifier checks that name, as it will appear in generated Go
+// source, is a plain identifier. kind names the artifact in the error.
+func validateIdentifier(kind, name string) error {
+	if !goIdentifierRe.MatchString(name) {
+		return fmt.Errorf("invalid %s name %q: must match %s", kind, name, goIdentifierRe)
+	}
+	return nil
+}
+
+// checkOutputDir verifies that a configured output directory stays inside
+// root (the directory holding mink.yaml, or the working directory when the
+// defaults are in use), so a hostile mink.yaml cannot direct generated files
+// outside the project. setting names the mink.yaml key in the error.
+func checkOutputDir(root, setting, dir string) error {
+	if err := ensureInsideDir(root, dir); err != nil {
+		return fmt.Errorf("generation.%s: %w", setting, err)
+	}
+	return nil
 }
 
 func toPascalCase(s string) string {

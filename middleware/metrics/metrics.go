@@ -22,6 +22,19 @@
 //   - Event store operations (append, load, subscribe)
 //   - Projection processing metrics
 //   - Error counts by type
+//
+// # Label cardinality
+//
+// Every label value this package emits is drawn from a bounded set that the
+// application controls: command types, aggregate types, projection names and
+// event types come from code (the event registry), and the outbox
+// "destination" label is whatever the caller of RecordMessageProcessed /
+// RecordMessageFailed passes — the OutboxProcessor passes the publisher
+// prefix (the text before the first ':' in a destination, e.g. "webhook" for
+// "webhook:https://..."), never the full destination, so the label set is
+// bounded by the number of registered publishers. A custom OutboxMetrics
+// caller that records full destinations is responsible for keeping that set
+// small and free of credentials.
 package metrics
 
 import (
@@ -46,6 +59,7 @@ const (
 	LabelErrorType      = "error_type"
 	LabelStreamID       = "stream_id"
 	LabelService        = "service"
+	LabelDestination    = "destination"
 )
 
 // Status values.
@@ -272,7 +286,7 @@ func (m *Metrics) initMetrics() {
 			Name:      "outbox_messages_processed_total",
 			Help:      "Total number of outbox messages processed.",
 		},
-		[]string{"destination", LabelStatus},
+		[]string{LabelDestination, LabelStatus},
 	)
 
 	m.outboxFailedTotal = prometheus.NewCounterVec(
@@ -282,7 +296,7 @@ func (m *Metrics) initMetrics() {
 			Name:      "outbox_messages_failed_total",
 			Help:      "Total number of outbox messages that failed delivery.",
 		},
-		[]string{"destination"},
+		[]string{LabelDestination},
 	)
 
 	m.outboxDeadLetteredTotal = prometheus.NewCounter(
@@ -685,6 +699,9 @@ func (pm *ProjectionMiddleware) Apply(ctx context.Context, event mink.StoredEven
 		pm.metrics.errorsTotal.WithLabelValues(pm.metrics.serviceName, "projection_error").Inc()
 	}
 
+	// event.Type is a bounded label: event types come from the application's
+	// event registry, not from client input, so they cannot grow the series set
+	// beyond the number of registered events.
 	pm.metrics.projectionsProcessedTotal.WithLabelValues(pm.metrics.serviceName, projName, event.Type, status).Inc()
 
 	// Update checkpoint
@@ -809,6 +826,12 @@ func (m *Metrics) OutboxPendingMessages() prometheus.Gauge {
 var _ mink.OutboxMetrics = (*Metrics)(nil)
 
 // RecordMessageProcessed records an outbox message processing result.
+//
+// destination is recorded verbatim as the "destination" label. The
+// OutboxProcessor passes the publisher prefix (e.g. "webhook"), never the
+// full destination, so the label set is bounded by the registered publishers
+// and never carries URL credentials; a caller recording full destinations
+// must keep that set small and free of secrets itself.
 func (m *Metrics) RecordMessageProcessed(destination string, success bool) {
 	status := StatusSuccess
 	if !success {
@@ -818,6 +841,9 @@ func (m *Metrics) RecordMessageProcessed(destination string, success bool) {
 }
 
 // RecordMessageFailed records an outbox message delivery failure.
+//
+// destination is recorded verbatim as the "destination" label; see
+// RecordMessageProcessed for what the OutboxProcessor passes.
 func (m *Metrics) RecordMessageFailed(destination string) {
 	m.outboxFailedTotal.WithLabelValues(destination).Inc()
 }

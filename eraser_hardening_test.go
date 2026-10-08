@@ -162,8 +162,10 @@ func TestEmitCertificate_GatesVerifiedOnMarker(t *testing.T) {
 	)
 	// A completed revoke whose marker was NOT written must not yield a "verified" cert.
 	result := &ErasureResult{SubjectID: "u1", Streams: []string{"User-u1"}, MarkerWritten: false}
-	require.NoError(t, e.emitCertificate(ctx, "u1", result))
+	cert, err := e.emitCertificate(ctx, "u1", result)
+	require.NoError(t, err)
 	assert.False(t, got.Verified, "certificate must not be verified when the marker was not written")
+	assert.Equal(t, got, cert, "emitCertificate returns the certificate it sent to the sink")
 }
 
 func TestDataEraser_ReconcileCatchesLateKey(t *testing.T) {

@@ -3,9 +3,10 @@ package mink
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"runtime/debug"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ValidationMiddleware validates commands before they reach the handler.
@@ -21,20 +22,46 @@ func ValidationMiddleware() Middleware {
 	}
 }
 
+// RecoveryOption configures RecoveryMiddleware.
+type RecoveryOption func(*recoveryConfig)
+
+// recoveryConfig holds RecoveryMiddleware's settings.
+type recoveryConfig struct {
+	captureCommand bool
+}
+
+// WithPanicCommandCapture makes RecoveryMiddleware record the entire
+// JSON-serialized command in PanicError.CommandData when a handler panics.
+//
+// This is opt-in because commands routinely carry personal or secret data
+// (addresses, tokens, card details) that would otherwise be copied verbatim
+// into error values, logs and crash reports. Enable it only when everything
+// that consumes PanicError is trusted to handle the command's contents.
+func WithPanicCommandCapture() RecoveryOption {
+	return func(c *recoveryConfig) {
+		c.captureCommand = true
+	}
+}
+
 // RecoveryMiddleware recovers from panics in handlers and returns them as errors.
-// It captures a sanitized representation of the command data for debugging.
-func RecoveryMiddleware() Middleware {
+//
+// By default PanicError.CommandData holds only non-sensitive context: a small
+// JSON object with the command type and, for an AggregateCommand, the aggregate
+// ID — never the command's own fields. Pass WithPanicCommandCapture() to record
+// the full JSON-serialized command instead; see that option for the privacy
+// trade-off.
+func RecoveryMiddleware(opts ...RecoveryOption) Middleware {
+	var cfg recoveryConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	return func(next MiddlewareFunc) MiddlewareFunc {
 		return func(ctx context.Context, cmd Command) (result CommandResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					stack := string(debug.Stack())
-					// Capture command data for debugging (best effort, ignore errors)
-					var commandData string
-					if data, jsonErr := json.Marshal(cmd); jsonErr == nil {
-						commandData = string(data)
-					}
-					panicErr := NewPanicErrorWithCommand(cmd.CommandType(), r, stack, commandData)
+					panicErr := NewPanicErrorWithCommand(cmd.CommandType(), r, stack, panicCommandData(cmd, cfg.captureCommand))
 					result = NewErrorResult(panicErr)
 					err = panicErr
 				}
@@ -42,6 +69,31 @@ func RecoveryMiddleware() Middleware {
 			return next(ctx, cmd)
 		}
 	}
+}
+
+// panicCommandData builds the CommandData recorded in a PanicError. With full
+// set it is the JSON-serialized command (best effort: an unserializable command
+// yields ""); otherwise it is a JSON summary of the command type and, for an
+// AggregateCommand, the aggregate ID.
+func panicCommandData(cmd Command, full bool) string {
+	if full {
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+
+	summary := struct {
+		CommandType string `json:"commandType"`
+		AggregateID string `json:"aggregateId,omitempty"`
+	}{CommandType: cmd.CommandType()}
+	if ac, ok := cmd.(AggregateCommand); ok {
+		summary.AggregateID = ac.AggregateID()
+	}
+	// A struct of plain strings always marshals.
+	data, _ := json.Marshal(summary)
+	return string(data)
 }
 
 // LoggingMiddleware logs command execution.
@@ -259,9 +311,9 @@ func CorrelationIDFromContext(ctx context.Context) string {
 // CorrelationIDMiddleware creates middleware that propagates correlation IDs.
 func CorrelationIDMiddleware(generator func() string) Middleware {
 	if generator == nil {
-		generator = func() string {
-			return fmt.Sprintf("%d", time.Now().UnixNano())
-		}
+		// A random UUID: the previous nanosecond-timestamp default was predictable
+		// and collided for commands dispatched within the same tick.
+		generator = uuid.NewString
 	}
 
 	return func(next MiddlewareFunc) MiddlewareFunc {

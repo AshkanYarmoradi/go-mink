@@ -89,12 +89,21 @@ type ExportRequest struct {
 
 	// Streams lists specific stream IDs to export.
 	// When provided, only these streams are loaded (efficient, no full scan).
+	//
+	// A stream may hold events about several data subjects (a shared "order" stream,
+	// say). When Streams is given and Filter is nil, the exporter therefore applies
+	// SubjectOrUntaggedFilter(SubjectID) by default: events tagged for other subjects
+	// (via WithSubjectTagger, $subjects) are dropped, while events carrying no subject
+	// tags — which cannot be attributed to anyone — are still exported. Set Filter
+	// explicitly to override that default (e.g. SubjectFilter to also drop untagged
+	// events, or a custom predicate).
 	Streams []string
 
 	// Filter selects which events to include.
 	// When Streams is empty, the exporter scans all events and applies this filter
 	// (requires the adapter to implement SubscriptionAdapter).
-	// When Streams is provided, the filter is applied within each stream.
+	// When Streams is provided, the filter is applied within each stream; when it is
+	// nil, SubjectOrUntaggedFilter(SubjectID) is applied instead (see Streams).
 	Filter ExportFilter
 
 	// FromTime limits export to events stored at or after this time.
@@ -293,6 +302,13 @@ func (e *DataExporter) processEvents(ctx context.Context, req ExportRequest, han
 	// turns N per-event round-trips into one lookup per distinct key. Confined to this export.
 	revokedCache := make(map[string]bool)
 	if len(req.Streams) > 0 {
+		// Explicit streams with no filter: SubjectID must scope the export, not merely
+		// label it. A shared stream may hold other subjects' events, and exporting the
+		// whole stream would hand one subject another's data. Drop events tagged for
+		// other subjects; keep untagged ones (unattributable, exported as before).
+		if req.Filter == nil {
+			req.Filter = SubjectOrUntaggedFilter(req.SubjectID)
+		}
 		return e.exportFromStreams(ctx, req, handler, revokedCache)
 	}
 	return e.exportFromScan(ctx, req, handler, revokedCache)
@@ -494,32 +510,91 @@ func newExportedMetadata(m Metadata) ExportedMetadata {
 }
 
 // Built-in export filters.
+//
+// An empty selector is never a wildcard in a GDPR export: FilterByTenantID(""),
+// FilterByUserID(""), FilterByMetadata(k, ""), FilterByStreamPrefix(""),
+// FilterByStreamCategory(""), FilterByStreams() and CombineFilters() all match NOTHING.
+// Matching "events whose tenant is empty" would otherwise select most of the store (every
+// event appended without that metadata) and hand it to a single data subject.
+
+// matchNothing is the fail-closed filter every empty selector collapses to.
+func matchNothing(StoredEvent) bool { return false }
 
 // FilterByTenantID returns a filter that matches events with the given tenant ID.
+// An empty tenantID matches nothing (it is not a wildcard for "events with no tenant").
 func FilterByTenantID(tenantID string) ExportFilter {
+	if tenantID == "" {
+		return matchNothing
+	}
 	return func(event StoredEvent) bool {
 		return event.Metadata.TenantID == tenantID
 	}
 }
 
-// FilterByUserID returns a filter that matches events with the given user ID.
+// FilterByUserID returns a filter that matches events with the given user ID. Note that
+// Metadata.UserID is ACTOR-scoped (who issued the command), not a data-subject footprint
+// — use SubjectFilter for that. An empty userID matches nothing.
 func FilterByUserID(userID string) ExportFilter {
+	if userID == "" {
+		return matchNothing
+	}
 	return func(event StoredEvent) bool {
 		return event.Metadata.UserID == userID
 	}
 }
 
-// FilterByStreamPrefix returns a filter that matches events from streams
-// whose ID starts with the given prefix.
+// FilterByStreamPrefix returns a filter that matches events from streams whose ID starts
+// with the given prefix. It is a plain prefix match: "user-1" also matches "user-10" and
+// "user-123". To select one aggregate end the prefix with the id separator ("user-1-"),
+// or use FilterByStreams for exact ids / FilterByStreamCategory for a whole category.
+// An empty prefix matches nothing.
 func FilterByStreamPrefix(prefix string) ExportFilter {
+	if prefix == "" {
+		return matchNothing
+	}
 	return func(event StoredEvent) bool {
 		return strings.HasPrefix(event.StreamID, prefix)
 	}
 }
 
-// FilterByMetadata returns a filter that matches events with a specific
-// custom metadata key-value pair.
+// FilterByStreams returns a filter that matches events from exactly the given stream IDs
+// (no prefix semantics). With no ids it matches nothing.
+func FilterByStreams(ids ...string) ExportFilter {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			set[id] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return matchNothing
+	}
+	return func(event StoredEvent) bool {
+		_, ok := set[event.StreamID]
+		return ok
+	}
+}
+
+// FilterByStreamCategory returns a filter that matches events whose stream category —
+// the text before the first '-' in the stream ID (the whole ID when it has none) — equals
+// category. Unlike FilterByStreamPrefix("user-") it cannot be confused by ids that merely
+// start with the same letters. An empty category matches nothing.
+func FilterByStreamCategory(category string) ExportFilter {
+	if category == "" {
+		return matchNothing
+	}
+	return func(event StoredEvent) bool {
+		return streamCategory(event.StreamID) == category
+	}
+}
+
+// FilterByMetadata returns a filter that matches events with a specific custom metadata
+// key-value pair. An empty key or value matches nothing (it is not a wildcard for
+// "events lacking that key").
 func FilterByMetadata(key, value string) ExportFilter {
+	if key == "" || value == "" {
+		return matchNothing
+	}
 	return func(event StoredEvent) bool {
 		if event.Metadata.Custom == nil {
 			return false
@@ -529,6 +604,7 @@ func FilterByMetadata(key, value string) ExportFilter {
 }
 
 // FilterByEventTypes returns a filter that matches events of any of the given types.
+// With no types it matches nothing.
 func FilterByEventTypes(types ...string) ExportFilter {
 	typeSet := make(map[string]struct{}, len(types))
 	for _, t := range types {
@@ -540,11 +616,35 @@ func FilterByEventTypes(types ...string) ExportFilter {
 	}
 }
 
-// CombineFilters returns a filter that matches events passing ALL provided filters (AND logic).
+// SubjectOrUntaggedFilter returns a filter that admits events tagged for subjectID (see
+// WithSubjectTagger / SubjectFilter) and events that carry no subject tags at all —
+// which cannot be attributed to anyone and are exported as they always were — while
+// dropping events tagged exclusively for OTHER subjects. It is the rule Export and
+// ExportStream apply by default to a request with explicit Streams and no Filter, so a
+// stream shared between subjects never leaks a co-subject's events. Prefer SubjectFilter
+// when every event is tagged and untagged ones must be excluded too. An empty subjectID
+// matches nothing.
+func SubjectOrUntaggedFilter(subjectID string) ExportFilter {
+	if subjectID == "" {
+		return matchNothing
+	}
+	return func(event StoredEvent) bool {
+		tags := GetSubjectTags(event.Metadata)
+		return len(tags) == 0 || containsString(tags, subjectID)
+	}
+}
+
+// CombineFilters returns a filter that matches events passing ALL provided filters (AND
+// logic). With no filters it matches NOTHING — an empty conjunction is not a wildcard in
+// a GDPR export — and a nil filter in the list fails closed (matches nothing) rather than
+// being skipped.
 func CombineFilters(filters ...ExportFilter) ExportFilter {
+	if len(filters) == 0 {
+		return matchNothing
+	}
 	return func(event StoredEvent) bool {
 		for _, f := range filters {
-			if !f(event) {
+			if f == nil || !f(event) {
 				return false
 			}
 		}

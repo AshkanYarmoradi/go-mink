@@ -194,6 +194,7 @@ func (p *Provider) Encrypt(_ context.Context, keyID string, plaintext []byte) ([
 	if err != nil {
 		return nil, err
 	}
+	defer encryption.ClearBytes(key)
 	return encryption.AESGCMEncrypt(key, plaintext, []byte(keyID))
 }
 
@@ -203,6 +204,7 @@ func (p *Provider) Decrypt(_ context.Context, keyID string, ciphertext []byte) (
 	if err != nil {
 		return nil, err
 	}
+	defer encryption.ClearBytes(key)
 	return encryption.AESGCMDecrypt(key, ciphertext, []byte(keyID))
 }
 
@@ -212,6 +214,7 @@ func (p *Provider) GenerateDataKey(_ context.Context, keyID string) (*encryption
 	if err != nil {
 		return nil, err
 	}
+	defer encryption.ClearBytes(key)
 
 	// Generate random 32-byte DEK
 	dek := make([]byte, 32)
@@ -239,6 +242,7 @@ func (p *Provider) DecryptDataKey(_ context.Context, keyID string, encryptedKey 
 	if err != nil {
 		return nil, err
 	}
+	defer encryption.ClearBytes(key)
 
 	plaintext, err := encryption.AESGCMDecrypt(key, encryptedKey, []byte(keyID))
 	if err != nil {
@@ -266,9 +270,15 @@ func (p *Provider) Close() error {
 	return nil
 }
 
-// getKey retrieves a master key, checking for revocation and closure. It takes the
-// write lock because an elapsed soft-revocation is promoted to a permanent shred on
-// access (stateLocked), which mutates key material.
+// getKey returns a private copy of a master key, checking for revocation and
+// closure. It takes the write lock because an elapsed soft-revocation is promoted
+// to a permanent shred on access (stateLocked), which mutates key material.
+//
+// A copy — never the live slice — is returned so the key material cannot change
+// under a caller that has already released the lock: RevokeKey, Close and
+// promotion all zero the stored slice in place, and handing that slice out would
+// let a concurrent revocation race with (and corrupt) an in-flight
+// encrypt/decrypt. Callers MUST encryption.ClearBytes the copy once done with it.
 func (p *Provider) getKey(keyID string) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -286,7 +296,9 @@ func (p *Provider) getKey(keyID string) ([]byte, error) {
 	if !ok {
 		return nil, encryption.NewKeyNotFoundError(keyID)
 	}
-	return key, nil
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	return keyCopy, nil
 }
 
 // SoftRevokeKey blocks decryption under keyID but allows UnrevokeKey to restore it

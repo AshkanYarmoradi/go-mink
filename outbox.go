@@ -204,8 +204,10 @@ func (es *EventStoreWithOutbox) buildMessageForRoute(route OutboxRoute, streamID
 	if route.Transform != nil {
 		transformed, err := route.Transform(nil, partial)
 		if err != nil {
+			// The destination may embed credentials (URL userinfo, query, or a
+			// provider token in the path); log only its redacted form.
 			es.logger.Error("Failed to transform outbox payload",
-				"eventType", eventType, "destination", route.Destination, "error", err)
+				"eventType", eventType, "destination", redactDestination(route.Destination), "error", err)
 			return nil
 		}
 		payload = transformed
@@ -234,6 +236,11 @@ func (es *EventStoreWithOutbox) buildMessageForRoute(route OutboxRoute, streamID
 }
 
 // Append stores events and schedules outbox messages.
+//
+// It applies the same reserved-metadata sanitization as EventStore.Append (see its
+// doc comment) and, like EventStore.Append, records the events' subject tags into
+// the index configured with WithSubjectIndexWriter once the events are durable —
+// on both the atomic AppendWithOutbox path and the non-atomic fallback.
 func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, events []interface{}, opts ...AppendOption) error {
 	if streamID == "" {
 		return ErrEmptyStreamID
@@ -251,6 +258,10 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 
 	// Serialize events
 	records := make([]adapters.EventRecord, len(events))
+	var subjectSet map[string]struct{} // nil (zero overhead) unless a subject index is wired
+	if es.store.subjectIndex != nil {
+		subjectSet = make(map[string]struct{})
+	}
 	for i, event := range events {
 		eventData, err := SerializeEvent(es.store.serializer, event, config.metadata)
 		if err != nil {
@@ -260,6 +271,7 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 		if err := es.store.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
+		es.store.collectSubjects(eventData.Metadata, subjectSet)
 
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
@@ -274,8 +286,13 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 	// Try atomic append+outbox if adapter supports it. The adapter schedules into
 	// our configured outbox store, so the atomic path and es.outbox stay consistent.
 	if appender, ok := es.store.adapter.(adapters.OutboxAppender); ok && len(prelimMessages) > 0 {
-		_, err := appender.AppendWithOutbox(ctx, streamID, records, config.expectedVersion, es.outbox, prelimMessages)
-		return err
+		if _, err := appender.AppendWithOutbox(ctx, streamID, records, config.expectedVersion, es.outbox, prelimMessages); err != nil {
+			return err
+		}
+		// Mirror EventStore.Append: feed the subject index once the events are
+		// durable, so index-backed export/erasure sees outbox-written events too.
+		es.store.writeSubjectIndex(ctx, streamID, subjectSet)
+		return nil
 	}
 
 	// Fallback: separate operations
@@ -283,6 +300,8 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 	if err != nil {
 		return err
 	}
+	// The events are durable at this point regardless of outbox scheduling below.
+	es.store.writeSubjectIndex(ctx, streamID, subjectSet)
 
 	if len(prelimMessages) > 0 {
 		es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")
@@ -296,6 +315,11 @@ func (es *EventStoreWithOutbox) Append(ctx context.Context, streamID string, eve
 }
 
 // SaveAggregate persists uncommitted events and schedules outbox messages.
+//
+// It applies the same reserved-metadata sanitization as EventStore.Append (see its
+// doc comment) and, like EventStore.SaveAggregate, records the events' subject
+// tags into the index configured with WithSubjectIndexWriter once the events are
+// durable — on both the atomic AppendWithOutbox path and the non-atomic fallback.
 func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate) error {
 	if agg == nil {
 		return ErrNilAggregate
@@ -309,6 +333,10 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 	streamID := fmt.Sprintf("%s-%s", agg.AggregateType(), agg.AggregateID())
 
 	records := make([]adapters.EventRecord, len(events))
+	var subjectSet map[string]struct{} // nil (zero overhead) unless a subject index is wired
+	if es.store.subjectIndex != nil {
+		subjectSet = make(map[string]struct{})
+	}
 	for i, event := range events {
 		eventData, err := SerializeEvent(es.store.serializer, event, Metadata{})
 		if err != nil {
@@ -318,6 +346,7 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 		if err := es.store.prepareEventData(ctx, streamID, &eventData); err != nil {
 			return fmt.Errorf("mink: failed to prepare aggregate event %d: %w", i, err)
 		}
+		es.store.collectSubjects(eventData.Metadata, subjectSet)
 
 		records[i] = adapters.EventRecord{
 			Type:     eventData.Type,
@@ -338,11 +367,16 @@ func (es *EventStoreWithOutbox) SaveAggregate(ctx context.Context, agg Aggregate
 		if err != nil {
 			return err
 		}
+		// Mirror EventStore.SaveAggregate: feed the subject index once the events
+		// are durable, so index-backed export/erasure sees outbox-written events too.
+		es.store.writeSubjectIndex(ctx, streamID, subjectSet)
 	} else {
 		_, err := es.store.adapter.Append(ctx, streamID, records, expectedVersion)
 		if err != nil {
 			return err
 		}
+		// The events are durable at this point regardless of outbox scheduling below.
+		es.store.writeSubjectIndex(ctx, streamID, subjectSet)
 
 		if len(outboxMessages) > 0 {
 			es.logger.Warn("Outbox messages scheduled non-atomically; adapter does not implement OutboxAppender")

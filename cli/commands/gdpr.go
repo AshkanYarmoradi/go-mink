@@ -3,7 +3,9 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	mink "go-mink.dev"
@@ -66,10 +68,26 @@ func taggedForSubject(md mink.Metadata, subjectID string) bool {
 	return false
 }
 
+// terminalSafe makes a value that originates in the event store — a key id, a
+// stream id, a subject id, or an error built from them — safe to print: every
+// control character (newline, carriage return, tab, ESC and the rest of C0/C1)
+// and the Unicode line/paragraph separators are replaced with U+FFFD, so a
+// poisoned value can neither forge extra report lines nor hide or overwrite real
+// ones through an ANSI escape sequence. Everything else is printed as-is.
+func terminalSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == 0x2028 || r == 0x2029 {
+			return unicode.ReplacementChar
+		}
+		return r
+	}, s)
+}
+
 // printFootprint renders a resolved SubjectFootprint (shared by discover and erase).
+// Every stored value it prints goes through terminalSafe.
 func printFootprint(fp *mink.SubjectFootprint) {
 	fmt.Println()
-	fmt.Println(styles.Title.Render(fmt.Sprintf("%s Subject footprint: %s", styles.IconDatabase, fp.SubjectID)))
+	fmt.Println(styles.Title.Render(fmt.Sprintf("%s Subject footprint: %s", styles.IconDatabase, terminalSafe(fp.SubjectID))))
 	fmt.Println()
 
 	details := []string{
@@ -90,7 +108,7 @@ func printFootprint(fp *mink.SubjectFootprint) {
 		fmt.Println()
 		table := ui.NewTable("Stream", "Tagged events")
 		for _, s := range fp.Streams {
-			table.AddRow(s, fmt.Sprintf("%d", fp.StreamEventCounts[s]))
+			table.AddRow(terminalSafe(s), fmt.Sprintf("%d", fp.StreamEventCounts[s]))
 		}
 		fmt.Println(table.Render())
 	}
@@ -127,7 +145,7 @@ uniformly; if legacy untagged events exist, the footprint is reported as PARTIAL
 				fmt.Println()
 				fmt.Println(styles.Subtitle.Render(fmt.Sprintf("%s Encryption keys", styles.IconKey)))
 				for _, k := range fp.KeyIDs {
-					fmt.Println("  " + styles.IconDot + " " + k)
+					fmt.Println("  " + styles.IconDot + " " + terminalSafe(k))
 				}
 			}
 			fmt.Println()
@@ -184,7 +202,7 @@ application's encryption provider; run it via the DataEraser.Verify API.`,
 			}
 
 			fmt.Println()
-			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Erasure readiness: %s", styles.IconLock, subjectID)))
+			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Erasure readiness: %s", styles.IconLock, terminalSafe(subjectID))))
 			fmt.Println()
 			details := []string{
 				fmt.Sprintf("Tagged events:          %d", fp.EventCount),
@@ -253,7 +271,7 @@ Vault. This command produces the auditable erasure plan.`,
 			fmt.Println(styles.Subtitle.Render(fmt.Sprintf("%s Erasure plan — revoke these keys", styles.IconKey)))
 			fmt.Println()
 			for _, k := range fp.KeyIDs {
-				fmt.Println("  " + styles.IconArrow + " " + k)
+				fmt.Println("  " + styles.IconArrow + " " + terminalSafe(k))
 			}
 			fmt.Println()
 			fmt.Println(styles.FormatInfo("Execute via mink.NewDataEraser(store, ...).Erase — the CLI does not hold your keys, so it will not revoke them here"))
@@ -263,7 +281,17 @@ Vault. This command produces the auditable erasure plan.`,
 	}
 }
 
+// gdprStoreOpener opens the read-only EventStore a gdpr subcommand works on. The
+// production opener is gdprStore (the diagnostic adapter named by mink.yaml); tests
+// inject a pre-seeded in-memory store.
+type gdprStoreOpener func(ctx context.Context) (*mink.EventStore, func(), error)
+
 func newGdprRetainCommand() *cobra.Command {
+	return newGdprRetainCommandWithStore(gdprStore)
+}
+
+// newGdprRetainCommandWithStore builds the retain command over the given store opener.
+func newGdprRetainCommandWithStore(open gdprStoreOpener) *cobra.Command {
 	var (
 		prefix    string
 		category  string
@@ -275,8 +303,12 @@ func newGdprRetainCommand() *cobra.Command {
 		Use:   "retain",
 		Short: "Preview (dry-run) which events a retention policy would crypto-shred",
 		Long: `Scan the store and report how many events a retention policy matches, without
-making any change. Actual enforcement (key revocation) requires your application's
-encryption provider; run it via mink.NewRetentionManager(...).Apply.
+making any change — together with the blast radius a shred sweep would have: the
+encryption keys it would revoke, the shared keys the blast-radius guard refuses to
+revoke because they also protect events outside the policy, and the matches that
+carry no encryption envelope and therefore cannot be crypto-shredded. Actual
+enforcement (key revocation) requires your application's encryption provider; run
+it via mink.NewRetentionManager(...).Apply.
 
 At least one matcher (--prefix, --category, --tenant, --event-type, or --max-age)
 is required.
@@ -291,7 +323,7 @@ Examples:
 				return fmt.Errorf("at least one matcher is required (--prefix, --category, --tenant, --event-type, or --max-age)")
 			}
 
-			store, cleanup, err := gdprStore(ctx)
+			store, cleanup, err := open(ctx)
 			if err != nil {
 				return err
 			}
@@ -314,23 +346,7 @@ Examples:
 				return err
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconChart + " Retention preview (dry-run)"))
-			fmt.Println()
-			details := []string{
-				fmt.Sprintf("Scanned:  %d events", report.Scanned),
-				fmt.Sprintf("Matched:  %d events", report.Matched),
-			}
-			for _, d := range details {
-				fmt.Println("  " + styles.Normal.Render(d))
-			}
-			fmt.Println()
-			if report.Matched == 0 {
-				fmt.Println(styles.FormatInfo("No events match this policy"))
-			} else {
-				fmt.Println(styles.FormatWarning(fmt.Sprintf("%d event(s) would be crypto-shredded — run RetentionManager.Apply with your encryption provider to enforce", report.Matched)))
-			}
-			fmt.Println()
+			printRetentionReport(report)
 			return nil
 		},
 	}
@@ -342,4 +358,75 @@ Examples:
 	cmd.Flags().DurationVar(&maxAge, "max-age", 0, "Match events older than this age (e.g. 8760h)")
 
 	return cmd
+}
+
+// printRetentionReport renders a RetentionReport for `gdpr retain`. Beyond the
+// Scanned/Matched counts it shows the blast radius the shred guard computed — the keys a
+// sweep would revoke, the shared keys it refuses, how many matches are plaintext, what
+// (if anything) was revoked, and the errors — as key ids and counts only; event payloads
+// and stream ids never reach the output.
+func printRetentionReport(report *mink.RetentionReport) {
+	title := " Retention sweep"
+	if report.DryRun {
+		title = " Retention preview (dry-run)"
+	}
+	fmt.Println()
+	fmt.Println(styles.Title.Render(styles.IconChart + title))
+	fmt.Println()
+
+	revoked := countWithKeyIDs("Keys revoked:        ", report.KeysRevoked)
+	if report.DryRun {
+		revoked += " (dry-run: nothing is revoked)"
+	}
+	details := []string{
+		fmt.Sprintf("Scanned:  %d events", report.Scanned),
+		fmt.Sprintf("Matched:  %d events", report.Matched),
+		fmt.Sprintf("Unencrypted matches: %d (plaintext — cannot be crypto-shredded)", report.UnencryptedMatches),
+		countWithKeyIDs("Keys to revoke:      ", report.KeysToRevoke),
+		countWithKeyIDs("Shared keys skipped: ", report.SharedKeysSkipped),
+		revoked,
+		fmt.Sprintf("Errors:              %d", len(report.Errors)),
+	}
+	for _, d := range details {
+		fmt.Println("  " + styles.Normal.Render(d))
+	}
+	fmt.Println()
+
+	switch {
+	case report.Matched == 0:
+		fmt.Println(styles.FormatInfo("No events match this policy"))
+	case report.DryRun:
+		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d event(s) would be crypto-shredded — run RetentionManager.Apply with your encryption provider to enforce", report.Matched)))
+	default:
+		fmt.Println(styles.FormatInfo(fmt.Sprintf("%d event(s) matched — see Keys revoked for what was crypto-shredded", report.Matched)))
+	}
+	if n := len(report.SharedKeysSkipped); n > 0 {
+		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d key(s) refused by the shared-key guard — they also protect events outside this policy and will NOT be revoked (use per-scope keys, or WithAllowSharedKeyRevocation to accept the blast radius)", n)))
+	}
+	if n := report.UnencryptedMatches; n > 0 {
+		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d matched event(s) carry no encryption envelope and would remain in plaintext — remediate via a RedactFields/Anonymize policy", n)))
+	}
+	if len(report.Errors) > 0 {
+		fmt.Println()
+		fmt.Println(styles.Subtitle.Render(styles.IconWarning + " Errors"))
+		for _, e := range report.Errors {
+			fmt.Println("  " + styles.IconDot + " " + terminalSafe(e.Error()))
+		}
+	}
+	fmt.Println()
+}
+
+// countWithKeyIDs renders "<label><count> [id, id]", listing the ids only when there are
+// any so an empty line never carries a dangling bracket.
+// The ids are stored values and are sanitized with terminalSafe before printing.
+func countWithKeyIDs(label string, ids []string) string {
+	s := fmt.Sprintf("%s%d", label, len(ids))
+	if len(ids) > 0 {
+		safe := make([]string, len(ids))
+		for i, id := range ids {
+			safe[i] = terminalSafe(id)
+		}
+		s += " [" + strings.Join(safe, ", ") + "]"
+	}
+	return s
 }

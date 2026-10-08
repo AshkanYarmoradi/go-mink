@@ -182,15 +182,18 @@ Examples:
 			fmt.Println()
 			configContent := config.GenerateYAML(cfg)
 			configPath := filepath.Join(absDir, config.ConfigFileName)
-			if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			// mink.yaml may later hold a literal database.url with credentials,
+			// so it is created owner-read/write only (see config.ConfigFileMode).
+			if err := os.WriteFile(configPath, []byte(configContent), config.ConfigFileMode); err != nil {
 				return fmt.Errorf("failed to create config file: %w", err)
 			}
 			fmt.Println(styles.FormatSuccess("Created mink.yaml"))
 
-			// Create .gitkeep files for empty directories
+			// Create .gitkeep files for empty directories (plain, non-sensitive
+			// placeholders: the default 0644 is intentional here).
 			for _, d := range dirs {
 				gitkeepPath := filepath.Join(absDir, d, ".gitkeep")
-				_ = os.WriteFile(gitkeepPath, []byte(""), 0644)
+				_ = os.WriteFile(gitkeepPath, []byte(""), 0o644)
 			}
 
 			// Print next steps

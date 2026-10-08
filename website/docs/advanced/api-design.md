@@ -208,8 +208,13 @@ func NewAggregateHandler[C Command, A Aggregate](
 // Validation middleware - calls cmd.Validate()
 func ValidationMiddleware() CommandMiddleware
 
-// Recovery middleware - catches panics
-func RecoveryMiddleware() CommandMiddleware
+// Recovery middleware - catches panics and returns a *PanicError. By default
+// PanicError.CommandData is only {"commandType": ..., "aggregateId": ...};
+// WithPanicCommandCapture() records the full JSON-serialized command (opt-in:
+// commands routinely carry PII/secrets).
+func RecoveryMiddleware(opts ...RecoveryOption) CommandMiddleware
+type RecoveryOption func(*recoveryConfig)
+func WithPanicCommandCapture() RecoveryOption
 
 // Logging middleware - logs command execution
 func LoggingMiddleware(logger Logger) CommandMiddleware
@@ -223,14 +228,16 @@ func TimeoutMiddleware(timeout time.Duration) CommandMiddleware
 // Retry middleware - retries on transient failures
 func RetryMiddleware(maxAttempts int, initialDelay time.Duration) CommandMiddleware
 
-// Correlation ID middleware - sets/generates correlation ID
+// Correlation ID middleware - sets/generates correlation ID (nil generator = random v4 UUID)
 func CorrelationIDMiddleware(generator func() string) CommandMiddleware
 
 // Causation ID middleware - tracks causation chain
 func CausationIDMiddleware() CommandMiddleware
 
-// Tenant middleware - sets tenant ID from context
-func TenantMiddleware(resolver func(context.Context) string) CommandMiddleware
+// Tenant middleware - uses the tenant already on the context (set server-side via
+// WithTenantID by the auth layer), otherwise extracts it from the command; required=true
+// rejects a command with no tenant. Never derive the tenant from a client-controlled header.
+func TenantMiddleware(extractor func(Command) string, required bool) CommandMiddleware
 
 // Idempotency middleware - prevents duplicate processing
 func IdempotencyMiddleware(config IdempotencyConfig) CommandMiddleware
@@ -251,14 +258,21 @@ type IdempotencyConfig struct {
     Store          IdempotencyStore     // Required: storage backend
     TTL            time.Duration        // Result expiration (default: 24h)
     ReservationTTL time.Duration        // In-flight reservation lease; bounds how long a duplicate is blocked (default: 5m)
-    KeyGenerator   func(Command) string // Custom key generator (default: GetIdempotencyKey)
+    KeyGenerator   func(Command) string // Custom key generator (default: GetIdempotencyKey); "" = no guarantee, pass-through
+    Scope          func(ctx context.Context, cmd Command) string // Principal scope, stored as "<scope>|<key>" (default: DefaultIdempotencyScope)
     StoreErrors    bool                 // Replay stored failures instead of retrying (default: false)
     FailClosed     bool                 // Fail the command on store outage (default: false = fail-open)
     SkipCommands   []string             // Command types that bypass the idempotency check
 }
 
 func DefaultIdempotencyConfig(store IdempotencyStore) IdempotencyConfig
-func GenerateIdempotencyKey(cmd Command) string
+func GenerateIdempotencyKey(cmd Command) string // "" when the command cannot be JSON-serialized
+
+// Scoping and bounding of the stored key.
+const MaxIdempotencyKeyLength = 255                                  // longer keys become "<len:scope|><CommandType>:sha256:<hex>" (digest covers the scoped key)
+const MaxIdempotencyFieldLength = 255                                // NewIdempotencyRecord truncates CommandType / AggregateID to this many bytes (rune boundary)
+func DefaultIdempotencyScope(ctx context.Context, _ Command) string  // TenantIDFromContext(ctx); "" when no tenant
+func EffectiveIdempotencyKey(cmdType, scope, key string) string      // "<len(scope)>:<scope>|<key>" (e.g. "8:tenant-a|req-1"); key verbatim when scope == ""
 ```
 
 ### Audit Logging
@@ -298,9 +312,17 @@ type AuditConfig struct {
     Store           AuditStore
     ActorFunc       ActorFunc // nil -> ActorFromContext
     SkipCommands    []string
-    FailClosed      bool      // default false = fail-open (auditing never breaks commands)
+    FailClosed      bool      // default false = fail-open (auditing never breaks commands; drops are logged)
     IncludeMetadata bool
+    MetadataFilter  func(map[string]string) map[string]string          // drop/mask captured metadata keys (plaintext trail)
+    Logger          Logger                                             // fail-open drop warnings; nil -> slog.Default()
+    OnError         func(ctx context.Context, entry *AuditEntry, err error) // every Store.Append failure, both modes
 }
+
+// String fields stored in VARCHAR(255) columns (CommandType, CommandID, AggregateID,
+// Actor, TenantID, CorrelationID, CausationID) are truncated to this many bytes
+// (rune boundary) before Append, so an over-long value cannot fail the row.
+const MaxAuditFieldLength = 255
 
 func AuditMiddleware(config AuditConfig) Middleware
 func DefaultAuditConfig(store AuditStore) AuditConfig
@@ -344,9 +366,10 @@ type EventRegistry struct {
 
 func NewEventRegistry() *EventRegistry
 
-func (r *EventRegistry) Register(eventType string, example interface{})
+func (r *EventRegistry) Register(eventType string, example interface{}) // first registration of a name wins
 func (r *EventRegistry) RegisterAll(events ...interface{}) // Uses struct name
 func (r *EventRegistry) Lookup(eventType string) (reflect.Type, bool)
+func (r *EventRegistry) Conflicts() []string // names a later Register tried to rebind to a different type (nil when none)
 ```
 
 ### Projections
@@ -415,6 +438,11 @@ func (s *EventStore) SubscribeStream(ctx context.Context,
 func (s *EventStore) SubscribeCategory(ctx context.Context,
     category string, fromPosition uint64, opts ...SubscriptionOptions) (Subscription, error)
 
+// Every subscription (catch-up and polling) delivers field-encrypted events
+// DECRYPTED, like Load and projections, and filters on plaintext; a hard,
+// unhandled decryption error ends the subscription with Err() set rather than
+// delivering ciphertext.
+//
 // Example usage. Errors are not delivered on a channel: range over Events()
 // (which closes when the subscription stops) and then inspect Err().
 sub, err := store.SubscribeAll(ctx, 0)
@@ -538,7 +566,8 @@ type FieldDefinition struct {
     Required bool
 }
 
-// Versioning errors
+// Versioning errors (a panic inside a user upcaster is recovered by
+// UpcasterChain.Upcast and returned as an *UpcastError, never propagated)
 var ErrUpcastFailed       = errors.New("mink: upcast failed")
 var ErrSchemaVersionGap   = errors.New("mink: schema version gap")
 var ErrIncompatibleSchema = errors.New("mink: incompatible schema")
@@ -591,13 +620,24 @@ func local.WithKey(keyID string, key []byte) local.Option
 func (p *local.Provider) AddKey(keyID string, key []byte) error
 func (p *local.Provider) RevokeKey(keyID string) error
 
-// AWS KMS (encryption/kms)
+// AWS KMS (encryption/kms) — stamp key ARNs, never aliases
 func kms.New(opts ...kms.Option) *kms.Provider
 func kms.WithKMSClient(client kms.KMSClient) kms.Option
+func kms.WithPendingDeletionWindow(days int32) kms.Option   // 7–30 (clamped)
+func kms.WithRevocationTimeout(d time.Duration) kms.Option  // bounds context-free revocation calls; default kms.DefaultRevocationTimeout (30s)
+// With a client implementing kms.KMSRevocationClient (+ kms.KMSDeletionCanceller for UnrevokeKey),
+// *kms.Provider satisfies encryption.Revocable, StatefulRevocable and RecoverableRevocable:
+func (p *kms.Provider) RevokeKey(keyID string) error
+func (p *kms.Provider) IsRevoked(keyID string) (bool, error)
+func (p *kms.Provider) RevocationState(keyID string) (encryption.RevocationState, error) // pending deletion = SoftRevoked
+func (p *kms.Provider) SoftRevokeKey(keyID string, graceWindow time.Duration) error
+func (p *kms.Provider) UnrevokeKey(keyID string) error                                    // state-driven: CancelKeyDeletion + EnableKey, EnableKey alone for a merely-disabled key; *kms.KeyPermanentlyDeletedError once deleted
+var kms.ErrKeyPermanentlyDeleted                                                           // sentinel; KeyPermanentlyDeletedError{KeyID} also Is(encryption.ErrKeyRevoked)
 
-// Vault Transit (encryption/vault)
+// Vault Transit (encryption/vault) — key names validated before any request (non-empty, no "/", no control bytes, not "." / ".."), then url.PathEscape'd
 func vault.New(opts ...vault.Option) *vault.Provider
 func vault.WithVaultClient(client vault.VaultClient) vault.Option
+func vault.WithRevocationTimeout(d time.Duration) vault.Option   // bounds RevokeKey / IsRevoked and the decrypt-path probe; default vault.DefaultRevocationTimeout (30s)
 
 // --- Root package config ---
 
@@ -610,13 +650,20 @@ func WithEncryptionProvider(p encryption.Provider) EncryptionOption
 func WithDefaultKeyID(keyID string) EncryptionOption
 func WithEncryptedFields(eventType string, fields ...string) EncryptionOption
 func WithTenantKeyResolver(resolver func(tenantID string) string) EncryptionOption
+func WithSubjectKeyResolver(resolver func(subjectID string) string) EncryptionOption // alias of WithTenantKeyResolver (last-applied wins)
+func WithRequireKeyResolution() EncryptionOption                                     // resolver miss → EncryptionError{Cause: *KeyResolutionError} instead of the default key
 func WithDecryptionErrorHandler(handler func(err error, eventType string, metadata Metadata) error) EncryptionOption
+func (c *FieldEncryptionConfig) Validate() error                                     // first malformed field path (wraps ErrInvalidEncryptedFieldPath); overlapping paths are valid
 
-// EventStore option
+// EventStore options
 func WithFieldEncryption(config *FieldEncryptionConfig) Option
+func WithCallerSchemaVersion() Option // honor an in-range caller $schema_version for a type with upcasters (default: dropped, latest stamped)
+func WithCallerSubjectTags() Option   // merge caller $subjects with the tagger's output (default: tagger output replaces them)
 
 // Metadata helpers
-func IsEncrypted(m Metadata) bool
+func IsEncrypted(m Metadata) bool            // $encrypted_fields present — the read-path signal (route through decryption)
+func HasEncryptionEnvelope(m Metadata) bool  // complete envelope (fields + key id + wrapped DEK) — what every key-acting path (erasure, retention, guard, verify) uses
+func SanitizeReservedMetadata(m Metadata) Metadata // copy-on-write strip of the four envelope keys
 func GetEncryptedFields(m Metadata) []string
 func GetEncryptionKeyID(m Metadata) string
 ```
@@ -719,6 +766,21 @@ if errors.As(err, &concErr) {
     // Access error details
     fmt.Printf("Stream: %s\n", concErr.StreamID)
 }
+
+// Added by the security hardening (all "mink: "-prefixed, typed errors implement Is/Unwrap)
+var ErrSagaTypeMismatch            // *SagaTypeMismatchError{CorrelationID, SagaID, ExpectedType, ActualType}
+var ErrResidualCountUnsupported    // a subject store cannot count residual rows (SubjectResidualCounter)
+var ErrRetentionUnscopedPolicy     // a RetentionPolicy with no matchers at all
+var ErrRetentionSharedKey          // *RetentionSharedKeyError{KeyID, OutOfScope}: shred guard refused a shared key
+var ErrRetentionUnencryptedMatches // a Shred policy matched events with no encryption envelope
+var ErrRetentionMaxScanNeedsCheckpoint // WithRetentionMaxScan configured without WithRetentionCheckpoint (non-fatal; sweep runs unbounded)
+var ErrAnonymizerSecretRequired    // Anonymizer.Validate() on an empty HMAC secret
+var ErrKeyResolutionFailed         // *KeyResolutionError{EventType, TenantID, SubjectID}: WithRequireKeyResolution and the resolver yielded no key
+var ErrInvalidEncryptedFieldPath   // FieldEncryptionConfig.Validate / first append of the affected type: malformed WithEncryptedFields path
+var SharedKeyError                 // Error() prints counts only (shared keys, other subjects); SharedKeys / OtherSubjects are programmatic
+// Sub-packages: postgres.ErrSubjectTagMalformed (*SubjectTagMalformedError{SubjectID, Rows, Streams}),
+// kms.ErrKeyPermanentlyDeleted (*KeyPermanentlyDeletedError{KeyID}), webhook.ErrInvalidDestination / ErrHostNotAllowed /
+// ErrHTTPSRequired / ErrInvalidHeader ("webhook: " prefix), sns.ErrReservedAttribute / ErrInvalidAttributeName
 ```
 
 ### Testing Utilities

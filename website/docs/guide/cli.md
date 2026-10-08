@@ -149,6 +149,15 @@ Generate boilerplate code for aggregates, events, projections, and commands.
 
 **Aliases:** `gen`, `g`
 
+Every generator validates its inputs before touching the filesystem and writes nothing on
+failure: the configured output directory (`generation.aggregate_package` /
+`event_package` / `projection_package` / `command_package`) must resolve inside the project
+root (the directory holding `mink.yaml`, or the current directory without one), its last
+path element must be a lowercase Go package name (`^[a-z][a-z0-9_]*$`), and aggregate /
+event / command / projection names — plus every `--events` entry — must be Go identifiers
+(`^[A-Za-z_][A-Za-z0-9_]*$`) after PascalCasing, so `order_item` and `item-added` are still
+accepted. Errors name the offending `mink.yaml` key.
+
 #### Generate Aggregate
 
 ```bash
@@ -372,15 +381,41 @@ $ mink migrate up --steps 1
 
 #### Rollback Migrations
 
+Rolling back executes `.down.sql` files, which is destructive, so the command lists the
+migrations it is about to revert and asks for confirmation (default **No**) before any SQL
+runs. Pass `--yes` / `-y` (or `--non-interactive`) when scripting; without a terminal and
+without either flag the command fails instead of rolling back.
+
 ```bash
 $ mink migrate down
 
-Rolling back 1 migration...
+? Roll back 1 migration(s)?
+  This executes the down migration(s) for:
+    20260107110000_add_projections.sql
+  The SQL is destructive and is not undone automatically.   › Yes / No
+
+Rolling back 1 migration(s)...
   Rolled back 20260107110000_add_projections.sql
 
-# Rollback multiple
-$ mink migrate down --steps 2
+# Rollback multiple, skipping the prompt
+$ mink migrate down --steps 2 --yes
 ```
+
+**Flags:**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--steps` | `-n` | Number of migrations to roll back (default 1) |
+| `--yes` | `-y` | Skip the rollback confirmation prompt |
+| `--non-interactive` | | Skip interactive elements, including the confirmation |
+
+:::note Security note
+Migration names are read back from the migrations table and must match
+`[A-Za-z0-9_.-]+` with no `..`; the resolved `.sql` / `.down.sql` path must stay inside
+`database.migrations_dir`. One bad row fails the whole read, and `migrate up` / `migrate
+down` / `migrate status` fail with `failed to read applied migrations: …` when the table
+cannot be read, rather than treating every migration as pending and re-running it.
+:::
 
 #### Check Status
 
@@ -525,6 +560,9 @@ $ mink stream export Order-abc123 --output order_backup.json
 
 Exported 15 events to order_backup.json
 ```
+
+The export contains event payloads (field-encrypted data is written as stored — the CLI
+holds no keys), so the file is created with mode `0600`.
 
 #### Stream Statistics
 
@@ -770,10 +808,22 @@ $ mink gdpr retain --category Customer --max-age 8760h
 
   Scanned:  1240 events
   Matched:  38 events
+  Unencrypted matches: 2 (plaintext — cannot be crypto-shredded)
+  Keys to revoke:      1 [key-customer-2025]
+  Shared keys skipped: 1 [key-default]
+  Keys revoked:        0 (dry-run: nothing is revoked)
+  Errors:              2
 
-⚠ 38 event(s) would be crypto-shredded — run RetentionManager.Apply with your
-  encryption provider to enforce
+⚠ 38 event(s) would be crypto-shredded — run RetentionManager.Apply with your encryption provider to enforce
+⚠ 1 key(s) refused by the shared-key guard — they also protect events outside this policy and will NOT be revoked (use per-scope keys, or WithAllowSharedKeyRevocation to accept the blast radius)
+⚠ 2 matched event(s) carry no encryption envelope and would remain in plaintext — remediate via a RedactFields/Anonymize policy
+
+⚠ Errors
+  • mink: retention refused to revoke key "key-default": it also protects 57 event(s) outside the Shred policy scope (blast-radius guard); use a per-scope key or WithAllowSharedKeyRevocation
+  • mink: retention shred matched events with no field-encryption envelope; they remain in plaintext
 ```
+
+The preview shows the blast radius the shred guard computed: `Keys to revoke` are keys used only by matched events, `Shared keys skipped` are keys that also protect events outside the policy (skipped by default; see `WithAllowSharedKeyRevocation` in the Go API), and `Unencrypted matches` are matched events that carry no complete encryption envelope (`mink.HasEncryptionEnvelope`) and therefore cannot be crypto-shredded. `Errors` lists one entry per refused key plus one for matched plaintext, so `report.Failed()` is true in the Go API whenever either is non-zero. Only key ids and counts are printed, never event payloads — and stored values (key ids, stream ids, subject ids, error text) are rendered with control characters replaced by `U+FFFD`, so a poisoned key id cannot forge or hide a report line. Key ids *are* printed (an operator needs them to split keys); under per-subject keys they embed subject ids, so treat the output as sensitive.
 
 **Flags for `retain`** (at least one matcher is required):
 
@@ -811,7 +861,13 @@ Mink
 
 ### Configuration File
 
-The CLI looks for `mink.yaml` in the current directory or parent directories.
+The CLI looks for `mink.yaml` in the current directory or parent directories, stopping at
+the nearest directory that contains a `go.mod`: a directory holding `go.mod` is still
+searched, but nothing above the Go module boundary is, so a `mink.yaml` planted in a shared
+parent directory can never take over your database URL, migrations directory or
+code-generation output paths (without any `go.mod` on the path the search continues to the
+filesystem root). The file can contain a literal database URL, so `mink init` writes it with
+mode `0600` (`config.ConfigFileMode`).
 
 ```yaml
 version: "1"
@@ -822,7 +878,7 @@ project:
 
 database:
   driver: postgres           # postgres or memory
-  url: ${DATABASE_URL}       # Environment variable expansion
+  url: ${DATABASE_URL}       # Expanded from the environment — allow-listed names only, see below
   schema: mink
   migrations_dir: migrations
 
@@ -842,12 +898,23 @@ generation:
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `MINK_CONFIG` | Path to config file (default: `./mink.yaml`) |
+| `DATABASE_URL` | PostgreSQL connection string (the default `database.url` reference) |
+| `MINK_CONFIG_ENV_ALLOW` | Comma-separated extra variable-name *prefixes* that `mink.yaml` may reference (see below) |
+
+**Environment-variable expansion is allow-listed.** `${NAME}` / `$NAME` references in
+`database.url` are expanded only when the variable name starts with `MINK_`, `DATABASE_`,
+`DB_`, `PG` or `POSTGRES` (case-insensitive). Any other reference — `$HOME`,
+`${AWS_SECRET_ACCESS_KEY}`, a shell special such as `$1` — makes the command fail with an
+error naming the variable instead of being silently expanded or blanked, so a `mink.yaml`
+planted on the config search path cannot route a secret from your environment into the DSN.
+Set `MINK_CONFIG_ENV_ALLOW=CUSTOM_,OTHER_` to widen the set. The rule applies to every
+driver, and a literal `$` in a DSN password must be percent-encoded as `%24`. There is no
+variable or flag for the config path itself: `mink.yaml` is discovered by walking up from
+the current directory to the nearest `go.mod`.
 
 **Example DATABASE_URL:**
 ```bash
-export DATABASE_URL="postgres://user:password@localhost:5432/mydb?sslmode=disable"
+export DATABASE_URL="postgres://user:password@db.internal:5432/mydb?sslmode=verify-full&sslrootcert=/etc/ssl/certs/postgres-ca.crt"   # sslmode=disable is acceptable only against a local development database
 ```
 
 ---
@@ -912,12 +979,21 @@ go generate ./...
 ### "DATABASE_URL not set"
 
 ```bash
-export DATABASE_URL="postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb?sslmode=disable"   # local development only; use sslmode=verify-full against any real server
 ```
 
 ### "mink.yaml not found"
 
 Run `mink init` to create the configuration file, or check you're in the correct directory.
+Remember that the upward search stops at the nearest `go.mod`: a `mink.yaml` above your Go
+module is deliberately ignored — move it into the module (typically next to `go.mod`); there
+is no config-path flag or environment variable that overrides the search.
+
+### "references environment variable … which the CLI will not expand"
+
+`database.url` references a variable outside the allow-list (`MINK_`, `DATABASE_`, `DB_`,
+`PG`, `POSTGRES`). Reference an allowed name instead, add your prefix to
+`MINK_CONFIG_ENV_ALLOW`, or percent-encode a literal `$` as `%24`.
 
 ### "Permission denied" on migrations
 

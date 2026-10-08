@@ -121,12 +121,78 @@ type SubjectOutboxPurger interface {       // outbox rows — aggregate_id == su
 type SubjectIdempotencyPurger interface {  // idempotency records — aggregate_id == subject
     DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error)
 }
+
+// Footprint-aware counterparts (preferred when present). The rows the library writes are
+// NOT keyed by the bare subject id — the outbox's AggregateID is the producing STREAM id
+// ("User-u1", never "u1"); the audit/idempotency AggregateID is the raw aggregate id
+// ("u1") — so mink's erasers pass mink.SubjectFootprintIDs(subject, fp): the subject id
+// plus every EXCLUSIVE footprint stream (streams shared with other subjects are skipped —
+// never purged nor counted — and reported as SharedStreamsSkipped), and the aggregate id
+// after the first '-' of each exclusive stream ONLY when the eraser is configured with
+// mink.WithDerivedAggregateIDs (none by default). The saga purger/counter receives the
+// same set as candidate correlation ids; counters receive the identical set during
+// verification. Contract: an empty/all-empty id slice returns (0, nil) without touching
+// the store; ids are de-duplicated and matched exactly; counters return the number of
+// matching rows.
+type SubjectOutboxFootprintPurger interface {
+    DeleteOutboxByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+type SubjectAuditFootprintPurger interface {
+    DeleteAuditByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+type SubjectIdempotencyFootprintPurger interface {
+    DeleteIdempotencyByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+type SubjectSagaFootprintPurger interface {
+    DeleteSagasByCorrelationIDs(ctx context.Context, correlationIDs []string) (int64, error)
+}
+
+// Residual counters let DataEraser.Verify and the erasure certificate prove a store
+// clean (or disclose it as unchecked) instead of certifying from the event log alone.
+type SubjectOutboxCounter interface {
+    CountOutboxByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+type SubjectAuditCounter interface {        // actor == subject OR aggregate_id in ids
+    CountAuditBySubject(ctx context.Context, subjectID string, aggregateIDs []string) (int64, error)
+}
+type SubjectIdempotencyCounter interface {
+    CountIdempotencyByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+type SubjectSagaCounter interface {
+    CountSagasByCorrelationIDs(ctx context.Context, correlationIDs []string) (int64, error)
+}
+
+// Type-scoped saga lookup. FindByCorrelationID is unscoped by saga type, so two saga
+// types sharing a correlation id could hydrate from each other's row; SagaManager
+// prefers this method when the store offers it (returns an error satisfying
+// errors.Is(err, ErrSagaNotFound) when absent).
+type SagaCorrelationTypeFinder interface {
+    FindByCorrelationIDAndType(ctx context.Context, correlationID, sagaType string) (*SagaState, error)
+}
 ```
 
 Wrap a store as a `mink.SubjectErasable` with `mink.NewAuditSubjectEraser`,
 `NewSagaSubjectEraser`, `NewOutboxSubjectEraser`, `NewIdempotencySubjectEraser`, or
-`NewSnapshotSubjectEraser`, then register it on the eraser via `WithSubjectStore`. See the
+`NewSnapshotSubjectEraser`, then register it on the eraser via `WithSubjectStore`. The
+built-in erasers use the footprint purger when the store implements it (reporting
+`FootprintAware`), fall back to the id-equality purger otherwise, and expose the counters
+through `mink.SubjectResidualCounter`. See the
 [GDPR guide](/docs/security#sibling-stores--audit-saga-snapshots-outbox-idempotency).
+
+:::note PostgreSQL implementation
+Id lists are bound as a single `= ANY($n::text[])` array parameter, so commas, braces,
+quotes, backslashes and the word `NULL` in an id match literally. `ListStreams` likewise
+treats its prefix as literal text (`%`, `_` and `\` are backslash-escaped and matched with
+`LIKE` under PostgreSQL's default escape character — the same mechanism as the read-model
+`CONTAINS` filter and category subscriptions, so it also works with
+`standard_conforming_strings=off`). `StreamsBySubject` tolerates a malformed `$subjects`
+tag on an *unrelated* row by falling back to a Go-side scan that skips it; a malformed row
+whose text may name the requested subject, on a stream no well-formed row resolved, makes
+the call fail with `*postgres.SubjectTagMalformedError` (`errors.Is` →
+`postgres.ErrSubjectTagMalformed`; carries the subject id and row/stream counts only)
+rather than returning a silently partial footprint. Results are sorted bytewise in Go on
+both paths.
+:::
 
 ### Subject Index (Optional)
 
@@ -140,11 +206,14 @@ type SubjectIndexAdapter interface { // read side
 type SubjectIndexWriter interface {  // write side (idempotent)
     IndexSubjects(ctx context.Context, streamID string, subjectIDs []string) error
 }
+type SubjectIndexPurger interface {  // optional: lets DataEraser.WithSubjectIndexPurge drop
+    DeleteSubject(ctx context.Context, subjectID string) error // an erased subject's entries
+}
 ```
 
 The PostgreSQL event-store adapter implements a **drift-free** `SubjectIndexAdapter` by
 querying the events' own `$subjects` tags in JSONB — no separate table to fall out of sync.
-`mink.MemorySubjectIndex` and `postgres.SubjectIndex` implement both sides; inject either
+`mink.MemorySubjectIndex` and `postgres.SubjectIndex` implement all three; inject either
 into a resolver with `mink.WithResolverIndex`. See the
 [subject index section](/docs/security#subject-index--backfill).
 
@@ -437,6 +506,16 @@ func (a *InMemoryAdapter) Append(ctx context.Context, streamID string,
     return stored, nil
 }
 ```
+
+:::note Detached copies
+The sketch above is simplified. The shipped in-memory adapter stores private copies of
+what it is given and hands out **detached copies** of what it returns: events from `Load`,
+`LoadFromPosition(Filtered)`, `GetStreamEvents` and subscriptions carry cloned `Data` and
+`Metadata.Custom`, the `StoredEvent`s returned by `Append` carry the caller's own buffers
+rather than the log's, `RewriteEventData` copies its input, and the idempotency store copies
+`Response` on `Store`/`Get`. Mutating a returned event or record can therefore never alter
+stored history or undo a redaction — the same isolation a database adapter gives you.
+:::
 
 ## Custom Adapter Template
 

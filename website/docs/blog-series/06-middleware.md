@@ -77,7 +77,9 @@ bus := mink.NewCommandBus(
 ### Recovery (Panic Handler)
 
 ```go
-mink.RecoveryMiddleware()  // Catches panics, returns clean errors
+mink.RecoveryMiddleware()  // Catches panics, returns clean errors (PanicError)
+// PanicError.CommandData is only the command type + aggregate id by default;
+// mink.WithPanicCommandCapture() opts into recording the full command JSON.
 ```
 
 ### Logging
@@ -111,7 +113,7 @@ mink.RetryMiddleware(mink.RetryConfig{
 ### Correlation ID
 
 ```go
-mink.CorrelationIDMiddleware(nil)  // Auto-generates if not present
+mink.CorrelationIDMiddleware(nil)  // Auto-generates a random v4 UUID if not present
 ```
 
 ### Idempotency
@@ -120,6 +122,8 @@ mink.CorrelationIDMiddleware(nil)  // Auto-generates if not present
 mink.IdempotencyMiddleware(mink.IdempotencyConfig{
     Store: idempotencyStore,
     TTL:   24 * time.Hour,
+    // Scope: nil = DefaultIdempotencyScope — keys are stored as "<len(tenant)>:<tenant>|<key>"
+    // (e.g. "8:tenant-a|req-1"), so two tenants presenting the same request id never collide.
 })
 ```
 
@@ -213,6 +217,10 @@ metricsProjection := m.WrapProjection(projection)
 - `mink_projections_processed_total` - Projection processing
 - `mink_projection_lag_events` - Projection lag
 
+Every label value is drawn from a bounded set the application controls; the outbox
+processor records only the publisher prefix (`webhook`, `kafka`, `sns`) as the
+`destination` label, so a store full of distinct URLs cannot blow up the series count.
+
 ### OpenTelemetry Tracing
 
 ```go
@@ -222,6 +230,9 @@ import "go-mink.dev/middleware/tracing"
 tracer := tracing.NewTracer(
     tracing.WithServiceName("order-service"),
     tracing.WithTracerProvider(provider), // Optional custom provider
+    // Keep PII out of the trace backend: error text often echoes request data.
+    tracing.WithoutErrorDetails(),            // or WithErrorRedaction(func(error) string)
+    tracing.WithMaxAttributeLength(256),      // runtime-derived attributes are capped (default 256 runes; 0 = unbounded)
 )
 
 // Add to command bus

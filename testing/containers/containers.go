@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,12 @@ var (
 	// ErrInvalidSchemaPrefix indicates the schema prefix contains invalid characters.
 	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must contain only alphanumeric characters and underscores")
 
+	// ErrInvalidSchemaName indicates a schema name is not a plain PostgreSQL
+	// identifier: it must start with a letter or underscore and contain only
+	// ASCII letters, digits and underscores. DropSchema returns it (without
+	// touching the database) when handed a name it did not generate itself.
+	ErrInvalidSchemaName = errors.New("containers: schema name must start with a letter or underscore and contain only alphanumeric characters and underscores")
+
 	// ErrInvalidPort indicates the port is not valid.
 	ErrInvalidPort = errors.New("containers: port must be a valid number between 1 and 65535")
 
@@ -43,7 +50,11 @@ var (
 	ErrEmptyPassword = errors.New("containers: password cannot be empty")
 )
 
-// identifierRegex validates PostgreSQL identifiers (schema names, etc.)
+// identifierRegex validates PostgreSQL identifiers (schema names, prefixes):
+// an ASCII letter or underscore followed by ASCII letters, digits or
+// underscores. Both CreateSchema (prefix) and DropSchema (full name) enforce it
+// before the identifier is interpolated into DDL, so the quoting in
+// quoteIdentifier is defence in depth rather than the only barrier.
 var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // PostgresContainer represents a PostgreSQL test container.
@@ -120,6 +131,18 @@ func getEnvOrDefault(key, defaultValue string) string {
 //   - POSTGRES_USER or TEST_POSTGRES_USER: Username (default: postgres)
 //   - POSTGRES_PASSWORD or TEST_POSTGRES_PASSWORD: Password (default: postgres)
 //   - POSTGRES_PORT or TEST_POSTGRES_PORT: Port (default: 5432)
+//
+// TEST-ONLY CREDENTIALS: with nothing set, these defaults assemble the DSN
+// postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable — the
+// throw-away database started by docker-compose.test.yml. The user/password
+// pair is deliberately well known and is meant solely for a disposable local
+// or CI instance; never reuse it for, or point this helper at, a shared or
+// production server. Redirect the helper with the per-field variables above
+// or with PostgresOption values. This package does NOT read TEST_DATABASE_URL
+// (a complete DSN): that variable is honoured by testutil.DefaultConfig and by
+// integration tests that read it directly, so when you override it you should
+// set the matching POSTGRES_* / TEST_POSTGRES_* variables as well to keep the
+// two helpers pointed at the same database.
 func defaultPostgresConfig() *postgresConfig {
 	return &postgresConfig{
 		image:    getEnvOrDefault("POSTGRES_IMAGE", "postgres:17"),
@@ -140,6 +163,12 @@ func defaultPostgresConfig() *postgresConfig {
 // If the instance is not reachable within the readiness timeout, the calling
 // test is skipped (t.Skip) rather than failed, so the suite still passes in
 // environments without the infrastructure.
+//
+// The built-in defaults (postgres/postgres on localhost:5432, database
+// mink_test, sslmode=disable) are test-only credentials for the disposable
+// docker-compose database; see defaultPostgresConfig for the environment
+// variables that override them. StartPostgres does not consult
+// TEST_DATABASE_URL — that full-DSN variable drives testutil.DefaultConfig.
 //
 // StartKafka (kafka.go) is the analogous helper for Kafka: it connects via
 // TEST_KAFKA_BROKERS and skips when it is unset/unreachable. Neither helper
@@ -221,8 +250,19 @@ func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix
 	return schema, nil
 }
 
-// DropSchema drops a test schema.
+// DropSchema drops a test schema (and everything in it, CASCADE).
+//
+// The schema name is interpolated into DDL, so it is validated first: it must
+// be a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ — which every name
+// returned by CreateSchema satisfies. Any other value (empty, leading digit,
+// quotes, semicolons, whitespace, non-ASCII) returns ErrInvalidSchemaName and
+// the database is not contacted. This stops a caller-supplied name from
+// escaping the quoted identifier and dropping something other than the
+// intended test schema.
 func (c *PostgresContainer) DropSchema(ctx context.Context, db *sql.DB, schema string) error {
+	if err := validateSchemaName(schema); err != nil {
+		return err
+	}
 	_, err := db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
 	return err
 }
@@ -250,9 +290,12 @@ func waitForPostgres(ctx context.Context, connStr string) error {
 	}
 }
 
-// quoteIdentifier quotes a PostgreSQL identifier after validating it.
+// quoteIdentifier quotes a PostgreSQL identifier with double quotes, doubling
+// any embedded double quote (" -> "") so the value can never terminate the
+// quoted identifier early. Callers still validate the name against
+// identifierRegex first; the escaping here is a second, independent barrier.
 func quoteIdentifier(name string) string {
-	return `"` + name + `"`
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // validateSchemaPrefix validates a schema prefix for use in test schema names.
@@ -262,6 +305,16 @@ func validateSchemaPrefix(prefix string) error {
 	}
 	if !identifierRegex.MatchString(prefix) {
 		return ErrInvalidSchemaPrefix
+	}
+	return nil
+}
+
+// validateSchemaName validates a full schema name before it is interpolated
+// into DDL (see DropSchema). It accepts exactly the identifiers matched by
+// identifierRegex and returns ErrInvalidSchemaName for anything else.
+func validateSchemaName(schema string) error {
+	if schema == "" || !identifierRegex.MatchString(schema) {
+		return ErrInvalidSchemaName
 	}
 	return nil
 }

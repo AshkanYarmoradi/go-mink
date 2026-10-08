@@ -150,9 +150,11 @@ bus.Use(mink.TimeoutMiddleware(5*time.Second))  // Timeout
 bus.Use(mink.RetryMiddleware(3, time.Second))   // Retry on failure
 bus.Use(mink.CorrelationIDMiddleware(nil))      // Auto-generate correlation ID
 bus.Use(mink.CausationIDMiddleware())           // Track causation chain
-bus.Use(mink.TenantMiddleware(func(ctx context.Context) string {
-    return ctx.Value("tenantID").(string)  // Multi-tenancy
-}))
+// Multi-tenancy: the tenant must already be on the context, put there by your auth
+// layer via mink.WithTenantID AFTER verifying the principal — never copied from a client
+// header. required=true rejects the command when no tenant is known. (The extractor
+// argument reads a tenant from the command itself; use it only for trusted callers.)
+bus.Use(mink.TenantMiddleware(nil, true))
 ```
 
 ### Built-in Middleware Reference
@@ -160,15 +162,24 @@ bus.Use(mink.TenantMiddleware(func(ctx context.Context) string {
 | Middleware | Description |
 |-----------|-------------|
 | `ValidationMiddleware()` | Calls `cmd.Validate()` before handling |
-| `RecoveryMiddleware()` | Catches panics and returns `PanicError` |
+| `RecoveryMiddleware(opts...)` | Catches panics and returns `PanicError`; `CommandData` holds only the command type and aggregate id unless `WithPanicCommandCapture()` is passed |
 | `LoggingMiddleware(logger)` | Logs command start/end with timing |
 | `MetricsMiddleware(metrics)` | Records command count, duration, errors |
 | `TimeoutMiddleware(duration)` | Adds context timeout |
 | `RetryMiddleware(attempts, delay)` | Retries on transient failures |
-| `CorrelationIDMiddleware(generator)` | Sets/generates correlation ID |
+| `CorrelationIDMiddleware(generator)` | Sets/generates correlation ID (a random v4 UUID when `generator` is nil) |
 | `CausationIDMiddleware()` | Tracks event causation chain |
-| `TenantMiddleware(resolver)` | Sets tenant ID from context |
-| `IdempotencyMiddleware(config)` | Prevents duplicate processing |
+| `TenantMiddleware(extractor, required)` | Uses the tenant already on the context (set server-side by your auth layer via `WithTenantID`); otherwise reads it from the command via `extractor`; fails validation when `required` and none is found |
+| `IdempotencyMiddleware(config)` | Prevents duplicate processing (keys scoped per tenant by default) |
+
+:::note Security note
+`RecoveryMiddleware()` still compiles unchanged — the options are variadic. By default a
+recovered panic's `PanicError.CommandData` is a small JSON summary
+(`{"commandType": ..., "aggregateId": ...}`), never the command's own fields, because
+commands routinely carry PII and secrets that would otherwise be copied into error values,
+logs and crash reports. Pass `mink.WithPanicCommandCapture()` only when everything that
+consumes `PanicError` is trusted with the command's contents.
+:::
 
 ---
 
@@ -248,7 +259,10 @@ func (c CreateOrder) IdempotencyKey() string {
 }
 
 // Auto-generated keys use SHA256 hash of command content
-// Format: "CreateOrder:<hash>" or "CreateOrder:type-only:<hash>" for fallback
+// Format: "CreateOrder:<hash>". A command that cannot be JSON-serialized yields ""
+// — "no idempotency guarantee": the middleware passes it straight through to the
+// handler and stores nothing, rather than deduplicating it against a shared key.
+// (An IdempotencyKey() that returns "" likewise falls back to the content hash.)
 ```
 
 ### Idempotency Configuration
@@ -260,6 +274,7 @@ type IdempotencyConfig struct {
     TTL            time.Duration        // Optional: result expiration (default: 24h)
     ReservationTTL time.Duration        // Optional: in-flight reservation lease, bounds how long a duplicate is blocked (default: 5m)
     KeyGenerator   func(Command) string // Optional: custom key generator (default: GetIdempotencyKey)
+    Scope          func(ctx context.Context, cmd Command) string // Optional: principal scope, stored as "<scope>|<key>" (default: DefaultIdempotencyScope = tenant from context)
     StoreErrors    bool                 // Optional: replay stored failures instead of retrying (default: false)
     FailClosed     bool                 // Optional: fail the command if the store is down (default: false)
     SkipCommands   []string             // Optional: command types that bypass the idempotency check
@@ -298,14 +313,36 @@ config := mink.IdempotencyConfig{
 bus.Use(mink.IdempotencyMiddleware(config))
 ```
 
+#### Principal-scoped keys
+
+Keys are scoped per principal before they reach the store: `Scope` (default
+`mink.DefaultIdempotencyScope`, which returns the tenant set by `TenantMiddleware` /
+`mink.WithTenantID`) is prepended in a length-prefixed encoding, `<len(scope)>:<scope>|<key>`
+(`8:tenant-a|req-1`), so two tenants presenting the same client request id can never replay
+or suppress each other's commands. Spelling out the scope's byte length makes the encoding
+injective: no client-chosen key, even one containing `|` or `:`, can make one scope's key
+collide with another's (tenant `a` + key `b|x` → `1:a|b|x`; tenant `a|b` + key `x` →
+`3:a|b|x`). Run the tenant middleware *before* the idempotency middleware; supply a `Scope`
+that returns `""` to disable scoping (the pre-hardening behavior — the key is then stored
+verbatim). A key longer than `mink.MaxIdempotencyKeyLength` (255 bytes — the PostgreSQL
+column width) is replaced by `<len:scope|><CommandType>:sha256:<digest of the scoped key>`
+(the scope prefix stays visible, truncated with the command type on a rune boundary to fit;
+the digest covers the full scoped key), so an over-long client key cannot fail the insert
+and silently defeat deduplication under fail-open. `NewIdempotencyRecord` likewise bounds
+`CommandType` and `AggregateID` to `mink.MaxIdempotencyFieldLength` (255 bytes).
+`mink.EffectiveIdempotencyKey(cmdType, scope, key)` computes the exact key the middleware
+will store, for inspection or pre-seeding.
+
 :::warning Idempotency keys must come from trusted input
 Derive idempotency keys from **authenticated / server-controlled** fields. If
 an attacker can influence the key — for example via
 `mink.IdempotencyKeyFromField` over a user-supplied field — they can collide
 with a victim's key and **suppress or replay** that victim's command. The
 default `mink.GetIdempotencyKey` (which hashes the full serialized command with
-SHA-256 when the command supplies no key of its own) is safe; a client-supplied request ID should be scoped to the authenticated
-caller (e.g. prefix it with the tenant/user ID) before use as a key.
+SHA-256 when the command supplies no key of its own) is safe, and the default
+`Scope` already prefixes the tenant; when commands are per-user *within* a tenant,
+scope a client-supplied request ID to the authenticated user as well (e.g. a
+`Scope` that returns `tenant + ":" + user`).
 :::
 
 ### Idempotency Flow
@@ -348,7 +385,7 @@ Links all events/commands from a single external request.
 
 ```go
 // Middleware auto-generates or propagates correlation ID
-bus.Use(mink.CorrelationIDMiddleware(nil)) // Uses UUID generator
+bus.Use(mink.CorrelationIDMiddleware(nil)) // nil = random v4 UUID (uuid.NewString), not guessable
 
 // Or provide custom generator
 bus.Use(mink.CorrelationIDMiddleware(func() string {
@@ -498,6 +535,15 @@ type SagaStore interface {
     FindByType(ctx context.Context, sagaType string, statuses ...SagaStatus) ([]*SagaState, error)
     Delete(ctx context.Context, sagaID string) error
     Close() error
+}
+
+// Optional (adapters.SagaCorrelationTypeFinder; the memory and PostgreSQL stores
+// implement it). SagaManager prefers it, so two saga TYPES can share one
+// correlation id. Without it, a correlation id already owned by a saga of a
+// different type fails with ErrSagaTypeMismatch (*SagaTypeMismatchError) instead
+// of hydrating from — and overwriting — the other saga's row.
+type SagaCorrelationTypeFinder interface {
+    FindByCorrelationIDAndType(ctx context.Context, correlationID, sagaType string) (*SagaState, error)
 }
 ```
 
@@ -710,6 +756,29 @@ manager.Register("OrderFulfillment",
 go manager.Start(ctx)
 defer manager.Stop()
 ```
+
+:::note Security note
+- **Correlation ids are type-scoped.** A correlation id that already belongs to a saga of a
+  *different* type is never hydrated into — or overwritten by — this saga: with a store that
+  implements `FindByCorrelationIDAndType` both types coexist, otherwise processing fails
+  with `mink.ErrSagaTypeMismatch` (the event loop logs it and continues; `StartSaga`
+  returns it).
+- **Retry capture never persists decrypted PII.** With `WithSagaRetryCapture()`, a
+  field-encrypted trigger event is captured as a *locator* (stream id, version, global
+  position, type, id, timestamp) rather than as its decrypted payload. `RetrySaga` /
+  `ResumeStalled` reload it through the normal decrypt path — so the manager must have been
+  built with an `EventStore`, and a re-drive fails with the decryption error once the
+  subject's key has been revoked. A locator is marked explicitly
+  (`Metadata.Custom["$saga_trigger_locator"] = "true"`), never inferred from an empty
+  payload, so a plaintext trigger with no `Data` is captured whole like any other plaintext
+  event; the reload reads exactly one event by version (`StreamQueryAdapter.GetStreamEvents`
+  with limit 1 on the shipped adapters) and refuses to re-drive if the stored event's id,
+  type, version or global position disagree with the locator.
+- **Registered name = `SagaType()`.** `Register(name, factory, ...)` logs an error when the
+  sagas the factory produces report a different `SagaType()`, and processing a starting
+  event for such a registration fails with `ErrSagaTypeMismatch` instead of persisting a row
+  that type-scoped lookups and re-drives could never find.
+:::
 
 ### Timeouts & Abandoned-Saga Compensation
 
@@ -957,6 +1026,11 @@ type OutboxRoute struct {
 ### Outbox Processor
 
 Background worker that polls for pending messages and delivers them via registered publishers.
+Log lines that name a destination (the processor's "No publisher for destination" and the
+`EventStoreWithOutbox` "Failed to transform outbox payload" lines) reduce it to its origin —
+`<prefix>:scheme://host[:port]`, with userinfo, path, query and fragment dropped — so a
+webhook URL carrying a token in its path or query never reaches your logs; non-URL
+destinations such as `kafka:orders` are logged as-is.
 
 ```go
 import (
@@ -1009,8 +1083,65 @@ pub := webhook.New(
     webhook.WithDefaultHeaders(map[string]string{
         "X-API-Key": "secret",
     }),
+    webhook.WithRequireHTTPS(),                                   // "http://" → ErrHTTPSRequired
+    webhook.WithAllowedHosts("hooks.example.com", "*.partner.io"), // anything else → ErrHostNotAllowed (fails closed)
+    webhook.WithSigningSecret(signingKey),                        // X-Outbox-Timestamp + X-Outbox-Signature
 )
 // Destination format: "webhook:https://example.com/events"
+```
+
+:::note Security note
+The default client **never follows redirects**: a 3xx fails the delivery (retry /
+dead-letter) instead of re-sending the payload and default headers — typically a bearer
+token — to a host you did not configure. A client injected with `WithHTTPClient` is never
+used as-is or mutated: the publisher works on a shallow copy, a client whose `CheckRedirect`
+is `nil` refuses redirects exactly like the default client, and a client with its own
+`CheckRedirect` (to deliberately follow redirects) has every hop validated against the
+publisher's policy — `http`/`https`, non-empty host, `WithRequireHTTPS`, `WithAllowedHosts`,
+read at request time — before its function runs, failing with the same `ErrHostNotAllowed` /
+`ErrHTTPSRequired` / `ErrInvalidDestination` without contacting the host. Every destination
+is parsed before sending (`http`/`https` with a non-empty host, else `ErrInvalidDestination`),
+message headers containing CR/LF are rejected with `ErrInvalidHeader`, error strings carry
+only `scheme://host[:port]` — never userinfo, path, query or fragment, so a Slack/Discord-style
+path secret never reaches the persisted `last_error` — and response bodies are drained up
+to 1 MiB. `WithAllowedHosts`
+matches hostnames only (case-insensitive, port ignored; `*.example.com` matches strict
+subdomains, not the apex) and an empty allowlist denies everything.
+:::
+
+With `WithSigningSecret`, every request carries `X-Outbox-Timestamp` (unix seconds) and
+`X-Outbox-Signature: sha256=<hex>` where the hex is `HMAC-SHA256(secret, timestamp + "." + body)`
+over the **raw** request body. The two headers are written after per-message `X-Outbox-*`
+headers, so a message header can never override them. A receiver verifies with a
+constant-time compare and a timestamp tolerance:
+
+```go
+import (
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+    "net/http"
+    "strconv"
+    "time"
+
+    "go-mink.dev/outbox/webhook"
+)
+
+func verify(r *http.Request, rawBody []byte, secret []byte) bool {
+    ts := r.Header.Get(webhook.HeaderTimestamp) // "X-Outbox-Timestamp"
+    sec, err := strconv.ParseInt(ts, 10, 64)
+    if err != nil {
+        return false
+    }
+    if skew := time.Now().Unix() - sec; skew < -300 || skew > 300 { // ±5 min replay window
+        return false
+    }
+    mac := hmac.New(sha256.New, secret)
+    mac.Write([]byte(ts + "."))
+    mac.Write(rawBody) // the body bytes exactly as received, before any JSON decoding
+    want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+    return hmac.Equal([]byte(want), []byte(r.Header.Get(webhook.HeaderSignature))) // "X-Outbox-Signature"
+}
 ```
 
 **Kafka Publisher** - Apache Kafka delivery:
@@ -1020,8 +1151,13 @@ import "go-mink.dev/outbox/kafka"
 pub := kafka.New(
     kafka.WithBrokers("broker1:9092", "broker2:9092"),
     kafka.WithBatchTimeout(100 * time.Millisecond),
+    kafka.WithTLS(&tls.Config{MinVersion: tls.VersionTLS12}),          // default is PLAINTEXT
+    kafka.WithSASL(plain.Mechanism{Username: user, Password: pass}),   // github.com/segmentio/kafka-go/sasl/plain; pair with TLS
 )
 // Destination format: "kafka:topic-name"
+// Without WithTLS / WithSASL the publisher talks PLAINTEXT and unauthenticated.
+// kafka.WithTransport(t) injects a custom *kafka.Transport; apply it BEFORE
+// WithTLS/WithSASL — it replaces whatever transport was configured so far.
 ```
 
 **SNS Publisher** - AWS SNS delivery:
@@ -1033,6 +1169,12 @@ pub := sns.New(
     sns.WithMessageGroupID("orders"),
 )
 // Destination format: "sns:arn:aws:sns:us-east-1:123456:topic"
+// Outbox headers become SNS message attributes. A name starting with "AWS." or
+// "Amazon." is rejected with ErrReservedAttribute (SNS reads those as delivery
+// directives — SMS sender id, max price, push type) unless
+// sns.WithAllowReservedAttributes() is set; a name outside [A-Za-z0-9_.-] /
+// 1–256 chars fails with ErrInvalidAttributeName. Other messages in the batch
+// are still delivered.
 ```
 
 ### Outbox Stores
@@ -1095,6 +1237,11 @@ processor := mink.NewOutboxProcessor(outboxStore,
 // Available metrics:
 // - outbox_messages_processed_total (labels: destination, status)
 // - outbox_messages_failed_total (labels: destination)
+//   The "destination" label value is the PUBLISHER PREFIX (text before the first
+//   ':' — "webhook", "kafka", "sns"): the OutboxProcessor hands OutboxMetrics the
+//   prefix, never the full destination, so a store full of distinct URLs, or a
+//   poisoned row, cannot create unbounded time series. (The metrics package records
+//   the value it is given verbatim; there is no option to label by full destination.)
 // - outbox_messages_dead_lettered_total
 // - outbox_batch_duration_seconds
 // - outbox_pending_messages (gauge)
@@ -1218,16 +1365,29 @@ store.RegisterEvents(CustomerCreated{}, AddressUpdated{})
 // Local provider -- AES-256-GCM, in-memory keys
 provider := local.New(local.WithKey("key-1", key))
 
-// AWS KMS provider -- uses kms.GenerateDataKey API
-provider := kms.New(kms.WithKMSClient(awsKMSClient))
+// AWS KMS provider -- uses kms.GenerateDataKey API. Stamp key ARNs, not aliases: ids
+// are resolved via DescribeKey AT CALL TIME, so a re-pointed alias changes
+// what RevokeKey/IsRevoked act on (a missing alias is kms.ErrAliasNotFound, never Revoked). A CMK pending deletion is SoftRevoked (UnrevokeKey
+// cancels it; a permanently deleted key yields *kms.KeyPermanentlyDeletedError), and
+// context-free calls are bounded by WithRevocationTimeout.
+provider := kms.New(kms.WithKMSClient(awsKMSClient), kms.WithRevocationTimeout(30*time.Second))
 
-// Vault Transit provider -- DEK generated locally, encrypted via Vault
+// Vault Transit provider -- DEK generated locally, encrypted via Vault. Key names are
+// validated (non-empty, no "/", no control bytes, not "." / "..") and url.PathEscape'd
+// before any request reaches the client; RevokeKey/IsRevoked are bounded by
+// vault.WithRevocationTimeout (default 30s).
 provider := vault.New(vault.WithVaultClient(vaultClient))
 ```
 
 ### Crypto-Shredding (GDPR)
 
-Revoke a tenant's encryption key to make their PII permanently unrecoverable:
+Revoke a tenant's encryption key to make the fields encrypted under it unrecoverable.
+Only the fields listed in `WithEncryptedFields` are affected — everything else stays in
+plaintext (see `e.Name` below). "Unrecoverable" is only as strong as the provider's
+deletion: `local` zeroes the key immediately, but **AWS KMS** merely *schedules* deletion —
+`CancelKeyDeletion` can restore the key during the 7–30 day pending window
+(`WithPendingDeletionWindow`), so the data is reported as still recoverable until AWS
+completes the deletion.
 
 ```go
 // Before: tenant B data loads normally
@@ -1242,7 +1402,7 @@ provider.RevokeKey("tenant-B")
 events, _ = store.Load(ctx, "Customer-bob")
 e = events[0].Data.(CustomerCreated)
 fmt.Println(e.Name)  // "Bob Jones" (not encrypted, still readable)
-fmt.Println(e.Email) // "base64-gibberish..." (permanently encrypted)
+fmt.Println(e.Email) // "base64-gibberish..." (ciphertext; unrecoverable once the key material is destroyed)
 ```
 
 ### Metadata Storage
@@ -1255,6 +1415,13 @@ Encryption metadata is stored in `Metadata.Custom` with `$`-prefixed keys (no DB
 | `$encryption_key_id` | `"master-1"` |
 | `$encrypted_dek` | Base64-encoded encrypted DEK |
 | `$encryption_algorithm` | `"AES-256-GCM"` |
+
+These four keys are **library-owned**: `Append` / `SaveAggregate` strip any caller-supplied
+copy from `Metadata.Custom` before stamping (`mink.SanitizeReservedMetadata`), so metadata
+from an untrusted writer cannot forge the envelope or redirect decryption to another key.
+Decryption **fails closed** — a listed field that is missing or not a string returns
+`ErrDecryptionFailed` instead of passing through — and integers above 2^53 in an encrypted
+event survive the round trip exactly.
 
 ### Integration with Event Versioning
 
@@ -1327,6 +1494,9 @@ result, err := exporter.Export(ctx, mink.ExportRequest{
     SubjectID: "user-123",
     Streams:   []string{"Customer-user-123", "Order-ord-1", "Order-ord-2"},
 })
+// With Streams and a nil Filter the exporter applies SubjectOrUntaggedFilter(SubjectID):
+// events tagged ($subjects) for OTHER subjects are dropped, untagged events are kept.
+// Pass an explicit Filter (e.g. FilterByStreams(...)) to export a whole stream deliberately.
 ```
 
 **Scan-based** -- scan all events with a filter (requires `SubscriptionAdapter`):
@@ -1343,9 +1513,12 @@ result, err := exporter.Export(ctx, mink.ExportRequest{
 ```go
 mink.FilterByTenantID("tenant-A")                          // By tenant ID
 mink.FilterByUserID("user-123")                             // By user ID
-mink.FilterByStreamPrefix("Customer-")                      // By stream prefix
+mink.FilterByStreamPrefix("Customer-")                      // By stream prefix ("user-1" also matches "user-10")
+mink.FilterByStreams("Customer-user-123", "Order-ord-1")    // By exact stream IDs
+mink.FilterByStreamCategory("Customer")                     // By category (text before the first '-')
 mink.FilterByMetadata("department", "sales")                // By custom metadata
 mink.FilterByEventTypes("CustomerCreated", "OrderPlaced")   // By event type
+mink.SubjectOrUntaggedFilter("user-123")                    // Tagged for the subject, or untagged
 
 // Combine filters with AND logic
 mink.CombineFilters(
@@ -1353,6 +1526,11 @@ mink.CombineFilters(
     mink.FilterByEventTypes("OrderPlaced"),
 )
 ```
+
+Filters **fail closed**: an empty selector (`FilterByTenantID("")`, `FilterByUserID("")`,
+`FilterByStreamPrefix("")`, `FilterByMetadata` with an empty key or value) matches
+*nothing*, `CombineFilters()` with no filters matches nothing, and a `nil` filter inside
+`CombineFilters` matches nothing rather than panicking.
 
 ### Streaming Export
 

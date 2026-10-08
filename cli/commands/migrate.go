@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
@@ -141,18 +143,33 @@ func runMigrateUp(ctx context.Context, env *MigrationEnv, steps int) error {
 	return nil
 }
 
+// rollbackConfirmer asks the operator to confirm rolling back the named
+// migrations (listed most recent first). A nil rollbackConfirmer means the
+// confirmation was waived with --yes / --non-interactive.
+type rollbackConfirmer func(names []string) (bool, error)
+
 func newMigrateDownCommand() *cobra.Command {
+	return newMigrateDownCommandWithConfirm(confirmRollbackInteractive)
+}
+
+// newMigrateDownCommandWithConfirm builds the down command with an explicit
+// confirmer so the confirmation flow can be exercised without a terminal.
+func newMigrateDownCommandWithConfirm(confirm rollbackConfirmer) *cobra.Command {
 	var steps int
 	var nonInteractive bool
+	var yes bool
 
 	cmd := &cobra.Command{
 		Use:   "down",
 		Short: "Rollback migrations",
 		Long: `Rollback applied database migrations.
 
-By default, rolls back the last migration. Use --steps to rollback more.`,
+By default, rolls back the last migration. Use --steps to rollback more.
+
+Rolling back executes the matching .down.sql files, which is destructive, so
+the command asks for confirmation first. Pass --yes (or --non-interactive) to
+skip the prompt when scripting.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = nonInteractive // Used for scripting (skip interactive elements)
 			ctx := cmd.Context()
 
 			env, isMemory, err := SetupMigrationEnv(ctx)
@@ -165,66 +182,133 @@ By default, rolls back the last migration. Use --steps to rollback more.`,
 			}
 			defer env.Close()
 
-			applied, err := getAppliedMigrations(ctx, env.Adapter, env.MigrationsDir)
-			if err != nil {
-				return err
-			}
-
-			if len(applied) == 0 {
-				fmt.Println(styles.FormatInfo("No migrations to rollback"))
-				return nil
-			}
-
-			// Reverse order for rollback
-			toRollback := applied
-			if steps == 0 {
-				steps = 1
-			}
-			if steps < len(toRollback) {
-				toRollback = toRollback[len(toRollback)-steps:]
-			}
-
-			fmt.Printf("\n%s Rolling back %d migration(s)...\n\n", styles.IconWarning, len(toRollback))
-
-			for i := len(toRollback) - 1; i >= 0; i-- {
-				m := toRollback[i]
-				fmt.Printf("  %s Rolling back %s... ", styles.IconPending, m.Name)
-
-				// Look for down migration
-				downPath := strings.TrimSuffix(m.Path, ".sql") + ".down.sql"
-				if _, err := os.Stat(downPath); os.IsNotExist(err) {
-					fmt.Println(styles.WarningStyle.Render("SKIPPED (no down migration)"))
-					continue
-				}
-
-				content, err := os.ReadFile(downPath)
-				if err != nil {
-					fmt.Println(styles.ErrorStyle.Render("FAILED"))
-					return fmt.Errorf("failed to read down migration: %w", err)
-				}
-
-				if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
-					fmt.Println(styles.ErrorStyle.Render("FAILED"))
-					return fmt.Errorf("rollback failed: %w", err)
-				}
-
-				if err := env.Adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
-					fmt.Println(styles.ErrorStyle.Render("FAILED"))
-					return fmt.Errorf("failed to remove migration record %q (schema rolled back but the record remains — the migrations table is now inconsistent): %w", m.Name, err)
-				}
-				fmt.Println(styles.SuccessStyle.Render("OK"))
-			}
-
-			fmt.Println()
-			fmt.Println(styles.FormatSuccess("Rollback complete"))
-			return nil
+			return runMigrateDown(ctx, env, steps, resolveRollbackConfirmer(confirm, yes, nonInteractive))
 		},
 	}
 
 	cmd.Flags().IntVarP(&steps, "steps", "n", 1, "Number of migrations to rollback")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive elements (for scripting)")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive elements, including the rollback confirmation (for scripting)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the rollback confirmation prompt")
 
 	return cmd
+}
+
+// resolveRollbackConfirmer returns the confirmer `mink migrate down` must
+// consult before executing any down migration: nil (no prompt) when --yes or
+// --non-interactive was passed, otherwise confirm itself. It is the only place
+// the two flags are interpreted, so the waiver semantics are testable without
+// a database or a terminal.
+func resolveRollbackConfirmer(confirm rollbackConfirmer, yes, nonInteractive bool) rollbackConfirmer {
+	if yes || nonInteractive {
+		return nil
+	}
+	return confirm
+}
+
+// runMigrateDown rolls back the most recently applied migrations recorded in
+// the migrations table. If steps is less than 1, a single migration is rolled
+// back. When confirm is non-nil it is consulted, with the names about to be
+// rolled back, before any SQL runs; a declined confirmation is not an error.
+//
+// Migration names come from the database and are validated by
+// getAppliedMigrations before they are turned into file paths; the derived
+// .down.sql path is checked against the migrations directory again here so
+// this loop never silently depends on that invariant.
+func runMigrateDown(ctx context.Context, env *MigrationEnv, steps int, confirm rollbackConfirmer) error {
+	applied, err := getAppliedMigrations(ctx, env.Adapter, env.MigrationsDir)
+	if err != nil {
+		return err
+	}
+
+	if len(applied) == 0 {
+		fmt.Println(styles.FormatInfo("No migrations to rollback"))
+		return nil
+	}
+
+	// Reverse order for rollback
+	toRollback := applied
+	if steps < 1 {
+		steps = 1
+	}
+	if steps < len(toRollback) {
+		toRollback = toRollback[len(toRollback)-steps:]
+	}
+
+	if confirm != nil {
+		names := make([]string, 0, len(toRollback))
+		for i := len(toRollback) - 1; i >= 0; i-- {
+			names = append(names, toRollback[i].Name)
+		}
+		confirmed, err := confirm(names)
+		if err != nil {
+			return fmt.Errorf("rollback confirmation failed (pass --yes to skip the prompt when scripting): %w", err)
+		}
+		if !confirmed {
+			fmt.Println(styles.FormatInfo("Cancelled"))
+			return nil
+		}
+	}
+
+	fmt.Printf("\n%s Rolling back %d migration(s)...\n\n", styles.IconWarning, len(toRollback))
+
+	for i := len(toRollback) - 1; i >= 0; i-- {
+		m := toRollback[i]
+		fmt.Printf("  %s Rolling back %s... ", styles.IconPending, m.Name)
+
+		// Look for down migration
+		downPath := strings.TrimSuffix(m.Path, ".sql") + ".down.sql"
+		if err := ensureInsideDir(env.MigrationsDir, downPath); err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("refusing to run down migration for %q: %w", m.Name, err)
+		}
+		if _, err := os.Stat(downPath); os.IsNotExist(err) {
+			fmt.Println(styles.WarningStyle.Render("SKIPPED (no down migration)"))
+			continue
+		}
+
+		content, err := os.ReadFile(downPath)
+		if err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("failed to read down migration: %w", err)
+		}
+
+		if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("rollback failed: %w", err)
+		}
+
+		if err := env.Adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
+			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			return fmt.Errorf("failed to remove migration record %q (schema rolled back but the record remains — the migrations table is now inconsistent): %w", m.Name, err)
+		}
+		fmt.Println(styles.SuccessStyle.Render("OK"))
+	}
+
+	fmt.Println()
+	fmt.Println(styles.FormatSuccess("Rollback complete"))
+	return nil
+}
+
+// confirmRollbackInteractive is the production rollbackConfirmer: a yes/no
+// prompt that lists the migrations about to be rolled back. It defaults to
+// "No", and a prompt that cannot be shown (no terminal) surfaces as an error,
+// so an unattended run never rolls anything back by accident.
+func confirmRollbackInteractive(names []string) (bool, error) {
+	var confirmed bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Roll back %d migration(s)?", len(names))).
+				Description("This executes the down migration(s) for:\n  " + strings.Join(names, "\n  ") +
+					"\nThe SQL is destructive and is not undone automatically.").
+				Value(&confirmed),
+		),
+	).WithTheme(huh.ThemeDracula())
+
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return confirmed, nil
 }
 
 func newMigrateStatusCommand() *cobra.Command {
@@ -253,7 +337,7 @@ func newMigrateStatusCommand() *cobra.Command {
 			// Get applied migrations using adapter
 			applied, err := env.Adapter.GetAppliedMigrations(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read applied migrations: %w", err)
 			}
 
 			appliedSet := make(map[string]bool)
@@ -405,8 +489,9 @@ func getPendingMigrations(ctx context.Context, adapter CLIAdapter, migrationsDir
 
 	applied, err := adapter.GetAppliedMigrations(ctx)
 	if err != nil {
-		// If we can't get applied migrations, assume all are pending
-		return all, nil
+		// Do not guess: treating every migration as pending on a read failure
+		// would re-run already-applied, possibly non-idempotent SQL.
+		return nil, fmt.Errorf("failed to read applied migrations: %w", err)
 	}
 
 	appliedSet := make(map[string]bool)
@@ -424,21 +509,61 @@ func getPendingMigrations(ctx context.Context, adapter CLIAdapter, migrationsDir
 	return pending, nil
 }
 
+// getAppliedMigrations reads the applied migration names from the migrations
+// table and maps each to its up-migration file inside migrationsDir. The
+// names are database rows, not trusted input: every name is validated and its
+// resolved path checked against migrationsDir, and a single bad row fails the
+// whole read rather than being skipped.
 func getAppliedMigrations(ctx context.Context, adapter CLIAdapter, migrationsDir string) ([]Migration, error) {
 	applied, err := adapter.GetAppliedMigrations(ctx)
 	if err != nil {
-		return nil, err
+		// Same wrapper as getPendingMigrations, so `migrate up`, `migrate down`
+		// and `migrate status` all report a failed read the same way.
+		return nil, fmt.Errorf("failed to read applied migrations: %w", err)
 	}
 
 	var migrations []Migration
 	for _, name := range applied {
+		path, err := migrationFilePath(migrationsDir, name)
+		if err != nil {
+			return nil, err
+		}
 		migrations = append(migrations, Migration{
 			Name: name,
-			Path: filepath.Join(migrationsDir, name+".sql"),
+			Path: path,
 		})
 	}
 
 	return migrations, nil
+}
+
+// migrationNameRe matches the migration names the CLI accepts when reading
+// them back from the migrations table: a plain file stem with no path
+// separators.
+var migrationNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+// validateMigrationName rejects migration names that are not plain file
+// stems. A poisoned row in the migrations table must not be able to steer
+// `mink migrate down` to a .down.sql outside the migrations directory.
+func validateMigrationName(name string) error {
+	if !migrationNameRe.MatchString(name) || strings.Contains(name, "..") {
+		return fmt.Errorf("invalid migration name %q in migrations table: names may only contain letters, digits, '_', '.' and '-', and must not contain \"..\"", name)
+	}
+	return nil
+}
+
+// migrationFilePath returns the path of the up migration file for name inside
+// migrationsDir, after validating the name and checking that the resolved
+// path stays inside the directory.
+func migrationFilePath(migrationsDir, name string) (string, error) {
+	if err := validateMigrationName(name); err != nil {
+		return "", err
+	}
+	path := filepath.Join(migrationsDir, name+".sql")
+	if err := ensureInsideDir(migrationsDir, path); err != nil {
+		return "", fmt.Errorf("invalid migration name %q in migrations table: %w", name, err)
+	}
+	return path, nil
 }
 
 func sanitizeName(name string) string {

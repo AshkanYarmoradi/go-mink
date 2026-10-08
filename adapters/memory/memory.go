@@ -3,7 +3,9 @@
 package memory
 
 import (
+	"bytes"
 	"context"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -326,7 +328,15 @@ func (a *MemoryAdapter) appendLocked(streamID string, events []adapters.EventRec
 
 		stream.events = append(stream.events, stored)
 		a.globalEvents = append(a.globalEvents, stored)
-		storedEvents[i] = stored
+
+		// Hand the caller back its OWN Data/Metadata (as the PostgreSQL adapter does)
+		// rather than the log's private copies: the returned slice must never alias
+		// the stored event, or a caller could rewrite history through it after the
+		// fact. Reusing the input costs no allocation and the caller already owns it.
+		returned := stored
+		returned.Data = event.Data
+		returned.Metadata = event.Metadata
+		storedEvents[i] = returned
 	}
 
 	// Update stream info
@@ -359,11 +369,12 @@ func (a *MemoryAdapter) Load(ctx context.Context, streamID string, fromVersion i
 		return []adapters.StoredEvent{}, nil
 	}
 
-	// Filter events by version
+	// Filter events by version. Each returned event is a detached copy so a caller
+	// (or a projection) cannot mutate the log through the returned Data/Custom.
 	events := make([]adapters.StoredEvent, 0)
 	for _, event := range stream.events {
 		if event.Version > fromVersion {
-			events = append(events, event)
+			events = append(events, cloneStoredEvent(event))
 		}
 	}
 
@@ -463,7 +474,7 @@ func (a *MemoryAdapter) LoadFromPositionFiltered(ctx context.Context, fromPositi
 		if !filter.Matches(event) {
 			continue
 		}
-		events = append(events, event)
+		events = append(events, cloneStoredEvent(event))
 		if len(events) >= limit {
 			break
 		}
@@ -532,7 +543,7 @@ func (a *MemoryAdapter) SubscribeAll(ctx context.Context, fromPosition uint64, o
 	for _, event := range a.globalEvents {
 		if event.GlobalPosition > fromPosition {
 			select {
-			case ch <- event:
+			case ch <- cloneStoredEvent(event):
 			case <-ctx.Done():
 				a.mu.RUnlock()
 				a.removeSubscriber(ch)
@@ -633,6 +644,17 @@ func copyMetadata(md adapters.Metadata) adapters.Metadata {
 		md.Custom = custom
 	}
 	return md
+}
+
+// cloneStoredEvent returns e with its Data and Metadata.Custom replaced by fresh
+// copies (one allocation per field; nil stays nil). Every event that leaves the
+// adapter — via Load, LoadFromPosition, GetStreamEvents, or a subscription — goes
+// through it, so no caller can reach the adapter's log through a returned slice or
+// map and mutate history (or undo a redaction) after the fact.
+func cloneStoredEvent(e adapters.StoredEvent) adapters.StoredEvent {
+	e.Data = bytes.Clone(e.Data)
+	e.Metadata.Custom = maps.Clone(e.Metadata.Custom)
+	return e
 }
 
 // LoadSnapshot retrieves the latest snapshot for the given stream.
@@ -784,8 +806,11 @@ func (a *MemoryAdapter) notifySubscribers(events []adapters.StoredEvent) []pendi
 	var drops []pendingDrop
 	for _, sub := range a.subscribers {
 		for _, event := range events {
+			// Each subscriber receives its own detached copy so a projection that
+			// mutates a delivered event cannot reach the log, the Append caller, or
+			// another subscriber.
 			select {
-			case sub.ch <- event:
+			case sub.ch <- cloneStoredEvent(event):
 			default:
 				// Channel full: drop the event (non-blocking delivery) and
 				// queue an OnError notification if one was provided.
@@ -935,7 +960,7 @@ func (a *MemoryAdapter) GetStreamEvents(ctx context.Context, streamID string, fr
 	var events []adapters.StoredEvent
 	for _, event := range stream.events {
 		if event.Version > fromVersion {
-			events = append(events, event)
+			events = append(events, cloneStoredEvent(event))
 			if limit > 0 && len(events) >= limit {
 				break
 			}
@@ -1227,10 +1252,13 @@ func (a *MemoryAdapter) ExecuteSQL(ctx context.Context, sql string) error {
 	return nil
 }
 
-// GenerateSchema returns an informational message for the memory adapter.
+// GenerateSchema returns an informational message for the memory adapter. The
+// project name is sanitized so a newline in it cannot end the `--` comment and
+// inject a statement into the generated SQL (adapters.SanitizeSQLComment, shared
+// with the PostgreSQL adapter).
 func (a *MemoryAdapter) GenerateSchema(projectName, tableName, snapshotTableName, outboxTableName string) string {
 	return `-- Mink Event Store (In-Memory)
--- Generated for: ` + projectName + `
+-- Generated for: ` + adapters.SanitizeSQLComment(projectName) + `
 
 -- The memory adapter does not require schema creation.
 -- All data is stored in-memory and will be lost when the application stops.

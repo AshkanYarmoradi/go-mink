@@ -766,18 +766,24 @@ func TestDecryptJSONField_InvalidBase64Value(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to decode field")
 }
 
+// $encrypted_fields only ever lists fields that were actually sealed, so a listed
+// field that is absent or no longer a string means the stored row was altered
+// after the fact (an AEAD bypass). decryptJSONField must fail closed — naming the
+// field and wrapping ErrDecryptionFailed — rather than pass the value through.
+
 func TestDecryptJSONField_NonStringValue(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 
 	data := map[string]interface{}{
-		"count": 42, // Not a string, wasn't encrypted
+		"count": 42, // listed as sealed, but the ciphertext string was replaced by a number
 	}
 
-	// Should return nil (skip non-string values)
 	err := decryptJSONField(data, "count", "test-stream", key)
-	require.NoError(t, err)
-	assert.Equal(t, 42, data["count"]) // unchanged
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), `"count"`)
+	assert.Equal(t, 42, data["count"]) // left untouched, never reinterpreted as plaintext
 }
 
 func TestDecryptJSONField_MissingField(t *testing.T) {
@@ -788,9 +794,11 @@ func TestDecryptJSONField_MissingField(t *testing.T) {
 		"name": "John",
 	}
 
-	// Should return nil for missing field
+	// A sealed field that has been removed from the row is tampering, not "nothing to do".
 	err := decryptJSONField(data, "email", "test-stream", key)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), `"email"`)
 }
 
 func TestDecryptJSONField_NestedMissingParent(t *testing.T) {
@@ -801,9 +809,11 @@ func TestDecryptJSONField_NestedMissingParent(t *testing.T) {
 		"name": "John",
 	}
 
-	// Parent key "address" doesn't exist
+	// Parent key "address" doesn't exist, yet "address.street" was recorded as sealed.
 	err := decryptJSONField(data, "address.street", "test-stream", key)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), `"address.street"`)
 }
 
 func TestDecryptJSONField_NestedNonMapChild(t *testing.T) {
@@ -811,12 +821,14 @@ func TestDecryptJSONField_NestedNonMapChild(t *testing.T) {
 	_, _ = rand.Read(key)
 
 	data := map[string]interface{}{
-		"address": "not-a-map", // String instead of map
+		"address": "not-a-map", // String instead of the object that held the sealed leaf
 	}
 
-	// Parent exists but isn't a map
 	err := decryptJSONField(data, "address.street", "test-stream", key)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encryption.ErrDecryptionFailed)
+	assert.Contains(t, err.Error(), `"address.street"`)
+	assert.Equal(t, "not-a-map", data["address"]) // untouched
 }
 
 func TestEncryptJSONField_NestedMissingParent(t *testing.T) {
@@ -832,6 +844,9 @@ func TestEncryptJSONField_NestedMissingParent(t *testing.T) {
 	assert.False(t, encrypted)
 }
 
+// A parent that is present but is not a JSON object is a mismatch between the field
+// configuration and the event's shape: it must fail rather than silently leave the
+// field in plaintext (an absent or null parent, by contrast, is an optional object).
 func TestEncryptJSONField_NestedNonMapChild(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
@@ -841,6 +856,15 @@ func TestEncryptJSONField_NestedNonMapChild(t *testing.T) {
 	}
 
 	encrypted, err := encryptJSONField(data, "address.street", "test-stream", key)
+	require.Error(t, err)
+	assert.False(t, encrypted)
+	assert.Contains(t, err.Error(), `"address"`)
+	assert.Contains(t, err.Error(), "not a JSON object")
+	assert.Equal(t, "not-a-map", data["address"], "the mismatched parent is left untouched")
+
+	// JSON null parent: an optional nested object the event did not set — skipped.
+	nullParent := map[string]interface{}{"address": nil}
+	encrypted, err = encryptJSONField(nullParent, "address.street", "test-stream", key)
 	require.NoError(t, err)
 	assert.False(t, encrypted)
 }
@@ -903,4 +927,59 @@ func TestDecryptJSONField_InvalidDecryptedJSON(t *testing.T) {
 	err = decryptJSONField(data, "email", "test-stream", key)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to unmarshal decrypted field")
+}
+
+// TestHasEncryptionEnvelope pins the difference between the two envelope predicates:
+// IsEncrypted is true as soon as $encrypted_fields is present (the read-path gate),
+// while HasEncryptionEnvelope additionally requires a non-empty key id AND wrapped DEK —
+// the only shape a key revocation actually erases. IsEncrypted's semantics are asserted
+// alongside so the promotion can never silently change them.
+func TestHasEncryptionEnvelope(t *testing.T) {
+	tests := []struct {
+		name          string
+		custom        map[string]string
+		wantEnvelope  bool
+		wantEncrypted bool
+	}{
+		{"nil custom", nil, false, false},
+		{"empty custom", map[string]string{}, false, false},
+		{"unrelated keys only", map[string]string{"foo": "bar"}, false, false},
+		{"fields only", map[string]string{encryptedFieldsKey: `["email"]`}, false, true},
+		{"fields + key id, no DEK", map[string]string{encryptedFieldsKey: `["email"]`, encryptionKeyIDKey: "k"}, false, true},
+		{"fields + DEK, no key id", map[string]string{encryptedFieldsKey: `["email"]`, encryptedDEKKey: "AAAA"}, false, true},
+		{"fields + empty key id + DEK", map[string]string{encryptedFieldsKey: `["email"]`, encryptionKeyIDKey: "", encryptedDEKKey: "AAAA"}, false, true},
+		{"fields + key id + empty DEK", map[string]string{encryptedFieldsKey: `["email"]`, encryptionKeyIDKey: "k", encryptedDEKKey: ""}, false, true},
+		{"key id + DEK but no fields marker", map[string]string{encryptionKeyIDKey: "k", encryptedDEKKey: "AAAA"}, false, false},
+		{"bare key id (legacy / hand-written)", map[string]string{encryptionKeyIDKey: "k"}, false, false},
+		{"algorithm only", map[string]string{encryptionAlgorithmKey: "AES-256-GCM"}, false, false},
+		{"complete envelope without algorithm (legacy)", map[string]string{encryptedFieldsKey: `["email"]`, encryptionKeyIDKey: "k", encryptedDEKKey: "AAAA"}, true, true},
+		{"complete envelope with algorithm", map[string]string{encryptedFieldsKey: `["email"]`, encryptionKeyIDKey: "k", encryptedDEKKey: "AAAA", encryptionAlgorithmKey: "AES-256-GCM"}, true, true},
+		{"complete envelope plus unrelated keys", map[string]string{encryptedFieldsKey: `["email","phone"]`, encryptionKeyIDKey: "tenant-A", encryptedDEKKey: "AAAA", SubjectTagsKey: `["u1"]`}, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Metadata{Custom: tt.custom}
+			assert.Equal(t, tt.wantEnvelope, HasEncryptionEnvelope(m), "HasEncryptionEnvelope")
+			assert.Equal(t, tt.wantEncrypted, IsEncrypted(m), "IsEncrypted (behavior unchanged)")
+			if tt.wantEnvelope {
+				assert.True(t, IsEncrypted(m), "a complete envelope always satisfies IsEncrypted")
+			}
+		})
+	}
+}
+
+// A real envelope stamped by encryptFields satisfies HasEncryptionEnvelope, and stripping
+// the markers after decryption clears both predicates without mutating the input.
+func TestHasEncryptionEnvelope_RealEnvelopeAndStrip(t *testing.T) {
+	_, config := testEncConfig(t, "master-1", WithEncryptedFields("UserCreated", "email"))
+	_, encMeta, err := config.encryptFields(context.Background(), "s", "UserCreated", []byte(`{"email":"a@example.com"}`), Metadata{})
+	require.NoError(t, err)
+
+	assert.True(t, HasEncryptionEnvelope(encMeta))
+	assert.True(t, IsEncrypted(encMeta))
+
+	stripped := SanitizeReservedMetadata(encMeta)
+	assert.False(t, HasEncryptionEnvelope(stripped))
+	assert.False(t, IsEncrypted(stripped))
+	assert.True(t, HasEncryptionEnvelope(encMeta), "stripping must not mutate the input metadata")
 }

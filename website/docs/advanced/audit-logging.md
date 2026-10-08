@@ -88,6 +88,9 @@ type AuditConfig struct {
     SkipCommands    []string    // command types to NOT audit
     FailClosed      bool         // see "Failure semantics"; default false (fail-open)
     IncludeMetadata bool         // copy the command's metadata map into the entry
+    MetadataFilter  func(map[string]string) map[string]string // drop/mask captured keys before the write
+    Logger          Logger       // where fail-open drops are warned; nil → slog.Default()
+    OnError         func(ctx context.Context, entry *AuditEntry, err error) // every failed Append, both modes
 }
 
 func DefaultAuditConfig(store AuditStore) AuditConfig
@@ -105,6 +108,28 @@ bus.Use(mink.AuditMiddleware(cfg))
 
 `IncludeMetadata` copies the command's metadata map when the command exposes
 `GetMetadataMap() map[string]string` (commands embedding `mink.CommandBase` do).
+Because the trail is stored in **plaintext**, use `MetadataFilter` to keep personal or
+secret values out of it — it receives a private copy it may mutate or replace, and a
+`nil`/empty result omits metadata altogether:
+
+```go
+cfg.IncludeMetadata = true
+cfg.MetadataFilter = func(md map[string]string) map[string]string {
+    delete(md, "authorization")        // never persist a token
+    if _, ok := md["email"]; ok {
+        md["email"] = "<redacted>"     // keep the key, mask the value
+    }
+    return md
+}
+```
+
+:::note Bounded fields
+`CommandType`, `CommandID`, `AggregateID`, `Actor`, `TenantID`, `CorrelationID` and
+`CausationID` are truncated to `mink.MaxAuditFieldLength` (255 bytes, on a rune boundary —
+the PostgreSQL `VARCHAR(255)` width) before `Append`, so an over-long client-supplied
+actor or command id cannot make the audit row fail and, under fail-open, silently drop the
+record. `Error` and `Metadata` are unbounded.
+:::
 
 ---
 
@@ -143,14 +168,22 @@ type ActorFunc func(ctx context.Context, cmd Command) string
 The audit write happens **after** the command runs. The `FailClosed` flag controls
 what happens if that write fails:
 
-- **Fail-open (default)** — a store error is ignored and the original command
-  result is returned. Auditing never breaks command processing.
+- **Fail-open (default)** — the original command result is returned, so auditing
+  never breaks command processing — but the drop is **never silent**: a warning
+  (`mink: audit entry dropped: store write failed (fail-open)`, with the audit id,
+  command type/id, aggregate, tenant and error) is written to `AuditConfig.Logger`,
+  or to `log/slog`'s default logger when `Logger` is nil.
 - **Fail-closed** (`FailClosed: true`) — a store error is surfaced as the command
   result/error, so callers can react (e.g. reject the request for compliance).
 
+In both modes `AuditConfig.OnError` (if set) is invoked with the entry that could not be
+persisted — count drops, raise an alert, or spool the entry elsewhere; it runs inline on
+the command path, so it must not block.
+
 A nil `Store` follows the same policy rather than panicking the pipeline: fail-open
-returns the command outcome unchanged, while fail-closed surfaces
-`mink.ErrNilAuditStore` (joined with any error the command itself reported).
+returns the command outcome unchanged (and logs one warning when the middleware is
+constructed), while fail-closed surfaces `mink.ErrNilAuditStore` (joined with any error
+the command itself reported).
 
 :::warning Auditing is not transactional
 Because the audit entry is written *after* the command, `FailClosed` surfaces the
@@ -362,8 +395,13 @@ features:
 :::warning Audit logs can contain sensitive data
 `error` messages and captured `metadata` may include PII. Treat the audit table as
 sensitive: restrict access, and avoid placing secrets in command metadata if you
-enable `IncludeMetadata`. Because those fields are stored in **plaintext**, an erasure
-request must reach them too — use [`DeleteAuditBySubject` / `NewAuditSubjectEraser`](#erasing-a-subject-gdpr).
+enable `IncludeMetadata` — or strip them with `MetadataFilter`. Because those fields are
+stored in **plaintext**, an erasure request must reach them too — use
+[`DeleteAuditBySubject` / `NewAuditSubjectEraser`](#erasing-a-subject-gdpr), which also
+purges rows keyed by the subject's *exclusive* footprint streams (`mink.SubjectFootprintIDs`;
+streams shared with other subjects are skipped and reported), reaches the raw aggregate id
+the `AggregateID` column actually holds only under `mink.WithDerivedAggregateIDs()` (safe
+for globally unique aggregate ids), and can count what remains for the erasure certificate.
 :::
 
 ---

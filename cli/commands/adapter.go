@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go-mink.dev/adapters"
@@ -33,10 +34,16 @@ type AdapterFactory struct {
 	dbURL  string
 }
 
-// NewAdapterFactory creates a new adapter factory.
+// NewAdapterFactory creates a new adapter factory. The database URL from mink.yaml
+// is expanded with expandConfigEnv: only references to allowed environment-variable
+// names are honoured (see configEnvAllowPrefixes / MINK_CONFIG_ENV_ALLOW), and a
+// reference to any other variable is an error naming it.
 func NewAdapterFactory(cfg *config.Config) (*AdapterFactory, error) {
-	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if cfg.Database.Driver != "memory" && (dbURL == "" || dbURL == "${DATABASE_URL}") {
+	dbURL, err := expandConfigEnv(cfg.Database.URL)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Database.Driver != "memory" && dbURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL environment variable is not set")
 	}
 
@@ -158,17 +165,27 @@ func loadConfig() (*config.Config, string, error) {
 // loadConfigOrDefault is like loadConfig but returns defaults if no config found.
 // Returns (config, cwd, error) - error only for os.Getwd failures.
 func loadConfigOrDefault() (*config.Config, string, error) {
+	cfg, _, cwd, err := loadConfigOrDefaultWithRoot()
+	return cfg, cwd, err
+}
+
+// loadConfigOrDefaultWithRoot is like loadConfigOrDefault but also reports
+// the project root: the directory that holds the mink.yaml in use, or cwd when
+// no config was found and the defaults are used. Commands that write files
+// derived from config values use root as the containment boundary.
+// Returns (config, root, cwd, error) - error only for os.Getwd failures.
+func loadConfigOrDefaultWithRoot() (*config.Config, string, string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
-	_, cfg, err := config.FindConfig(cwd)
+	root, cfg, err := config.FindConfig(cwd)
 	if err != nil {
-		return config.DefaultConfig(), cwd, nil
+		return config.DefaultConfig(), cwd, cwd, nil
 	}
 
-	return cfg, cwd, nil
+	return cfg, root, cwd, nil
 }
 
 // MigrationEnv holds the environment for migration-related commands.
@@ -261,8 +278,11 @@ func SetupDiagnosticEnv(ctx context.Context) (*DiagnosticEnv, DiagnosticSkipReas
 		return nil, DiagnosticSkipMemoryDriver, nil
 	}
 
-	dbURL := os.ExpandEnv(cfg.Database.URL)
-	if dbURL == "" || dbURL == "${DATABASE_URL}" {
+	dbURL, err := expandConfigEnv(cfg.Database.URL)
+	if err != nil {
+		return nil, DiagnosticNotSkipped, err
+	}
+	if dbURL == "" {
 		return nil, DiagnosticSkipNoDBURL, nil
 	}
 
@@ -276,4 +296,79 @@ func SetupDiagnosticEnv(ctx context.Context) (*DiagnosticEnv, DiagnosticSkipReas
 		Config:  cfg,
 		cleanup: cleanup,
 	}, DiagnosticNotSkipped, nil
+}
+
+// Environment-variable expansion of mink.yaml values.
+//
+// database.url may reference environment variables as $NAME or ${NAME}. The file
+// is not trusted input — config.FindConfig walks up parent directories, so a planted
+// mink.yaml can reach the CLI — and os.ExpandEnv would splice ANY variable the file
+// names ($HOME, $AWS_SECRET_ACCESS_KEY, $GITHUB_TOKEN, ...) into the DSN, from where
+// it reaches connection attempts and error output. Expansion is therefore
+// restricted to variable NAMES that look like database settings: names starting
+// with MINK_, DATABASE_, DB_, PG or POSTGRES (case-insensitive). A reference to any
+// other variable, in either syntax, fails with an error naming the variable.
+// Operators widen the set with MINK_CONFIG_ENV_ALLOW, a comma-separated list of
+// extra allowed name prefixes (environment variables are trusted; the file is not).
+// A literal '$' in a DSN password must be percent-encoded as %24.
+
+// configEnvAllowVar is the environment variable holding extra allowed prefixes.
+const configEnvAllowVar = "MINK_CONFIG_ENV_ALLOW"
+
+// configEnvAllowPrefixes are the variable-name prefixes mink.yaml may reference.
+var configEnvAllowPrefixes = []string{"MINK_", "DATABASE_", "DB_", "PG", "POSTGRES"}
+
+// extraConfigEnvPrefixes parses MINK_CONFIG_ENV_ALLOW: entries are trimmed and
+// upper-cased, empty entries are ignored (so a bare "," opens nothing).
+func extraConfigEnvPrefixes() []string {
+	var out []string
+	for _, p := range strings.Split(os.Getenv(configEnvAllowVar), ",") {
+		if p = strings.ToUpper(strings.TrimSpace(p)); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// configEnvAllowed reports whether a mink.yaml value may expand the named
+// environment variable: the (case-insensitive) name must start with one of the
+// built-in prefixes or one of the extra prefixes.
+func configEnvAllowed(name string, extra []string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range configEnvAllowPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	for _, p := range extra {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// expandConfigEnv expands $NAME / ${NAME} references in a mink.yaml value through
+// the allowlist above. An allowed variable that is unset expands to "" exactly as
+// os.ExpandEnv would; a reference to a variable outside the allowlist makes the
+// whole expansion fail, naming the first offending variable, so no part of the
+// value is ever used.
+func expandConfigEnv(value string) (string, error) {
+	if !strings.Contains(value, "$") {
+		return value, nil
+	}
+	extra := extraConfigEnvPrefixes()
+	var denied []string
+	expanded := os.Expand(value, func(name string) string {
+		if !configEnvAllowed(name, extra) {
+			denied = append(denied, name)
+			return ""
+		}
+		return os.Getenv(name)
+	})
+	if len(denied) > 0 {
+		return "", fmt.Errorf("mink.yaml database.url references environment variable %q, which the CLI will not expand: only names starting with %s are allowed (add a prefix to %s to allow it, or percent-encode a literal $ as %%24)",
+			denied[0], strings.Join(configEnvAllowPrefixes, ", "), configEnvAllowVar)
+	}
+	return expanded, nil
 }

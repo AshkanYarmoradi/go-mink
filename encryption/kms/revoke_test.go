@@ -19,15 +19,35 @@ type mockKMSRevocationClient struct {
 	state     types.KeyState
 	scheduled int
 	notFound  bool // simulate a CMK whose deletion has completed (DescribeKey → NotFound)
+
+	// canonicalID is the KeyMetadata.KeyId DescribeKey reports, mirroring how AWS
+	// resolves an alias/ARN input to the bare key id. Empty echoes the input id.
+	canonicalID string
+	// scheduledIDs / windows record the KeyId and PendingWindowInDays of every
+	// ScheduleKeyDeletion call so tests can assert what the provider sent to AWS.
+	scheduledIDs []string
+	windows      []int32
+	// describeCtx is the context of the most recent DescribeKey call (ctx threading).
+	describeCtx context.Context //nolint:containedctx // test double records the ctx it was called with
+	// describeFunc overrides DescribeKey when set (error injection, blocking, ...).
+	describeFunc func(ctx context.Context, params *kms.DescribeKeyInput) (*kms.DescribeKeyOutput, error)
 }
 
-func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, _ *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
+func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, params *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
 	m.scheduled++
+	m.scheduledIDs = append(m.scheduledIDs, derefString(params.KeyId))
+	if params.PendingWindowInDays != nil {
+		m.windows = append(m.windows, *params.PendingWindowInDays)
+	}
 	m.state = types.KeyStatePendingDeletion
 	return &kms.ScheduleKeyDeletionOutput{}, nil
 }
 
-func (m *mockKMSRevocationClient) DescribeKey(_ context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
+func (m *mockKMSRevocationClient) DescribeKey(ctx context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
+	m.describeCtx = ctx
+	if m.describeFunc != nil {
+		return m.describeFunc(ctx, params)
+	}
 	if m.notFound {
 		return nil, &types.NotFoundException{}
 	}
@@ -35,7 +55,19 @@ func (m *mockKMSRevocationClient) DescribeKey(_ context.Context, params *kms.Des
 	if st == "" {
 		st = types.KeyStateEnabled
 	}
-	return &kms.DescribeKeyOutput{KeyMetadata: &types.KeyMetadata{KeyId: params.KeyId, KeyState: st}}, nil
+	id := params.KeyId
+	if m.canonicalID != "" {
+		canonical := m.canonicalID
+		id = &canonical
+	}
+	return &kms.DescribeKeyOutput{KeyMetadata: &types.KeyMetadata{KeyId: id, KeyState: st}}, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // A key pending deletion (or disabled) is unusable for crypto operations — mirror AWS

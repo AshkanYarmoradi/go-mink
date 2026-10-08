@@ -212,7 +212,7 @@ Once configured, the EventStore handles versioning transparently:
 |-----------|----------|
 | `Load()` / `LoadFrom()` | Events are upcasted from their stored version to the latest version |
 | `LoadAggregate()` | Events are upcasted before being applied to the aggregate |
-| `Append()` | New events are stamped with `$schema_version` = latest version |
+| `Append()` | New events are stamped with `$schema_version` = latest version. A caller-supplied `$schema_version` is **dropped** by default — the chain's latest version is stamped (and nothing is stamped when no chain is configured) — so untrusted metadata cannot downgrade one event and have the chain re-run over current data on `Load`. `mink.WithCallerSchemaVersion()` (trusted migration tooling only) keeps a caller value that is an integer within `[1, latest]` for a type that has upcasters; anything else is still replaced. `ReEncryptStream` needs no option: its copies keep the source marker verbatim on a chain-less store and are re-stamped with the latest version when the copying store's chain upcasted them |
 | `SaveAggregate()` | Same stamping as `Append()` |
 | `LoadRaw()` | Returns raw events **without** upcasting (for inspection/debugging) |
 
@@ -347,7 +347,11 @@ if errors.Is(err, mink.ErrUpcastFailed) {
 
 ### Typed Errors
 
-All typed errors implement `Is()` and `Unwrap()` for `errors.Is()` and `errors.As()` compatibility:
+All typed errors implement `Is()` and `Unwrap()` for `errors.Is()` and `errors.As()` compatibility.
+A **panic** inside a user upcaster is recovered by `UpcasterChain.Upcast` (and therefore by
+`Load` / `LoadAggregate` / `UpcastingSerializer`) and returned as an `*UpcastError` naming the
+event type and the `FromVersion -> ToVersion` transition that failed, with no partial data —
+it never unwinds into the caller:
 
 ```go
 // UpcastError -- detailed upcasting failure

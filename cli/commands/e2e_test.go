@@ -341,7 +341,7 @@ func TestE2E_CompleteCliWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	cmd = NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--steps", "1"})
+	cmd.SetArgs([]string{"down", "--steps", "1", "--yes"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -560,7 +560,7 @@ func TestE2E_MigrationLifecycle(t *testing.T) {
 	// Rollback one step (should remove posts table)
 	t.Log("Rolling back one migration")
 	cmd = NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--steps", "1"})
+	cmd.SetArgs([]string{"down", "--steps", "1", "--yes"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 
@@ -570,7 +570,7 @@ func TestE2E_MigrationLifecycle(t *testing.T) {
 	// Rollback remaining migrations
 	t.Log("Rolling back remaining migrations")
 	cmd = NewMigrateCommand()
-	cmd.SetArgs([]string{"down", "--steps", "2"})
+	cmd.SetArgs([]string{"down", "--steps", "2", "--yes"})
 	err = cmd.Execute()
 	require.NoError(t, err)
 

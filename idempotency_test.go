@@ -319,20 +319,13 @@ func TestGenerateIdempotencyKey(t *testing.T) {
 		assert.Contains(t, key, "IdempotencyTestCommand:")
 	})
 
-	t.Run("handles unmarshallable command with fallback", func(t *testing.T) {
+	t.Run("unmarshallable command yields no key", func(t *testing.T) {
+		// A type-only fallback key would make every later command of this type
+		// collide for the TTL, so serialization failure must yield "" (no
+		// idempotency guarantee) instead.
 		cmd := unmarshalableCommand{}
-		key := GenerateIdempotencyKey(cmd)
-		// Should still generate a key (fallback path)
-		assert.Contains(t, key, "UnmarshalableCommand:")
-	})
-
-	t.Run("fallback generates deterministic key", func(t *testing.T) {
-		// Verify that unmarshallable commands produce identical keys on repeated calls
-		cmd := unmarshalableCommand{}
-		key1 := GenerateIdempotencyKey(cmd)
-		key2 := GenerateIdempotencyKey(cmd)
-		assert.Equal(t, key1, key2, "fallback should generate deterministic keys")
-		assert.Contains(t, key1, ":type-only:", "fallback key should include type-only marker")
+		assert.Equal(t, "", GenerateIdempotencyKey(cmd))
+		assert.Equal(t, "", GenerateIdempotencyKey(cmd), "result must be stable")
 	})
 }
 

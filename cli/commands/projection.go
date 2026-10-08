@@ -503,7 +503,9 @@ func newStreamExportCommand() *cobra.Command {
 				output = streamID + ".json"
 			}
 
-			if err := os.WriteFile(output, data, 0644); err != nil {
+			// Event payloads can carry PII, so the export is written
+			// owner-read/write only.
+			if err := os.WriteFile(output, data, 0o600); err != nil {
 				return err
 			}
 
