@@ -154,6 +154,10 @@ func TestErasureErrorStrings(t *testing.T) {
 	ske := &SharedKeyError{SubjectID: "u1", SharedKeys: []string{"tenant-A"}, OtherSubjects: []string{"u2"}}
 	msg := ske.Error()
 	assert.Contains(t, msg, "u1") // the target subject
-	assert.Contains(t, msg, "u2") // a co-tenant subject sharing the key
+	assert.NotContains(t, msg, "tenant-A", "key ids are not printed: under a per-subject key resolver they embed subject ids")
+	assert.Contains(t, msg, "1 key(s) shared with 1 other subject(s)")
+	assert.Equal(t, []string{"tenant-A"}, ske.SharedKeys, "the key ids stay available for programmatic use")
+	assert.NotContains(t, msg, "u2", "a co-tenant's identifier must never appear in a loggable error message")
+	assert.Equal(t, []string{"u2"}, ske.OtherSubjects, "the sample stays available for programmatic use")
 	assert.ErrorIs(t, ske, ErrSharedKeyRevocation)
 }

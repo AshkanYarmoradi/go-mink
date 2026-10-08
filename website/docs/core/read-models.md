@@ -249,6 +249,14 @@ engine.ProcessInlineProjections(ctx, events)
 engine.NotifyLiveProjections(ctx, events)
 ```
 
+:::note Panics in inline projections
+A panic inside an inline projection's `Apply` is recovered by
+`ProcessInlineProjections`, logged (projection, event type, stream, position, panic
+value), and returned as a `*ProjectionError` (`errors.Is(err, mink.ErrProjectionFailed)`)
+that names the projection and event but never the payload — the same contract the async
+and live paths already have — instead of unwinding into the caller's append.
+:::
+
 ### Poison-event handling
 
 By default an async projection that keeps failing on the same event exhausts its
@@ -256,6 +264,17 @@ retry budget and stops in the `Faulted` state, blocking all later events. Set
 `AsyncOptions.OnPoisonEvent` to skip (dead-letter) the offending event and keep
 the projection moving. Return `nil` to advance past the event; return an error to
 stop the worker.
+
+Field-encrypted events that can no longer be decrypted — a crypto-shredded key
+(`mink.ErrKeyRevoked`), a tampered envelope (`mink.ErrDecryptionFailed`) — take the
+same path. The async worker decrypts only the events the projection handles, one at a
+time, so a decryption failure is attributed to *that* event rather than failing the
+whole batch: it goes through `ErrorClassifier`, the retry budget and `OnPoisonEvent`
+with the event **as stored** (ciphertext) and a `cause` satisfying
+`errors.Is(cause, mink.ErrKeyRevoked)` / `mink.ErrDecryptionFailed`, while the events
+before it in the batch are applied and checkpointed normally and undecryptable events
+the projection does not handle are skipped without being decrypted. Return `nil` to
+checkpoint past a shredded event. (`Rebuild` still fails on an undecryptable event.)
 
 ```go
 engine.RegisterAsync(analyticsProjection, mink.AsyncOptions{

@@ -38,6 +38,21 @@ var (
 	// errors.Is(err, ErrSagaNotRetryable); inspect a *SagaNotRetryableError for the
 	// saga id, its status, and the human-readable reason.
 	ErrSagaNotRetryable = errors.New("mink: saga is not retryable")
+
+	// ErrSagaTypeMismatch indicates that the saga state found for a correlation ID
+	// belongs to a DIFFERENT saga type than the one being processed. It is returned
+	// by the SagaManager when the configured SagaStore cannot scope correlation
+	// lookups by saga type (it does not implement the optional
+	// FindByCorrelationIDAndType method) and two saga types share a correlation ID:
+	// rather than hydrating saga type B from type A's row and then overwriting it
+	// (type confusion), the manager refuses to process the event. Match it with
+	// errors.Is(err, ErrSagaTypeMismatch); inspect a *SagaTypeMismatchError for the
+	// correlation id, the conflicting saga id, and the expected/actual types. Use a
+	// store that implements SagaCorrelationTypeFinder (the shipped stores do) to
+	// let both saga types coexist on one correlation id. It is also returned when a
+	// factory produces sagas whose SagaType() differs from the registered name
+	// (see SagaManager.Register).
+	ErrSagaTypeMismatch = errors.New("mink: saga type mismatch for correlation id")
 )
 
 // Type aliases for adapter types - these provide the public API
@@ -57,6 +72,14 @@ type (
 
 	// SagaStore defines the interface for saga persistence.
 	SagaStore = adapters.SagaStore
+
+	// SagaCorrelationTypeFinder is the optional SagaStore extension that looks a
+	// saga up by correlation id AND saga type. SagaManager prefers it whenever the
+	// store implements it (the memory and PostgreSQL stores do), which lets two
+	// saga types coexist on one correlation id; a store without it falls back to
+	// the unscoped FindByCorrelationID and a foreign-type row is reported as
+	// ErrSagaTypeMismatch. See adapters.SagaCorrelationTypeFinder.
+	SagaCorrelationTypeFinder = adapters.SagaCorrelationTypeFinder
 
 	// SubjectSagaPurger is the optional SagaStore extension for GDPR erasure of a
 	// subject's saga state (see NewSagaSubjectEraser).
@@ -389,6 +412,41 @@ func (e *SagaNotRetryableError) Is(target error) bool {
 // Unwrap returns the underlying sentinel for errors.Is / errors.Unwrap.
 func (e *SagaNotRetryableError) Unwrap() error {
 	return ErrSagaNotRetryable
+}
+
+// SagaTypeMismatchError is the typed form of ErrSagaTypeMismatch: the saga state
+// found for CorrelationID belongs to saga type ActualType (saga SagaID), while the
+// event was being processed for ExpectedType. Match with
+// errors.Is(err, ErrSagaTypeMismatch); type-assert to *SagaTypeMismatchError for
+// the details.
+type SagaTypeMismatchError struct {
+	// CorrelationID is the shared correlation id the lookup was made for.
+	CorrelationID string
+
+	// SagaID is the id of the saga that currently owns the correlation id.
+	SagaID string
+
+	// ExpectedType is the saga type the event was being processed for.
+	ExpectedType string
+
+	// ActualType is the type of the saga found for the correlation id.
+	ActualType string
+}
+
+// Error returns the error message.
+func (e *SagaTypeMismatchError) Error() string {
+	return fmt.Sprintf("mink: saga type mismatch for correlation id %q: expected %q but saga %q is of type %q",
+		e.CorrelationID, e.ExpectedType, e.SagaID, e.ActualType)
+}
+
+// Is reports whether this error matches the target error.
+func (e *SagaTypeMismatchError) Is(target error) bool {
+	return target == ErrSagaTypeMismatch
+}
+
+// Unwrap returns the underlying sentinel for errors.Is / errors.Unwrap.
+func (e *SagaTypeMismatchError) Unwrap() error {
+	return ErrSagaTypeMismatch
 }
 
 // SagaCorrelation provides strategies for correlating events to sagas.

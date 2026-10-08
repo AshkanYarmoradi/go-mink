@@ -45,3 +45,12 @@ website/.cache-loader/
 
 # Claude Code / OpenSpec local tooling (regenerable via `openspec init`)
 .claude/
+
+# Private keys, certificates and secrets — never commit these.
+# (.env is ignored above; .env.* covers per-environment variants, except the committed template.)
+*.pem
+*.key
+*.p12
+*.pfx
+.env.*
+!.env.example

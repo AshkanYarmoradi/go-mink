@@ -122,6 +122,11 @@ func (c *UpcasterChain) Validate() error {
 // Returns the transformed data, the final version, and any error.
 // If no upcasters exist for the event type or the data is already at the latest version,
 // the original data is returned unchanged.
+//
+// A panic inside a registered Upcaster is recovered and reported as an *UpcastError
+// (errors.Is(err, ErrUpcastFailed)) naming the event type and version transition —
+// never the payload — so one malformed historical event cannot unwind through
+// Load/LoadAggregate into the caller.
 func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, metadata Metadata) ([]byte, int, error) {
 	c.mu.RLock()
 	upcasters := c.upcasters[eventType]
@@ -146,7 +151,7 @@ func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, m
 			return nil, currentVersion, NewSchemaVersionGapError(eventType, currentVersion, u.FromVersion())
 		}
 
-		result, err := u.Upcast(currentData, metadata)
+		result, err := safeUpcast(u, currentData, metadata)
 		if err != nil {
 			return nil, currentVersion, NewUpcastError(eventType, u.FromVersion(), u.ToVersion(), err)
 		}
@@ -156,6 +161,24 @@ func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, m
 	}
 
 	return currentData, currentVersion, nil
+}
+
+// safeUpcast invokes u.Upcast, converting a panic inside the (user-supplied)
+// upcaster into an ordinary error. Upcasters run over stored bytes on every
+// Load/LoadAggregate, so a panic on one malformed historical event would otherwise
+// unwind through the event store into the caller. The error names the event type
+// and version transition and carries the recovered panic value; it deliberately
+// does not include the event payload. Upcast wraps it in an *UpcastError, so
+// errors.Is(err, ErrUpcastFailed) holds.
+func safeUpcast(u Upcaster, data []byte, metadata Metadata) (result []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("mink: upcaster for %q (version %d -> %d) panicked: %v",
+				u.EventType(), u.FromVersion(), u.ToVersion(), r)
+		}
+	}()
+	return u.Upcast(data, metadata)
 }
 
 // HasUpcasters reports whether any upcasters are registered for the given event type.

@@ -525,7 +525,7 @@ func (a *PostgresAdapter) appendInTx(ctx context.Context, tx *sql.Tx, streamID s
 		WHERE stream_id = $1
 		FOR UPDATE`, streamID).Scan(&currentVersion)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		streamExists = false
 		currentVersion = 0
 	} else if err != nil {
@@ -657,7 +657,7 @@ func (a *PostgresAdapter) GetStreamInfo(ctx context.Context, streamID string) (*
 		&info.EventCount,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, adapters.NewStreamNotFoundError(streamID)
 	}
 	if err != nil {
@@ -739,7 +739,7 @@ func (a *PostgresAdapter) LoadSnapshot(ctx context.Context, streamID string) (*a
 		&snapshot.Data,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -777,7 +777,7 @@ func (a *PostgresAdapter) GetCheckpoint(ctx context.Context, projectionName stri
 		SELECT position FROM `+schemaQ+`.checkpoints
 		WHERE projection_name = $1`, projectionName).Scan(&pos)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
@@ -951,8 +951,17 @@ func (a *PostgresAdapter) ListStreams(ctx context.Context, prefix string, limit 
 	argNum := 1
 
 	if prefix != "" {
+		// The caller's prefix is data, not a pattern: escape the LIKE metacharacters
+		// ('%', '_' and the backslash) with escapeLikePattern — the same helper and
+		// clause form the read-model CONTAINS filter and the category subscriptions
+		// use — so a prefix such as "Order%" only matches streams that literally
+		// start with "Order%". PostgreSQL's LIKE escape character is backslash by
+		// default and that default does not depend on standard_conforming_strings,
+		// whereas a literal ESCAPE '\' clause is parsed differently under each
+		// setting; so no ESCAPE clause is written and the escaped prefix travels
+		// only inside the bind parameter.
 		query += fmt.Sprintf(" WHERE s.stream_id LIKE $%d", argNum)
-		args = append(args, prefix+"%")
+		args = append(args, escapeLikePattern(prefix)+"%")
 	}
 
 	query += " ORDER BY s.updated_at DESC"
@@ -1102,7 +1111,7 @@ func (a *PostgresAdapter) GetProjection(ctx context.Context, name string) (*adap
 		WHERE projection_name = $1
 	`, name).Scan(&p.Name, &p.Position, &p.Status, &p.UpdatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -1263,11 +1272,13 @@ func GenerateSchema(projectName, schemaName, tableName, snapshotTableName, outbo
 	}
 
 	var b strings.Builder
+	// The project name comes from mink.yaml and lands in a `--` line comment; a
+	// newline inside it would end the comment and turn the remainder into live DDL.
 	fmt.Fprintf(&b, `-- Mink Event Store Schema (PostgreSQL)
 -- Generated for: %s
 
 `,
-		projectName,
+		adapters.SanitizeSQLComment(projectName),
 	)
 
 	appendSQLStatements(&b, eventStoreSchemaStatements(schemaName, tableName, snapshotTableName))

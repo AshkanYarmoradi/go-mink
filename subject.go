@@ -55,6 +55,20 @@ func setSubjectTags(m Metadata, subjects []string) Metadata {
 	return m.WithCustom(subjectTagsKey, string(b))
 }
 
+// replaceSubjectTags records the tagger-derived subjects in Metadata.Custom,
+// REPLACING any caller-supplied tags rather than merging with them (the default
+// append-time policy when a SubjectTagger is configured; see WithCallerSubjectTags
+// for the opt-in merge). An empty subjects list leaves the event untagged — a
+// caller must not be able to attribute an event to a subject the tagger did not
+// derive. Copy-on-write: the caller's map is never mutated.
+func replaceSubjectTags(m Metadata, subjects []string) Metadata {
+	m = withoutCustomKeys(m, subjectTagsKey)
+	if len(subjects) == 0 {
+		return m
+	}
+	return setSubjectTags(m, subjects)
+}
+
 // GetSubjectTags returns the data-subject ids recorded on an event's metadata, or
 // nil if none.
 func GetSubjectTags(m Metadata) []string {
@@ -97,12 +111,57 @@ type SubjectFootprint struct {
 	Streams           []string       // sorted, de-duplicated
 	StreamEventCounts map[string]int // tagged events per stream
 	EventCount        int            // total tagged events
-	KeyIDs            []string       // distinct encryption key ids on tagged events (sorted)
+
+	// SharedStreams lists the footprint streams (sorted, a subset of Streams) in which
+	// the resolver observed an event tagged for a subject OTHER than this one — streams
+	// shared with co-tenants (an order with buyer and seller, a conversation). Rows that
+	// sibling stores key by such a stream id (outbox messages, audit / idempotency rows,
+	// sagas correlated on it) cannot be attributed to this subject alone, so the built-in
+	// SubjectErasable implementations purge and count only the EXCLUSIVE streams (see
+	// ExclusiveStreams and SubjectFootprintIDs) and report the shared ones as skipped.
+	// Untagged events do not make a stream shared; they make the footprint Partial.
+	SharedStreams []string
+
+	// KeyIDs lists the distinct master key ids (sorted) of the tagged events that carry a
+	// COMPLETE field-encryption envelope (HasEncryptionEnvelope) — the keys an erasure
+	// revokes. A tagged event with a bare "$encryption_key_id" but no envelope is
+	// plaintext as far as crypto-shredding is concerned: its key is not listed here and
+	// the event counts as CleartextEvents.
+	KeyIDs []string
+
+	// CleartextEvents is the number of tagged events that carry NO complete
+	// field-encryption envelope (!HasEncryptionEnvelope). Crypto-shredding cannot reach
+	// them (there is no key to revoke), so their payload stays readable after an erasure;
+	// see ErasureResult.CleartextEvents.
+	CleartextEvents int
 
 	// Partial is true when completeness cannot be proven — e.g. the store contains
 	// untagged (legacy) events that could belong to the subject. Callers MUST treat
 	// a partial footprint as incomplete (never a silent partial).
 	Partial bool
+}
+
+// ExclusiveStreams returns the footprint streams that are NOT shared with another
+// subject (Streams minus SharedStreams), in Streams order. It is the stream set the
+// built-in sibling-store erasers purge and count by; a nil footprint yields nil.
+func (fp *SubjectFootprint) ExclusiveStreams() []string {
+	if fp == nil || len(fp.Streams) == 0 {
+		return nil
+	}
+	if len(fp.SharedStreams) == 0 {
+		return fp.Streams
+	}
+	shared := make(map[string]struct{}, len(fp.SharedStreams))
+	for _, s := range fp.SharedStreams {
+		shared[s] = struct{}{}
+	}
+	out := make([]string, 0, len(fp.Streams))
+	for _, s := range fp.Streams {
+		if _, ok := shared[s]; !ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // SubjectIndexAdapter is an OPTIONAL extension that resolves a subject's streams from
@@ -164,9 +223,24 @@ func WithResolverIndex(idx SubjectIndexAdapter) SubjectResolverOption {
 
 // WithAuthoritativeIndex asserts that the injected index (WithResolverIndex) is complete
 // — every stream touching a subject is recorded — so an index-backed resolve may report
-// a non-partial footprint. Use it only when you can guarantee completeness: after
-// BackfillSubjectIndex with no concurrent writes, or with a transactionally-consistent
-// index. Without it, an index-backed resolve is honestly marked Partial.
+// a non-partial footprint. Without it, an index-backed resolve is honestly marked Partial.
+//
+// An index-backed resolve never observes untagged events, so this assertion is the ONLY
+// thing standing between a legacy (pre-tagging) event the backfill could not attribute
+// and a footprint — and hence an erasure certificate — that claims completeness. Use it
+// only when BOTH hold:
+//
+//   - the index was populated by BackfillSubjectIndexWithReport and the report shows
+//     Untagged == 0 (every scanned event was attributed to at least one subject), or the
+//     untagged events are known to carry no PII; an Undecryptable count means the tagger
+//     never saw those events' encrypted fields, so their subjects were taken from existing
+//     tags only; and
+//   - no write has bypassed the index writer since (WithSubjectIndexWriter on every store
+//     instance that appends, or a transactionally-consistent index such as the PostgreSQL
+//     adapter's drift-free StreamsBySubject).
+//
+// Otherwise prefer the scan-backed resolver, which proves completeness by observing the
+// untagged events itself.
 func WithAuthoritativeIndex() SubjectResolverOption {
 	return func(r *SubjectResolver) {
 		r.authoritative = true
@@ -191,6 +265,7 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 
 	fp := &SubjectFootprint{SubjectID: subjectID, StreamEventCounts: map[string]int{}}
 	streamSet := map[string]struct{}{}
+	sharedSet := map[string]struct{}{}
 	keySet := map[string]struct{}{}
 
 	// Index-backed fast path. An index is used ONLY when explicitly injected
@@ -216,8 +291,12 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 					r.record(fp, streamSet, keySet, se)
 				}
 			}
+			// The whole stream is in hand: note whether a co-tenant shares it.
+			if _, mine := streamSet[streamID]; mine && streamSharedWithOthers(stored, subjectID) {
+				sharedSet[streamID] = struct{}{}
+			}
 		}
-		r.finalize(fp, streamSet, keySet)
+		r.finalize(fp, streamSet, sharedSet, keySet)
 		// An index only proves completeness when the caller asserts it is authoritative;
 		// otherwise it may have drifted behind best-effort append-time writes, so the
 		// footprint cannot be proven complete.
@@ -253,20 +332,66 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 		}
 		position = batch[len(batch)-1].GlobalPosition
 	}
-	r.finalize(fp, streamSet, keySet)
+	// A co-tenant's event can precede the subject's first event in a shared stream, so
+	// sharing cannot be settled during the single pass without remembering every tagged
+	// stream in the store. Re-read the footprint streams instead: O(the subject's events).
+	if err := r.detectSharedStreams(ctx, subjectID, streamSet, sharedSet); err != nil {
+		return nil, err
+	}
+	r.finalize(fp, streamSet, sharedSet, keySet)
 	return fp, nil
+}
+
+// detectSharedStreams loads each footprint stream and records in sharedSet the ones in
+// which another subject is tagged (see SubjectFootprint.SharedStreams).
+func (r *SubjectResolver) detectSharedStreams(ctx context.Context, subjectID string, streamSet, sharedSet map[string]struct{}) error {
+	for streamID := range streamSet {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		stored, err := r.store.LoadRaw(ctx, streamID, 0)
+		if err != nil {
+			if errors.Is(err, ErrStreamNotFound) {
+				continue
+			}
+			return fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
+		}
+		if streamSharedWithOthers(stored, subjectID) {
+			sharedSet[streamID] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// streamSharedWithOthers reports whether any event in the stream is tagged for a subject
+// other than subjectID. Untagged events do not count: they make a footprint Partial, not
+// a stream shared.
+func streamSharedWithOthers(stored []StoredEvent, subjectID string) bool {
+	for i := range stored {
+		for _, s := range GetSubjectTags(stored[i].Metadata) {
+			if s != subjectID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *SubjectResolver) record(fp *SubjectFootprint, streamSet, keySet map[string]struct{}, se StoredEvent) {
 	fp.EventCount++
 	fp.StreamEventCounts[se.StreamID]++
 	streamSet[se.StreamID] = struct{}{}
-	if k := GetEncryptionKeyID(se.Metadata); k != "" {
-		keySet[k] = struct{}{}
+	// One predicate for "would revoking this event's key erase it?": only a complete
+	// envelope names a key worth revoking; anything less is cleartext to an erasure.
+	if HasEncryptionEnvelope(se.Metadata) {
+		keySet[GetEncryptionKeyID(se.Metadata)] = struct{}{}
+	} else {
+		fp.CleartextEvents++
 	}
 }
 
-func (r *SubjectResolver) finalize(fp *SubjectFootprint, streamSet, keySet map[string]struct{}) {
+func (r *SubjectResolver) finalize(fp *SubjectFootprint, streamSet, sharedSet, keySet map[string]struct{}) {
 	fp.Streams = sortedSet(streamSet)
+	fp.SharedStreams = sortedSet(sharedSet)
 	fp.KeyIDs = sortedSet(keySet)
 }

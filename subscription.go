@@ -384,6 +384,15 @@ func (s *CatchupSubscription) setErr(err error) {
 
 // PollingSubscription polls the event store for new events.
 // This is a fallback when push-based subscriptions aren't available.
+//
+// Field encryption is transparent on read, as on every other read surface
+// (Load, CatchupSubscription, projections): events are delivered decrypted through
+// the owning EventStore's decrypt path, and a Filter matches on plaintext. A hard,
+// unhandled decryption error (e.g. a revoked key with no
+// WithDecryptionErrorHandler) stops the subscription with Err() set rather than
+// delivering ciphertext or silently skipping the event; a crypto-shred handler that
+// swallows the error yields the event with its fields left as stored. Zero overhead
+// when no encryption is configured.
 type PollingSubscription struct {
 	store *EventStore
 	opts  SubscriptionOptions
@@ -451,6 +460,16 @@ func (s *PollingSubscription) poll(ctx context.Context, interval time.Duration) 
 			if err != nil {
 				// On error, continue polling (could add retry logic here)
 				continue
+			}
+
+			// Decrypt field-encrypted events via the store's shared primitive (the same
+			// path CatchupSubscription uses) so subscribers never see ciphertext. A hard
+			// decryption failure is not transient: surface it via Err() and stop, exactly
+			// as the catch-up subscription does, rather than skipping the event.
+			events, err = s.store.decryptStoredEvents(ctx, events)
+			if err != nil {
+				s.setErr(err)
+				return
 			}
 
 			for _, event := range events {

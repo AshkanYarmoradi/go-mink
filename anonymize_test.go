@@ -52,3 +52,41 @@ func TestAnonymizer_InRetentionPolicy(t *testing.T) {
 	require.Len(t, pseudonyms, 1)
 	assert.NotContains(t, pseudonyms[0], "User-u1")
 }
+
+// An empty secret degrades HMAC to an unkeyed hash; the constructor keeps its signature
+// but Validate must reject it so callers can fail fast before anonymizing with it.
+func TestAnonymizer_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		a       *Anonymizer
+		wantErr error
+	}{
+		{"nil receiver", nil, ErrAnonymizerSecretRequired},
+		{"empty secret", NewAnonymizer(nil), ErrAnonymizerSecretRequired},
+		{"zero-length secret", NewAnonymizer([]byte{}), ErrAnonymizerSecretRequired},
+		{"keyed", NewAnonymizer([]byte("secret")), nil},
+		{"keyed with options", NewAnonymizer([]byte("s"), WithPseudonymPrefix("anon_"), WithPseudonymLength(8)), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.a.Validate()
+			if tt.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.True(t, strings.HasPrefix(err.Error(), "mink: "), "sentinel is mink-prefixed: %q", err.Error())
+		})
+	}
+}
+
+// Documents the hazard Validate guards against: with an empty secret the pseudonym is a
+// plain unkeyed hash, so anyone can recompute it for a guessed value.
+func TestAnonymizer_EmptySecretIsUnkeyed(t *testing.T) {
+	unkeyed := NewAnonymizer(nil)
+	again := NewAnonymizer([]byte{})
+	assert.Equal(t, unkeyed.Pseudonymize("email", "alice@example.com"), again.Pseudonymize("email", "alice@example.com"),
+		"no secret ⇒ any party computes the same pseudonym")
+	keyed := NewAnonymizer([]byte("secret"))
+	assert.NotEqual(t, unkeyed.Pseudonymize("email", "alice@example.com"), keyed.Pseudonymize("email", "alice@example.com"))
+}

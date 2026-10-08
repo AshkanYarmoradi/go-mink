@@ -1069,7 +1069,7 @@ func run(ctx context.Context) error {
 
 	// Initialize application
 	application, err := app.New(ctx, app.Config{
-		DatabaseURL:    getEnvOrDefault("DATABASE_URL", "postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"),
+		DatabaseURL:    getEnvOrDefault("DATABASE_URL", "postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"), // local dev default; production sets DATABASE_URL with sslmode=verify-full
 		DatabaseSchema: "minkshop",
 		MaxConnections: 10,
 	})

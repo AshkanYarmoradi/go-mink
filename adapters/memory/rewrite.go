@@ -26,6 +26,11 @@ func (a *MemoryAdapter) RewriteEventData(ctx context.Context, streamID string, v
 	if !ok {
 		return fmt.Errorf("mink/memory: no event at stream %q version %d to rewrite", streamID, version)
 	}
+	// Store private copies (one allocation per field, shared by the two internal
+	// logs) so the caller's slice/map cannot keep reaching into the stored event
+	// after the rewrite — the same isolation Append gives its input.
+	data = copyBytes(data)
+	metadata = copyMetadata(metadata)
 	found := false
 	for i := range stream.events {
 		if stream.events[i].Version == version {

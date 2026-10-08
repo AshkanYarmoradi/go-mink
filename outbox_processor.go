@@ -3,6 +3,7 @@ package mink
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -272,7 +273,7 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 		if !ok {
 			// No publisher for this destination prefix; mark as failed
 			for _, msg := range msgs {
-				p.logger.Error("No publisher for destination", "destination", msg.Destination, "prefix", prefix)
+				p.logger.Error("No publisher for destination", "destination", redactDestination(msg.Destination), "prefix", prefix)
 				if err := p.store.MarkFailed(ctx, msg.ID, fmt.Errorf("%w: %s", ErrPublisherNotFound, prefix)); err != nil {
 					p.logger.Error("Failed to mark message as failed", "id", msg.ID, "error", err)
 				}
@@ -357,4 +358,44 @@ func destinationPrefix(destination string) string {
 		return destination[:idx]
 	}
 	return destination
+}
+
+// redactDestination returns a log-safe rendering of an outbox destination.
+//
+// URL-shaped destinations such as "webhook:https://user:token@host/hook?key=…"
+// may embed credentials in the URL's userinfo or query string — and the most
+// common webhook providers put the bearer secret in the PATH
+// ("https://hooks.slack.com/services/T0/B0/<secret>",
+// "https://discord.com/api/webhooks/<id>/<token>") — while the processor logs
+// the destination on failure paths. For a destination that contains a URL only
+// its origin, "<prefix>:scheme://host" (host includes the port when one was
+// given), is kept: userinfo, path, query and fragment are all dropped. A
+// destination that does not contain a URL ("kafka:topic", "sns:arn:aws:sns:…")
+// is returned unchanged, and a URL that cannot be parsed is replaced by
+// "<prefix>:<redacted>" rather than echoed.
+func redactDestination(dest string) string {
+	i := strings.Index(dest, "://")
+	if i < 0 {
+		return dest
+	}
+	// Walk back over the scheme ([A-Za-z0-9+.-]) to find where the URL starts;
+	// whatever precedes it is the publisher prefix (e.g. "webhook:").
+	start := i
+	for start > 0 && isSchemeByte(dest[start-1]) {
+		start--
+	}
+	head, rawURL := dest[:start], dest[start:]
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return head + "<redacted>"
+	}
+	origin := url.URL{Scheme: u.Scheme, Host: u.Host}
+	return head + origin.String()
+}
+
+// isSchemeByte reports whether c may appear in a URL scheme.
+func isSchemeByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		c == '+' || c == '-' || c == '.'
 }

@@ -200,7 +200,7 @@ docker run -d --name minkshop-db \
   postgres:16
 
 # 6. Set connection and migrate
-export DATABASE_URL="postgres://postgres:secret@localhost:5432/postgres?sslmode=disable"
+export DATABASE_URL="postgres://postgres:secret@localhost:5432/postgres?sslmode=disable"   # local dev only (plaintext); production uses sslmode=verify-full
 mink migrate up
 
 # 7. Verify setup

@@ -187,7 +187,7 @@ store := mink.New(adapter)
 ### PostgreSQL Adapter (Production)
 
 ```go
-connStr := "postgres://user:pass@localhost:5432/events?sslmode=disable"
+connStr := "postgres://user:pass@db.internal:5432/events?sslmode=verify-full&sslrootcert=/etc/ssl/certs/postgres-ca.crt" // TLS with server-certificate verification; sslmode=disable is for local development only
 adapter, err := postgres.NewAdapter(connStr)
 adapter.Initialize(ctx)
 store := mink.New(adapter)

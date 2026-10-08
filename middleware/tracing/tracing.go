@@ -17,10 +17,29 @@
 //   - Success/failure status
 //   - Error details when commands fail
 //   - Correlation and causation IDs
+//
+// # Error details and PII
+//
+// By default the middlewares copy the full error text of a failed operation
+// into the span status description and into the recorded exception event.
+// Error messages frequently embed request data (validation errors echo field
+// values, storage errors echo stream ids, wrapped errors echo whatever the
+// handler formatted), so a trace backend can end up holding personal data.
+// Use WithErrorRedaction to map errors to a safe description, or
+// WithoutErrorDetails to replace every error with a fixed generic message.
+//
+// # Attribute length
+//
+// Span attributes built from runtime values (command types, aggregate and
+// stream ids, correlation ids, event types and ids, projection names) are
+// capped at DefaultMaxAttributeLength runes, because several of those values
+// are client-supplied and would otherwise be recorded unbounded. The cap is
+// configurable with WithMaxAttributeLength.
 package tracing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel"
@@ -38,12 +57,29 @@ const (
 
 	// DefaultServiceName is the default service name for spans.
 	DefaultServiceName = "mink"
+
+	// DefaultMaxAttributeLength is the default cap, in runes, applied to every
+	// span attribute that is built from a runtime value. Longer values are
+	// truncated. See WithMaxAttributeLength.
+	DefaultMaxAttributeLength = 256
+
+	// RedactedErrorMessage is the generic description that WithoutErrorDetails
+	// records in place of the real error text.
+	RedactedErrorMessage = "operation failed"
 )
 
 // Tracer wraps OpenTelemetry tracer for mink operations.
 type Tracer struct {
 	tracer      trace.Tracer
 	serviceName string
+
+	// redactError, when non-nil, maps an operation error to the text that is
+	// recorded on the span. nil records the raw error (the default).
+	redactError func(error) string
+
+	// maxAttrLen caps runtime-derived string attributes in runes. A value <= 0
+	// disables the cap.
+	maxAttrLen int
 }
 
 // TracerOption configures a Tracer.
@@ -63,11 +99,46 @@ func WithServiceName(name string) TracerOption {
 	}
 }
 
+// WithErrorRedaction sets a function that decides what text is recorded on a
+// span when an operation fails. The middlewares then call span.SetStatus with
+// fn(err) as the description and record errors.New(fn(err)) as the exception
+// event instead of the raw error, so the original error text (which may embed
+// personal data) never reaches the trace backend. The error returned to the
+// caller is not affected.
+//
+// The redaction applies to every span this package creates: command spans,
+// event store spans and projection spans. Passing nil restores the default
+// behavior of recording the raw error.
+func WithErrorRedaction(fn func(error) string) TracerOption {
+	return func(t *Tracer) {
+		t.redactError = fn
+	}
+}
+
+// WithoutErrorDetails records the fixed RedactedErrorMessage for every failed
+// operation instead of the error text. It is shorthand for
+// WithErrorRedaction(func(error) string { return RedactedErrorMessage }).
+func WithoutErrorDetails() TracerOption {
+	return WithErrorRedaction(func(error) string { return RedactedErrorMessage })
+}
+
+// WithMaxAttributeLength caps, in runes, every span attribute that is built
+// from a runtime value (command type, aggregate id, stream id, correlation id,
+// event type, event id, projection name). Values longer than n are truncated.
+// The default is DefaultMaxAttributeLength. A value of zero or less disables
+// the cap and records the values unbounded.
+func WithMaxAttributeLength(n int) TracerOption {
+	return func(t *Tracer) {
+		t.maxAttrLen = n
+	}
+}
+
 // NewTracer creates a new Tracer with the global TracerProvider.
 func NewTracer(opts ...TracerOption) *Tracer {
 	t := &Tracer{
 		tracer:      otel.Tracer(TracerName),
 		serviceName: DefaultServiceName,
+		maxAttrLen:  DefaultMaxAttributeLength,
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -90,15 +161,62 @@ func (t *Tracer) ServiceName() string {
 	return t.serviceName
 }
 
+// MaxAttributeLength returns the configured attribute cap in runes. A value of
+// zero or less means the cap is disabled.
+func (t *Tracer) MaxAttributeLength() int {
+	return t.maxAttrLen
+}
+
+// recordError marks span as failed. With no redaction configured it records
+// the raw error; otherwise it records only the redacted description.
+func (t *Tracer) recordError(span trace.Span, err error) {
+	if t.redactError == nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	msg := t.redactError(err)
+	span.RecordError(errors.New(msg))
+	span.SetStatus(codes.Error, msg)
+}
+
+// attr caps a runtime-derived attribute value at the configured length.
+func (t *Tracer) attr(s string) string {
+	return truncate(s, t.maxAttrLen)
+}
+
+// truncate returns s cut to at most maxRunes runes. A maxRunes of zero or
+// less returns s unchanged. The cut happens on a rune boundary so the result
+// is always valid UTF-8 when s is.
+func truncate(s string, maxRunes int) string {
+	if maxRunes <= 0 || len(s) <= maxRunes {
+		// A byte length within the cap implies a rune count within the cap.
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxRunes {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
 // =============================================================================
 // Command Middleware
 // =============================================================================
 
 // CommandMiddleware creates middleware that traces command execution.
+//
+// Failed commands are recorded on the span according to the tracer's error
+// redaction setting (see WithErrorRedaction); by default the raw error text is
+// recorded. String attributes are capped per WithMaxAttributeLength.
 func CommandMiddleware(tracer *Tracer) mink.Middleware {
 	return func(next mink.MiddlewareFunc) mink.MiddlewareFunc {
 		return func(ctx context.Context, cmd mink.Command) (mink.CommandResult, error) {
-			spanName := fmt.Sprintf("command.%s", cmd.CommandType())
+			commandType := tracer.attr(cmd.CommandType())
+			spanName := fmt.Sprintf("command.%s", commandType)
 
 			ctx, span := tracer.StartSpan(ctx, spanName,
 				trace.WithSpanKind(trace.SpanKindInternal),
@@ -108,12 +226,12 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 			// Set command attributes
 			attrs := []attribute.KeyValue{
 				attribute.String("mink.service", tracer.serviceName),
-				attribute.String("mink.command.type", cmd.CommandType()),
+				attribute.String("mink.command.type", commandType),
 			}
 
 			// Check if command implements AggregateCommand
 			if aggCmd, ok := cmd.(mink.AggregateCommand); ok {
-				attrs = append(attrs, attribute.String("mink.command.aggregate_id", aggCmd.AggregateID()))
+				attrs = append(attrs, attribute.String("mink.command.aggregate_id", tracer.attr(aggCmd.AggregateID())))
 			}
 
 			span.SetAttributes(attrs...)
@@ -122,7 +240,7 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 			// key that mink.CorrelationIDMiddleware writes — use the public
 			// accessor rather than a private key local to this package.
 			if correlationID := mink.CorrelationIDFromContext(ctx); correlationID != "" {
-				span.SetAttributes(attribute.String("mink.correlation_id", correlationID))
+				span.SetAttributes(attribute.String("mink.correlation_id", tracer.attr(correlationID)))
 			}
 
 			// Execute command
@@ -130,15 +248,13 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 
 			// Record result
 			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
+				tracer.recordError(span, err)
 			} else if result.IsError() {
-				span.RecordError(result.Error)
-				span.SetStatus(codes.Error, result.Error.Error())
+				tracer.recordError(span, result.Error)
 			} else {
 				span.SetStatus(codes.Ok, "")
 				span.SetAttributes(
-					attribute.String("mink.result.aggregate_id", result.AggregateID),
+					attribute.String("mink.result.aggregate_id", tracer.attr(result.AggregateID)),
 					attribute.Int64("mink.result.version", result.Version),
 				)
 			}
@@ -175,7 +291,7 @@ func (m *EventStoreMiddleware) Append(ctx context.Context, streamID string, even
 
 	span.SetAttributes(
 		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", streamID),
+		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
 		attribute.Int64("mink.expected_version", expectedVersion),
 		attribute.Int("mink.events.count", len(events)),
 	)
@@ -183,7 +299,7 @@ func (m *EventStoreMiddleware) Append(ctx context.Context, streamID string, even
 	if len(events) > 0 {
 		eventTypes := make([]string, len(events))
 		for i, e := range events {
-			eventTypes[i] = e.Type
+			eventTypes[i] = m.tracer.attr(e.Type)
 		}
 		span.SetAttributes(attribute.StringSlice("mink.events.types", eventTypes))
 	}
@@ -191,8 +307,7 @@ func (m *EventStoreMiddleware) Append(ctx context.Context, streamID string, even
 	stored, err := m.adapter.Append(ctx, streamID, events, expectedVersion)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 		if len(stored) > 0 {
@@ -215,15 +330,14 @@ func (m *EventStoreMiddleware) Load(ctx context.Context, streamID string, fromVe
 
 	span.SetAttributes(
 		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", streamID),
+		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
 		attribute.Int64("mink.from_version", fromVersion),
 	)
 
 	events, err := m.adapter.Load(ctx, streamID, fromVersion)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 		span.SetAttributes(attribute.Int("mink.events.loaded", len(events)))
@@ -241,14 +355,13 @@ func (m *EventStoreMiddleware) GetStreamInfo(ctx context.Context, streamID strin
 
 	span.SetAttributes(
 		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", streamID),
+		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
 	)
 
 	info, err := m.adapter.GetStreamInfo(ctx, streamID)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 		span.SetAttributes(attribute.Int64("mink.stream.version", info.Version))
@@ -269,8 +382,7 @@ func (m *EventStoreMiddleware) GetLastPosition(ctx context.Context) (uint64, err
 	pos, err := m.adapter.GetLastPosition(ctx)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 		span.SetAttributes(attribute.Int64("mink.last_position", int64(pos)))
@@ -291,8 +403,7 @@ func (m *EventStoreMiddleware) Initialize(ctx context.Context) error {
 	err := m.adapter.Initialize(ctx)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -335,7 +446,8 @@ func (m *ProjectionMiddleware) HandledEvents() []string {
 
 // Apply applies an event with tracing.
 func (m *ProjectionMiddleware) Apply(ctx context.Context, event mink.StoredEvent) error {
-	spanName := fmt.Sprintf("projection.%s.apply", m.projection.Name())
+	projectionName := m.tracer.attr(m.projection.Name())
+	spanName := fmt.Sprintf("projection.%s.apply", projectionName)
 
 	ctx, span := m.tracer.StartSpan(ctx, spanName,
 		trace.WithSpanKind(trace.SpanKindInternal),
@@ -344,10 +456,10 @@ func (m *ProjectionMiddleware) Apply(ctx context.Context, event mink.StoredEvent
 
 	span.SetAttributes(
 		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.projection.name", m.projection.Name()),
-		attribute.String("mink.event.type", event.Type),
-		attribute.String("mink.event.id", event.ID),
-		attribute.String("mink.event.stream_id", event.StreamID),
+		attribute.String("mink.projection.name", projectionName),
+		attribute.String("mink.event.type", m.tracer.attr(event.Type)),
+		attribute.String("mink.event.id", m.tracer.attr(event.ID)),
+		attribute.String("mink.event.stream_id", m.tracer.attr(event.StreamID)),
 		attribute.Int64("mink.event.version", event.Version),
 		attribute.Int64("mink.event.global_position", int64(event.GlobalPosition)),
 	)
@@ -355,8 +467,7 @@ func (m *ProjectionMiddleware) Apply(ctx context.Context, event mink.StoredEvent
 	err := m.projection.Apply(ctx, event)
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		m.tracer.recordError(span, err)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -380,6 +491,10 @@ func AddEvent(ctx context.Context, name string, opts ...trace.EventOption) {
 }
 
 // SetError sets an error on the current span.
+//
+// SetError is not bound to a Tracer, so it always records the raw error text;
+// the WithErrorRedaction setting does not apply. Redact err yourself before
+// calling it when the message may carry personal data.
 func SetError(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
 	span.RecordError(err)

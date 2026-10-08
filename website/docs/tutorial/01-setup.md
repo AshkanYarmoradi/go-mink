@@ -41,7 +41,7 @@ mink generate aggregate Cart --events Created,ItemAdded,ItemRemoved
 mink generate aggregate Order --events Created,Paid,Shipped
 
 # Run migrations
-export DATABASE_URL="postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"
+export DATABASE_URL="postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"   # local dev only (plaintext); production uses sslmode=verify-full
 mink migrate up
 
 # Verify setup
@@ -214,7 +214,7 @@ func run(ctx context.Context) error {
 
 	// Database connection string
 	connStr := getEnvOrDefault("DATABASE_URL", 
-		"postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable")
+		"postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable") // local dev default; production sets DATABASE_URL with sslmode=verify-full
 
 	// Create PostgreSQL adapter
 	fmt.Println("📦 Connecting to PostgreSQL...")
@@ -407,7 +407,7 @@ type Config struct {
 // Load reads configuration from environment variables.
 func Load() *Config {
 	return &Config{
-		DatabaseURL:    getEnv("DATABASE_URL", "postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"),
+		DatabaseURL:    getEnv("DATABASE_URL", "postgres://minkshop:secret@localhost:5432/minkshop?sslmode=disable"), // local dev default; production sets DATABASE_URL with sslmode=verify-full
 		DatabaseSchema: getEnv("DATABASE_SCHEMA", "minkshop"),
 		MaxConnections: getEnvInt("DATABASE_MAX_CONNECTIONS", 10),
 		

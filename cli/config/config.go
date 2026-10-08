@@ -138,14 +138,23 @@ func (c *Config) Save(dir string) error {
 	return c.SaveFile(path)
 }
 
-// SaveFile saves the configuration to a specific file path
+// ConfigFileMode is the permission mode used when writing mink.yaml.
+//
+// The file may hold a literal database.url (including a password), so it is
+// written owner-read/write only.
+const ConfigFileMode os.FileMode = 0o600
+
+// SaveFile saves the configuration to a specific file path.
+//
+// The file is written with ConfigFileMode (0600): it can contain a literal
+// database.url with credentials, so it is not world-readable.
 func (c *Config) SaveFile(path string) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, ConfigFileMode)
 }
 
 // Exists checks if a config file exists in the directory
@@ -155,7 +164,20 @@ func Exists(dir string) bool {
 	return err == nil
 }
 
-// FindConfig searches for a config file starting from dir and going up
+// goModFileName marks the root of a Go module and bounds the config search.
+const goModFileName = "go.mod"
+
+// FindConfig searches for a config file starting from dir and going up.
+//
+// The search stops at the Go module boundary: once a directory containing
+// go.mod has been checked, no ancestor above it is consulted. Without this
+// bound, a mink.yaml planted anywhere above the project (for example in a
+// shared parent directory) would silently take over the database URL, the
+// migrations directory and the code-generation output locations. When no
+// go.mod is found on the way up, the search continues to the filesystem root
+// as before.
+//
+// It returns os.ErrNotExist when no config file is found within the boundary.
 func FindConfig(dir string) (string, *Config, error) {
 	current := dir
 	for {
@@ -166,6 +188,12 @@ func FindConfig(dir string) (string, *Config, error) {
 				return "", nil, err
 			}
 			return current, cfg, nil
+		}
+
+		if _, err := os.Stat(filepath.Join(current, goModFileName)); err == nil {
+			// Reached the module root without finding a config: do not look
+			// above the module boundary.
+			return "", nil, os.ErrNotExist
 		}
 
 		parent := filepath.Dir(current)

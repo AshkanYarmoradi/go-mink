@@ -16,18 +16,40 @@ import (
 // still providing sufficient history for retry scenarios.
 const maxProcessedEventsToTrack = 100
 
-// reservedLastEventKey is the reserved key under which the manager persists the raw
+// reservedLastEventKey is the reserved key under which the manager persists the
 // last trigger event, so an operator can re-drive a settled saga (see
-// SagaManager.RetrySaga) without re-reading the event store. It rides the existing
-// persisted SagaState.Data JSON — no schema change — but is written and read only by
-// the manager: it is stamped into the persisted state in saveSaga and stripped in
-// hydrateSaga, so it NEVER appears in the saga's own Data()/SetData() and works
-// regardless of how a saga projects its Data. It is populated only when
-// WithSagaRetryCapture is enabled, so it adds zero overhead when re-drive is unused.
+// SagaManager.RetrySaga). It rides the existing persisted SagaState.Data JSON — no
+// schema change — but is written and read only by the manager: it is stamped into
+// the persisted state in saveSaga and stripped in hydrateSaga, so it NEVER appears
+// in the saga's own Data()/SetData() and works regardless of how a saga projects
+// its Data. It is populated only when WithSagaRetryCapture is enabled, so it adds
+// zero overhead when re-drive is unused.
+//
+// What is captured depends on whether the event is field-encrypted at rest:
+//
+//   - a plaintext event is captured whole (locator + payload), so a re-drive needs
+//     no event-store read;
+//   - a field-encrypted event is captured as a LOCATOR ONLY (id, stream id, type,
+//     version, global position, timestamp — no Data, and no Metadata other than
+//     the explicit sagaTriggerLocatorKey marker). The saga store never receives
+//     the decrypted payload, so crypto-shredding the event's key keeps the PII
+//     unrecoverable; RetrySaga reloads the event from the event store through its
+//     normal decrypt path (and fails if the key is revoked).
+//
+// See captureCandidate for the rule and reloadTriggerEvent for the re-drive side.
 //
 // The "__mink_" prefix is reserved for the library; saga authors MUST NOT read or
 // write Data keys with this prefix.
 const reservedLastEventKey = "__mink_last_event"
+
+// sagaTriggerLocatorKey is the Metadata.Custom key that marks a captured trigger
+// event as a locator (see captureCandidate). The marker is explicit so a locator is
+// never inferred from the shape of the capture: a plaintext trigger with no payload
+// (for example a synthetic event handed to StartSaga) is captured whole and
+// re-driven as is, rather than being mistaken for a locator and failing the
+// re-drive. It follows the "$"-prefixed reserved-metadata convention the library
+// uses for its own markers.
+const sagaTriggerLocatorKey = "$saga_trigger_locator"
 
 // SagaManagerOption configures a SagaManager.
 type SagaManagerOption func(*SagaManager)
@@ -123,6 +145,15 @@ func WithSagaRetryDelay(d time.Duration) SagaManagerOption {
 // it never leaks into saga-author code and it works regardless of how a saga
 // implements Data()/SetData() — including projection-style sagas that rebuild Data
 // from typed fields (which would otherwise silently drop a key written into Data).
+//
+// Field-encrypted events are never captured in the clear: a trigger event that is
+// field-encrypted at rest is captured as a LOCATOR only (stream id, version, global
+// position, type — no payload, no metadata), so the saga store never holds a
+// decrypted field and crypto-shredding the event's key stays effective. RetrySaga /
+// ResumeStalled reload such an event from the event store through the normal
+// decrypt path — which requires the manager to have been built with an EventStore —
+// and fail with the decryption error (e.g. a revoked key) when it can no longer be
+// decrypted. A plaintext event is captured whole and re-driven without a store read.
 func WithSagaRetryCapture() SagaManagerOption {
 	return func(m *SagaManager) {
 		m.captureLastEvent = true
@@ -321,6 +352,16 @@ func NewSagaManager(eventStore *EventStore, opts ...SagaManagerOption) *SagaMana
 }
 
 // Register registers a saga type with its factory and correlation configuration.
+//
+// sagaType is the name the manager keys everything on: event routing, the
+// type-scoped correlation lookup (SagaCorrelationTypeFinder), the persisted
+// SagaState.Type, RetrySagasByType and the factory lookup on re-drive. It MUST
+// equal the SagaType() reported by the sagas the factory produces (for a saga
+// embedding SagaBase, the type passed to NewSagaBase). A factory whose sagas
+// report a different type is still registered — Register cannot fail — but the
+// mismatch is logged at Error level here, and processing an event for it fails
+// with ErrSagaTypeMismatch (see attemptProcessSagaEvent) instead of persisting a
+// row that later lookups could never find.
 func (m *SagaManager) Register(sagaType string, factory SagaFactory, correlation SagaCorrelation) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -332,6 +373,12 @@ func (m *SagaManager) Register(sagaType string, factory SagaFactory, correlation
 	saga := factory("")
 	for _, eventType := range saga.HandledEvents() {
 		m.eventHandlers[eventType] = append(m.eventHandlers[eventType], sagaType)
+	}
+
+	if got := saga.SagaType(); got != sagaType {
+		m.logger.Error("Saga factory reports a different SagaType than the name it is registered under; "+
+			"lookups, persistence and re-drive key on the registered name, so events for this saga will fail with ErrSagaTypeMismatch",
+			"registered", sagaType, "sagaType", got)
 	}
 
 	m.logger.Info("Registered saga", "type", sagaType, "events", saga.HandledEvents())
@@ -619,10 +666,14 @@ func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error
 	// no saga cares about is never decrypted (mirrors the projection engine's
 	// decrypt-only-what-is-handled optimization).
 	//
-	// Note for GDPR: when WithSagaRetryCapture is enabled the captured trigger event is
-	// persisted into saga state, which therefore holds decrypted fields — the same
-	// property SagaState.Data has always had, and the reason NewSagaSubjectEraser exists.
-	// Register it with DataEraser.WithSubjectStore to purge saga-derived PII on erasure.
+	// Note for GDPR: when WithSagaRetryCapture is enabled the trigger event is captured
+	// into saga state from the RAW (as-stored) event, never from the decrypted one: a
+	// field-encrypted event is captured as a locator only (see captureCandidate), so no
+	// decrypted field ever lands in the saga store. Whatever a saga itself copies out of
+	// the plaintext into its own Data is still plaintext — the reason
+	// NewSagaSubjectEraser exists; register it with DataEraser.WithSubjectStore to
+	// purge saga-derived PII on erasure.
+	capture := captureCandidate(event)
 	decrypted, err := m.decryptEvent(ctx, event)
 	if err != nil {
 		// Hard, unhandled decryption failure: report it rather than handing sagas
@@ -637,7 +688,7 @@ func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error
 	event = decrypted
 
 	for _, sagaType := range sagaTypes {
-		if err := m.processSagaEvent(ctx, sagaType, event); err != nil {
+		if err := m.processSagaEvent(ctx, sagaType, event, capture); err != nil {
 			m.logger.Error("Failed to process saga event",
 				"sagaType", sagaType,
 				"eventType", event.Type,
@@ -652,7 +703,12 @@ func (m *SagaManager) processEvent(ctx context.Context, event StoredEvent) error
 // processSagaEvent processes an event for a specific saga type.
 // It implements optimistic concurrency control with retry on conflicts
 // and per-saga locking to serialize access to the same saga instance.
-func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, event StoredEvent) error {
+//
+// event is what the saga is handed (decrypted when field encryption is configured);
+// capture is what is recorded for a later RetrySaga when WithSagaRetryCapture is
+// enabled — derived from the as-stored event by captureCandidate, so a field-encrypted
+// event is captured as a locator only and its plaintext never reaches the saga store.
+func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, event, capture StoredEvent) error {
 	m.mu.RLock()
 	correlations := m.correlations[sagaType]
 	factory := m.registry[sagaType]
@@ -716,7 +772,7 @@ func (m *SagaManager) processSagaEvent(ctx context.Context, sagaType string, eve
 		// The first lookup cannot be eliminated because we need the saga ID to determine
 		// the lock key. For new sagas (isStarting=true), only one lookup occurs since
 		// the saga doesn't exist in the store yet.
-		err := m.attemptProcessSagaEvent(ctx, sagaType, event, correlations, factory, nil)
+		err := m.attemptProcessSagaEvent(ctx, sagaType, event, capture, correlations, factory, nil)
 		if err == nil {
 			return nil
 		}
@@ -749,10 +805,17 @@ func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event 
 			continue
 		}
 
-		// Try to find existing saga
-		loadedState, err := m.store.FindByCorrelationID(ctx, corrID)
+		// Try to find existing saga (of THIS saga type).
+		loadedState, err := m.findSagaByCorrelation(ctx, sagaType, corrID)
 		if err == nil {
 			return loadedState.ID, corrID, loadedState, false
+		}
+		if errors.Is(err, ErrSagaTypeMismatch) {
+			// Another saga type owns this correlation id in a store that cannot scope
+			// lookups by type. Force an attempt (whether or not this is a starting
+			// event) so attemptProcessSagaEvent re-runs the lookup under the lock and
+			// reports the typed error — never hydrate the wrong saga, never skip silently.
+			return "", corrID, nil, true
 		}
 
 		// Check if this event can start a new saga
@@ -764,6 +827,46 @@ func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event 
 	return "", "", nil, false
 }
 
+// findSagaByCorrelation finds the saga of the given type correlated to
+// correlationID. It prefers the store's OPTIONAL type-scoped lookup
+// (SagaCorrelationTypeFinder, which both shipped stores implement; the base
+// SagaStore does not require it); when the store only offers the unscoped
+// FindByCorrelationID and the row it returns belongs to a different saga type, it
+// returns a *SagaTypeMismatchError (ErrSagaTypeMismatch) instead of the foreign
+// state — so saga type B is never hydrated from, and never overwrites, saga type
+// A's row when the two share a correlation id.
+//
+// It never returns (nil, nil): a store that reports "no saga" as a nil state with
+// a nil error (instead of ErrSagaNotFound, as the SagaStore contract requires) is
+// normalized to a *SagaNotFoundError so callers can rely on a non-nil state
+// whenever the error is nil.
+func (m *SagaManager) findSagaByCorrelation(ctx context.Context, sagaType, correlationID string) (*SagaState, error) {
+	var (
+		state *SagaState
+		err   error
+	)
+	if scoped, ok := m.store.(SagaCorrelationTypeFinder); ok {
+		state, err = scoped.FindByCorrelationIDAndType(ctx, correlationID, sagaType)
+	} else {
+		state, err = m.store.FindByCorrelationID(ctx, correlationID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, &SagaNotFoundError{CorrelationID: correlationID}
+	}
+	if state.Type != sagaType {
+		return nil, &SagaTypeMismatchError{
+			CorrelationID: correlationID,
+			SagaID:        state.ID,
+			ExpectedType:  sagaType,
+			ActualType:    state.Type,
+		}
+	}
+	return state, nil
+}
+
 // attemptProcessSagaEvent performs a single attempt to process an event for a saga.
 // This method is called under a per-saga lock, so we are guaranteed to have exclusive
 // access to this saga instance.
@@ -771,10 +874,12 @@ func (m *SagaManager) resolveSagaID(ctx context.Context, sagaType string, event 
 // The preloadedState parameter allows passing a state that was already loaded by
 // resolveSagaID to avoid duplicate store queries on the first attempt. Pass nil
 // to force a fresh load from the store (used on retry attempts).
+//
+// capture is the retry-capture form of the event (see processSagaEvent).
 func (m *SagaManager) attemptProcessSagaEvent(
 	ctx context.Context,
 	sagaType string,
-	event StoredEvent,
+	event, capture StoredEvent,
 	correlations []SagaCorrelation,
 	factory SagaFactory,
 	preloadedState *SagaState,
@@ -801,9 +906,12 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		//     this branch is skipped and we always load the latest state from the
 		//     store. This ensures we do not rely on potentially stale preloaded
 		//     state when re-processing an event.
-		//   - If FindByCorrelationID returns ErrSagaNotFound, state remains nil and
-		//     we rely on the isStartingEvent check below to decide whether a new
-		//     saga should be created for this correlation ID.
+		//   - If the lookup returns ErrSagaNotFound, state remains nil and we rely
+		//     on the isStartingEvent check below to decide whether a new saga should
+		//     be created for this correlation ID.
+		//   - If the correlation ID is owned by a saga of a DIFFERENT type (store
+		//     without a type-scoped lookup), the typed ErrSagaTypeMismatch is returned
+		//     rather than hydrating — and later overwriting — the foreign row.
 		if preloadedState != nil && preloadedState.CorrelationID == correlationID {
 			state = preloadedState
 			m.logger.Debug("Using preloaded state",
@@ -813,7 +921,7 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		} else {
 			// Load fresh state from store - critical for retries to see latest state
 			var err error
-			state, err = m.store.FindByCorrelationID(ctx, correlationID)
+			state, err = m.findSagaByCorrelation(ctx, sagaType, correlationID)
 			if err != nil && !errors.Is(err, ErrSagaNotFound) {
 				return fmt.Errorf("mink: failed to find saga: %w", err)
 			}
@@ -840,6 +948,18 @@ func (m *SagaManager) attemptProcessSagaEvent(
 			// Create new saga
 			sagaID := fmt.Sprintf("%s-%s", sagaType, correlationID)
 			saga = factory(sagaID)
+			// The row is persisted under saga.SagaType() but every later lookup
+			// (type-scoped correlation lookup, re-drive factory lookup) keys on
+			// the registered name: refuse to persist a row those lookups could
+			// never find. See Register.
+			if got := saga.SagaType(); got != sagaType {
+				return &SagaTypeMismatchError{
+					CorrelationID: correlationID,
+					SagaID:        sagaID,
+					ExpectedType:  sagaType,
+					ActualType:    got,
+				}
+			}
 			saga.SetCorrelationID(correlationID)
 			saga.SetStatus(SagaStatusStarted)
 			saga.SetStartedAt(time.Now())
@@ -879,6 +999,14 @@ func (m *SagaManager) attemptProcessSagaEvent(
 		return nil
 	}
 
+	// Capture the trigger event (only when WithSagaRetryCapture is enabled) so a
+	// settled saga can later be re-driven. Recorded on the manager-owned carrier slot
+	// before any dispatch, so it is captured even if the saga fails and follows the
+	// compensation save path — and persisted by saveSaga independently of the saga's
+	// own Data()/SetData(). The capture is the as-stored form (locator only for a
+	// field-encrypted event), never the decrypted payload.
+	m.captureTriggerEvent(saga, capture)
+
 	// Drive the saga forward with this event. RetrySaga re-drives a settled saga
 	// through the very same path, so the two share identical semantics.
 	return m.redrive(ctx, saga, event)
@@ -892,17 +1020,10 @@ func (m *SagaManager) attemptProcessSagaEvent(
 // saga reaches Completed; on a fresh failure it follows the same compensation path
 // as a first-time failure.
 //
-// The caller is responsible for the terminal-state and idempotency checks and, for
-// re-drive, for holding the per-saga lock and resetting the retried event's
-// idempotency key beforehand.
+// The caller is responsible for the terminal-state and idempotency checks, for
+// recording the retry capture (captureTriggerEvent) and, for re-drive, for holding
+// the per-saga lock and resetting the retried event's idempotency key beforehand.
 func (m *SagaManager) redrive(ctx context.Context, saga Saga, event StoredEvent) error {
-	// Capture the trigger event (only when WithSagaRetryCapture is enabled) so a
-	// settled saga can later be re-driven without the event store. Recorded on the
-	// manager-owned carrier slot before any dispatch, so it is captured even if the
-	// saga fails and follows the compensation save path — and persisted by saveSaga
-	// independently of the saga's own Data()/SetData().
-	m.captureTriggerEvent(saga, event)
-
 	// Handle the event
 	saga.SetStatus(SagaStatusRunning)
 	commands, err := saga.HandleEvent(ctx, event)
@@ -963,10 +1084,11 @@ type lastEventCarrier interface {
 }
 
 // captureTriggerEvent records the trigger event on the saga's manager-owned carrier
-// slot, so a settled saga can be re-driven later without re-reading the event store.
-// It is a no-op unless WithSagaRetryCapture is enabled (zero overhead when unused),
-// for a zero-value event (nothing meaningful to capture), or for a saga that does
-// not embed SagaBase (no carrier).
+// slot, so a settled saga can be re-driven later. Callers pass the capture form
+// produced by captureCandidate (never a decrypted payload). It is a no-op unless
+// WithSagaRetryCapture is enabled (zero overhead when unused), for a zero-value
+// event (nothing meaningful to capture), or for a saga that does not embed SagaBase
+// (no carrier).
 func (m *SagaManager) captureTriggerEvent(saga Saga, event StoredEvent) {
 	if !m.captureLastEvent {
 		return
@@ -977,6 +1099,134 @@ func (m *SagaManager) captureTriggerEvent(saga Saga, event StoredEvent) {
 	if c, ok := saga.(lastEventCarrier); ok {
 		c.setLastTriggerEvent(event)
 	}
+}
+
+// captureCandidate derives what may be persisted into saga state for a later
+// RetrySaga from the AS-STORED event (before decryption). A plaintext event is
+// captured whole — payload or not. A field-encrypted event (IsEncrypted on its
+// stored metadata — which the decrypt path strips, so this MUST be evaluated on
+// the raw event) is reduced to a locator: id, stream id, type, version, global
+// position and timestamp, with no Data and with Metadata holding only the
+// explicit sagaTriggerLocatorKey marker. The saga store therefore never holds a
+// decrypted field (crypto-shredding the event's key stays effective), nor the
+// ciphertext and wrapped DEK, which it has no use for; the re-drive reloads the
+// event from the event store instead (reloadTriggerEvent).
+func captureCandidate(raw StoredEvent) StoredEvent {
+	if !IsEncrypted(raw.Metadata) {
+		return raw
+	}
+	return StoredEvent{
+		ID:             raw.ID,
+		StreamID:       raw.StreamID,
+		Type:           raw.Type,
+		Version:        raw.Version,
+		GlobalPosition: raw.GlobalPosition,
+		Timestamp:      raw.Timestamp,
+		Metadata:       Metadata{Custom: map[string]string{sagaTriggerLocatorKey: "true"}},
+	}
+}
+
+// isTriggerLocator reports whether a captured trigger event is a locator-only
+// capture (see captureCandidate) that must be reloaded from the event store before
+// it can be re-delivered. Only the explicit marker decides: the shape of the
+// capture (an empty payload in particular) is never used, so a payload-less
+// plaintext trigger stays a whole capture.
+func isTriggerLocator(captured StoredEvent) bool {
+	return captured.Metadata.Custom[sagaTriggerLocatorKey] == "true"
+}
+
+// reloadTriggerEvent re-reads a locator-only captured trigger event from the event
+// store and runs it through the store's normal decrypt path. The read is bounded:
+// when the locator carries a version and the adapter can page a stream
+// (adapters.StreamQueryAdapter — both shipped adapters can), exactly one event is
+// read from that version; otherwise the stream is read from the locator's version
+// (LoadRaw) and matched by version — or by id when the locator carries none. In
+// both cases the event found is verified against every identifying field the
+// locator carries (id, type, version, global position) so a re-drive never
+// delivers a different event than the one captured.
+//
+// A decryption failure — e.g. the subject's key has been revoked — is returned as
+// is, so a re-drive can never resurrect erased data; a crypto-shred handler that
+// swallows the failure yields the event as stored, exactly as live delivery would.
+func (m *SagaManager) reloadTriggerEvent(ctx context.Context, loc StoredEvent) (StoredEvent, error) {
+	if m.eventStore == nil {
+		return StoredEvent{}, errors.New("mink: captured trigger event is a locator but the saga manager has no event store to reload it from")
+	}
+	if loc.StreamID == "" {
+		return StoredEvent{}, errors.New("mink: captured trigger event locator has no stream id")
+	}
+
+	raw, err := m.loadTriggerEventRaw(ctx, loc)
+	if err != nil {
+		return StoredEvent{}, fmt.Errorf("mink: reload captured trigger event from stream %q: %w", loc.StreamID, err)
+	}
+	if raw == nil {
+		return StoredEvent{}, fmt.Errorf("mink: captured trigger event (stream %q, version %d, id %q) not found in event store",
+			loc.StreamID, loc.Version, loc.ID)
+	}
+	if err := matchTriggerLocator(*raw, loc); err != nil {
+		return StoredEvent{}, err
+	}
+	return m.eventStore.DecryptStoredEvent(ctx, *raw)
+}
+
+// loadTriggerEventRaw fetches the as-stored event a locator points at, reading as
+// little of the stream as the adapter allows (see reloadTriggerEvent). It returns
+// (nil, nil) when no event matches the locator.
+func (m *SagaManager) loadTriggerEventRaw(ctx context.Context, loc StoredEvent) (*StoredEvent, error) {
+	fromVersion := loc.Version - 1 // Load/LoadRaw/GetStreamEvents are exclusive of fromVersion
+	if fromVersion < 0 {
+		fromVersion = 0
+	}
+
+	if loc.Version > 0 {
+		if sq, ok := m.eventStore.adapter.(adapters.StreamQueryAdapter); ok {
+			events, err := sq.GetStreamEvents(ctx, loc.StreamID, fromVersion, 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(events) == 0 || events[0].Version != loc.Version {
+				return nil, nil
+			}
+			ev := convertStoredEventFromAdapter(events[0])
+			return &ev, nil
+		}
+	}
+
+	events, err := m.eventStore.LoadRaw(ctx, loc.StreamID, fromVersion)
+	if err != nil {
+		return nil, err
+	}
+	for i := range events {
+		ev := events[i]
+		if (loc.Version > 0 && ev.Version == loc.Version) || (loc.Version <= 0 && loc.ID != "" && ev.ID == loc.ID) {
+			return &ev, nil
+		}
+	}
+	return nil, nil
+}
+
+// matchTriggerLocator verifies that the stored event found for a locator is the
+// event the locator describes: every identifying field the locator carries (id,
+// type, version, global position) must agree. A mismatch means the stream was
+// rewritten or the locator is corrupt; the re-drive is refused rather than
+// delivering a different event.
+func matchTriggerLocator(ev, loc StoredEvent) error {
+	mismatch := func(field string, want, got interface{}) error {
+		return fmt.Errorf("mink: captured trigger event locator (stream %q, version %d) does not match the stored event: %s %v, found %v",
+			loc.StreamID, loc.Version, field, want, got)
+	}
+	switch {
+	case loc.ID != "" && ev.ID != loc.ID:
+		return mismatch("id", loc.ID, ev.ID)
+	case loc.Type != "" && ev.Type != loc.Type:
+		return mismatch("type", loc.Type, ev.Type)
+	case loc.Version > 0 && ev.Version != loc.Version:
+		return mismatch("version", loc.Version, ev.Version)
+	case loc.GlobalPosition > 0 && ev.GlobalPosition != loc.GlobalPosition:
+		return mismatch("global position", loc.GlobalPosition, ev.GlobalPosition)
+	}
+	return nil
 }
 
 // cloneSagaData shallow-copies a saga Data map into a new map (never nil), with room
@@ -1336,10 +1586,15 @@ func (m *SagaManager) FindSagasByType(ctx context.Context, sagaType string, stat
 //
 // The last trigger event is recovered from the manager-owned reserved slot of the
 // saga's stored state, captured during normal processing when WithSagaRetryCapture
-// is enabled (see reservedLastEventKey) — no event-store re-read and no schema
-// change. Capture is opt-in and zero-overhead when off; a retryable-status saga with
-// no captured event (capture disabled, or the saga last ran before it was enabled)
-// is rejected with a clear reason rather than guessing.
+// is enabled (see reservedLastEventKey) — no schema change. A plaintext event is
+// captured whole, so its re-drive needs no event-store read. A field-encrypted
+// event is captured as a LOCATOR only (its decrypted payload never enters the saga
+// store, so crypto-shredding stays effective): the re-drive reloads it from the
+// event store through the normal decrypt path and fails — reporting the decryption
+// error, e.g. a revoked key — if it can no longer be decrypted. Capture is opt-in
+// and zero-overhead when off; a retryable-status saga with no captured event
+// (capture disabled, or the saga last ran before it was enabled) is rejected with a
+// clear reason rather than guessing.
 //
 // # Observed outcome
 //
@@ -1605,7 +1860,7 @@ func (m *SagaManager) driveLocked(ctx context.Context, sagaID string, accept fun
 			Reason: "no captured trigger event to re-drive (enable WithSagaRetryCapture, or the saga last ran before it was enabled)",
 		}
 	}
-	event, ok := decodeLastEvent(raw)
+	captured, ok := decodeLastEvent(raw)
 	if !ok {
 		return nil, 0, nil, &SagaNotRetryableError{
 			SagaID: sagaID, Status: state.Status,
@@ -1613,14 +1868,25 @@ func (m *SagaManager) driveLocked(ctx context.Context, sagaID string, accept fun
 		}
 	}
 
-	// An event captured before field decryption reached the saga path — i.e. by a
-	// version of the library that handed sagas ciphertext — is still encrypted in saga
-	// state, so decrypt it and re-drive with the same plaintext a live delivery gives.
-	// A no-op (no markers) for an event captured after decryption, which is already
-	// plaintext, so this costs nothing on the normal path.
-	event, err = m.decryptEvent(ctx, event)
-	if err != nil {
-		return nil, 0, nil, fmt.Errorf("mink: decrypt captured trigger event for saga %q: %w", sagaID, err)
+	// Recover the event to re-deliver from the capture:
+	//   - a locator-only capture (field-encrypted at rest — the payload is deliberately
+	//     NOT in saga state) is reloaded from the event store and decrypted through the
+	//     store's normal path; a revoked key fails the re-drive here, so erased data is
+	//     never resurrected;
+	//   - a whole capture is re-delivered as is. An event captured with ciphertext by a
+	//     version of the library that captured before decryption is decrypted the same
+	//     way a live delivery would be (a no-op for plaintext, so it costs nothing).
+	var event StoredEvent
+	if isTriggerLocator(captured) {
+		event, err = m.reloadTriggerEvent(ctx, captured)
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("mink: reload captured trigger event for saga %q: %w", sagaID, err)
+		}
+	} else {
+		event, err = m.decryptEvent(ctx, captured)
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("mink: decrypt captured trigger event for saga %q: %w", sagaID, err)
+		}
 	}
 
 	fromStatus = state.Status
@@ -1658,6 +1924,11 @@ func (m *SagaManager) driveLocked(ctx context.Context, sagaID string, accept fun
 	// Record the re-drive on the saga's history so it is auditable even with no
 	// observer configured; the saga's resulting status after the drive is the outcome.
 	m.recordRetryStep(saga, fromStatus)
+
+	// Re-capture in the same as-stored form (a locator stays a locator; a whole
+	// capture is re-captured whole) so the re-drive never upgrades a locator-only
+	// capture into a persisted plaintext payload.
+	m.captureTriggerEvent(saga, captured)
 
 	// Re-deliver through the normal drive path — identical semantics to a fresh
 	// delivery, persisted under optimistic concurrency (ErrConcurrencyConflict on a
@@ -1944,6 +2215,8 @@ func (m *SagaManager) StartSaga(ctx context.Context, sagaType string, triggerEve
 		return fmt.Errorf("mink: event type %q is not a starting event for saga %q", triggerEvent.Type, sagaType)
 	}
 
-	// Process the event through the saga
-	return m.processSagaEvent(ctx, sagaType, triggerEvent)
+	// Process the event through the saga. The trigger event is handed to the saga as
+	// given (StartSaga does not decrypt); its retry capture follows the same rule as
+	// the event loop — a field-encrypted event is captured as a locator only.
+	return m.processSagaEvent(ctx, sagaType, triggerEvent, captureCandidate(triggerEvent))
 }

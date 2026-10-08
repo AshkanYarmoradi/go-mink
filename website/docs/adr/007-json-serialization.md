@@ -83,6 +83,12 @@ registry.Register("OrderCreated", OrderCreated{})
 registry.Register("ItemAdded", ItemAdded{})
 ```
 
+> The sketch above is simplified: the shipped `EventRegistry` never lets a later
+> `Register`/`RegisterAll` **overwrite** an existing name with a *different* Go type —
+> the first registration wins, re-registering the same type is a no-op, and the
+> rejected names are exposed through `registry.Conflicts()` so startup can fail
+> deterministically instead of silently deserializing events into the wrong type.
+
 ### PostgreSQL JSONB Benefits
 
 ```sql
