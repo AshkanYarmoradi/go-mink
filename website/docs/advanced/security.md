@@ -553,7 +553,7 @@ Handle schema evolution without breaking existing events. For comprehensive docu
 
 ### How It Works
 
-Schema version is stored in `Metadata.Custom["$schema_version"]` -- no database migration needed. Events without a version are treated as version 1. A caller-supplied `$schema_version` is dropped on `Append` by default — the chain's latest version is stamped (nothing when no chain is configured) — so untrusted metadata cannot mis-route the upcaster chain; `mink.WithCallerSchemaVersion()` lets trusted migration tooling keep a value within `[1, latest]` for a type that has upcasters. A panicking upcaster is recovered and surfaced as an `*UpcastError` (`ErrUpcastFailed`) naming the event type and version transition.
+Schema version is stored in `Metadata.Custom["$schema_version"]` -- no database migration needed. Events without a version are treated as version 1. A caller-supplied `$schema_version` is dropped on `Append` by default — the chain's latest version is stamped (nothing when no chain is configured) — so untrusted metadata cannot mis-route the upcaster chain; `mink.WithCallerSchemaVersion()` lets trusted migration tooling keep a value within `[1, latest]` for a type that has upcasters. A panicking upcaster is recovered and surfaced as an `*UpcastError` (`ErrUpcastFailed`) naming the event type and version transition and carrying only `PanicValueSummary` of the panic value (its type, plus the message for a Go runtime error) — never the event payload.
 
 ```go
 // Define upcasters -- pure byte-level transformations

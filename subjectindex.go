@@ -188,12 +188,8 @@ func BackfillSubjectIndexWithReport(ctx context.Context, store *EventStore, tagg
 		return rep, ErrSubscriptionNotSupported
 	}
 
-	defer func() {
-		if rep.Undecryptable > 0 {
-			store.logger.Warn("mink: subject index backfill could not decrypt some events; indexed them from their existing subject tags only",
-				"undecryptable", rep.Undecryptable, "scanned", rep.Scanned)
-		}
-	}()
+	defer warnUndecryptable(store.logger, &rep)
+	run := &subjectBackfill{store: store, tagger: tagger, writer: writer, rep: &rep}
 	var position uint64
 	for {
 		if err := ctx.Err(); err != nil {
@@ -206,40 +202,83 @@ func BackfillSubjectIndexWithReport(ctx context.Context, store *EventStore, tagg
 		if len(batch) == 0 {
 			break
 		}
-		for _, se := range batch {
-			// Honor cancellation mid-batch, not only between batches.
-			if err := ctx.Err(); err != nil {
-				return rep, err
-			}
-			rep.Scanned++
-			// Combine tagger-derived subjects with any already tagged on the event, then
-			// de-duplicate — when tagging was already enabled the two overlap, and
-			// duplicate (subject, stream) pairs are redundant index writes. Build a fresh
-			// slice rather than appending onto the tagger's return: the tagger's
-			// slice-ownership is unspecified, so appending could mutate a buffer it reuses.
-			var derived []string
-			if data, md, ok := backfillPlaintext(ctx, store, se); ok {
-				derived = tagger(se.Type, data, md)
-			} else {
-				rep.Undecryptable++
-			}
-			existing := GetSubjectTags(se.Metadata)
-			subjects := make([]string, 0, len(derived)+len(existing))
-			subjects = append(subjects, derived...)
-			subjects = append(subjects, existing...)
-			subjects = dedupeStrings(subjects)
-			if len(subjects) == 0 {
-				rep.Untagged++
-				continue
-			}
-			if err := writer.IndexSubjects(ctx, se.StreamID, subjects); err != nil {
-				return rep, fmt.Errorf("mink: backfill index stream %q: %w", se.StreamID, err)
-			}
-			rep.Indexed++
+		if err := run.indexBatch(ctx, batch); err != nil {
+			return rep, err
 		}
 		position = batch[len(batch)-1].GlobalPosition
 	}
 	return rep, nil
+}
+
+// warnUndecryptable logs, once, how many field-encrypted events a backfill could not
+// decrypt (and so indexed from their existing subject tags only). It is deferred by
+// BackfillSubjectIndexWithReport so the warning covers the run however it ended.
+func warnUndecryptable(logger Logger, rep *BackfillReport) {
+	if rep.Undecryptable > 0 {
+		logger.Warn("mink: subject index backfill could not decrypt some events; indexed them from their existing subject tags only",
+			"undecryptable", rep.Undecryptable, "scanned", rep.Scanned)
+	}
+}
+
+// subjectBackfill carries one BackfillSubjectIndexWithReport run's collaborators and
+// its in-progress report between the per-batch and per-event steps.
+type subjectBackfill struct {
+	store  *EventStore
+	tagger SubjectTagger
+	writer SubjectIndexWriter
+	rep    *BackfillReport
+}
+
+// indexBatch indexes every event in batch in order, honoring cancellation mid-batch
+// (not only between batches) and stopping at the first index-write failure.
+func (b *subjectBackfill) indexBatch(ctx context.Context, batch []StoredEvent) error {
+	for _, se := range batch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := b.indexEvent(ctx, se); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexEvent counts one scanned event and records its subjects (subjectsOf) in the
+// index, or counts it as Untagged when neither the tagger nor its existing tags name
+// any subject.
+func (b *subjectBackfill) indexEvent(ctx context.Context, se StoredEvent) error {
+	b.rep.Scanned++
+	subjects := b.subjectsOf(ctx, se)
+	if len(subjects) == 0 {
+		b.rep.Untagged++
+		return nil
+	}
+	if err := b.writer.IndexSubjects(ctx, se.StreamID, subjects); err != nil {
+		return fmt.Errorf("mink: backfill index stream %q: %w", se.StreamID, err)
+	}
+	b.rep.Indexed++
+	return nil
+}
+
+// subjectsOf returns the de-duplicated subjects of one event: those the tagger derives
+// from the event's plaintext (backfillPlaintext; an undecryptable event is counted and
+// never reaches the tagger) combined with any already tagged on the event — when
+// tagging was already enabled the two overlap, and duplicate (subject, stream) pairs
+// are redundant index writes. It builds a fresh slice rather than appending onto the
+// tagger's return: the tagger's slice-ownership is unspecified, so appending could
+// mutate a buffer it reuses.
+func (b *subjectBackfill) subjectsOf(ctx context.Context, se StoredEvent) []string {
+	var derived []string
+	if data, md, ok := backfillPlaintext(ctx, b.store, se); ok {
+		derived = b.tagger(se.Type, data, md)
+	} else {
+		b.rep.Undecryptable++
+	}
+	existing := GetSubjectTags(se.Metadata)
+	subjects := make([]string, 0, len(derived)+len(existing))
+	subjects = append(subjects, derived...)
+	subjects = append(subjects, existing...)
+	return dedupeStrings(subjects)
 }
 
 // backfillPlaintext returns an event's data and metadata as a SubjectTagger expects

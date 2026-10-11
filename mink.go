@@ -163,7 +163,7 @@
 //
 //	bus := mink.NewCommandBus()
 //	bus.Use(mink.ValidationMiddleware())
-//	bus.Use(mink.RecoveryMiddleware()) // add WithPanicCommandCapture() to record full command JSON
+//	bus.Use(mink.RecoveryMiddleware()) // WithPanicCommandCapture() / WithPanicValueCapture() opt into raw details
 //	bus.Use(mink.LoggingMiddleware(logger, nil))
 //
 // Register command handlers:

@@ -42,17 +42,17 @@ var (
 	_ SubjectResidualCounter = (*idempotencySubjectEraser)(nil)
 	_ SubjectResidualCounter = (*snapshotSubjectEraser)(nil)
 
-	_ derivedAggregateIDsOptIn = (*auditSubjectEraser)(nil)
-	_ derivedAggregateIDsOptIn = (*sagaSubjectEraser)(nil)
-	_ derivedAggregateIDsOptIn = (*outboxSubjectEraser)(nil)
-	_ derivedAggregateIDsOptIn = (*idempotencySubjectEraser)(nil)
+	_ derivedAggregateIDEnabler = (*auditSubjectEraser)(nil)
+	_ derivedAggregateIDEnabler = (*sagaSubjectEraser)(nil)
+	_ derivedAggregateIDEnabler = (*outboxSubjectEraser)(nil)
+	_ derivedAggregateIDEnabler = (*idempotencySubjectEraser)(nil)
 )
 
-// derivedAggregateIDsOptIn is implemented by the built-in store-backed erasers so that
+// derivedAggregateIDEnabler is implemented by the built-in store-backed erasers so that
 // NewDataEraser can hand them the WithDerivedAggregateIDs setting without widening the
 // SubjectErasable contract. It returns a configured COPY (the registered eraser may be
 // shared with other DataErasers).
-type derivedAggregateIDsOptIn interface {
+type derivedAggregateIDEnabler interface {
 	withDerivedAggregateIDs() SubjectErasable
 }
 

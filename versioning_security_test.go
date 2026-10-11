@@ -36,9 +36,11 @@ func TestUpcasterChain_Upcast_RecoversPanic(t *testing.T) {
 	assert.Equal(t, 1, ue.FromVersion)
 	assert.Equal(t, 2, ue.ToVersion)
 
-	// Descriptive (event type, versions, panic value) but never the payload.
+	// Descriptive (event type, versions, summary of the panic value) but never the
+	// payload — nor the raw panic value, which may be a message formatted from it.
 	assert.Contains(t, err.Error(), "panicked")
-	assert.Contains(t, err.Error(), "index out of range in user upcaster")
+	assert.Contains(t, err.Error(), "redacted panic value of type string")
+	assert.NotContains(t, err.Error(), "index out of range in user upcaster")
 	assert.Contains(t, err.Error(), `"OrderCreated"`)
 	assert.NotContains(t, err.Error(), "SENSITIVE-PAYLOAD-VALUE")
 }

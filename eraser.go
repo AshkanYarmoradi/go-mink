@@ -234,7 +234,7 @@ func NewDataEraser(store *EventStore, opts ...DataEraserOption) *DataEraser {
 		// Hand the opt-in to the built-in erasers, whatever the option order. Each returns
 		// a configured copy so an eraser shared with another DataEraser is not mutated.
 		for i, s := range e.subjectStores {
-			if d, ok := s.(derivedAggregateIDsOptIn); ok {
+			if d, ok := s.(derivedAggregateIDEnabler); ok {
 				e.subjectStores[i] = d.withDerivedAggregateIDs()
 			}
 		}
@@ -611,66 +611,133 @@ func (e *DataEraser) validateRequest(req ErasureRequest) error {
 // its scope.
 func (e *DataEraser) discoverKeys(ctx context.Context, req ErasureRequest, result *ErasureResult, fn func(StoredEvent)) error {
 	if len(req.Streams) > 0 {
-		legacyStreams, mixedStreams, untaggedSkipped := 0, 0, 0
-		sharedSet := map[string]struct{}{}
-		for _, streamID := range req.Streams {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			stored, err := e.store.LoadRaw(ctx, streamID, 0)
-			if err != nil {
-				if errors.Is(err, ErrStreamNotFound) {
-					e.logger.Warn("stream not found during erasure, skipping",
-						"streamID", streamID, "subjectID", req.SubjectID)
-					continue
-				}
-				return NewErasureError(req.SubjectID, fmt.Errorf("failed to load stream %q: %w", streamID, err))
-			}
-			tagged := streamHasSubjectTags(stored)
-			if !tagged {
-				legacyStreams++
-			}
-			matched, untagged := false, 0
-			for _, se := range stored {
-				if !e.matches(se, req) {
-					continue
-				}
-				if tagged && !eventTagsSubject(se.Metadata, req.SubjectID) {
-					if len(GetSubjectTags(se.Metadata)) == 0 {
-						untagged++ // unattributable: not the co-tenant's, not provably the subject's
-					}
-					continue // not the subject's event (another subject's, or untagged)
-				}
-				matched = true
-				fn(se)
-			}
-			if untagged > 0 {
-				mixedStreams++
-				untaggedSkipped += untagged
-			}
-			if matched && streamSharedWithOthers(stored, req.SubjectID) {
-				sharedSet[streamID] = struct{}{}
-			}
-		}
-		result.SharedStreams = sortedSet(sharedSet)
-		if legacyStreams > 0 {
-			result.Notes = append(result.Notes, fmt.Sprintf(
-				"%d of %d listed stream(s) carry no subject tags; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams",
-				legacyStreams, len(req.Streams)))
-		}
-		if untaggedSkipped > 0 {
-			// The subject's own pre-tagging events may hide among these; the erasure
-			// cannot claim completeness (mirrors the scan resolver's rule for untagged
-			// events), so the certificate cannot be Verified.
-			result.Partial = true
-			result.Notes = append(result.Notes, fmt.Sprintf(
-				"%d untagged event(s) in %d listed stream(s) that also carry subject tags could not be attributed to any subject and were not shredded; keys were collected only from events tagged for the subject",
-				untaggedSkipped, mixedStreams))
-		}
-		return nil
+		return e.discoverKeysByStream(ctx, req, result, fn)
 	}
+	return e.discoverKeysByScan(ctx, req, result, fn)
+}
 
-	// Scan-based discovery.
+// discoverKeysByStream is the stream-scoped half of discoverKeys: it loads each listed
+// stream, hands the subject's matched events to fn (see collectStreamKeys for the
+// subject-scoping rule), records which matched streams are shared with other subjects,
+// and finally annotates result with the legacy/untagged scope notes.
+func (e *DataEraser) discoverKeysByStream(ctx context.Context, req ErasureRequest, result *ErasureResult, fn func(StoredEvent)) error {
+	var scope streamScopeCounts
+	sharedSet := map[string]struct{}{}
+	for _, streamID := range req.Streams {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		stored, found, err := e.loadErasureStream(ctx, req.SubjectID, streamID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		tally := e.collectStreamKeys(stored, req, fn)
+		scope.add(tally)
+		if tally.matched && streamSharedWithOthers(stored, req.SubjectID) {
+			sharedSet[streamID] = struct{}{}
+		}
+	}
+	result.SharedStreams = sortedSet(sharedSet)
+	scope.annotate(result, len(req.Streams))
+	return nil
+}
+
+// loadErasureStream loads one listed stream for key discovery. A missing stream is not
+// an error: it is logged (PII-free) and reported as found == false so the caller skips
+// it; any other load failure is wrapped in an ErasureError.
+func (e *DataEraser) loadErasureStream(ctx context.Context, subjectID, streamID string) (stored []StoredEvent, found bool, err error) {
+	stored, err = e.store.LoadRaw(ctx, streamID, 0)
+	if err != nil {
+		if errors.Is(err, ErrStreamNotFound) {
+			e.logger.Warn("stream not found during erasure, skipping",
+				"streamID", streamID, "subjectID", subjectID)
+			return nil, false, nil
+		}
+		return nil, false, NewErasureError(subjectID, fmt.Errorf("failed to load stream %q: %w", streamID, err))
+	}
+	return stored, true, nil
+}
+
+// streamKeyTally is what collectStreamKeys reports about one listed stream.
+type streamKeyTally struct {
+	// tagged is true when at least one event in the stream carries "$subjects" tags,
+	// i.e. the stream is subject-scoped rather than legacy.
+	tagged bool
+	// matched is true when at least one of the subject's events was handed to fn.
+	matched bool
+	// untagged counts the matched events of a tagged stream that carry no tag at all —
+	// unattributable: not a co-tenant's, not provably the subject's — and were skipped.
+	untagged int
+}
+
+// collectStreamKeys applies discoverKeys' subject-scoping rule to one loaded stream:
+// in a tagged stream only the events tagged for req.SubjectID reach fn (other subjects'
+// and untagged events are skipped, the latter counted); in a legacy stream with no tags
+// every event matching req reaches fn.
+func (e *DataEraser) collectStreamKeys(stored []StoredEvent, req ErasureRequest, fn func(StoredEvent)) streamKeyTally {
+	tally := streamKeyTally{tagged: streamHasSubjectTags(stored)}
+	for _, se := range stored {
+		if !e.matches(se, req) {
+			continue
+		}
+		if tally.tagged && !eventTagsSubject(se.Metadata, req.SubjectID) {
+			if len(GetSubjectTags(se.Metadata)) == 0 {
+				tally.untagged++ // unattributable: not the co-tenant's, not provably the subject's
+			}
+			continue // not the subject's event (another subject's, or untagged)
+		}
+		tally.matched = true
+		fn(se)
+	}
+	return tally
+}
+
+// streamScopeCounts accumulates, across the listed streams, the per-stream tallies that
+// discoverKeysByStream turns into result notes.
+type streamScopeCounts struct {
+	legacyStreams   int // listed streams with no subject tags (every key collected)
+	mixedStreams    int // tagged streams that also held untagged, skipped events
+	untaggedSkipped int // untagged events skipped across the mixed streams
+}
+
+// add folds one stream's tally into the counts.
+func (c *streamScopeCounts) add(t streamKeyTally) {
+	if !t.tagged {
+		c.legacyStreams++
+	}
+	if t.untagged > 0 {
+		c.mixedStreams++
+		c.untaggedSkipped += t.untagged
+	}
+}
+
+// annotate records the count-only scope notes on result (listed is the number of
+// streams the request named). Skipped untagged events make the result Partial: the
+// subject's own pre-tagging events may hide among them, so the erasure cannot claim
+// completeness (mirrors the scan resolver's rule for untagged events) and the
+// certificate cannot be Verified.
+func (c streamScopeCounts) annotate(result *ErasureResult, listed int) {
+	if c.legacyStreams > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%d of %d listed stream(s) carry no subject tags; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams",
+			c.legacyStreams, listed))
+	}
+	if c.untaggedSkipped > 0 {
+		result.Partial = true
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%d untagged event(s) in %d listed stream(s) that also carry subject tags could not be attributed to any subject and were not shredded; keys were collected only from events tagged for the subject",
+			c.untaggedSkipped, c.mixedStreams))
+	}
+}
+
+// discoverKeysByScan is the scan-based half of discoverKeys: it walks the whole store
+// (which needs a SubscriptionAdapter), hands every event matching req to fn, and then
+// settles which matched streams are shared with other subjects. The caller's filter
+// defines the scope; no subject-scoping is applied here.
+func (e *DataEraser) discoverKeysByScan(ctx context.Context, req ErasureRequest, result *ErasureResult, fn func(StoredEvent)) error {
 	if _, ok := e.store.Adapter().(adapters.SubscriptionAdapter); !ok {
 		return NewErasureError(req.SubjectID, ErrErasureScanNotSupported)
 	}
@@ -688,12 +755,7 @@ func (e *DataEraser) discoverKeys(ctx context.Context, req ErasureRequest, resul
 		if len(batch) == 0 {
 			break
 		}
-		for _, se := range batch {
-			if e.matches(se, req) {
-				matchedStreams[se.StreamID] = struct{}{}
-				fn(se)
-			}
-		}
+		e.collectScanKeys(batch, req, matchedStreams, fn)
 		position = batch[len(batch)-1].GlobalPosition
 	}
 	// A co-tenant's event can precede the subject's first matched event in a stream, so
@@ -704,6 +766,17 @@ func (e *DataEraser) discoverKeys(ctx context.Context, req ErasureRequest, resul
 	}
 	result.SharedStreams = shared
 	return nil
+}
+
+// collectScanKeys hands fn every event in batch that matches req and records the
+// stream of each such event in matchedStreams.
+func (e *DataEraser) collectScanKeys(batch []StoredEvent, req ErasureRequest, matchedStreams map[string]struct{}, fn func(StoredEvent)) {
+	for _, se := range batch {
+		if e.matches(se, req) {
+			matchedStreams[se.StreamID] = struct{}{}
+			fn(se)
+		}
+	}
 }
 
 // sharedStreamsOf loads each stream in streams and returns, sorted, the ones in which

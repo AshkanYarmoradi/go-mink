@@ -254,111 +254,158 @@ func (e *DataEraser) emitCertificate(ctx context.Context, subjectID string, resu
 // subject-index purge when no sink is configured. Verification failures are recorded
 // on result.Errors.
 func (e *DataEraser) buildCertificate(ctx context.Context, subjectID string, result *ErasureResult) ErasureCertificate {
-	cert := ErasureCertificate{
+	d := &certificateDraft{verified: true, cert: ErasureCertificate{
 		SubjectID:   subjectID,
 		VerifiedAt:  time.Now(),
 		KeysRevoked: len(result.KeysRevoked),
 		Partial:     result.Partial,
 		SideEffects: result.SideEffects,
-	}
-	verified := true
+	}}
 
-	vr := &VerificationReport{SubjectID: subjectID, Partial: result.Partial}
-	if err := e.verifyStreams(ctx, subjectID, result.Streams, vr); err != nil {
-		verified = false
-		result.Errors = append(result.Errors, fmt.Errorf("certificate event verification: %w", err))
-		cert.Notes = append(cert.Notes, "event verification could not be completed; the events are not attested")
-	}
-	storesVerified, err := e.countSubjectResiduals(ctx, subjectID, result.footprint(subjectID), vr)
-	if err != nil {
-		verified = false
-		result.Errors = append(result.Errors, fmt.Errorf("certificate residual count: %w", err))
-		cert.Notes = append(cert.Notes, "sibling-store residual count failed; the sibling stores are not attested")
-	}
-	// A store that left shared streams alone was counted over the exclusive ids only:
-	// its rows for the subject on the shared streams are neither purged nor counted, so
-	// it cannot be listed as verified and the certificate cannot attest the erasure.
-	skippedShared := map[string]int{}
-	for _, ss := range result.SubjectStores {
-		if ss.SharedStreamsSkipped > 0 {
-			skippedShared[ss.Name] = ss.SharedStreamsSkipped
-		}
-	}
-	if len(skippedShared) > 0 {
-		kept := storesVerified[:0:0]
-		for _, name := range storesVerified {
-			if _, skipped := skippedShared[name]; !skipped {
-				kept = append(kept, name)
-			}
-		}
-		storesVerified = kept
-	}
-	cert.EventsChecked = vr.EventsChecked
-	cert.StoresVerified = storesVerified
-	cert.StoresUnchecked = vr.UncheckedStores
-	if !vr.clean() {
-		verified = false
-	}
-	cert.Notes = append(cert.Notes, residualNotes(vr)...)
-
-	// A certificate must attest SOMETHING. When keys were revoked (or failed to
-	// revoke) or streams were targeted but not one subject-tagged event could be
-	// checked — a KeyIDs-only, explicit-Streams or untagged-legacy erasure — the
-	// certificate is vacuous and must not claim verification. A genuinely empty
-	// footprint (nothing resolved, nothing revoked) is honestly "nothing to erase".
-	attempted := len(result.KeysRevoked) > 0 || len(result.KeysFailed) > 0 || len(result.Streams) > 0
-	switch {
-	case vr.EventsChecked == 0 && attempted:
-		verified = false
-		cert.Notes = append(cert.Notes, "no subject-tagged events could be verified: the erasure was scoped by key ids, explicit streams or untagged events, so the certificate cannot attest that the subject's events are unrecoverable")
-	case vr.EventsChecked == 0:
-		cert.Notes = append(cert.Notes, "nothing to erase: the subject has no resolved streams or keys")
-	}
-	// A key that failed to revoke leaves everything under it recoverable, whatever
-	// the event check saw (the events may be untagged or outside the checked streams).
-	if n := len(result.KeysFailed); n > 0 {
-		verified = false
-		cert.Notes = append(cert.Notes, fmt.Sprintf("%d key(s) failed to revoke; data under them remains recoverable", n))
-	}
-	// Cleartext subject events survive crypto-shredding untouched.
-	if result.CleartextEvents > 0 {
-		cert.Notes = append(cert.Notes, cleartextNote(result.CleartextEvents))
-	}
-	cert.Notes = append(cert.Notes, result.Notes...)
+	vr := e.attestEvidence(ctx, subjectID, result, d)
+	d.gateVacuous(vr.EventsChecked, result)
+	d.gateKeyOutcome(result)
 
 	// When a marker stream is configured, the certificate must not claim verified
 	// erasure unless the append-only marker was actually written — otherwise a lost
 	// marker leaves a "verified" receipt with no durable erasure record.
 	if e.markerStream != "" && !result.MarkerWritten {
-		verified = false
-		cert.Notes = append(cert.Notes, "the erasure marker was not written; no durable erasure record exists")
+		d.block("the erasure marker was not written; no durable erasure record exists")
 	}
-	// A registered sibling store that failed, or that could not be purged (Skipped,
-	// e.g. it lacks the subject-purger interface), may still hold the subject's PII —
-	// so the erasure is not fully verified. Verify() itself covers events and counted
-	// sibling stores; per-store erase outcomes are known here via result.SubjectStores.
-	for _, ss := range result.SubjectStores {
+	d.gateSubjectStores(result.SubjectStores)
+	// A read model that could not be redacted (ResidualReadModels) may still serve the
+	// subject's plaintext PII from the read side, so it must block verification too —
+	// key revocation alone does not make the erasure complete.
+	if n := len(result.ResidualReadModels); n > 0 {
+		d.block(fmt.Sprintf("%d read model(s) could not be redacted", n))
+	}
+	d.cert.Verified = d.verified
+	return d.cert
+}
+
+// certificateDraft is the ErasureCertificate that buildCertificate assembles, together
+// with its running verdict. Every finding that denies attestation goes through block,
+// which clears the verdict AND explains why in a PII-free note, so the two cannot drift
+// apart; note records an explanation that leaves the verdict alone.
+type certificateDraft struct {
+	cert     ErasureCertificate
+	verified bool
+}
+
+// block denies attestation and records the (PII-free) reason.
+func (d *certificateDraft) block(note string) {
+	d.verified = false
+	d.cert.Notes = append(d.cert.Notes, note)
+}
+
+// note records a (PII-free) explanation without affecting the verdict.
+func (d *certificateDraft) note(note string) {
+	d.cert.Notes = append(d.cert.Notes, note)
+}
+
+// attestEvidence runs the verification behind a certificate — the subject's events
+// (verifyStreams) and the registered sibling stores' residual counts
+// (countSubjectResiduals) — and records the evidence on the draft: EventsChecked, the
+// stores it may list as verified (attestableStores), the stores that could not be
+// counted, and the residual notes. A verification step that fails (also recorded on
+// result.Errors) or any residual PII denies attestation. The report is returned so the
+// caller can judge whether the certificate attests anything at all.
+func (e *DataEraser) attestEvidence(ctx context.Context, subjectID string, result *ErasureResult, d *certificateDraft) *VerificationReport {
+	vr := &VerificationReport{SubjectID: subjectID, Partial: result.Partial}
+	if err := e.verifyStreams(ctx, subjectID, result.Streams, vr); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("certificate event verification: %w", err))
+		d.block("event verification could not be completed; the events are not attested")
+	}
+	storesVerified, err := e.countSubjectResiduals(ctx, subjectID, result.footprint(subjectID), vr)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("certificate residual count: %w", err))
+		d.block("sibling-store residual count failed; the sibling stores are not attested")
+	}
+	d.cert.EventsChecked = vr.EventsChecked
+	d.cert.StoresVerified = attestableStores(storesVerified, result.SubjectStores)
+	d.cert.StoresUnchecked = vr.UncheckedStores
+	if !vr.clean() {
+		d.verified = false
+	}
+	d.cert.Notes = append(d.cert.Notes, residualNotes(vr)...)
+	return vr
+}
+
+// attestableStores returns the sibling stores, among those proven clean by their
+// residual count, that a certificate may list as verified. A store that left footprint
+// streams shared with other subjects alone (SubjectErasureOutcome.SharedStreamsSkipped)
+// was counted over the exclusive ids only: its rows for the subject on the shared
+// streams are neither purged nor counted, so it cannot be listed as verified (and
+// gateSubjectStores denies the attestation).
+func attestableStores(storesVerified []string, outcomes []SubjectErasureOutcome) []string {
+	skippedShared := map[string]struct{}{}
+	for _, ss := range outcomes {
+		if ss.SharedStreamsSkipped > 0 {
+			skippedShared[ss.Name] = struct{}{}
+		}
+	}
+	if len(skippedShared) == 0 {
+		return storesVerified
+	}
+	kept := storesVerified[:0:0]
+	for _, name := range storesVerified {
+		if _, skipped := skippedShared[name]; !skipped {
+			kept = append(kept, name)
+		}
+	}
+	return kept
+}
+
+// gateVacuous enforces that a certificate attests SOMETHING. When keys were revoked (or
+// failed to revoke) or streams were targeted but not one subject-tagged event could be
+// checked — a KeyIDs-only, explicit-Streams or untagged-legacy erasure — the certificate
+// is vacuous and must not claim verification. A genuinely empty footprint (nothing
+// resolved, nothing revoked) is honestly "nothing to erase".
+func (d *certificateDraft) gateVacuous(eventsChecked int, result *ErasureResult) {
+	if eventsChecked > 0 {
+		return
+	}
+	attempted := len(result.KeysRevoked) > 0 || len(result.KeysFailed) > 0 || len(result.Streams) > 0
+	if attempted {
+		d.block("no subject-tagged events could be verified: the erasure was scoped by key ids, explicit streams or untagged events, so the certificate cannot attest that the subject's events are unrecoverable")
+		return
+	}
+	d.note("nothing to erase: the subject has no resolved streams or keys")
+}
+
+// gateKeyOutcome records what the key revocation left behind. A key that failed to
+// revoke leaves everything under it recoverable, whatever the event check saw (the
+// events may be untagged or outside the checked streams), so it denies attestation.
+// Cleartext subject events survive crypto-shredding untouched and are noted, and the
+// erasure's own notes are carried onto the certificate.
+func (d *certificateDraft) gateKeyOutcome(result *ErasureResult) {
+	if n := len(result.KeysFailed); n > 0 {
+		d.block(fmt.Sprintf("%d key(s) failed to revoke; data under them remains recoverable", n))
+	}
+	if result.CleartextEvents > 0 {
+		d.note(cleartextNote(result.CleartextEvents))
+	}
+	d.cert.Notes = append(d.cert.Notes, result.Notes...)
+}
+
+// gateSubjectStores denies attestation for every registered sibling store that failed,
+// or that could not be purged (Skipped, e.g. it lacks the subject-purger interface) —
+// either may still hold the subject's PII — and for every store that purged the
+// exclusive streams but deliberately left the ones shared with other subjects, where the
+// subject's rows may remain. Verify() itself covers events and counted sibling stores;
+// the per-store erase outcomes are known only here, via result.SubjectStores.
+func (d *certificateDraft) gateSubjectStores(outcomes []SubjectErasureOutcome) {
+	for _, ss := range outcomes {
 		if ss.Err != "" || ss.Skipped {
-			verified = false
-			cert.Notes = append(cert.Notes, fmt.Sprintf("sibling store %q was not erased (failed or skipped)", ss.Name))
+			d.block(fmt.Sprintf("sibling store %q was not erased (failed or skipped)", ss.Name))
 			continue
 		}
 		if ss.SharedStreamsSkipped > 0 {
 			// Not "skipped" (the store IS supported): it purged the exclusive streams and
 			// deliberately left the shared ones, where the subject's rows may remain.
-			verified = false
-			cert.Notes = append(cert.Notes, fmt.Sprintf("sibling store %q left %d footprint stream(s) shared with other subjects untouched; rows for the subject on those streams may remain and are not attested", ss.Name, ss.SharedStreamsSkipped))
+			d.block(fmt.Sprintf("sibling store %q left %d footprint stream(s) shared with other subjects untouched; rows for the subject on those streams may remain and are not attested", ss.Name, ss.SharedStreamsSkipped))
 		}
 	}
-	// A read model that could not be redacted (ResidualReadModels) may still serve the
-	// subject's plaintext PII from the read side, so it must block verification too —
-	// key revocation alone does not make the erasure complete.
-	if n := len(result.ResidualReadModels); n > 0 {
-		verified = false
-		cert.Notes = append(cert.Notes, fmt.Sprintf("%d read model(s) could not be redacted", n))
-	}
-	cert.Verified = verified
-	return cert
 }
 
 func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, streams []string, rep *VerificationReport) error {

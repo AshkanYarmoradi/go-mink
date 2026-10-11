@@ -351,7 +351,9 @@ All typed errors implement `Is()` and `Unwrap()` for `errors.Is()` and `errors.A
 A **panic** inside a user upcaster is recovered by `UpcasterChain.Upcast` (and therefore by
 `Load` / `LoadAggregate` / `UpcastingSerializer`) and returned as an `*UpcastError` naming the
 event type and the `FromVersion -> ToVersion` transition that failed, with no partial data —
-it never unwinds into the caller:
+it never unwinds into the caller. The error carries only `mink.PanicValueSummary` of the
+recovered value (its type, plus the message for a Go runtime error), so neither the event
+payload nor a panic message formatted from it reaches the error:
 
 ```go
 // UpcastError -- detailed upcasting failure

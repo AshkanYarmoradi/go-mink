@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
@@ -27,10 +28,24 @@ type mockKMSRevocationClient struct {
 	// ScheduleKeyDeletion call so tests can assert what the provider sent to AWS.
 	scheduledIDs []string
 	windows      []int32
-	// describeCtx is the context of the most recent DescribeKey call (ctx threading).
-	describeCtx context.Context //nolint:containedctx // test double records the ctx it was called with
+	// describeCall holds what the provider handed the most recent DescribeKey call
+	// (ctx threading), observed at call time; nil until DescribeKey has been called.
+	describeCall *ctxFacts
 	// describeFunc overrides DescribeKey when set (error injection, blocking, ...).
 	describeFunc func(ctx context.Context, params *kms.DescribeKeyInput) (*kms.DescribeKeyOutput, error)
+}
+
+// ctxFacts is what a test double records about the context a call arrived with —
+// the facts the tests assert — instead of retaining the context itself.
+type ctxFacts struct {
+	hasDeadline bool
+	deadline    time.Time
+	traceID     interface{} // the ctxKey{} value threaded by the caller, if any
+}
+
+func observeCtx(ctx context.Context) *ctxFacts {
+	dl, ok := ctx.Deadline()
+	return &ctxFacts{hasDeadline: ok, deadline: dl, traceID: ctx.Value(ctxKey{})}
 }
 
 func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, params *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
@@ -44,7 +59,7 @@ func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, params 
 }
 
 func (m *mockKMSRevocationClient) DescribeKey(ctx context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
-	m.describeCtx = ctx
+	m.describeCall = observeCtx(ctx)
 	if m.describeFunc != nil {
 		return m.describeFunc(ctx, params)
 	}

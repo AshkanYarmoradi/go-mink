@@ -162,7 +162,7 @@ bus.Use(mink.TenantMiddleware(nil, true))
 | Middleware | Description |
 |-----------|-------------|
 | `ValidationMiddleware()` | Calls `cmd.Validate()` before handling |
-| `RecoveryMiddleware(opts...)` | Catches panics and returns `PanicError`; `CommandData` holds only the command type and aggregate id unless `WithPanicCommandCapture()` is passed |
+| `RecoveryMiddleware(opts...)` | Catches panics and returns `PanicError`; `Value` holds only a `PanicValueSummary` (the panic value's type, plus its message for a Go runtime error) unless `WithPanicValueCapture()` is passed, and `CommandData` holds only the command type and aggregate id unless `WithPanicCommandCapture()` is passed |
 | `LoggingMiddleware(logger)` | Logs command start/end with timing |
 | `MetricsMiddleware(metrics)` | Records command count, duration, errors |
 | `TimeoutMiddleware(duration)` | Adds context timeout |
@@ -174,11 +174,16 @@ bus.Use(mink.TenantMiddleware(nil, true))
 
 :::note Security note
 `RecoveryMiddleware()` still compiles unchanged — the options are variadic. By default a
-recovered panic's `PanicError.CommandData` is a small JSON summary
-(`{"commandType": ..., "aggregateId": ...}`), never the command's own fields, because
-commands routinely carry PII and secrets that would otherwise be copied into error values,
-logs and crash reports. Pass `mink.WithPanicCommandCapture()` only when everything that
-consumes `PanicError` is trusted with the command's contents.
+recovered panic's `PanicError.Value` is `mink.PanicValueSummary(r)` — a string naming the
+panic value's type (`redacted panic value of type *orders.PlaceOrder`) and, only for a Go
+runtime error such as a nil dereference, its message — and `PanicError.CommandData` is a
+small JSON summary (`{"commandType": ..., "aggregateId": ...}`), never the command's own
+fields. Handlers routinely panic with the command, the aggregate, an event or a message
+formatted from one of them, and commands routinely carry PII and secrets, so both would
+otherwise be copied into error values, logs and crash reports; `PanicError.Error()` prints at
+most the summary regardless. Pass `mink.WithPanicValueCapture()` (raw panic value in
+`Value`) and/or `mink.WithPanicCommandCapture()` (full command JSON in `CommandData`) only
+when everything that consumes `PanicError` is trusted with those contents.
 :::
 
 ---

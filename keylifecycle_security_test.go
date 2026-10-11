@@ -141,10 +141,10 @@ func TestReEncryptStream_TaggerPolicyOnCopies(t *testing.T) {
 		copier.RegisterEvents(eraseUserCreated{})
 		_, _, err := ReEncryptStream(ctx, copier, src, dst)
 		require.NoError(t, err)
-		copy := loadOnlyRaw(t, ctx, copier, dst)
-		assert.Equal(t, []string{"u1"}, GetSubjectTags(copy.Metadata))
-		assert.Equal(t, "key-u1", GetEncryptionKeyID(copy.Metadata))
-		assert.False(t, SubjectFilter("victim")(copy))
+		copied := loadOnlyRaw(t, ctx, copier, dst)
+		assert.Equal(t, []string{"u1"}, GetSubjectTags(copied.Metadata))
+		assert.Equal(t, "key-u1", GetEncryptionKeyID(copied.Metadata))
+		assert.False(t, SubjectFilter("victim")(copied))
 	})
 
 	t.Run("WithCallerSubjectTags: carried-over tags merge first", func(t *testing.T) {
@@ -153,8 +153,8 @@ func TestReEncryptStream_TaggerPolicyOnCopies(t *testing.T) {
 		copier.RegisterEvents(eraseUserCreated{})
 		_, _, err := ReEncryptStream(ctx, copier, src, dst)
 		require.NoError(t, err)
-		copy := loadOnlyRaw(t, ctx, copier, dst)
-		assert.Equal(t, []string{"victim", "u1"}, GetSubjectTags(copy.Metadata))
-		assert.Equal(t, "key-victim", GetEncryptionKeyID(copy.Metadata))
+		copied := loadOnlyRaw(t, ctx, copier, dst)
+		assert.Equal(t, []string{"victim", "u1"}, GetSubjectTags(copied.Metadata))
+		assert.Equal(t, "key-victim", GetEncryptionKeyID(copied.Metadata))
 	})
 }

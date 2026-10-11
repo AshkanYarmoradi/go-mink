@@ -209,12 +209,22 @@ func NewAggregateHandler[C Command, A Aggregate](
 func ValidationMiddleware() CommandMiddleware
 
 // Recovery middleware - catches panics and returns a *PanicError. By default
-// PanicError.CommandData is only {"commandType": ..., "aggregateId": ...};
-// WithPanicCommandCapture() records the full JSON-serialized command (opt-in:
-// commands routinely carry PII/secrets).
+// PanicError.Value is PanicValueSummary(r) — the panic value's type, plus its
+// message only for a Go runtime error — and PanicError.CommandData is only
+// {"commandType": ..., "aggregateId": ...}; PanicError.Error() never prints more
+// than the summary. WithPanicValueCapture() keeps the raw panic value in Value and
+// WithPanicCommandCapture() records the full JSON-serialized command (both opt-in:
+// handlers panic with the payloads they process, and commands carry PII/secrets).
 func RecoveryMiddleware(opts ...RecoveryOption) CommandMiddleware
 type RecoveryOption func(*recoveryConfig)
 func WithPanicCommandCapture() RecoveryOption
+func WithPanicValueCapture() RecoveryOption
+
+// Payload-safe description of a recovered panic value: "<type>: <message>" for a
+// Go runtime error, "redacted panic value of type <type>" for anything else
+// (strings included), "nil panic value" for nil. Used by RecoveryMiddleware, the
+// projection engine and UpcasterChain; reusable by application-level recover().
+func PanicValueSummary(v interface{}) string
 
 // Logging middleware - logs command execution
 func LoggingMiddleware(logger Logger) CommandMiddleware
@@ -567,7 +577,8 @@ type FieldDefinition struct {
 }
 
 // Versioning errors (a panic inside a user upcaster is recovered by
-// UpcasterChain.Upcast and returned as an *UpcastError, never propagated)
+// UpcasterChain.Upcast and returned as an *UpcastError carrying only
+// PanicValueSummary of the panic value, never propagated)
 var ErrUpcastFailed       = errors.New("mink: upcast failed")
 var ErrSchemaVersionGap   = errors.New("mink: schema version gap")
 var ErrIncompatibleSchema = errors.New("mink: incompatible schema")

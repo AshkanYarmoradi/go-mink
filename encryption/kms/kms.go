@@ -526,7 +526,7 @@ func (p *Provider) adminContext() (context.Context, context.CancelFunc) {
 // cancellation and values propagate.
 func (p *Provider) boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {}
+		return ctx, func() { /* the caller owns this context and its deadline; nothing of ours to cancel */ }
 	}
 	return context.WithTimeout(ctx, p.timeout())
 }

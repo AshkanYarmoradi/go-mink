@@ -251,10 +251,12 @@ engine.NotifyLiveProjections(ctx, events)
 
 :::note Panics in inline projections
 A panic inside an inline projection's `Apply` is recovered by
-`ProcessInlineProjections`, logged (projection, event type, stream, position, panic
-value), and returned as a `*ProjectionError` (`errors.Is(err, mink.ErrProjectionFailed)`)
+`ProcessInlineProjections`, logged (projection, event type, stream, position, and the panic
+value reduced to `mink.PanicValueSummary` — its type, plus the message only for a Go runtime
+error), and returned as a `*ProjectionError` (`errors.Is(err, mink.ErrProjectionFailed)`)
 that names the projection and event but never the payload — the same contract the async
-and live paths already have — instead of unwinding into the caller's append.
+and live paths have, which likewise log and wrap only the summary (visible for async
+workers as `ProjectionStatus.Error`) — instead of unwinding into the caller's append.
 :::
 
 ### Poison-event handling

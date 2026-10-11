@@ -657,24 +657,32 @@ func (m *RetentionManager) detectSharedShredKeys(ctx context.Context, candidates
 		if len(batch) == 0 {
 			break
 		}
-		for _, se := range batch {
-			if !HasEncryptionEnvelope(se.Metadata) {
-				continue // plaintext: a revocation does not touch it
-			}
-			keyID := GetEncryptionKeyID(se.Metadata)
-			if _, want := candidates[keyID]; !want {
-				continue
-			}
-			if !coveredByShred(se, policies, now) {
-				outOfScope[keyID]++
-			}
-		}
+		tallyOutOfScopeKeys(batch, candidates, policies, now, outOfScope)
 		position = batch[len(batch)-1].GlobalPosition
 		if len(batch) < m.batchSize {
 			break
 		}
 	}
 	return outOfScope, nil
+}
+
+// tallyOutOfScopeKeys is detectSharedShredKeys' per-batch step: for every event in
+// batch encrypted (complete envelope) under a candidate key, it adds one to that key's
+// count in outOfScope when no Shred policy covers the event on this sweep. Plaintext
+// events and events under non-candidate keys are ignored.
+func tallyOutOfScopeKeys(batch []StoredEvent, candidates map[string]struct{}, policies []RetentionPolicy, now time.Time, outOfScope map[string]int) {
+	for _, se := range batch {
+		if !HasEncryptionEnvelope(se.Metadata) {
+			continue // plaintext: a revocation does not touch it
+		}
+		keyID := GetEncryptionKeyID(se.Metadata)
+		if _, want := candidates[keyID]; !want {
+			continue
+		}
+		if !coveredByShred(se, policies, now) {
+			outOfScope[keyID]++
+		}
+	}
 }
 
 // coveredByShred reports whether at least one ActionShred policy matches se on this sweep

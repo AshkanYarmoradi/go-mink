@@ -153,10 +153,19 @@ Every generator validates its inputs before touching the filesystem and writes n
 failure: the configured output directory (`generation.aggregate_package` /
 `event_package` / `projection_package` / `command_package`) must resolve inside the project
 root (the directory holding `mink.yaml`, or the current directory without one), its last
-path element must be a lowercase Go package name (`^[a-z][a-z0-9_]*$`), and aggregate /
+path element must be a lowercase Go package name (`^[a-z][a-z0-9_]*$`) that is neither a Go
+keyword (`type`, `func`, `package`, …) nor the blank identifier `_`, and aggregate /
 event / command / projection names — plus every `--events` entry — must be Go identifiers
 (`^[A-Za-z_][A-Za-z0-9_]*$`) after PascalCasing, so `order_item` and `item-added` are still
 accepted. Errors name the offending `mink.yaml` key.
+
+The containment check resolves symbolic links before judging the path, so a directory that
+looks contained but reaches outside the project through a link (`internal/link/domain` where
+`internal/link` points elsewhere) is rejected with `path "…" resolves outside "…"`, and a
+dangling link or link loop on the path is rejected rather than followed. The configured
+directory is cleaned (`filepath.Clean`) before it is checked and created, so the location
+that was checked is exactly the one written to. Windows junctions are not resolved by this
+check; directory symlinks are.
 
 #### Generate Aggregate
 
@@ -412,7 +421,9 @@ $ mink migrate down --steps 2 --yes
 :::note Security note
 Migration names are read back from the migrations table and must match
 `[A-Za-z0-9_.-]+` with no `..`; the resolved `.sql` / `.down.sql` path must stay inside
-`database.migrations_dir`. One bad row fails the whole read, and `migrate up` / `migrate
+`database.migrations_dir` — symbolic links are resolved before that containment check, so
+a link inside the migrations directory cannot redirect a migration file outside it, and a
+dangling link on the path is rejected. One bad row fails the whole read, and `migrate up` / `migrate
 down` / `migrate status` fail with `failed to read applied migrations: …` when the table
 cannot be read, rather than treating every migration as pending and re-running it.
 :::
@@ -562,7 +573,10 @@ Exported 15 events to order_backup.json
 ```
 
 The export contains event payloads (field-encrypted data is written as stored — the CLI
-holds no keys), so the file is created with mode `0600`.
+holds no keys), so the file is written with mode `0600` through `config.WriteSecureFile`: an
+existing, more permissive output file is tightened to `0600` before any content is written
+(best-effort on Windows, where POSIX permission bits are not enforced), then truncated,
+written and synced.
 
 #### Stream Statistics
 
@@ -867,7 +881,9 @@ searched, but nothing above the Go module boundary is, so a `mink.yaml` planted 
 parent directory can never take over your database URL, migrations directory or
 code-generation output paths (without any `go.mod` on the path the search continues to the
 filesystem root). The file can contain a literal database URL, so `mink init` writes it with
-mode `0600` (`config.ConfigFileMode`).
+mode `0600` (`config.ConfigFileMode`) through `config.WriteSecureFile`, which also tightens
+an existing, more permissive `mink.yaml` to `0600` before replacing its content (as does
+`config.SaveFile`).
 
 ```yaml
 version: "1"

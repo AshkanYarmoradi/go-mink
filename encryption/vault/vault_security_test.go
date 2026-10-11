@@ -19,8 +19,22 @@ type recordingVaultClient struct {
 	names []string
 	// existsFunc overrides KeyExists when set (blocking, error injection, ctx capture).
 	existsFunc func(ctx context.Context, keyName string) (bool, error)
-	// existsCtx is the context of the most recent KeyExists call.
-	existsCtx context.Context //nolint:containedctx // test double records the ctx it was called with
+	// existsCall holds what the provider handed the most recent KeyExists call,
+	// observed at call time; nil until KeyExists has been called.
+	existsCall *ctxFacts
+}
+
+// ctxFacts is what a test double records about the context a call arrived with —
+// the facts the tests assert — instead of retaining the context itself.
+type ctxFacts struct {
+	hasDeadline bool
+	deadline    time.Time
+	traceID     interface{} // the ctxKey{} value threaded by the caller, if any
+}
+
+func observeCtx(ctx context.Context) *ctxFacts {
+	dl, ok := ctx.Deadline()
+	return &ctxFacts{hasDeadline: ok, deadline: dl, traceID: ctx.Value(ctxKey{})}
 }
 
 func (c *recordingVaultClient) Encrypt(_ context.Context, keyName string, plaintext []byte) ([]byte, error) {
@@ -43,7 +57,7 @@ func (c *recordingVaultClient) DeleteKey(_ context.Context, keyName string) erro
 
 func (c *recordingVaultClient) KeyExists(ctx context.Context, keyName string) (bool, error) {
 	c.names = append(c.names, keyName)
-	c.existsCtx = ctx
+	c.existsCall = observeCtx(ctx)
 	if c.existsFunc != nil {
 		return c.existsFunc(ctx, keyName)
 	}
@@ -221,12 +235,11 @@ func TestWithRevocationTimeout(t *testing.T) {
 			"IsRevoked": func() error { _, err := p.IsRevoked("k"); return err },
 		}
 		for name, call := range calls {
-			client.existsCtx = nil
+			client.existsCall = nil
 			require.NoError(t, call(), name)
-			require.NotNil(t, client.existsCtx, name)
-			dl, ok := client.existsCtx.Deadline()
-			require.True(t, ok, "%s must bound its Vault calls", name)
-			assert.WithinDuration(t, time.Now().Add(90*time.Second), dl, 5*time.Second, name)
+			require.NotNil(t, client.existsCall, name)
+			require.True(t, client.existsCall.hasDeadline, "%s must bound its Vault calls", name)
+			assert.WithinDuration(t, time.Now().Add(90*time.Second), client.existsCall.deadline, 5*time.Second, name)
 		}
 	})
 	t.Run("a stalled Vault times out instead of hanging", func(t *testing.T) {
@@ -268,11 +281,10 @@ func TestProvider_DecryptErrorPath_ThreadsCallerContext(t *testing.T) {
 
 		_, err := p.Decrypt(ctx, "k", []byte("bad"))
 		require.ErrorIs(t, err, encryption.ErrKeyRevoked)
-		require.NotNil(t, client.existsCtx)
-		assert.Equal(t, "trace-1", client.existsCtx.Value(ctxKey{}))
-		got, ok := client.existsCtx.Deadline()
-		require.True(t, ok)
-		assert.True(t, got.Equal(deadline), "the caller's own deadline is kept, not replaced")
+		require.NotNil(t, client.existsCall)
+		assert.Equal(t, "trace-1", client.existsCall.traceID)
+		require.True(t, client.existsCall.hasDeadline)
+		assert.True(t, client.existsCall.deadline.Equal(deadline), "the caller's own deadline is kept, not replaced")
 	})
 	t.Run("no caller deadline: the revocation timeout bounds the probe", func(t *testing.T) {
 		client := &recordingVaultClient{}
@@ -282,10 +294,9 @@ func TestProvider_DecryptErrorPath_ThreadsCallerContext(t *testing.T) {
 
 		_, err := p.DecryptDataKey(context.Background(), "k", []byte("bad"))
 		require.ErrorIs(t, err, encryption.ErrKeyRevoked)
-		require.NotNil(t, client.existsCtx)
-		dl, ok := client.existsCtx.Deadline()
-		require.True(t, ok)
-		assert.WithinDuration(t, time.Now().Add(DefaultRevocationTimeout), dl, 5*time.Second)
+		require.NotNil(t, client.existsCall)
+		require.True(t, client.existsCall.hasDeadline)
+		assert.WithinDuration(t, time.Now().Add(DefaultRevocationTimeout), client.existsCall.deadline, 5*time.Second)
 	})
 	t.Run("an unverifiable key state fails closed as a decryption error", func(t *testing.T) {
 		client := &recordingVaultClient{}

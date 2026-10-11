@@ -28,6 +28,7 @@ type RecoveryOption func(*recoveryConfig)
 // recoveryConfig holds RecoveryMiddleware's settings.
 type recoveryConfig struct {
 	captureCommand bool
+	captureValue   bool
 }
 
 // WithPanicCommandCapture makes RecoveryMiddleware record the entire
@@ -43,13 +44,34 @@ func WithPanicCommandCapture() RecoveryOption {
 	}
 }
 
+// WithPanicValueCapture makes RecoveryMiddleware keep the raw recovered panic
+// value in PanicError.Value when a handler panics.
+//
+// By default PanicError.Value holds only PanicValueSummary(r) — the panic
+// value's type and, for a Go runtime error, its message — because handlers
+// commonly panic with the command, the aggregate, an event, or a message
+// formatted from one of them, which would otherwise be copied verbatim into
+// error values, logs and crash reports. This is opt-in for the same reason as
+// WithPanicCommandCapture: enable it only when everything that consumes
+// PanicError is trusted to handle the panic value's contents. PanicError.Error()
+// prints the summary regardless, so the raw value is exposed only through the
+// Value field.
+func WithPanicValueCapture() RecoveryOption {
+	return func(c *recoveryConfig) {
+		c.captureValue = true
+	}
+}
+
 // RecoveryMiddleware recovers from panics in handlers and returns them as errors.
 //
-// By default PanicError.CommandData holds only non-sensitive context: a small
-// JSON object with the command type and, for an AggregateCommand, the aggregate
-// ID — never the command's own fields. Pass WithPanicCommandCapture() to record
-// the full JSON-serialized command instead; see that option for the privacy
-// trade-off.
+// By default the returned PanicError holds only non-sensitive context.
+// PanicError.Value is PanicValueSummary of the recovered value — its type and,
+// for a Go runtime error, its message — never the value itself; pass
+// WithPanicValueCapture() to keep the raw value. PanicError.CommandData is a
+// small JSON object with the command type and, for an AggregateCommand, the
+// aggregate ID — never the command's own fields; pass WithPanicCommandCapture()
+// to record the full JSON-serialized command instead. See each option for its
+// privacy trade-off.
 func RecoveryMiddleware(opts ...RecoveryOption) Middleware {
 	var cfg recoveryConfig
 	for _, opt := range opts {
@@ -60,8 +82,7 @@ func RecoveryMiddleware(opts ...RecoveryOption) Middleware {
 		return func(ctx context.Context, cmd Command) (result CommandResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					stack := string(debug.Stack())
-					panicErr := NewPanicErrorWithCommand(cmd.CommandType(), r, stack, panicCommandData(cmd, cfg.captureCommand))
+					panicErr := newRecoveredPanicError(cmd, r, string(debug.Stack()), cfg)
 					result = NewErrorResult(panicErr)
 					err = panicErr
 				}
@@ -69,6 +90,23 @@ func RecoveryMiddleware(opts ...RecoveryOption) Middleware {
 			return next(ctx, cmd)
 		}
 	}
+}
+
+// newRecoveredPanicError builds the PanicError RecoveryMiddleware returns for a
+// recovered panic value r. Value holds PanicValueSummary(r) unless captureValue
+// is set, in which case the raw value is kept and the summary is retained
+// separately so that Error() still prints no more than the summary.
+func newRecoveredPanicError(cmd Command, r interface{}, stack string, cfg recoveryConfig) *PanicError {
+	summary := PanicValueSummary(r)
+	value := interface{}(summary)
+	if cfg.captureValue {
+		value = r
+	}
+	panicErr := NewPanicErrorWithCommand(cmd.CommandType(), value, stack, panicCommandData(cmd, cfg.captureCommand))
+	if cfg.captureValue {
+		panicErr.summary = summary
+	}
+	return panicErr
 }
 
 // panicCommandData builds the CommandData recorded in a PanicError. With full

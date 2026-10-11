@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"fmt"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,7 +114,7 @@ Examples:
 			// Validate everything that ends up in generated Go source or in a
 			// file location before touching the filesystem: mink.yaml is not
 			// trusted input.
-			aggDir := cfg.Generation.AggregatePackage
+			aggDir := configuredOutputDir(cfg.Generation.AggregatePackage)
 			if err := checkOutputDir(root, "aggregate_package", aggDir); err != nil {
 				return err
 			}
@@ -145,7 +146,7 @@ Examples:
 
 			var eventsDir, eventPkg string
 			if len(events) > 0 {
-				eventsDir = cfg.Generation.EventPackage
+				eventsDir = configuredOutputDir(cfg.Generation.EventPackage)
 				if err := checkOutputDir(root, "event_package", eventsDir); err != nil {
 					return err
 				}
@@ -268,7 +269,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 				return err
 			}
 
-			outputDir := params.getOutputDir(cfg)
+			outputDir := configuredOutputDir(params.getOutputDir(cfg))
 			if err := checkOutputDir(root, params.packageSetting, outputDir); err != nil {
 				return err
 			}
@@ -364,7 +365,7 @@ func newGenerateProjectionCommand() *cobra.Command {
 				handled = append(handled, eventName)
 			}
 
-			projDir := cfg.Generation.ProjectionPackage
+			projDir := configuredOutputDir(cfg.Generation.ProjectionPackage)
 			if err := checkOutputDir(root, "projection_package", projDir); err != nil {
 				return err
 			}
@@ -481,11 +482,24 @@ var (
 // output package path (its last path element) and validates it, so that a
 // hostile or mistyped mink.yaml cannot inject arbitrary text into the package
 // clause of generated files. setting names the mink.yaml key in the error.
+//
+// Matching the identifier shape is not enough: Go keywords (type, func,
+// package, ...) and the blank identifier "_" have that shape but are invalid in
+// a package clause, so a directory named after one would generate files that
+// do not compile. They are rejected with an error naming the offending word.
 func packageNameFromPath(setting, pkgPath string) (string, error) {
 	name := filepath.Base(pkgPath)
+	if name == "_" {
+		return "", fmt.Errorf("generation.%s: %q does not end in a valid Go package name (the blank identifier %q cannot name a package)",
+			setting, pkgPath, name)
+	}
 	if !goPackageNameRe.MatchString(name) {
 		return "", fmt.Errorf("generation.%s: %q does not end in a valid Go package name (last path element must match %s)",
 			setting, pkgPath, goPackageNameRe)
+	}
+	if token.Lookup(name).IsKeyword() {
+		return "", fmt.Errorf("generation.%s: %q does not end in a valid Go package name (%q is a Go keyword)",
+			setting, pkgPath, name)
 	}
 	return name, nil
 }
@@ -497,6 +511,17 @@ func validateIdentifier(kind, name string) error {
 		return fmt.Errorf("invalid %s name %q: must match %s", kind, name, goIdentifierRe)
 	}
 	return nil
+}
+
+// configuredOutputDir normalises a generation.* directory read from mink.yaml
+// before it is checked and used. checkOutputDir judges the cleaned path, so
+// the very same spelling must be what reaches os.MkdirAll and the file
+// writes: handed the raw value, the OS would resolve "internal/link/../x"
+// through the link at internal/link (and could land outside the project),
+// while the check saw the contained internal/x. Cleaning once up front makes
+// the checked location and the written location the same.
+func configuredOutputDir(dir string) string {
+	return filepath.Clean(dir)
 }
 
 // checkOutputDir verifies that a configured output directory stays inside

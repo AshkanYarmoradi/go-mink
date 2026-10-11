@@ -68,6 +68,13 @@ const (
 	RedactedErrorMessage = "operation failed"
 )
 
+// Span attribute keys shared by several spans. The remaining keys appear once
+// each and stay inline next to the span they describe.
+const (
+	attrService  = "mink.service"
+	attrStreamID = "mink.stream_id"
+)
+
 // Tracer wraps OpenTelemetry tracer for mink operations.
 type Tracer struct {
 	tracer      trace.Tracer
@@ -225,7 +232,7 @@ func CommandMiddleware(tracer *Tracer) mink.Middleware {
 
 			// Set command attributes
 			attrs := []attribute.KeyValue{
-				attribute.String("mink.service", tracer.serviceName),
+				attribute.String(attrService, tracer.serviceName),
 				attribute.String("mink.command.type", commandType),
 			}
 
@@ -290,8 +297,8 @@ func (m *EventStoreMiddleware) Append(ctx context.Context, streamID string, even
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
+		attribute.String(attrService, m.tracer.serviceName),
+		attribute.String(attrStreamID, m.tracer.attr(streamID)),
 		attribute.Int64("mink.expected_version", expectedVersion),
 		attribute.Int("mink.events.count", len(events)),
 	)
@@ -329,8 +336,8 @@ func (m *EventStoreMiddleware) Load(ctx context.Context, streamID string, fromVe
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
+		attribute.String(attrService, m.tracer.serviceName),
+		attribute.String(attrStreamID, m.tracer.attr(streamID)),
 		attribute.Int64("mink.from_version", fromVersion),
 	)
 
@@ -354,8 +361,8 @@ func (m *EventStoreMiddleware) GetStreamInfo(ctx context.Context, streamID strin
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("mink.service", m.tracer.serviceName),
-		attribute.String("mink.stream_id", m.tracer.attr(streamID)),
+		attribute.String(attrService, m.tracer.serviceName),
+		attribute.String(attrStreamID, m.tracer.attr(streamID)),
 	)
 
 	info, err := m.adapter.GetStreamInfo(ctx, streamID)
@@ -377,7 +384,7 @@ func (m *EventStoreMiddleware) GetLastPosition(ctx context.Context) (uint64, err
 	)
 	defer span.End()
 
-	span.SetAttributes(attribute.String("mink.service", m.tracer.serviceName))
+	span.SetAttributes(attribute.String(attrService, m.tracer.serviceName))
 
 	pos, err := m.adapter.GetLastPosition(ctx)
 
@@ -398,7 +405,7 @@ func (m *EventStoreMiddleware) Initialize(ctx context.Context) error {
 	)
 	defer span.End()
 
-	span.SetAttributes(attribute.String("mink.service", m.tracer.serviceName))
+	span.SetAttributes(attribute.String(attrService, m.tracer.serviceName))
 
 	err := m.adapter.Initialize(ctx)
 
@@ -455,7 +462,7 @@ func (m *ProjectionMiddleware) Apply(ctx context.Context, event mink.StoredEvent
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("mink.service", m.tracer.serviceName),
+		attribute.String(attrService, m.tracer.serviceName),
 		attribute.String("mink.projection.name", projectionName),
 		attribute.String("mink.event.type", m.tracer.attr(event.Type)),
 		attribute.String("mink.event.id", m.tracer.attr(event.ID)),

@@ -37,7 +37,7 @@ func countingServer(t *testing.T, status int) (*httptest.Server, *atomic.Int32, 
 	return server, &hits, &lastBody
 }
 
-func oneMessage(dest string, payload string) []*adapters.OutboxMessage {
+func oneMessage(dest, payload string) []*adapters.OutboxMessage {
 	return []*adapters.OutboxMessage{
 		{ID: "msg-1", Destination: dest, Payload: []byte(payload)},
 	}

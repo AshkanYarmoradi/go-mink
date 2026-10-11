@@ -442,20 +442,18 @@ func TestProvider_DecryptErrorPath_ThreadsCallerContext(t *testing.T) {
 
 		_, err := p.Decrypt(ctx, "k", []byte("enc:x"))
 		require.ErrorIs(t, err, encryption.ErrKeyRevoked)
-		require.NotNil(t, rc.describeCtx)
-		assert.Equal(t, "trace-1", rc.describeCtx.Value(ctxKey{}))
-		got, ok := rc.describeCtx.Deadline()
-		require.True(t, ok)
-		assert.True(t, got.Equal(deadline), "the caller's own deadline is kept, not replaced")
+		require.NotNil(t, rc.describeCall)
+		assert.Equal(t, "trace-1", rc.describeCall.traceID)
+		require.True(t, rc.describeCall.hasDeadline)
+		assert.True(t, rc.describeCall.deadline.Equal(deadline), "the caller's own deadline is kept, not replaced")
 	})
 	t.Run("no caller deadline: the revocation timeout bounds the probe", func(t *testing.T) {
-		rc.describeCtx = nil
+		rc.describeCall = nil
 		_, err := p.DecryptDataKey(context.Background(), "k", []byte("enc:x"))
 		require.ErrorIs(t, err, encryption.ErrKeyRevoked)
-		require.NotNil(t, rc.describeCtx)
-		dl, ok := rc.describeCtx.Deadline()
-		require.True(t, ok)
-		assert.WithinDuration(t, time.Now().Add(DefaultRevocationTimeout), dl, 5*time.Second)
+		require.NotNil(t, rc.describeCall)
+		require.True(t, rc.describeCall.hasDeadline)
+		assert.WithinDuration(t, time.Now().Add(DefaultRevocationTimeout), rc.describeCall.deadline, 5*time.Second)
 	})
 	t.Run("cancelled caller context fails closed as a decryption error", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -497,12 +495,11 @@ func TestWithRevocationTimeout(t *testing.T) {
 			"UnrevokeKey":     func() error { return p.UnrevokeKey("k") },
 		}
 		for name, call := range calls {
-			rc.describeCtx = nil
+			rc.describeCall = nil
 			require.NoError(t, call(), name)
-			require.NotNil(t, rc.describeCtx, name)
-			dl, ok := rc.describeCtx.Deadline()
-			require.True(t, ok, "%s must bound its KMS calls", name)
-			assert.WithinDuration(t, time.Now().Add(90*time.Second), dl, 5*time.Second, name)
+			require.NotNil(t, rc.describeCall, name)
+			require.True(t, rc.describeCall.hasDeadline, "%s must bound its KMS calls", name)
+			assert.WithinDuration(t, time.Now().Add(90*time.Second), rc.describeCall.deadline, 5*time.Second, name)
 		}
 	})
 	t.Run("a stalled KMS endpoint times out instead of hanging", func(t *testing.T) {

@@ -37,22 +37,26 @@ type overlapEvent struct {
 // "tampered".
 func TestFieldEncryptionConfig_OverlappingPaths_RoundTrip(t *testing.T) {
 	ctx := context.Background()
-	configs := map[string][]string{
-		"parent first":            {"address", "address.street"},
-		"leaf first (legacy bug)": {"address.street", "address"},
-		"three levels":            {"a", "a.b", "a.b.c"},
-		"three levels reversed":   {"a.b.c", "a.b", "a"},
-		"siblings and parent":     {"address.city", "address", "address.street"},
+	const (
+		addressDoc = `{"name":"n","address":{"street":"1 Main St","city":"NYC"}}`
+		deepDoc    = `{"a":{"b":{"c":"deep","d":1},"e":"x"},"f":true}`
+	)
+	tests := []struct {
+		name  string
+		paths []string // configuration order
+		data  string
+		top   string // the top-level field that must end up sealed as a whole
+	}{
+		{"parent first", []string{"address", "address.street"}, addressDoc, "address"},
+		{"leaf first (legacy bug)", []string{"address.street", "address"}, addressDoc, "address"},
+		{"three levels", []string{"a", "a.b", "a.b.c"}, deepDoc, "a"},
+		{"three levels reversed", []string{"a.b.c", "a.b", "a"}, deepDoc, "a"},
+		{"siblings and parent", []string{"address.city", "address", "address.street"}, addressDoc, "address"},
 	}
-	for name, paths := range configs {
-		t.Run(name, func(t *testing.T) {
-			_, config := testEncConfig(t, "master-1", WithEncryptedFields("Overlap", paths...))
-			var data []byte
-			if paths[0] == "a" || paths[0] == "a.b.c" {
-				data = []byte(`{"a":{"b":{"c":"deep","d":1},"e":"x"},"f":true}`)
-			} else {
-				data = []byte(`{"name":"n","address":{"street":"1 Main St","city":"NYC"}}`)
-			}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, config := testEncConfig(t, "master-1", WithEncryptedFields("Overlap", tt.paths...))
+			data := []byte(tt.data)
 
 			enc, md, err := config.encryptFields(ctx, "Overlap-1", "Overlap", data, Metadata{})
 			require.NoError(t, err)
@@ -60,28 +64,28 @@ func TestFieldEncryptionConfig_OverlappingPaths_RoundTrip(t *testing.T) {
 
 			// Deepest paths are recorded (and were sealed) first.
 			recorded := GetEncryptedFields(md)
-			require.Len(t, recorded, len(paths))
-			for i := 1; i < len(recorded); i++ {
-				assert.GreaterOrEqual(t, fieldDepth(recorded[i-1]), fieldDepth(recorded[i]), "recorded order must be deepest-first: %v", recorded)
-			}
+			require.Len(t, recorded, len(tt.paths))
+			assertRecordedDeepestFirst(t, recorded)
 
 			// On disk the top-level sealed field is a single ciphertext string.
 			var onDisk map[string]interface{}
 			require.NoError(t, json.Unmarshal(enc, &onDisk))
-			top := paths[0]
-			if top != "a" && top != "address" {
-				top = "address"
-				if paths[0] == "a.b.c" {
-					top = "a"
-				}
-			}
-			_, isString := onDisk[top].(string)
-			assert.True(t, isString, "parent %q must be sealed as a whole", top)
+			_, isString := onDisk[tt.top].(string)
+			assert.True(t, isString, "parent %q must be sealed as a whole", tt.top)
 
 			dec, err := config.decryptFields(ctx, "Overlap-1", "Overlap", enc, md)
 			require.NoError(t, err)
 			assert.JSONEq(t, string(data), string(dec))
 		})
+	}
+}
+
+// assertRecordedDeepestFirst checks that $encrypted_fields lists deeper paths before
+// their parents, which is the order they were sealed in.
+func assertRecordedDeepestFirst(t *testing.T, recorded []string) {
+	t.Helper()
+	for i := 1; i < len(recorded); i++ {
+		assert.GreaterOrEqual(t, fieldDepth(recorded[i-1]), fieldDepth(recorded[i]), "recorded order must be deepest-first: %v", recorded)
 	}
 }
 

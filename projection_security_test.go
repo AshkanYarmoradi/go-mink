@@ -47,7 +47,9 @@ func TestProjectionEngine_ProcessInlineProjections_PanicRecovery(t *testing.T) {
 	assert.Equal(t, "InlinePanic", pe.ProjectionName)
 	assert.Equal(t, "ProjectionTestEvent", pe.EventType)
 	assert.Equal(t, uint64(7), pe.Position)
-	assert.Contains(t, err.Error(), "boom: inline apply")
+	assert.Contains(t, err.Error(), "redacted panic value of type string",
+		"the recovered value is reduced to PanicValueSummary")
+	assert.NotContains(t, err.Error(), "boom: inline apply", "a string panic may be a formatted payload")
 	assert.Contains(t, err.Error(), "inline projection InlinePanic failed")
 	assert.NotContains(t, err.Error(), "SENSITIVE-ORDER")
 	assert.True(t, logger.hasLogMessage("error", "Inline projection panicked"), "expected the panic to be logged")

@@ -183,8 +183,9 @@ Examples:
 			configContent := config.GenerateYAML(cfg)
 			configPath := filepath.Join(absDir, config.ConfigFileName)
 			// mink.yaml may later hold a literal database.url with credentials,
-			// so it is created owner-read/write only (see config.ConfigFileMode).
-			if err := os.WriteFile(configPath, []byte(configContent), config.ConfigFileMode); err != nil {
+			// so it is created owner-read/write only (see config.ConfigFileMode
+			// and config.WriteSecureFile).
+			if err := config.WriteSecureFile(configPath, []byte(configContent)); err != nil {
 				return fmt.Errorf("failed to create config file: %w", err)
 			}
 			fmt.Println(styles.FormatSuccess("Created mink.yaml"))

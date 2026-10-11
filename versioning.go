@@ -167,15 +167,16 @@ func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, m
 // upcaster into an ordinary error. Upcasters run over stored bytes on every
 // Load/LoadAggregate, so a panic on one malformed historical event would otherwise
 // unwind through the event store into the caller. The error names the event type
-// and version transition and carries the recovered panic value; it deliberately
-// does not include the event payload. Upcast wraps it in an *UpcastError, so
-// errors.Is(err, ErrUpcastFailed) holds.
+// and version transition and carries only PanicValueSummary of the recovered
+// value — its type and, for a Go runtime error, its message — so neither the
+// event payload nor a panic value formatted from it reaches the error. Upcast
+// wraps it in an *UpcastError, so errors.Is(err, ErrUpcastFailed) holds.
 func safeUpcast(u Upcaster, data []byte, metadata Metadata) (result []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = nil
-			err = fmt.Errorf("mink: upcaster for %q (version %d -> %d) panicked: %v",
-				u.EventType(), u.FromVersion(), u.ToVersion(), r)
+			err = fmt.Errorf("mink: upcaster for %q (version %d -> %d) panicked: %s",
+				u.EventType(), u.FromVersion(), u.ToVersion(), PanicValueSummary(r))
 		}
 	}()
 	return u.Upcast(data, metadata)

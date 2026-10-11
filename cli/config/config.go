@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -146,15 +147,48 @@ const ConfigFileMode os.FileMode = 0o600
 
 // SaveFile saves the configuration to a specific file path.
 //
-// The file is written with ConfigFileMode (0600): it can contain a literal
-// database.url with credentials, so it is not world-readable.
+// The file is written with ConfigFileMode (0600) through WriteSecureFile: it
+// can contain a literal database.url with credentials, so it is not
+// world-readable — not even when it replaces an existing, more permissive
+// mink.yaml.
 func (c *Config) SaveFile(path string) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, ConfigFileMode)
+	return WriteSecureFile(path, data)
+}
+
+// WriteSecureFile writes data to path with ConfigFileMode (0600), creating the
+// file or replacing its content, and syncs it to disk.
+//
+// os.WriteFile applies its mode only when it creates the file: overwriting an
+// existing 0644 file leaves it world-readable, with the new content in it.
+// WriteSecureFile is for files that hold credentials or personal data
+// (mink.yaml, stream exports) and must never be readable by other users
+// whatever mode the file had before. It opens the file for truncation, tightens
+// the permissions on the open descriptor before writing a single byte, then
+// writes and syncs. On Windows POSIX permission bits are not enforced, so the
+// chmod there is best-effort and never fails the write.
+func WriteSecureFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, ConfigFileMode)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(ConfigFileMode); err != nil && runtime.GOOS != "windows" {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Exists checks if a config file exists in the directory

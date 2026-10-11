@@ -78,8 +78,10 @@ bus := mink.NewCommandBus(
 
 ```go
 mink.RecoveryMiddleware()  // Catches panics, returns clean errors (PanicError)
-// PanicError.CommandData is only the command type + aggregate id by default;
-// mink.WithPanicCommandCapture() opts into recording the full command JSON.
+// PanicError.Value is a PanicValueSummary (the panic value's type, plus its message
+// only for a Go runtime error) and CommandData is only the command type + aggregate
+// id by default; mink.WithPanicValueCapture() / mink.WithPanicCommandCapture() opt
+// into keeping the raw panic value / recording the full command JSON.
 ```
 
 ### Logging

@@ -338,7 +338,7 @@ func TestSagaSubjectEraser_FootprintAware(t *testing.T) {
 	assert.Equal(t, 0, out.SharedStreamsSkipped)
 
 	// Opted in to derived aggregate ids: "o1" is matched too.
-	derived := NewSagaSubjectEraser(store).(derivedAggregateIDsOptIn).withDerivedAggregateIDs()
+	derived := NewSagaSubjectEraser(store).(derivedAggregateIDEnabler).withDerivedAggregateIDs()
 	out, err = derived.EraseSubject(ctx, "u1", fp)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), out.Erased, "the saga correlated on the derived aggregate id")

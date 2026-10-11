@@ -150,7 +150,7 @@ Typed errors implement `Is()` for `errors.Is()` compatibility:
 ```go
 // Sentinel: errors.Is(err, mink.ErrConcurrencyConflict)
 // Typed: err.(*mink.ConcurrencyError).StreamID for details
-// Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError, ProjectionError, EventTypeNotRegisteredError, UnregisteredEventTypeError
+// Also: StreamNotFoundError, SerializationError, HandlerNotFoundError, PanicError (Value and Error() carry only PanicValueSummary(r) — the panic value's type, plus its message for a Go runtime error — unless RecoveryMiddleware gets WithPanicValueCapture(); CommandData is a type/aggregate-id summary unless WithPanicCommandCapture(); the projection engine and UpcasterChain log/wrap the same summary), ProjectionError, EventTypeNotRegisteredError, UnregisteredEventTypeError
 // Store capabilities (errors.go): ErrSubscriptionNotSupported, ErrFilteredFeedNotSupported, ErrRewriteNotSupported, ErrBinarySerializerUnsupported, ErrUnregisteredEventType
 // Versioning: ErrUpcastFailed, ErrSchemaVersionGap, ErrIncompatibleSchema, ErrSchemaNotFound
 // Typed: UpcastError, SchemaVersionGapError, IncompatibleSchemaError

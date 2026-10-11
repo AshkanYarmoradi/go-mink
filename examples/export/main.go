@@ -50,6 +50,18 @@ type PaymentReceived struct {
 	Amount     float64 `json:"amount"`
 }
 
+// Subject ids and stream ids the demos refer to. Stream ids follow the
+// AggregateType-AggregateID convention the store uses for categories.
+const (
+	aliceID             = "alice-1"
+	bobID               = "bob-1"
+	aliceCustomerStream = "Customer-alice-1"
+	aliceOrderStream    = "Order-ord-1"
+	alicePaymentStream  = "Payment-pay-1"
+	bobCustomerStream   = "Customer-bob-1"
+	bobOrderStream      = "Order-ord-2"
+)
+
 // subjectTagger tells the store which data subject each event concerns. The store applies
 // it at append time (Append, SaveAggregate and the outbox alike) and records the ids in
 // Metadata.Custom["$subjects"], which is what SubjectFilter and SubjectResolver match on.
@@ -140,12 +152,12 @@ func seedData(ctx context.Context, store *mink.EventStore) error {
 		// Tenant A — Alice. Note the ACTORS: her customer record is written by "admin" and
 		// her payment by "system"; only the order is written by Alice herself. That is why an
 		// actor filter (FilterByUserID) is not a substitute for a subject footprint.
-		{"Customer-alice-1", CustomerCreated{CustomerID: "alice-1", Name: "Alice Smith", Email: "alice@example.com", Phone: "+1-555-0100"}, mink.Metadata{TenantID: "A", UserID: "admin"}},
-		{"Order-ord-1", OrderPlaced{OrderID: "ord-1", CustomerID: "alice-1", Amount: 149.99}, mink.Metadata{TenantID: "A", UserID: "alice-1"}},
-		{"Payment-pay-1", PaymentReceived{PaymentID: "pay-1", OrderID: "ord-1", CustomerID: "alice-1", Amount: 149.99}, mink.Metadata{TenantID: "A", UserID: "system"}},
+		{aliceCustomerStream, CustomerCreated{CustomerID: aliceID, Name: "Alice Smith", Email: "alice@example.com", Phone: "+1-555-0100"}, mink.Metadata{TenantID: "A", UserID: "admin"}},
+		{aliceOrderStream, OrderPlaced{OrderID: "ord-1", CustomerID: aliceID, Amount: 149.99}, mink.Metadata{TenantID: "A", UserID: aliceID}},
+		{alicePaymentStream, PaymentReceived{PaymentID: "pay-1", OrderID: "ord-1", CustomerID: aliceID, Amount: 149.99}, mink.Metadata{TenantID: "A", UserID: "system"}},
 		// Tenant B — Bob
-		{"Customer-bob-1", CustomerCreated{CustomerID: "bob-1", Name: "Bob Jones", Email: "bob@example.com", Phone: "+44-20-1234"}, mink.Metadata{TenantID: "B", UserID: "admin"}},
-		{"Order-ord-2", OrderPlaced{OrderID: "ord-2", CustomerID: "bob-1", Amount: 79.99}, mink.Metadata{TenantID: "B", UserID: "bob-1"}},
+		{bobCustomerStream, CustomerCreated{CustomerID: bobID, Name: "Bob Jones", Email: "bob@example.com", Phone: "+44-20-1234"}, mink.Metadata{TenantID: "B", UserID: "admin"}},
+		{bobOrderStream, OrderPlaced{OrderID: "ord-2", CustomerID: bobID, Amount: 79.99}, mink.Metadata{TenantID: "B", UserID: bobID}},
 	}
 	for _, s := range seeds {
 		if err := store.Append(ctx, s.stream, []interface{}{s.event}, mink.WithAppendMetadata(s.md)); err != nil {
@@ -168,7 +180,7 @@ func subjectExport(ctx context.Context, store *mink.EventStore) {
 	resolver := mink.NewSubjectResolver(store)
 	exporter := mink.NewDataExporter(store, mink.WithExportSubjectResolver(resolver))
 
-	result, err := exporter.Export(ctx, mink.ExportRequest{SubjectID: "alice-1"})
+	result, err := exporter.Export(ctx, mink.ExportRequest{SubjectID: aliceID})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -190,8 +202,8 @@ func streamBasedExport(ctx context.Context, store *mink.EventStore) {
 
 	// Export Alice's data by listing her known streams
 	result, err := exporter.Export(ctx, mink.ExportRequest{
-		SubjectID: "alice-1",
-		Streams:   []string{"Customer-alice-1", "Order-ord-1", "Payment-pay-1"},
+		SubjectID: aliceID,
+		Streams:   []string{aliceCustomerStream, aliceOrderStream, alicePaymentStream},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -255,8 +267,8 @@ func scanBasedExport(ctx context.Context, store *mink.EventStore) {
 	// Export a data subject by scan. SubjectFilter matches the $subjects tags the store's
 	// SubjectTagger recorded at append time — the subject-scoped predicate.
 	result, err = exporter.Export(ctx, mink.ExportRequest{
-		SubjectID: "alice-1",
-		Filter:    mink.SubjectFilter("alice-1"),
+		SubjectID: aliceID,
+		Filter:    mink.SubjectFilter(aliceID),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -269,7 +281,7 @@ func scanBasedExport(ctx context.Context, store *mink.EventStore) {
 	// data-subject request with an actor filter.
 	result, err = exporter.Export(ctx, mink.ExportRequest{
 		SubjectID: "alice-1-as-actor",
-		Filter:    mink.FilterByUserID("alice-1"),
+		Filter:    mink.FilterByUserID(aliceID),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -288,8 +300,8 @@ func streamingExport(ctx context.Context, store *mink.EventStore) {
 	// Stream events one by one — suitable for large exports
 	count := 0
 	err := exporter.ExportStream(ctx, mink.ExportRequest{
-		SubjectID: "alice-1",
-		Streams:   []string{"Customer-alice-1", "Order-ord-1"},
+		SubjectID: aliceID,
+		Streams:   []string{aliceCustomerStream, aliceOrderStream},
 	}, func(_ context.Context, event mink.ExportedEvent) error {
 		count++
 		fmt.Printf("  Streamed event %d: [%s] %s\n", count, event.StreamID, event.EventType)
@@ -319,26 +331,26 @@ type timeRangeDemo struct {
 func timeRangeDemos(now time.Time) []timeRangeDemo {
 	oneHourAgo := now.Add(-1 * time.Hour)
 	cutoff := now.Add(1 * time.Hour)
-	aliceStreams := []string{"Customer-alice-1", "Order-ord-1"}
+	aliceStreams := []string{aliceCustomerStream, aliceOrderStream}
 	return []timeRangeDemo{
 		{
 			label: "Alice's events in the last hour (SubjectID alice-1 scopes her streams)",
-			req:   mink.ExportRequest{SubjectID: "alice-1", Streams: aliceStreams, FromTime: &oneHourAgo},
+			req:   mink.ExportRequest{SubjectID: aliceID, Streams: aliceStreams, FromTime: &oneHourAgo},
 		},
 		{
 			label: "Alice's customer events before the cutoff",
-			req:   mink.ExportRequest{SubjectID: "alice-1", Streams: []string{"Customer-alice-1"}, ToTime: &cutoff},
+			req:   mink.ExportRequest{SubjectID: aliceID, Streams: []string{aliceCustomerStream}, ToTime: &cutoff},
 		},
 		{
 			label: "Same streams requested for bob-1 (default scoping drops events tagged for other subjects)",
-			req:   mink.ExportRequest{SubjectID: "bob-1", Streams: aliceStreams, FromTime: &oneHourAgo},
+			req:   mink.ExportRequest{SubjectID: bobID, Streams: aliceStreams, FromTime: &oneHourAgo},
 		},
 		{
 			label: "Whole Customer-alice-1 stream before the cutoff (explicit FilterByStreams; SubjectID is only a label here)",
 			req: mink.ExportRequest{
 				SubjectID: "ops-snapshot",
-				Streams:   []string{"Customer-alice-1"},
-				Filter:    mink.FilterByStreams("Customer-alice-1"),
+				Streams:   []string{aliceCustomerStream},
+				Filter:    mink.FilterByStreams(aliceCustomerStream),
 				ToTime:    &cutoff,
 			},
 		},
@@ -371,8 +383,8 @@ func cryptoShreddingExport(ctx context.Context, store *mink.EventStore, provider
 
 	// Before revocation — Bob's data exports normally
 	result, err := exporter.Export(ctx, mink.ExportRequest{
-		SubjectID: "bob-1",
-		Streams:   []string{"Customer-bob-1"},
+		SubjectID: bobID,
+		Streams:   []string{bobCustomerStream},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -392,8 +404,8 @@ func cryptoShreddingExport(ctx context.Context, store *mink.EventStore, provider
 
 	// After revocation — encrypted events are exported as redacted
 	result, err = exporter.Export(ctx, mink.ExportRequest{
-		SubjectID: "bob-1",
-		Streams:   []string{"Customer-bob-1", "Order-ord-2"},
+		SubjectID: bobID,
+		Streams:   []string{bobCustomerStream, bobOrderStream},
 	})
 	if err != nil {
 		log.Fatal(err)

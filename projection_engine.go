@@ -966,22 +966,25 @@ func shouldHandleEvent(projection Projection, eventType string) bool {
 // unrecovered panic would otherwise unwind through the event store into the
 // command handler. A panic is logged and converted into a *ProjectionError
 // (errors.Is(err, ErrProjectionFailed)) naming the projection, event type and
-// position — never the payload — and is then handled by ProcessInlineProjections
-// exactly like an Apply error: metrics are recorded and the append's
-// inline-projection step fails.
+// position — never the payload: the recovered value is reduced to
+// PanicValueSummary, so a projection that panics with the event or its data does
+// not copy it into the log or the error — and is then handled by
+// ProcessInlineProjections exactly like an Apply error: metrics are recorded and
+// the append's inline-projection step fails.
 func (e *ProjectionEngine) applyInline(ctx context.Context, projection InlineProjection, event StoredEvent) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			summary := PanicValueSummary(r)
 			e.logger.Error("Inline projection panicked",
 				"projection", projection.Name(),
 				"event_type", event.Type,
 				"stream_id", event.StreamID,
 				"global_position", event.GlobalPosition,
-				"panic", r,
+				"panic", summary,
 			)
 			err = NewProjectionError(projection.Name(), event.Type, event.GlobalPosition,
-				fmt.Errorf("panic processing event %s (stream %s) at position %d: %v",
-					event.Type, event.StreamID, event.GlobalPosition, r))
+				fmt.Errorf("panic processing event %s (stream %s) at position %d: %s",
+					event.Type, event.StreamID, event.GlobalPosition, summary))
 		}
 	}()
 	return projection.Apply(ctx, event)
@@ -1479,11 +1482,14 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 // processAsyncBatch processes a batch of events for an async projection.
 func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncProjectionWorker) (retErr error) {
 	// Recover from panics in projection Apply/ApplyBatch handlers to prevent
-	// a panicking projection from killing the async worker goroutine.
+	// a panicking projection from killing the async worker goroutine. Only
+	// PanicValueSummary of the recovered value is logged and wrapped, so a
+	// projection that panics with the event or its data does not leak it.
 	var currentEvent *StoredEvent
 	var batchRange string
 	defer func() {
 		if r := recover(); r != nil {
+			summary := PanicValueSummary(r)
 			switch {
 			case currentEvent != nil:
 				e.logger.Error("Async projection panicked",
@@ -1491,24 +1497,24 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 					"event_type", currentEvent.Type,
 					"stream_id", currentEvent.StreamID,
 					"global_position", currentEvent.GlobalPosition,
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %v",
-					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, r)
+				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %s",
+					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, summary)
 			case batchRange != "":
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
 					"batch", batchRange,
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic processing batch %s in projection %s: %v",
-					batchRange, worker.projection.Name(), r)
+				retErr = fmt.Errorf("panic processing batch %s in projection %s: %s",
+					batchRange, worker.projection.Name(), summary)
 			default:
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic in projection %s: %v", worker.projection.Name(), r)
+				retErr = fmt.Errorf("panic in projection %s: %s", worker.projection.Name(), summary)
 			}
 		}
 	}()
@@ -1732,10 +1738,11 @@ func (e *ProjectionEngine) runLiveWorker(ctx context.Context, worker *liveProjec
 }
 
 // deliverLiveEvent calls a live projection's OnEvent, recovering from panics.
+// Only PanicValueSummary of the recovered value is logged, never the value itself.
 func (e *ProjectionEngine) deliverLiveEvent(ctx context.Context, worker *liveProjectionWorker, event StoredEvent) {
 	defer func() {
 		if r := recover(); r != nil {
-			e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", r)
+			e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", PanicValueSummary(r))
 		}
 	}()
 	worker.projection.OnEvent(ctx, event)

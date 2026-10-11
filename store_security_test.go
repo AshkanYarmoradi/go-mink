@@ -320,37 +320,58 @@ func TestEventStore_Append_SchemaVersionPolicy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var opts []Option
-			if tt.upcasters {
-				opts = append(opts, WithUpcasters(newSecurityUpcasterChain(t)))
-			}
-			if tt.honor {
-				opts = append(opts, WithCallerSchemaVersion())
-			}
-			store := New(memory.NewAdapter(), opts...)
-			store.RegisterEvents(StoreOrderCreated{}, StoreItemAdded{})
-
-			var appendOpts []AppendOption
-			var caller map[string]string
-			if tt.caller != "" {
-				caller = map[string]string{schemaVersionKey: tt.caller, "app": "kept"}
-				appendOpts = append(appendOpts, WithAppendMetadata(Metadata{Custom: caller}))
-			}
+			store := newSchemaVersionPolicyStore(t, tt.upcasters, tt.honor)
+			caller, appendOpts := callerSchemaVersion(tt.caller)
 			snapshot := cloneCustom(caller)
 			require.NoError(t, store.Append(ctx, "Order-1", []interface{}{tt.event}, appendOpts...))
 
 			stored := loadOnlyRaw(t, ctx, store, "Order-1")
-			if tt.want == "" {
-				assert.NotContains(t, stored.Metadata.Custom, schemaVersionKey)
-			} else {
-				assert.Equal(t, tt.want, stored.Metadata.Custom[schemaVersionKey])
-			}
+			assertSchemaVersionStamp(t, stored.Metadata, tt.want)
 			if caller != nil {
 				assert.Equal(t, "kept", stored.Metadata.Custom["app"])
 				assert.Equal(t, snapshot, caller, "the caller's map must never be mutated")
 			}
 		})
 	}
+}
+
+// newSchemaVersionPolicyStore builds a memory-backed store with StoreOrderCreated and
+// StoreItemAdded registered, optionally with the security upcaster chain
+// (StoreOrderCreated latest=3) and WithCallerSchemaVersion.
+func newSchemaVersionPolicyStore(t *testing.T, upcasters, honor bool) *EventStore {
+	t.Helper()
+	var opts []Option
+	if upcasters {
+		opts = append(opts, WithUpcasters(newSecurityUpcasterChain(t)))
+	}
+	if honor {
+		opts = append(opts, WithCallerSchemaVersion())
+	}
+	store := New(memory.NewAdapter(), opts...)
+	store.RegisterEvents(StoreOrderCreated{}, StoreItemAdded{})
+	return store
+}
+
+// callerSchemaVersion returns the caller-supplied Custom metadata carrying version
+// under $schema_version (plus an unrelated "app" key that must survive) and the append
+// options that attach it. An empty version means the caller supplies no metadata.
+func callerSchemaVersion(version string) (map[string]string, []AppendOption) {
+	if version == "" {
+		return nil, nil
+	}
+	caller := map[string]string{schemaVersionKey: version, "app": "kept"}
+	return caller, []AppendOption{WithAppendMetadata(Metadata{Custom: caller})}
+}
+
+// assertSchemaVersionStamp checks the persisted $schema_version; an empty want means
+// the key must be absent.
+func assertSchemaVersionStamp(t *testing.T, md Metadata, want string) {
+	t.Helper()
+	if want == "" {
+		assert.NotContains(t, md.Custom, schemaVersionKey)
+		return
+	}
+	assert.Equal(t, want, md.Custom[schemaVersionKey])
 }
 
 func TestEventStore_Append_SubjectTagsPolicy(t *testing.T) {

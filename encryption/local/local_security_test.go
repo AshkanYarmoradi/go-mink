@@ -64,12 +64,6 @@ func runConcurrentTeardownRound(t *testing.T, teardown func(p *Provider) error) 
 	key := testKey(t)
 	p := mustNew(t, WithKey("k", key))
 	defer func() { _ = p.Close() }()
-	ctx := context.Background()
-	aad := []byte("k") // the local provider binds ciphertext to the key id
-
-	legitimateFailure := func(err error) bool {
-		return errors.Is(err, encryption.ErrKeyRevoked) || errors.Is(err, encryption.ErrProviderClosed)
-	}
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -78,28 +72,7 @@ func runConcurrentTeardownRound(t *testing.T, teardown func(p *Provider) error) 
 		go func() {
 			defer wg.Done()
 			<-start
-			for i := 0; i < 50; i++ {
-				ct, err := p.Encrypt(ctx, "k", []byte("secret"))
-				if err != nil {
-					assert.True(t, legitimateFailure(err), "unexpected Encrypt error: %v", err)
-					return
-				}
-				pt, derr := encryption.AESGCMDecrypt(key, ct, aad)
-				if assert.NoError(t, derr, "ciphertext must have been produced under the intact key") {
-					assert.Equal(t, "secret", string(pt))
-				}
-
-				dk, err := p.GenerateDataKey(ctx, "k")
-				if err != nil {
-					assert.True(t, legitimateFailure(err), "unexpected GenerateDataKey error: %v", err)
-					return
-				}
-				unwrapped, derr := encryption.AESGCMDecrypt(key, dk.Ciphertext, aad)
-				if assert.NoError(t, derr, "wrapped DEK must have been sealed under the intact key") {
-					assert.Equal(t, dk.Plaintext, unwrapped)
-				}
-				encryption.ClearBytes(dk.Plaintext)
-			}
+			runCryptoOpsUntilTeardown(t, p, key)
 		}()
 	}
 	wg.Add(1)
@@ -110,4 +83,46 @@ func runConcurrentTeardownRound(t *testing.T, teardown func(p *Provider) error) 
 	}()
 	close(start)
 	wg.Wait()
+}
+
+// runCryptoOpsUntilTeardown drives Encrypt and GenerateDataKey against p until the
+// first error. Every success must have been sealed under the intact master key and
+// the first error must be one of the two legitimate teardown outcomes.
+func runCryptoOpsUntilTeardown(t *testing.T, p *Provider, key []byte) {
+	ctx := context.Background()
+	aad := []byte("k") // the local provider binds ciphertext to the key id
+	for i := 0; i < 50; i++ {
+		ct, err := p.Encrypt(ctx, "k", []byte("secret"))
+		if err != nil {
+			assertLegitimateTeardownFailure(t, "Encrypt", err)
+			return
+		}
+		assertSealedUnderKey(t, key, ct, aad, []byte("secret"), "ciphertext must have been produced under the intact key")
+
+		dk, err := p.GenerateDataKey(ctx, "k")
+		if err != nil {
+			assertLegitimateTeardownFailure(t, "GenerateDataKey", err)
+			return
+		}
+		assertSealedUnderKey(t, key, dk.Ciphertext, aad, dk.Plaintext, "wrapped DEK must have been sealed under the intact key")
+		encryption.ClearBytes(dk.Plaintext)
+	}
+}
+
+// assertLegitimateTeardownFailure accepts only the errors a concurrent RevokeKey or
+// Close may legitimately cause.
+func assertLegitimateTeardownFailure(t *testing.T, op string, err error) {
+	t.Helper()
+	legitimate := errors.Is(err, encryption.ErrKeyRevoked) || errors.Is(err, encryption.ErrProviderClosed)
+	assert.True(t, legitimate, "unexpected %s error: %v", op, err)
+}
+
+// assertSealedUnderKey proves ciphertext was produced under key (not a partially
+// zeroed copy of it) by decrypting it independently of the provider.
+func assertSealedUnderKey(t *testing.T, key, ciphertext, aad, wantPlaintext []byte, msg string) {
+	t.Helper()
+	pt, err := encryption.AESGCMDecrypt(key, ciphertext, aad)
+	if assert.NoError(t, err, msg) {
+		assert.Equal(t, wantPlaintext, pt)
+	}
 }
