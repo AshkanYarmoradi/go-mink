@@ -72,8 +72,8 @@ func TestErase_StreamsScope_UntaggedStreamKeepsLegacyAllKeysWithNote(t *testing.
 	revoked, _ := provider.IsRevoked("k")
 	assert.True(t, revoked)
 	require.Len(t, res.Notes, 1)
-	assert.Contains(t, res.Notes[0], "1 of 1 listed stream(s) carry no subject tags")
-	assert.True(t, notesContain(cert.Notes, "1 of 1 listed stream(s) carry no subject tags"), "the note reaches the certificate: %v", cert.Notes)
+	assert.Contains(t, res.Notes[0], "1 of 1 listed stream(s) hold no event attributable to any subject")
+	assert.True(t, notesContain(cert.Notes, "1 of 1 listed stream(s) hold no event attributable to any subject"), "the note reaches the certificate: %v", cert.Notes)
 	assert.False(t, cert.Verified, "no subject-tagged event could be attested")
 }
 
@@ -91,7 +91,7 @@ func TestErase_StreamsScope_MixedTaggedAndLegacyStreams(t *testing.T) {
 	assert.Equal(t, []string{"key-u1"}, res.KeysRevoked, "the legacy stream's default key happens to be key-u1 too; key-u2 is never collected")
 	assert.Equal(t, 2, res.EventsScanned, "u1's tagged event + the untagged legacy event")
 	require.Len(t, res.Notes, 1)
-	assert.Contains(t, res.Notes[0], "1 of 2 listed stream(s) carry no subject tags")
+	assert.Contains(t, res.Notes[0], "1 of 2 listed stream(s) hold no event attributable to any subject")
 }
 
 func TestSharedKeyError_MessageOmitsOtherSubjects(t *testing.T) {

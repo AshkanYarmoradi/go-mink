@@ -72,12 +72,12 @@ func TestEnsureInsideDir_SymlinkToParentEscapes(t *testing.T) {
 
 func TestEnsureInsideDir_SymlinkStayingInsideIsAllowed(t *testing.T) {
 	root := t.TempDir()
-	real := filepath.Join(root, "real")
-	require.NoError(t, os.MkdirAll(real, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(real, "existing.sql"), []byte("SELECT 1;"), 0o644))
+	realDir := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(realDir, "existing.sql"), []byte("SELECT 1;"), 0o644))
 
 	alias := filepath.Join(root, "alias")
-	mustSymlink(t, real, alias)
+	mustSymlink(t, realDir, alias)
 
 	for _, p := range []string{
 		alias,

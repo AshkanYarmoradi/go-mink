@@ -63,6 +63,10 @@ func WithExportLogger(l Logger) DataExporterOption {
 // complete footprint — for both Export and ExportStream. A partial footprint is never
 // silently exported: Export surfaces it as ExportResult.Partial, while ExportStream (which
 // has no result object) fails with ErrExportPartialFootprint.
+//
+// The exporter attributes untagged events with the resolver's tagger (WithResolverTagger,
+// or the store's own SubjectTagger by default), so a resolved export contains exactly the
+// events the footprint counted — tagged or tagger-derived.
 func WithExportSubjectResolver(r *SubjectResolver) DataExporterOption {
 	return func(e *DataExporter) {
 		e.resolver = r
@@ -91,19 +95,21 @@ type ExportRequest struct {
 	// When provided, only these streams are loaded (efficient, no full scan).
 	//
 	// A stream may hold events about several data subjects (a shared "order" stream,
-	// say). When Streams is given and Filter is nil, the exporter therefore applies
-	// SubjectOrUntaggedFilter(SubjectID) by default: events tagged for other subjects
-	// (via WithSubjectTagger, $subjects) are dropped, while events carrying no subject
-	// tags — which cannot be attributed to anyone — are still exported. Set Filter
-	// explicitly to override that default (e.g. SubjectFilter to also drop untagged
-	// events, or a custom predicate).
+	// say). When Streams is given and Filter is nil, the exporter therefore keeps only
+	// the events attributed to SubjectID and the events that cannot be attributed to
+	// anyone: an event tagged (via WithSubjectTagger, $subjects) for other subjects is
+	// dropped, and so is an untagged event the store's SubjectTagger (or the resolver's
+	// WithResolverTagger) attributes to other subjects only; an untagged event nobody can
+	// attribute is still exported, as it always was. Without a tagger this is exactly
+	// SubjectOrUntaggedFilter(SubjectID). Set Filter explicitly to override that default
+	// (e.g. SubjectFilter to also drop untagged events, or a custom predicate).
 	Streams []string
 
 	// Filter selects which events to include.
 	// When Streams is empty, the exporter scans all events and applies this filter
 	// (requires the adapter to implement SubscriptionAdapter).
 	// When Streams is provided, the filter is applied within each stream; when it is
-	// nil, SubjectOrUntaggedFilter(SubjectID) is applied instead (see Streams).
+	// nil, the subject-or-unattributable default described on Streams is applied instead.
 	Filter ExportFilter
 
 	// FromTime limits export to events stored at or after this time.
@@ -197,10 +203,12 @@ func (e *DataExporter) Export(ctx context.Context, req ExportRequest) (*ExportRe
 			return nil, NewExportError(req.SubjectID, err)
 		}
 		req.Streams = fp.Streams
-		// A resolved stream is included because it holds at least one event tagged for the
-		// subject, but a shared stream may also hold OTHER subjects' events. Constrain the
-		// export to this subject's events so a shared stream never leaks a co-tenant's data.
-		req.Filter = SubjectFilter(req.SubjectID)
+		// A resolved stream is included because it holds at least one event attributed to
+		// the subject, but a shared stream may also hold OTHER subjects' events. Constrain
+		// the export to this subject's events — under the same attribution rule the
+		// footprint was built with — so a shared stream never leaks a co-tenant's data and
+		// a tagger-derived event is exported like a tagged one.
+		req.Filter = e.attributedToFilter(ctx, req.SubjectID)
 		partial = fp.Partial
 		resolved = true
 	}
@@ -278,7 +286,7 @@ func (e *DataExporter) ExportStream(ctx context.Context, req ExportRequest, hand
 		}
 		// Constrain to this subject's events: a shared stream may also hold other subjects'
 		// events, and streaming the whole stream would leak them (see Export).
-		req.Filter = SubjectFilter(req.SubjectID)
+		req.Filter = e.attributedToFilter(ctx, req.SubjectID)
 	} else if err := e.validateRequest(req); err != nil {
 		return err
 	}
@@ -304,14 +312,52 @@ func (e *DataExporter) processEvents(ctx context.Context, req ExportRequest, han
 	if len(req.Streams) > 0 {
 		// Explicit streams with no filter: SubjectID must scope the export, not merely
 		// label it. A shared stream may hold other subjects' events, and exporting the
-		// whole stream would hand one subject another's data. Drop events tagged for
-		// other subjects; keep untagged ones (unattributable, exported as before).
+		// whole stream would hand one subject another's data. Drop events attributed
+		// (tagged, or tagger-derived) to other subjects only; keep the ones nobody can
+		// attribute (exported as before).
 		if req.Filter == nil {
-			req.Filter = SubjectOrUntaggedFilter(req.SubjectID)
+			req.Filter = e.subjectOrUnattributableFilter(ctx, req.SubjectID)
 		}
 		return e.exportFromStreams(ctx, req, handler, revokedCache)
 	}
 	return e.exportFromScan(ctx, req, handler, revokedCache)
+}
+
+// tagger returns the SubjectTagger the exporter attributes untagged events with: the
+// resolver's (WithResolverTagger), or nil for the store's own SubjectTagger.
+func (e *DataExporter) tagger() SubjectTagger {
+	if e.resolver != nil {
+		return e.resolver.tagger
+	}
+	return nil
+}
+
+// attribute attributes se under the shared rule (EventStore.attributeSubjects) with the
+// exporter's tagger.
+func (e *DataExporter) attribute(ctx context.Context, se StoredEvent) subjectAttribution {
+	return e.store.attributeSubjects(ctx, e.tagger(), se)
+}
+
+// attributedToFilter is the filter a resolved export applies: it admits exactly the
+// events attributed to subjectID (persisted tag, or derived by the tagger) — the rule the
+// footprint was resolved with — and drops other subjects' and unattributable events.
+// Without a tagger it is SubjectFilter(subjectID).
+func (e *DataExporter) attributedToFilter(ctx context.Context, subjectID string) ExportFilter {
+	return func(se StoredEvent) bool {
+		return e.attribute(ctx, se).to(subjectID)
+	}
+}
+
+// subjectOrUnattributableFilter is the default filter for explicit Streams with no
+// Filter: it admits the events attributed to subjectID and the events nobody can
+// attribute (untagged, and the tagger derives nothing or cannot see them), and drops the
+// events attributed to other subjects only. Without a tagger it is
+// SubjectOrUntaggedFilter(subjectID).
+func (e *DataExporter) subjectOrUnattributableFilter(ctx context.Context, subjectID string) ExportFilter {
+	return func(se StoredEvent) bool {
+		at := e.attribute(ctx, se)
+		return !at.attributed() || at.to(subjectID)
+	}
 }
 
 // exportFromStreams loads events from specific streams.
@@ -618,12 +664,15 @@ func FilterByEventTypes(types ...string) ExportFilter {
 
 // SubjectOrUntaggedFilter returns a filter that admits events tagged for subjectID (see
 // WithSubjectTagger / SubjectFilter) and events that carry no subject tags at all —
-// which cannot be attributed to anyone and are exported as they always were — while
-// dropping events tagged exclusively for OTHER subjects. It is the rule Export and
-// ExportStream apply by default to a request with explicit Streams and no Filter, so a
-// stream shared between subjects never leaks a co-subject's events. Prefer SubjectFilter
-// when every event is tagged and untagged ones must be excluded too. An empty subjectID
-// matches nothing.
+// which this filter cannot attribute to anyone and are exported as they always were —
+// while dropping events tagged exclusively for OTHER subjects. It reads persisted tags
+// only. It is the rule Export and ExportStream apply by default to a request with
+// explicit Streams and no Filter when the store has no SubjectTagger; with one, the
+// default additionally runs the tagger over untagged events and drops those it
+// attributes to other subjects only (see ExportRequest.Streams), so a stream shared
+// between subjects never leaks a co-subject's events, tagged or not. Prefer
+// SubjectFilter when every event is tagged and untagged ones must be excluded too. An
+// empty subjectID matches nothing.
 func SubjectOrUntaggedFilter(subjectID string) ExportFilter {
 	if subjectID == "" {
 		return matchNothing

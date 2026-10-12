@@ -773,7 +773,11 @@ $ mink gdpr discover user-123
 ```
 
 If tagging was not applied uniformly (legacy untagged events exist), the footprint is
-reported as **PARTIAL** — treat it as incomplete.
+reported as **PARTIAL** — treat it as incomplete. The CLI holds no `SubjectTagger`, so it
+attributes by persisted `$subjects` tags only; untagged events that your application's
+tagger *could* attribute (see the
+[attribution rule](/docs/security#subject-discovery)) are counted and erased by the
+in-app `SubjectResolver` / `DataEraser`, not here.
 
 #### Verify erasure readiness
 

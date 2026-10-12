@@ -271,13 +271,16 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 	for prefix, msgs := range messagesByPrefix {
 		publisher, ok := p.publishers[prefix]
 		if !ok {
-			// No publisher for this destination prefix; mark as failed
+			// No publisher for this destination prefix; mark as failed. The prefix is
+			// stored data nobody registered, so it is NOT a bounded label value: the
+			// failure is recorded under the fixed UnregisteredDestinationLabel (the log
+			// line still names the prefix for diagnosis).
 			for _, msg := range msgs {
 				p.logger.Error("No publisher for destination", "destination", redactDestination(msg.Destination), "prefix", prefix)
 				if err := p.store.MarkFailed(ctx, msg.ID, fmt.Errorf("%w: %s", ErrPublisherNotFound, prefix)); err != nil {
 					p.logger.Error("Failed to mark message as failed", "id", msg.ID, "error", err)
 				}
-				p.metrics.RecordMessageFailed(prefix)
+				p.metrics.RecordMessageFailed(UnregisteredDestinationLabel)
 			}
 			continue
 		}
@@ -350,6 +353,21 @@ func (p *OutboxProcessor) runCleanup(ctx context.Context) {
 		p.logger.Info("Cleaned up completed outbox messages", "count", cleaned)
 	}
 }
+
+// UnregisteredDestinationLabel is the destination label under which the
+// OutboxProcessor reports, via OutboxMetrics.RecordMessageFailed, a message
+// whose destination prefix has no registered Publisher.
+//
+// A destination is stored data, so an unregistered prefix is whatever was
+// written to the outbox ("tenant-123:https://…", a typo, a decommissioned
+// publisher) and is unbounded; recording it verbatim would let every distinct
+// stored value create a new metric series. Collapsing all such failures onto
+// this one fixed value keeps the "destination" label set bounded by the
+// registered publishers plus this label. The "No publisher for destination"
+// log line still carries the offending prefix for diagnosis. Avoid registering
+// a Publisher whose Destination() is this value, or its failures would merge
+// with the unroutable ones.
+const UnregisteredDestinationLabel = "unregistered"
 
 // destinationPrefix extracts the prefix from a destination string.
 // For example, "webhook:https://example.com" returns "webhook".

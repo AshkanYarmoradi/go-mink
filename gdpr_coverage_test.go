@@ -78,10 +78,17 @@ func TestRetention_CategoryAndEventTypeMatchers(t *testing.T) {
 	assert.Equal(t, 0, rep2.Matched)
 }
 
-func TestDedupeStrings(t *testing.T) {
-	assert.Equal(t, []string{"a", "b"}, dedupeStrings([]string{"a", "b", "a", "b", "a"}))
-	assert.Equal(t, []string{"x"}, dedupeStrings([]string{"x"}))
-	assert.Empty(t, dedupeStrings(nil))
+func TestCleanSubjects(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"}, cleanSubjects([]string{"a", "b", "a", "b", "a"}))
+	assert.Equal(t, []string{"x"}, cleanSubjects([]string{"", "x", ""}), "empty ids are dropped")
+	assert.Nil(t, cleanSubjects([]string{"", ""}), "only empty ids is no subject")
+	assert.Nil(t, cleanSubjects(nil))
+
+	// A fresh slice: the tagger's own buffer is never retained or aliased.
+	in := []string{"x"}
+	out := cleanSubjects(in)
+	out[0] = "mutated"
+	assert.Equal(t, "x", in[0])
 }
 
 func TestExportStream_AutoResolvesSubject(t *testing.T) {

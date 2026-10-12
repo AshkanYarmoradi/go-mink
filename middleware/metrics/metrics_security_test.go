@@ -7,6 +7,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go-mink.dev"
 )
 
 // =============================================================================
@@ -15,8 +17,10 @@ import (
 // The "destination" label is recorded exactly as given. Cardinality is bounded
 // at the source: the OutboxProcessor passes the publisher prefix ("webhook"),
 // never the full destination (see TestOutboxProcessor_Metrics_ReceiveOnlyPrefix
-// in the root package), so the metrics layer neither rewrites nor needs an
-// opt-out for the label value.
+// in the root package), and collapses every prefix that has no registered
+// publisher onto mink.UnregisteredDestinationLabel (see
+// TestOutboxProcessor_Metrics_UnregisteredPrefixUsesFixedLabel), so the metrics
+// layer neither rewrites nor needs an opt-out for the label value.
 // =============================================================================
 
 func TestMetrics_RecordMessageProcessed_LabelIsValueGiven(t *testing.T) {
@@ -82,4 +86,24 @@ func TestMetrics_OutboxLabelNames(t *testing.T) {
 	}
 	assert.True(t, sawProcessed, "processed counter not gathered")
 	assert.True(t, sawFailed, "failed counter not gathered")
+}
+
+// TestMetrics_RecordMessageFailed_UnregisteredLabelIsSingleSeries pins the
+// other half of the cardinality bound: however many distinct unroutable
+// destinations the processor sees, they all land on the one
+// mink.UnregisteredDestinationLabel series.
+func TestMetrics_RecordMessageFailed_UnregisteredLabelIsSingleSeries(t *testing.T) {
+	m := New(WithNamespace("outbox_unregistered_label_test"))
+	registry := prometheus.NewRegistry()
+	require.NoError(t, m.Register(registry))
+
+	for i := 0; i < 5; i++ {
+		m.RecordMessageFailed(mink.UnregisteredDestinationLabel)
+	}
+	m.RecordMessageFailed("webhook")
+
+	assert.Equal(t, 2, testutil.CollectAndCount(m.outboxFailedTotal), "one series for all unroutable messages plus one per registered publisher")
+	assert.Equal(t, float64(5), testutil.ToFloat64(m.outboxFailedTotal.WithLabelValues(mink.UnregisteredDestinationLabel)))
+	assert.Equal(t, float64(1), testutil.ToFloat64(m.outboxFailedTotal.WithLabelValues("webhook")))
+	assert.Regexp(t, `^[a-z_]+$`, mink.UnregisteredDestinationLabel, "the fixed label must be a plain, credential-free value")
 }

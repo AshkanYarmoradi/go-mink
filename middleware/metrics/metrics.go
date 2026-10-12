@@ -31,10 +31,15 @@
 // "destination" label is whatever the caller of RecordMessageProcessed /
 // RecordMessageFailed passes — the OutboxProcessor passes the publisher
 // prefix (the text before the first ':' in a destination, e.g. "webhook" for
-// "webhook:https://..."), never the full destination, so the label set is
-// bounded by the number of registered publishers. A custom OutboxMetrics
-// caller that records full destinations is responsible for keeping that set
-// small and free of credentials.
+// "webhook:https://..."), never the full destination. A stored destination
+// whose prefix has no registered publisher is not under the application's
+// control (it is whatever was written to the outbox, e.g.
+// "tenant-123:https://..."), so the processor does not pass that prefix
+// either: every such failure is recorded under the fixed
+// mink.UnregisteredDestinationLabel ("unregistered"). The label set is
+// therefore bounded by the registered publishers plus that one value. A
+// custom OutboxMetrics caller that records full destinations is responsible
+// for keeping that set small and free of credentials.
 package metrics
 
 import (
@@ -829,9 +834,10 @@ var _ mink.OutboxMetrics = (*Metrics)(nil)
 //
 // destination is recorded verbatim as the "destination" label. The
 // OutboxProcessor passes the publisher prefix (e.g. "webhook"), never the
-// full destination, so the label set is bounded by the registered publishers
-// and never carries URL credentials; a caller recording full destinations
-// must keep that set small and free of secrets itself.
+// full destination, and only ever reaches this method for a prefix that has a
+// registered publisher, so the label set is bounded by the registered
+// publishers and never carries URL credentials; a caller recording full
+// destinations must keep that set small and free of secrets itself.
 func (m *Metrics) RecordMessageProcessed(destination string, success bool) {
 	status := StatusSuccess
 	if !success {
@@ -843,7 +849,10 @@ func (m *Metrics) RecordMessageProcessed(destination string, success bool) {
 // RecordMessageFailed records an outbox message delivery failure.
 //
 // destination is recorded verbatim as the "destination" label; see
-// RecordMessageProcessed for what the OutboxProcessor passes.
+// RecordMessageProcessed for what the OutboxProcessor passes. For a message
+// whose prefix has no registered publisher the processor passes the fixed
+// mink.UnregisteredDestinationLabel rather than the (unbounded, stored)
+// prefix, so this label stays bounded even for unroutable destinations.
 func (m *Metrics) RecordMessageFailed(destination string) {
 	m.outboxFailedTotal.WithLabelValues(destination).Inc()
 }

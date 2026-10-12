@@ -111,15 +111,16 @@ func TestBackfillSubjectIndex_UndecryptableFallsBackToExistingTags(t *testing.T)
 		require.NoError(t, provider.RevokeKey("k"))
 
 		idx := NewMemorySubjectIndex()
-		n, err := BackfillSubjectIndex(ctx, store, emailTagger, idx, 10)
+		rep, err := BackfillSubjectIndexWithReport(ctx, store, emailTagger, idx, 10)
 		require.NoError(t, err)
-		assert.Equal(t, 1, n)
+		assert.Equal(t, BackfillReport{Scanned: 1, Indexed: 1}, rep,
+			"a tagged event is attributed from its tag and never decrypted, so it is not undecryptable")
 
 		got, _ := idx.StreamsBySubject(ctx, "u1")
-		assert.Equal(t, []string{"User-u1"}, got, "the event's existing tag is still indexed")
+		assert.Equal(t, []string{"User-u1"}, got, "the event's existing tag is indexed")
 		got, _ = idx.StreamsBySubject(ctx, "u1@example.com")
-		assert.Empty(t, got, "the tagger is NOT run over ciphertext")
-		assert.True(t, warnLogged(logger, "could not decrypt"), "a warning with the count is logged: %v", logger.warnLogs)
+		assert.Empty(t, got, "the tagger is NOT run over ciphertext (nor over a tagged event at all)")
+		assert.Empty(t, logger.warnLogs, "nothing untagged was undecryptable")
 	})
 
 	t.Run("revoked key without a handler (hard decrypt error)", func(t *testing.T) {
@@ -199,7 +200,9 @@ func TestBackfillSubjectIndex_WriterFailureStillLogsUndecryptable(t *testing.T) 
 	)
 	store := New(memory.NewAdapter(), WithFieldEncryption(cfg), WithSubjectTagger(userIDTagger), WithLogger(logger))
 	store.RegisterEvents(eraseUserCreated{})
-	appendUser(t, ctx, store, "User-u1", "u1")
+	// Scanned first: untagged (no UserID) and encrypted → undecryptable once the key is gone.
+	require.NoError(t, store.Append(ctx, "Legacy-l1", []interface{}{eraseUserCreated{UserID: "u1", Email: "old@example.com"}}))
+	appendUser(t, ctx, store, "User-u1", "u1") // tagged: the first index write, which fails
 	require.NoError(t, provider.RevokeKey("k"))
 
 	_, err = BackfillSubjectIndex(ctx, store, emailTagger, failingIndexWriter{}, 10)

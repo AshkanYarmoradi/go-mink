@@ -96,39 +96,31 @@ func (m *MemorySubjectIndex) DeleteSubject(ctx context.Context, subjectID string
 	return nil
 }
 
-// dedupeStrings returns in with duplicates removed, preserving order.
-func dedupeStrings(in []string) []string {
-	if len(in) < 2 {
-		return in
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
-
 // BackfillSubjectIndex scans the whole event store and records each event's subjects
-// (derived by tagger, plus any already tagged on the event) into writer. This is the
-// migration step that lets a subject index cover events written BEFORE subject tagging
-// was enabled — making historical subjects fully resolvable, and therefore fully
-// erasable, instead of permanently Partial.
+// into writer: the event's persisted "$subjects" tags when it has any, otherwise the
+// subjects tagger derives from it. This is the migration step that lets a subject index
+// cover events written BEFORE subject tagging was enabled — making historical subjects
+// fully resolvable, and therefore fully erasable, instead of permanently Partial.
 //
-// The tagger sees each event exactly as the live append path shows it: a
-// field-encrypted event is DECRYPTED first, through the store's own decrypt path
-// (DecryptStoredEvent, with WithDecryptionErrorHandler honored), with the encryption
-// envelope stripped from the metadata it receives. Running a tagger over ciphertext
-// would silently under-index every subject whose id lives in an encrypted field. An
-// event that cannot be decrypted — its key is revoked (crypto-shredded), the handler
-// swallowed the failure and left the ciphertext in place, or the store has no
-// encryption configured for an encrypted event — is NOT passed to the tagger: it is
-// indexed from its existing "$subjects" tags only, counted, and a single warning with
-// the count is logged through the store's logger at the end.
+// Attribution is the ONE rule shared with SubjectResolver, DataEraser and DataExporter
+// (see WithResolverTagger): a tagged event is indexed from its tags alone (the tagger is
+// not re-run over it — to re-attribute history under a changed tagger, re-tag it, e.g.
+// with ReEncryptStream, which re-applies the tag policy), and an untagged event is
+// attributed by the tagger exactly as the live append path would have. The tagger sees
+// such an event as the append path showed it: a field-encrypted event is DECRYPTED first,
+// through the store's own decrypt path (DecryptStoredEvent, with
+// WithDecryptionErrorHandler honored), with the encryption envelope stripped from the
+// metadata it receives. Running a tagger over ciphertext would silently under-index every
+// subject whose id lives in an encrypted field. An untagged event that cannot be
+// decrypted — its key is revoked (crypto-shredded), the handler swallowed the failure and
+// left the ciphertext in place, or the store has no encryption configured for an
+// encrypted event — is NOT passed to the tagger: it stays unattributed (Untagged), is
+// counted (Undecryptable), and a single warning with the count is logged through the
+// store's logger at the end.
+//
+// Because the index records exactly what a resolver using the same tagger attributes, an
+// index-backed resolve finds every event the backfill indexed — provided the resolver
+// attributes with the SAME tagger (the store's own by default, or WithResolverTagger).
 //
 // Requires a scannable adapter (SubscriptionAdapter) — returns
 // ErrSubscriptionNotSupported otherwise. Returns the number of events scanned
@@ -143,36 +135,39 @@ func BackfillSubjectIndex(ctx context.Context, store *EventStore, tagger Subject
 }
 
 // BackfillReport summarizes a BackfillSubjectIndexWithReport run. All counts are
-// PII-free. Scanned == Indexed + Untagged.
+// PII-free. Scanned == Indexed + Untagged; Undecryptable <= Untagged.
 type BackfillReport struct {
 	// Scanned is the number of events examined.
 	Scanned int
 
 	// Indexed is the number of events for which at least one subject was recorded in
-	// the index (derived by the tagger and/or already present in the event's tags).
+	// the index (from the event's persisted tags, or derived by the tagger when it had
+	// none).
 	Indexed int
 
-	// Untagged is the number of events for which NEITHER the tagger NOR the event's
-	// existing "$subjects" tags produced a subject. Such events are invisible to an
-	// index-backed resolve: if any of them concerns a data subject, that subject's
-	// footprint resolved through this index is incomplete. WithAuthoritativeIndex is only
-	// safe over this index when Untagged == 0, or when the untagged events are known to
-	// carry no PII.
+	// Untagged is the number of events that could not be attributed to ANY subject even
+	// by the tagger: they carry no "$subjects" tag and the tagger derived nothing (or
+	// never saw them, see Undecryptable). Such events are invisible to an index-backed
+	// resolve: if any of them concerns a data subject, that subject's footprint resolved
+	// through this index is incomplete. WithAuthoritativeIndex is only safe over this
+	// index when Untagged == 0, or when the untagged events are known to carry no PII.
 	Untagged int
 
-	// Undecryptable is the number of field-encrypted events that could not be decrypted
-	// (revoked key, a handler that swallowed the failure, or no encryption config), so
-	// the tagger never saw their encrypted fields; they were indexed from their existing
-	// tags only (and count as Untagged when they had none). The store's logger receives
-	// one warning with this count.
+	// Undecryptable is the number of UNTAGGED field-encrypted events that could not be
+	// decrypted (revoked key, a handler that swallowed the failure, or no encryption
+	// config), so the tagger never saw them and they could not be attributed; each is also
+	// counted in Untagged. Tagged encrypted events are attributed from their tags and are
+	// not decrypted, so they never count here. The store's logger receives one warning
+	// with this count.
 	Undecryptable int
 }
 
 // BackfillSubjectIndexWithReport is BackfillSubjectIndex returning a BackfillReport
 // instead of a bare scanned count. Read Untagged before asserting WithAuthoritativeIndex
-// over the index: an index-backed resolve never sees untagged events, so a non-zero
-// Untagged means the index — and any footprint or erasure certificate derived from it —
-// cannot be proven complete. On an error the report covers the events processed so far.
+// over the index: an index-backed resolve never sees events outside the indexed streams,
+// so a non-zero Untagged means the index — and any footprint or erasure certificate
+// derived from it — cannot be proven complete. On an error the report covers the events
+// processed so far.
 func BackfillSubjectIndexWithReport(ctx context.Context, store *EventStore, tagger SubjectTagger, writer SubjectIndexWriter, batchSize int) (BackfillReport, error) {
 	var rep BackfillReport
 	if tagger == nil || writer == nil {
@@ -210,12 +205,12 @@ func BackfillSubjectIndexWithReport(ctx context.Context, store *EventStore, tagg
 	return rep, nil
 }
 
-// warnUndecryptable logs, once, how many field-encrypted events a backfill could not
-// decrypt (and so indexed from their existing subject tags only). It is deferred by
+// warnUndecryptable logs, once, how many untagged field-encrypted events a backfill
+// could not decrypt (and so could not attribute to any subject). It is deferred by
 // BackfillSubjectIndexWithReport so the warning covers the run however it ended.
 func warnUndecryptable(logger Logger, rep *BackfillReport) {
 	if rep.Undecryptable > 0 {
-		logger.Warn("mink: subject index backfill could not decrypt some events; indexed them from their existing subject tags only",
+		logger.Warn("mink: subject index backfill could not decrypt some untagged events; they could not be attributed to any subject and were counted as untagged",
 			"undecryptable", rep.Undecryptable, "scanned", rep.Scanned)
 	}
 }
@@ -244,7 +239,7 @@ func (b *subjectBackfill) indexBatch(ctx context.Context, batch []StoredEvent) e
 }
 
 // indexEvent counts one scanned event and records its subjects (subjectsOf) in the
-// index, or counts it as Untagged when neither the tagger nor its existing tags name
+// index, or counts it as Untagged when neither its existing tags nor the tagger name
 // any subject.
 func (b *subjectBackfill) indexEvent(ctx context.Context, se StoredEvent) error {
 	b.rep.Scanned++
@@ -260,44 +255,17 @@ func (b *subjectBackfill) indexEvent(ctx context.Context, se StoredEvent) error 
 	return nil
 }
 
-// subjectsOf returns the de-duplicated subjects of one event: those the tagger derives
-// from the event's plaintext (backfillPlaintext; an undecryptable event is counted and
-// never reaches the tagger) combined with any already tagged on the event — when
-// tagging was already enabled the two overlap, and duplicate (subject, stream) pairs
-// are redundant index writes. It builds a fresh slice rather than appending onto the
-// tagger's return: the tagger's slice-ownership is unspecified, so appending could
-// mutate a buffer it reuses.
+// subjectsOf returns the subjects of one event under the shared attribution rule
+// (EventStore.attributeSubjects, with the backfill's tagger): its persisted tags, or —
+// for an untagged event — what the tagger derives from its plaintext. An untagged event
+// that cannot be decrypted never reaches the tagger; it is counted as Undecryptable and
+// yields no subject. Using the very helper the resolver, eraser and exporter attribute
+// with is what keeps the index from naming streams a resolve would not confirm, or
+// missing ones it would.
 func (b *subjectBackfill) subjectsOf(ctx context.Context, se StoredEvent) []string {
-	var derived []string
-	if data, md, ok := backfillPlaintext(ctx, b.store, se); ok {
-		derived = b.tagger(se.Type, data, md)
-	} else {
+	at := b.store.attributeSubjects(ctx, b.tagger, se)
+	if at.undecryptable {
 		b.rep.Undecryptable++
 	}
-	existing := GetSubjectTags(se.Metadata)
-	subjects := make([]string, 0, len(derived)+len(existing))
-	subjects = append(subjects, derived...)
-	subjects = append(subjects, existing...)
-	return dedupeStrings(subjects)
-}
-
-// backfillPlaintext returns an event's data and metadata as a SubjectTagger expects
-// them: decrypted, with the encryption envelope stripped — what the live append path
-// hands the tagger before encrypting. A plaintext event passes through untouched. ok
-// is false when the event is field-encrypted but cannot be decrypted: the store has
-// no encryption configured, the decrypt path failed, or its WithDecryptionErrorHandler
-// swallowed a revoked-key failure and left the ciphertext in place (DecryptStoredEvent
-// then keeps the envelope, which is how that no-op is detected).
-func backfillPlaintext(ctx context.Context, store *EventStore, se StoredEvent) ([]byte, Metadata, bool) {
-	if !IsEncrypted(se.Metadata) {
-		return se.Data, se.Metadata, true
-	}
-	if store.encryption == nil {
-		return nil, Metadata{}, false
-	}
-	dec, err := store.DecryptStoredEvent(ctx, se)
-	if err != nil || IsEncrypted(dec.Metadata) {
-		return nil, Metadata{}, false
-	}
-	return dec.Data, dec.Metadata, true
+	return at.subjects
 }

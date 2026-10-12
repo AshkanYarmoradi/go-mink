@@ -115,12 +115,31 @@ func CleanupSchema(ctx context.Context, db *sql.DB, schema string) error {
 //   - a prefix whose first character is a digit gets a leading '_';
 //   - an empty prefix becomes "test".
 //
-// A prefix that is already a valid identifier is used unchanged, so existing
-// callers see identical output. Prefixes longer than ~43 characters will be
-// truncated by PostgreSQL's 63-byte identifier limit; keep them short.
+// A prefix that is already a valid identifier and short enough is used
+// unchanged, so existing callers see identical output.
+//
+// The result never exceeds 63 bytes (pgMaxIdentifierBytes, PostgreSQL's
+// identifier limit): the sanitised prefix is truncated so that the complete
+// "_<UnixNano>" suffix always fits, which today leaves 43 bytes of prefix.
+// Without this the server would silently truncate the suffix off a long prefix,
+// successive calls would resolve to the same schema, and CleanupSchema could
+// then drop another test's schema. Uniqueness therefore always comes from the
+// timestamp, never from the tail of a long prefix.
 func UniqueSchema(prefix string) string {
-	return fmt.Sprintf("%s_%d", sanitizeSchemaPrefix(prefix), time.Now().UnixNano())
+	suffix := fmt.Sprintf("_%d", time.Now().UnixNano())
+	name := sanitizeSchemaPrefix(prefix)
+	if maxPrefix := pgMaxIdentifierBytes - len(suffix); len(name) > maxPrefix {
+		// The sanitised prefix is pure ASCII, so byte slicing never splits a rune,
+		// and its first byte (a letter or '_') survives, so it stays an identifier.
+		name = name[:maxPrefix]
+	}
+	return name + suffix
 }
+
+// pgMaxIdentifierBytes is PostgreSQL's identifier length limit (NAMEDATALEN-1).
+// The server silently truncates longer identifiers, which is why UniqueSchema
+// bounds its output itself instead of letting the uniqueness suffix be cut off.
+const pgMaxIdentifierBytes = 63
 
 // sanitizeSchemaPrefix maps an arbitrary string onto a safe identifier prefix
 // as documented on UniqueSchema.

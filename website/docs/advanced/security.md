@@ -368,8 +368,11 @@ exporter := mink.NewDataExporter(store,
 )
 
 // Strategy 1: Stream-based -- when you know the stream IDs (efficient, no scan).
-// With Streams and a nil Filter, SubjectOrUntaggedFilter(SubjectID) is applied:
-// events tagged ($subjects) for OTHER subjects are dropped, untagged ones kept.
+// With Streams and a nil Filter only the events attributed to SubjectID and the events
+// nobody can attribute are kept: events tagged ($subjects) for OTHER subjects are
+// dropped, and so are untagged events the store's SubjectTagger (or the resolver's
+// WithResolverTagger) attributes to other subjects only; untagged events nobody can
+// attribute are kept. Without a tagger this is exactly SubjectOrUntaggedFilter(SubjectID).
 result, err := exporter.Export(ctx, mink.ExportRequest{
     SubjectID: "user-123",
     Streams:   []string{"Customer-user-123", "Order-ord-456"},
@@ -416,7 +419,7 @@ mink.FilterByStreams("Customer-user-123", "Order-ord-1") // Match exact stream I
 mink.FilterByStreamCategory("Customer")                // Match the category (text before the first '-')
 mink.FilterByMetadata("department", "sales")           // Match custom metadata
 mink.FilterByEventTypes("CustomerCreated", "OrderPlaced")  // Match event types
-mink.SubjectOrUntaggedFilter("user-123")               // Tagged for the subject, or untagged (the Streams default)
+mink.SubjectOrUntaggedFilter("user-123")               // Tagged for the subject, or untagged (persisted tags only; the Streams default when no tagger is configured)
 
 // Combine filters (AND logic)
 mink.CombineFilters(
@@ -489,15 +492,20 @@ never fatal. The built-in sibling-store erasers purge by the subject's resolved 
 streams shared with other subjects are skipped and reported as `SharedStreamsSkipped`, and
 derived aggregate ids are reached only with `mink.WithDerivedAggregateIDs()` /
 `SubjectFootprintIDsWithDerived` — safe only for globally unique aggregate ids) and can count
-what remains (`SubjectResidualCounter`); the certificate is never *vacuously* `Verified`
-(zero checked events with keys revoked yields `Verified=false` plus a note, and
-`Verify` flags such a report as `Vacuous`); every path decides "is this ciphertext?" with
-`mink.HasEncryptionEnvelope`; a `SharedKeyError` message carries counts only (never other
-subjects' ids, never key ids); and `WithSubjectIndexPurge` removes the subject from a
-subject index only after a verified erasure (verified internally when no certificate sink is
-configured). The full workflow — blast-radius
-guard, strict accountability, the discovery race, and the subject index — is documented in
-the [GDPR & Data Governance guide](/docs/security#data-erasure-article-17).
+what remains (`SubjectResidualCounter`); every path attributes events under one rule —
+persisted `$subjects` tags first, and for untagged (pre-tagging) events the store's
+`SubjectTagger` (or `mink.WithResolverTagger`) run over their decrypted plaintext, never
+over ciphertext — so a derived-only historical event is resolved, exported, shredded and
+attested like a tagged one; the certificate is never *vacuously* `Verified` (zero checked
+attributed events with keys revoked yields `Verified=false` plus a note, and `Verify` flags
+such a report as `Vacuous`), and events nobody can attribute are disclosed as
+`UnattributedRecoverable` (forces `Partial`) or `UnattributedRedacted`; every path decides
+"is this ciphertext?" with `mink.HasEncryptionEnvelope`; a `SharedKeyError` message carries
+counts only (never other subjects' ids, never key ids); and `WithSubjectIndexPurge` removes
+the subject from a subject index only after a verified erasure (verified internally when no
+certificate sink is configured). The full workflow — attribution, blast-radius guard, strict
+accountability, the discovery race, and the subject index — is documented in the
+[GDPR & Data Governance guide](/docs/security#data-erasure-article-17).
 
 ### Data Retention
 

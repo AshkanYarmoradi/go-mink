@@ -221,7 +221,9 @@ metricsProjection := m.WrapProjection(projection)
 
 Every label value is drawn from a bounded set the application controls; the outbox
 processor records only the publisher prefix (`webhook`, `kafka`, `sns`) as the
-`destination` label, so a store full of distinct URLs cannot blow up the series count.
+`destination` label — and the fixed `mink.UnregisteredDestinationLabel` (`"unregistered"`)
+for a message whose prefix has no registered publisher, since that prefix is whatever was
+stored — so a store full of distinct URLs cannot blow up the series count.
 
 ### OpenTelemetry Tracing
 

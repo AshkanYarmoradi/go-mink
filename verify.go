@@ -13,20 +13,42 @@ import (
 // event footprint and the registered sibling stores.
 type VerificationReport struct {
 	SubjectID string
-	// Verified is true iff at least one subject-tagged event was checked, no residual
-	// PII remains (events AND counted sibling stores) and the footprint is complete. It
-	// is never true for a report that checked nothing (see Vacuous).
-	Verified       bool
+	// Verified is true iff at least one event attributed to the subject was checked, no
+	// residual PII remains (events AND counted sibling stores) and the footprint is
+	// complete. It is never true for a report that checked nothing (see Vacuous).
+	Verified bool
+	// EventsChecked counts the events attributed to the subject — by persisted tag, or
+	// derived by the tagger (see WithResolverTagger) — that were checked.
 	EventsChecked  int
 	RedactedEvents int // encrypted events whose key is revoked (unrecoverable)
 
-	// Vacuous is true when EventsChecked is 0: the resolver found no subject-tagged
-	// event to check — the subject never had tagged events, or its subject-index entries
-	// were purged (WithSubjectIndexPurge) and an index-backed resolver now resolves an
-	// empty footprint. Nothing could be attested, so Verified is false and Notes says
-	// so; it is not a finding of residual PII. Re-verify with a scan-backed resolver (no
-	// WithResolverIndex) or after BackfillSubjectIndex.
+	// Vacuous is true when EventsChecked is 0: the resolver found no event attributed to
+	// the subject to check — the subject never had attributable events, its
+	// subject-index entries were purged (WithSubjectIndexPurge) and an index-backed
+	// resolver now resolves an empty footprint, or its events were derived-only (untagged,
+	// attributed through the tagger) and encrypted, so revoking their key also made them
+	// unattributable (see UnattributedRedacted; the certificate Erase emits verifies the
+	// events it matched before revoking, and is the attestation for that case). Nothing
+	// could be attested, so Verified is false and Notes says so; it is not a finding of
+	// residual PII. Re-verify with a scan-backed resolver (no WithResolverIndex) or after
+	// BackfillSubjectIndex.
 	Vacuous bool
+
+	// UnattributedRecoverable lists "stream@version" of events in the subject's footprint
+	// streams that carry no subject tag and that the tagger could not attribute to ANY
+	// subject (no tagger, nothing derived, or encrypted and undecryptable), and whose
+	// payload is still readable or recoverable: no complete encryption envelope, or a key
+	// that is live or only soft-revoked. Any of them may be the subject's own PII, so they
+	// were not checked as the subject's AND force Partial — the footprint cannot be proven
+	// complete, whatever the resolver said.
+	UnattributedRecoverable []string
+
+	// UnattributedRedacted lists "stream@version" of events in the subject's footprint
+	// streams that could not be attributed to any subject but are permanently
+	// crypto-shredded (complete envelope, key revoked): whoever they belonged to, no PII
+	// is recoverable from their encrypted fields, so they neither block nor count toward
+	// the attestation. A derived-only encrypted event lands here after its key is revoked.
+	UnattributedRedacted []string
 
 	// ResidualEncrypted lists "stream@version" of encrypted events whose key is still
 	// live (PII recoverable).
@@ -62,7 +84,9 @@ type VerificationReport struct {
 	// verification (counts and store names only; never ids, fields or values).
 	Notes []string
 
-	// Partial mirrors the footprint: untagged events may exist beyond what was checked.
+	// Partial is true when completeness cannot be proven: the footprint was Partial, or
+	// the subject's streams hold unattributable events whose PII is still recoverable
+	// (UnattributedRecoverable).
 	Partial bool
 }
 
@@ -70,20 +94,26 @@ type VerificationReport struct {
 // suitable for recording via an AuditStore for Article 17 accountability.
 //
 // Verified is true only when the certificate could positively attest the erasure:
-// every subject-tagged event checked is unrecoverable, every registered sibling store
-// that could be counted is clean, the footprint is complete, every key revoked, the
-// marker (if configured) written, and no read model or sibling store failed. An
-// erasure that checked ZERO events but revoked keys or targeted streams (a KeyIDs-only,
-// explicit-Streams or untagged-legacy erasure) is NOT verified — nothing could be
-// attested — and Notes says so; a genuinely empty footprint (no streams, no keys) is
-// verified with a "nothing to erase" note.
+// every event attributed to the subject that was checked is unrecoverable, every
+// registered sibling store that could be counted is clean, the footprint is complete,
+// every key revoked, the marker (if configured) written, and no read model or sibling
+// store failed. The events checked are the ones the erasure attributed to the subject
+// (persisted tag or tagger-derived) BEFORE revoking — so a derived-only encrypted event,
+// unattributable once shredded, is still attested — plus any attributable event found in
+// the subject's streams afterwards. An erasure that checked ZERO such events but revoked
+// keys or targeted streams (a KeyIDs-only, explicit-Streams or untagged-legacy erasure)
+// is NOT verified — nothing could be attested — and Notes says so; a genuinely empty
+// footprint (no streams, no keys) is verified with a "nothing to erase" note.
 type ErasureCertificate struct {
 	SubjectID     string    `json:"subjectId"`
 	VerifiedAt    time.Time `json:"verifiedAt"`
 	Verified      bool      `json:"verified"`
 	EventsChecked int       `json:"eventsChecked"`
 	KeysRevoked   int       `json:"keysRevoked"`
-	Partial       bool      `json:"partial"`
+	// Partial is true when the erasure's footprint was Partial, or when the verification
+	// found unattributable events with still-recoverable PII in the subject's streams
+	// (VerificationReport.UnattributedRecoverable).
+	Partial bool `json:"partial"`
 
 	// SideEffects names the external-PII domains erased alongside the event store
 	// (no PII), e.g. "blob-storage", "search-index".
@@ -117,10 +147,16 @@ type CertificateSink func(ctx context.Context, cert ErasureCertificate) error
 // Requires a configured SubjectResolver (WithEraseSubjectResolver). A sibling store
 // that cannot be counted is listed under UncheckedStores rather than certified.
 //
-// A report must attest SOMETHING: when the resolver yields no subject-tagged event to
-// check (EventsChecked == 0), the report is Vacuous — Verified is false and a note says
-// so — rather than a positive attestation built on zero evidence. Sibling-store residual
-// counts cover the subject id and the subject's exclusive streams only; when the
+// Events are attributed under the shared rule (persisted tag, or the tagger — the
+// resolver's or the store's — run over an untagged event's plaintext). An event in the
+// subject's streams that nobody can attribute is not silently skipped: it is listed as
+// UnattributedRecoverable (and forces Partial) while its PII is still recoverable, or as
+// UnattributedRedacted once permanently crypto-shredded.
+//
+// A report must attest SOMETHING: when the resolver yields no event attributed to the
+// subject to check (EventsChecked == 0), the report is Vacuous — Verified is false and a
+// note says so — rather than a positive attestation built on zero evidence. Sibling-store
+// residual counts cover the subject id and the subject's exclusive streams only; when the
 // footprint has streams shared with other subjects, a note says those stores' rows on
 // the shared streams were not counted.
 func (e *DataEraser) Verify(ctx context.Context, subjectID string) (*VerificationReport, error) {
@@ -135,7 +171,7 @@ func (e *DataEraser) Verify(ctx context.Context, subjectID string) (*Verificatio
 		return nil, NewErasureError(subjectID, err)
 	}
 	rep := &VerificationReport{SubjectID: subjectID, Partial: fp.Partial}
-	if err := e.verifyStreams(ctx, subjectID, fp.Streams, rep); err != nil {
+	if err := e.verifyStreams(ctx, subjectID, fp.Streams, rep, nil); err != nil {
 		return nil, err
 	}
 	counted, err := e.countSubjectResiduals(ctx, subjectID, fp, rep)
@@ -160,7 +196,7 @@ func (e *DataEraser) Verify(ctx context.Context, subjectID string) (*Verificatio
 }
 
 // vacuousVerifyNote explains a report that checked no event (PII-free).
-const vacuousVerifyNote = "no subject-tagged events were resolved for the subject; nothing was checked, so the report cannot attest that the subject's events are unrecoverable (a purged subject index resolves an empty footprint: re-verify with a scan-backed resolver or after BackfillSubjectIndex)"
+const vacuousVerifyNote = "no events attributed to the subject were resolved; nothing was checked, so the report cannot attest that the subject's events are unrecoverable (a purged subject index resolves an empty footprint: re-verify with a scan-backed resolver or after BackfillSubjectIndex; an untagged event whose subject the tagger derived can no longer be attributed once its key is revoked: the certificate emitted by Erase, which verifies the events matched before revoking, is the attestation for it)"
 
 // sharedStreamsCountNote explains that sibling-store residual counts exclude the
 // footprint streams shared with other subjects (PII-free: counts only).
@@ -194,6 +230,9 @@ func residualNotes(rep *VerificationReport) []string {
 	if n := len(rep.ResidualRecoverable); n > 0 {
 		notes = append(notes, fmt.Sprintf("%d event(s) remain recoverable: their key is only soft-revoked and can still be restored within its grace window", n))
 	}
+	if n := len(rep.UnattributedRecoverable) + len(rep.UnattributedRedacted); n > 0 {
+		notes = append(notes, unattributedNote(len(rep.UnattributedRecoverable), len(rep.UnattributedRedacted)))
+	}
 	for _, rs := range rep.ResidualStores {
 		notes = append(notes, fmt.Sprintf("sibling store %q still holds %d row(s) attributable to the subject", rs.Name, rs.Count))
 	}
@@ -201,6 +240,13 @@ func residualNotes(rep *VerificationReport) []string {
 		notes = append(notes, fmt.Sprintf("%d sibling store(s) could not be counted and are not attested: %v", len(rep.UncheckedStores), rep.UncheckedStores))
 	}
 	return notes
+}
+
+// unattributedNote explains the events in the subject's streams that nobody could
+// attribute (PII-free: counts only).
+func unattributedNote(recoverable, redacted int) string {
+	return fmt.Sprintf("%d event(s) in the subject's streams could not be attributed to any subject and were not checked as the subject's: %d still readable or recoverable (possibly the subject's own, so completeness cannot be proven), %d permanently crypto-shredded (no recoverable PII)",
+		recoverable+redacted, recoverable, redacted)
 }
 
 // countSubjectResiduals asks every registered sibling store that implements
@@ -312,10 +358,15 @@ func (d *certificateDraft) note(note string) {
 // caller can judge whether the certificate attests anything at all.
 func (e *DataEraser) attestEvidence(ctx context.Context, subjectID string, result *ErasureResult, d *certificateDraft) *VerificationReport {
 	vr := &VerificationReport{SubjectID: subjectID, Partial: result.Partial}
-	if err := e.verifyStreams(ctx, subjectID, result.Streams, vr); err != nil {
+	// The events the erasure attributed to the subject before revoking (result.attributed)
+	// are verified as the subject's even if the revoke made them unattributable.
+	if err := e.verifyStreams(ctx, subjectID, result.Streams, vr, result.attributed); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate event verification: %w", err))
 		d.block("event verification could not be completed; the events are not attested")
 	}
+	// Unattributable events with recoverable PII in the subject's streams make the
+	// verification Partial; the certificate must say so too.
+	d.cert.Partial = d.cert.Partial || vr.Partial
 	storesVerified, err := e.countSubjectResiduals(ctx, subjectID, result.footprint(subjectID), vr)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("certificate residual count: %w", err))
@@ -357,17 +408,17 @@ func attestableStores(storesVerified []string, outcomes []SubjectErasureOutcome)
 }
 
 // gateVacuous enforces that a certificate attests SOMETHING. When keys were revoked (or
-// failed to revoke) or streams were targeted but not one subject-tagged event could be
-// checked — a KeyIDs-only, explicit-Streams or untagged-legacy erasure — the certificate
-// is vacuous and must not claim verification. A genuinely empty footprint (nothing
-// resolved, nothing revoked) is honestly "nothing to erase".
+// failed to revoke) or streams were targeted but not one event attributed to the subject
+// could be checked — a KeyIDs-only, explicit-Streams or untagged-legacy erasure — the
+// certificate is vacuous and must not claim verification. A genuinely empty footprint
+// (nothing resolved, nothing revoked) is honestly "nothing to erase".
 func (d *certificateDraft) gateVacuous(eventsChecked int, result *ErasureResult) {
 	if eventsChecked > 0 {
 		return
 	}
 	attempted := len(result.KeysRevoked) > 0 || len(result.KeysFailed) > 0 || len(result.Streams) > 0
 	if attempted {
-		d.block("no subject-tagged events could be verified: the erasure was scoped by key ids, explicit streams or untagged events, so the certificate cannot attest that the subject's events are unrecoverable")
+		d.block("no events attributed to the subject could be verified: the erasure was scoped by key ids, explicit streams or unattributable events, so the certificate cannot attest that the subject's events are unrecoverable")
 		return
 	}
 	d.note("nothing to erase: the subject has no resolved streams or keys")
@@ -408,7 +459,15 @@ func (d *certificateDraft) gateSubjectStores(outcomes []SubjectErasureOutcome) {
 	}
 }
 
-func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, streams []string, rep *VerificationReport) error {
+// verifyStreams checks every event of the given streams that is the subject's: one the
+// erasure attributed to the subject before revoking (attributed, nil for a standalone
+// Verify) or one attributeSubjects attributes to the subject now (persisted tag, or
+// derived by the eraser's tagger). A resolved stream can be shared with other subjects;
+// their events are skipped, since checking them would inflate EventsChecked and produce
+// false residuals. An event nobody can attribute is NOT silently skipped: it is recorded
+// as UnattributedRecoverable (forcing Partial) while its PII is still readable or
+// recoverable, or as UnattributedRedacted once permanently crypto-shredded.
+func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, streams []string, rep *VerificationReport, attributed erasureMatches) error {
 	cfg := e.store.EncryptionConfig()
 	for _, streamID := range streams {
 		stored, err := e.store.LoadRaw(ctx, streamID, 0)
@@ -419,14 +478,17 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 			return NewErasureError(subjectID, fmt.Errorf("load stream %q: %w", streamID, err))
 		}
 		for _, se := range stored {
-			// Only the target subject's events matter. A resolved stream can be shared
-			// with other subjects; checking their events would inflate EventsChecked and
-			// produce false residuals. Untagged (legacy) events are covered by Partial.
-			if !eventTagsSubject(se.Metadata, subjectID) {
-				continue
+			ref := fmt.Sprintf("%s@%d", se.StreamID, se.Version)
+			if !attributed.has(se) {
+				at := e.attribute(ctx, se)
+				if !at.to(subjectID) {
+					if !at.attributed() {
+						rep.recordUnattributed(ref, se.Metadata, cfg)
+					}
+					continue // another subject's event, or nobody's to check
+				}
 			}
 			rep.EventsChecked++
-			ref := fmt.Sprintf("%s@%d", se.StreamID, se.Version)
 			// Same predicate as key discovery: only a complete envelope is ciphertext a
 			// revocation erases. Anything less (legacy plaintext, a bare key id, a damaged
 			// envelope) is readable or unshreddable PII — residual cleartext either way.
@@ -437,13 +499,7 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 			// Only a PERMANENT revocation counts as erased. A soft-revoked key
 			// (restorable within its grace window) leaves the PII recoverable, so it
 			// is surfaced separately and must block verification.
-			state := encryption.NotRevoked
-			if cfg != nil {
-				if s, err := cfg.RevocationState(GetEncryptionKeyID(se.Metadata)); err == nil {
-					state = s
-				}
-			}
-			switch state {
+			switch revocationState(cfg, se.Metadata) {
 			case encryption.Revoked:
 				rep.RedactedEvents++
 			case encryption.SoftRevoked:
@@ -454,4 +510,30 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 		}
 	}
 	return nil
+}
+
+// recordUnattributed files an event of the subject's streams that nobody could
+// attribute: permanently crypto-shredded (complete envelope, key revoked) events hold no
+// recoverable PII and are only listed; anything else may be the subject's own readable
+// or recoverable PII, so it is listed AND forces Partial.
+func (r *VerificationReport) recordUnattributed(ref string, m Metadata, cfg *FieldEncryptionConfig) {
+	if HasEncryptionEnvelope(m) && revocationState(cfg, m) == encryption.Revoked {
+		r.UnattributedRedacted = append(r.UnattributedRedacted, ref)
+		return
+	}
+	r.UnattributedRecoverable = append(r.UnattributedRecoverable, ref)
+	r.Partial = true
+}
+
+// revocationState returns the revocation state of the key an event's envelope names, or
+// NotRevoked when there is no encryption config or the provider cannot say.
+func revocationState(cfg *FieldEncryptionConfig, m Metadata) encryption.RevocationState {
+	if cfg == nil {
+		return encryption.NotRevoked
+	}
+	state, err := cfg.RevocationState(GetEncryptionKeyID(m))
+	if err != nil {
+		return encryption.NotRevoked
+	}
+	return state
 }

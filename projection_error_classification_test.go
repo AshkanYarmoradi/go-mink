@@ -176,10 +176,21 @@ func TestProjectionEngine_InterleavedTransientAndPoison_OnlyCountsPoison(t *test
 	startEngine(t, engine)
 
 	// The event is eventually applied — only the single poison error advanced the budget
-	// (to 1 < 2), so the worker never gave up.
+	// (to 1 < 2), so the worker never gave up. The script needs five poll cycles plus
+	// backoff, which a slow CI runner can stretch well past a second, hence the generous
+	// deadline (the test returns as soon as the condition holds).
 	require.Eventually(t, func() bool {
 		return projection.appliedCount() >= 1
-	}, 2*time.Second, 5*time.Millisecond, "only poison errors should count toward the budget; the event must eventually apply")
+	}, 10*time.Second, 5*time.Millisecond, "only poison errors should count toward the budget; the event must eventually apply")
+
+	// The in-budget poison attempt legitimately marked the worker Faulted (setError), and
+	// the successful apply clears that only after processAsyncBatch returns. Reading the
+	// status once, the instant Apply succeeds, raced that recovery; poll for it instead.
+	// Running with no recorded error is strictly stronger than "not Faulted".
+	require.Eventually(t, func() bool {
+		status, err := engine.GetStatus("InterleavedProbe")
+		return err == nil && status.State == ProjectionStateRunning && status.Error == ""
+	}, 10*time.Second, 5*time.Millisecond, "the worker must recover to Running once the event applies")
 
 	status, err := engine.GetStatus("InterleavedProbe")
 	require.NoError(t, err)

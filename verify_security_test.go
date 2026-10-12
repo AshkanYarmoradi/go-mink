@@ -76,7 +76,7 @@ func TestEmitCertificate_KeyIDsOnlyErasureIsVacuous(t *testing.T) {
 
 	assert.Equal(t, 0, cert.EventsChecked)
 	assert.False(t, cert.Verified, "a certificate that checked no events must not attest the erasure")
-	assert.True(t, notesContain(cert.Notes, "no subject-tagged events could be verified"), "%v", cert.Notes)
+	assert.True(t, notesContain(cert.Notes, "no events attributed to the subject could be verified"), "%v", cert.Notes)
 }
 
 func TestEmitCertificate_EmptyFootprintIsNothingToErase(t *testing.T) {

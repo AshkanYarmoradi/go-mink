@@ -1245,8 +1245,13 @@ processor := mink.NewOutboxProcessor(outboxStore,
 //   The "destination" label value is the PUBLISHER PREFIX (text before the first
 //   ':' — "webhook", "kafka", "sns"): the OutboxProcessor hands OutboxMetrics the
 //   prefix, never the full destination, so a store full of distinct URLs, or a
-//   poisoned row, cannot create unbounded time series. (The metrics package records
-//   the value it is given verbatim; there is no option to label by full destination.)
+//   poisoned row, cannot create unbounded time series. A message whose prefix has
+//   NO registered publisher is stored, uncontrolled data ("tenant-123:https://…", a
+//   typo), so its failure is recorded under the fixed mink.UnregisteredDestinationLabel
+//   ("unregistered") instead — the label set is bounded by the registered publishers
+//   plus that one value; the "No publisher for destination" log line still names the
+//   prefix. (The metrics package records the value it is given verbatim; there is no
+//   option to label by full destination. Avoid a publisher named "unregistered".)
 // - outbox_messages_dead_lettered_total
 // - outbox_batch_duration_seconds
 // - outbox_pending_messages (gauge)
@@ -1499,8 +1504,11 @@ result, err := exporter.Export(ctx, mink.ExportRequest{
     SubjectID: "user-123",
     Streams:   []string{"Customer-user-123", "Order-ord-1", "Order-ord-2"},
 })
-// With Streams and a nil Filter the exporter applies SubjectOrUntaggedFilter(SubjectID):
-// events tagged ($subjects) for OTHER subjects are dropped, untagged events are kept.
+// With Streams and a nil Filter the exporter keeps the events attributed to SubjectID and
+// the events nobody can attribute: events tagged ($subjects) for OTHER subjects are dropped,
+// and so are untagged events the store's SubjectTagger attributes to other subjects only;
+// untagged events nobody can attribute are kept. Without a tagger this is exactly
+// SubjectOrUntaggedFilter(SubjectID).
 // Pass an explicit Filter (e.g. FilterByStreams(...)) to export a whole stream deliberately.
 ```
 
@@ -1523,7 +1531,7 @@ mink.FilterByStreams("Customer-user-123", "Order-ord-1")    // By exact stream I
 mink.FilterByStreamCategory("Customer")                     // By category (text before the first '-')
 mink.FilterByMetadata("department", "sales")                // By custom metadata
 mink.FilterByEventTypes("CustomerCreated", "OrderPlaced")   // By event type
-mink.SubjectOrUntaggedFilter("user-123")                    // Tagged for the subject, or untagged
+mink.SubjectOrUntaggedFilter("user-123")                    // Tagged for the subject, or untagged (persisted tags only)
 
 // Combine filters with AND logic
 mink.CombineFilters(

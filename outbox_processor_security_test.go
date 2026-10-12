@@ -155,7 +155,9 @@ func TestOutboxProcessor_ProcessBatch_LogsRedactedDestination(t *testing.T) {
 
 // TestOutboxProcessor_Metrics_ReceiveOnlyPrefix pins the contract the metrics
 // layer relies on: the processor hands OutboxMetrics the publisher prefix, never
-// the full destination (which may carry URL credentials and is unbounded).
+// the full destination (which may carry URL credentials and is unbounded), and
+// a prefix with no registered publisher is collapsed onto the fixed
+// UnregisteredDestinationLabel.
 func TestOutboxProcessor_Metrics_ReceiveOnlyPrefix(t *testing.T) {
 	store := memory.NewOutboxStore()
 	ctx := context.Background()
@@ -183,8 +185,80 @@ func TestOutboxProcessor_Metrics_ReceiveOnlyPrefix(t *testing.T) {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	assert.ElementsMatch(t, []string{"webhook", "failing"}, metrics.processedCalls)
-	assert.ElementsMatch(t, []string{"failing", "unknown"}, metrics.failedCalls)
+	assert.ElementsMatch(t, []string{"failing", UnregisteredDestinationLabel}, metrics.failedCalls)
 	for _, label := range append(append([]string{}, metrics.processedCalls...), metrics.failedCalls...) {
 		assert.NotContains(t, label, "://", "a full destination must never reach the metrics layer: %q", label)
 	}
+}
+
+// TestOutboxProcessor_Metrics_UnregisteredPrefixUsesFixedLabel pins the
+// cardinality bound the metrics package documents: a stored destination whose
+// prefix has no registered publisher is tenant- or attacker-controlled, so its
+// failure is recorded under the fixed UnregisteredDestinationLabel — never under
+// the prefix itself — while the log line still names the prefix for diagnosis.
+func TestOutboxProcessor_Metrics_UnregisteredPrefixUsesFixedLabel(t *testing.T) {
+	store := memory.NewOutboxStore()
+	ctx := context.Background()
+
+	hostile := []string{
+		"tenant-123:https://alice:hunter2@evil.example.com/x?k=v",
+		"tenant-456:https://evil.example.com/y",
+		"'; DROP TABLE outbox; --:kafka",
+		"unknown-prefix-without-separator",
+	}
+	for _, dest := range hostile {
+		require.NoError(t, store.Schedule(ctx, []*adapters.OutboxMessage{{
+			AggregateID: "order-1", EventType: "OrderCreated", Destination: dest, Payload: []byte(`{}`),
+		}}))
+	}
+
+	metrics := &mockOutboxMetrics{}
+	logger := &argsRecordingLogger{}
+	// Only "webhook" is registered; none of the stored prefixes match it.
+	processor := NewOutboxProcessor(store,
+		WithPublisher(newMockPublisher("webhook")),
+		WithOutboxMetrics(metrics),
+		WithProcessorLogger(logger))
+	require.NoError(t, processor.processBatch(ctx))
+
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	require.Len(t, metrics.failedCalls, len(hostile), "every unroutable message is reported failed once")
+	for _, label := range metrics.failedCalls {
+		assert.Equal(t, UnregisteredDestinationLabel, label)
+	}
+	for _, dest := range hostile {
+		assert.NotContains(t, metrics.failedCalls, destinationPrefix(dest), "the stored prefix must never become a label value")
+		assert.NotContains(t, metrics.failedCalls, dest, "the stored destination must never become a label value")
+	}
+	assert.Empty(t, metrics.processedCalls, "an unroutable message is never reported as processed")
+	assert.Equal(t, len(hostile), store.CountByStatus()[adapters.OutboxFailed])
+
+	// The log line keeps the (redacted) destination and the prefix for diagnosis.
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	var loggedPrefixes []string
+	for _, e := range logger.entries {
+		if e.msg != "No publisher for destination" {
+			continue
+		}
+		prefix, ok := e.argValue("prefix")
+		require.True(t, ok, "the no-publisher log line must name the prefix")
+		loggedPrefixes = append(loggedPrefixes, prefix.(string))
+		assert.NotContains(t, e.rendered(), "hunter2", "the log line must not leak URL credentials")
+	}
+	wantPrefixes := make([]string, 0, len(hostile))
+	for _, dest := range hostile {
+		wantPrefixes = append(wantPrefixes, destinationPrefix(dest))
+	}
+	assert.ElementsMatch(t, wantPrefixes, loggedPrefixes)
+}
+
+// TestUnregisteredDestinationLabel_IsAPlainLabelValue guards the constant the
+// metrics package references: a short, fixed, credential-free identifier that
+// cannot be confused with a real "<prefix>:<url>" destination.
+func TestUnregisteredDestinationLabel_IsAPlainLabelValue(t *testing.T) {
+	assert.Equal(t, "unregistered", UnregisteredDestinationLabel)
+	assert.Regexp(t, `^[a-z_]+$`, UnregisteredDestinationLabel)
+	assert.NotContains(t, UnregisteredDestinationLabel, ":")
 }

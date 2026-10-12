@@ -86,7 +86,9 @@ func GetSubjectTags(m Metadata) []string {
 	return subjects
 }
 
-// eventTagsSubject reports whether an event's metadata tags the given subject.
+// eventTagsSubject reports whether an event's metadata tags the given subject (persisted
+// "$subjects" tags only; see EventStore.attributeSubjects for the rule the footprint
+// consumers use, which also derives untagged events through the tagger).
 func eventTagsSubject(m Metadata, subjectID string) bool {
 	for _, s := range GetSubjectTags(m) {
 		if s == subjectID {
@@ -96,48 +98,203 @@ func eventTagsSubject(m Metadata, subjectID string) bool {
 	return false
 }
 
-// SubjectFilter returns an ExportFilter matching events tagged with subjectID. It
-// bridges subject tagging into the export/erasure scan model.
+// SubjectFilter returns an ExportFilter matching events whose PERSISTED "$subjects" tags
+// name subjectID. It bridges subject tagging into the export/erasure scan model.
+//
+// It reads tags only — it has no store or context to run a SubjectTagger — so an
+// untagged event the tagger could derive the subject from does not match. The
+// SubjectResolver, DataEraser and the exporter's own default filters (a resolved
+// footprint, or explicit Streams with no Filter) attribute such events through the
+// store's tagger instead; pass SubjectFilter explicitly only when persisted tags are the
+// intended scope.
 func SubjectFilter(subjectID string) ExportFilter {
 	return func(e StoredEvent) bool {
 		return eventTagsSubject(e.Metadata, subjectID)
 	}
 }
 
+// subjectAttribution is the outcome of attributing one stored event to its data
+// subject(s) (EventStore.attributeSubjects).
+type subjectAttribution struct {
+	// subjects the event is attributed to: its persisted "$subjects" tags, or — for an
+	// untagged event — what the tagger derived from its plaintext. Empty when the event
+	// could not be attributed to anyone.
+	subjects []string
+	// derived is true when subjects came from the tagger rather than persisted tags.
+	derived bool
+	// undecryptable is true when the event is untagged and field-encrypted but could not
+	// be decrypted, so it was never handed to the tagger (subjects is then empty).
+	undecryptable bool
+}
+
+// attributed reports whether the event could be attributed to at least one subject.
+func (a subjectAttribution) attributed() bool { return len(a.subjects) > 0 }
+
+// to reports whether the event is attributed to subjectID.
+func (a subjectAttribution) to(subjectID string) bool { return containsString(a.subjects, subjectID) }
+
+// toOther reports whether the event is attributed to at least one subject other than
+// subjectID (possibly in addition to subjectID).
+func (a subjectAttribution) toOther(subjectID string) bool {
+	for _, s := range a.subjects {
+		if s != subjectID {
+			return true
+		}
+	}
+	return false
+}
+
+// attributeSubjects attributes one stored event to its data subject(s). It is the ONE
+// rule every footprint consumer uses — SubjectResolver (index and scan paths,
+// shared-stream detection), DataEraser (key discovery, the shared-key guard,
+// verification and the certificate), DataExporter's default filters and
+// BackfillSubjectIndex — so an event cannot be indexed, exported, shredded or verified
+// under different rules.
+//
+// Persisted "$subjects" tags win: an event that carries them is attributed to exactly
+// those subjects and the tagger is not consulted, so attribution costs nothing extra
+// when every event is tagged. An UNTAGGED event is attributed by running tagger over
+// it exactly as the append path would have: a field-encrypted event is decrypted first
+// through the store's own decrypt path (DecryptStoredEvent, WithDecryptionErrorHandler
+// honored) and the tagger receives its plaintext with the encryption envelope stripped
+// (the stored payload as written — upcasters are not applied). An encrypted event that
+// cannot be decrypted — its key is revoked, the handler swallowed the failure and left
+// the ciphertext in place, or the store has no encryption configured — is NEVER handed
+// to the tagger: running a tagger over ciphertext, or over a payload missing its
+// encrypted fields, would silently mis-attribute. Such an event is reported
+// undecryptable and unattributed; so is one the tagger derives nothing for. Note the
+// consequence: a derived-only (untagged) encrypted event can no longer be attributed
+// once its key is revoked, which is why Erase verifies the events it matched BEFORE
+// revoking (see erasureMatches).
+//
+// A nil tagger means the store's own SubjectTagger (WithSubjectTagger), so attribution
+// matches the append-time rule with no extra configuration; with no tagger at all,
+// untagged events are simply unattributed (persisted tags only, as before).
+func (s *EventStore) attributeSubjects(ctx context.Context, tagger SubjectTagger, se StoredEvent) subjectAttribution {
+	if tags := GetSubjectTags(se.Metadata); len(tags) > 0 {
+		return subjectAttribution{subjects: tags}
+	}
+	if tagger == nil {
+		tagger = s.subjectTagger
+	}
+	if tagger == nil {
+		return subjectAttribution{}
+	}
+	data, md, ok := s.taggerPlaintext(ctx, se)
+	if !ok {
+		return subjectAttribution{undecryptable: true}
+	}
+	derived := cleanSubjects(tagger(se.Type, data, md))
+	if len(derived) == 0 {
+		return subjectAttribution{}
+	}
+	return subjectAttribution{subjects: derived, derived: true}
+}
+
+// cleanSubjects returns a FRESH copy of a tagger's output with empty ids dropped and
+// duplicates removed, order-preserving. A fresh slice is built rather than the tagger's
+// own: the tagger's slice-ownership is unspecified, so retaining or appending onto it
+// could alias a buffer it reuses.
+func cleanSubjects(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// taggerPlaintext returns an event's data and metadata as a SubjectTagger expects them:
+// decrypted, with the encryption envelope stripped — what the live append path hands
+// the tagger before encrypting. A plaintext event passes through untouched. ok is
+// false when the event is field-encrypted but cannot be decrypted: the store has no
+// encryption configured, the decrypt path failed, or its WithDecryptionErrorHandler
+// swallowed a revoked-key failure and left the ciphertext in place (DecryptStoredEvent
+// then keeps the envelope, which is how that no-op is detected).
+func (s *EventStore) taggerPlaintext(ctx context.Context, se StoredEvent) ([]byte, Metadata, bool) {
+	if !IsEncrypted(se.Metadata) {
+		return se.Data, se.Metadata, true
+	}
+	if s.encryption == nil {
+		return nil, Metadata{}, false
+	}
+	dec, err := s.DecryptStoredEvent(ctx, se)
+	if err != nil || IsEncrypted(dec.Metadata) {
+		return nil, Metadata{}, false
+	}
+	return dec.Data, dec.Metadata, true
+}
+
+// streamSharedWithOthers reports whether any event in the stream is attributed (by
+// attributeSubjects: persisted tag, or derived by tagger) to a subject other than
+// subjectID. Unattributable events do not count: they make a footprint Partial, not a
+// stream shared.
+func (s *EventStore) streamSharedWithOthers(ctx context.Context, tagger SubjectTagger, stored []StoredEvent, subjectID string) bool {
+	for i := range stored {
+		if s.attributeSubjects(ctx, tagger, stored[i]).toOther(subjectID) {
+			return true
+		}
+	}
+	return false
+}
+
 // SubjectFootprint describes the complete extent of a data subject's events. It
 // drives complete-by-default export and erasure and doubles as an erasure preview.
+//
+// An event belongs to the footprint when it is ATTRIBUTED to the subject: it carries the
+// subject's persisted "$subjects" tag, or — when it carries no tag at all — the
+// SubjectTagger (the store's, or WithResolverTagger's) derives the subject from its
+// plaintext, exactly as the append path would have. One rule decides this for the
+// resolver, DataEraser, DataExporter and BackfillSubjectIndex alike, so a derived-only
+// historical event is indexed, exported, shredded and verified consistently.
 type SubjectFootprint struct {
 	SubjectID         string
 	Streams           []string       // sorted, de-duplicated
-	StreamEventCounts map[string]int // tagged events per stream
-	EventCount        int            // total tagged events
+	StreamEventCounts map[string]int // attributed events per stream
+	EventCount        int            // total attributed events
 
 	// SharedStreams lists the footprint streams (sorted, a subset of Streams) in which
-	// the resolver observed an event tagged for a subject OTHER than this one — streams
-	// shared with co-tenants (an order with buyer and seller, a conversation). Rows that
-	// sibling stores key by such a stream id (outbox messages, audit / idempotency rows,
-	// sagas correlated on it) cannot be attributed to this subject alone, so the built-in
-	// SubjectErasable implementations purge and count only the EXCLUSIVE streams (see
-	// ExclusiveStreams and SubjectFootprintIDs) and report the shared ones as skipped.
-	// Untagged events do not make a stream shared; they make the footprint Partial.
+	// the resolver observed an event attributed (tagged, or tagger-derived) to a subject
+	// OTHER than this one — streams shared with co-tenants (an order with buyer and
+	// seller, a conversation). Rows that sibling stores key by such a stream id (outbox
+	// messages, audit / idempotency rows, sagas correlated on it) cannot be attributed to
+	// this subject alone, so the built-in SubjectErasable implementations purge and count
+	// only the EXCLUSIVE streams (see ExclusiveStreams and SubjectFootprintIDs) and report
+	// the shared ones as skipped. Unattributable events do not make a stream shared; they
+	// make the footprint Partial.
 	SharedStreams []string
 
-	// KeyIDs lists the distinct master key ids (sorted) of the tagged events that carry a
-	// COMPLETE field-encryption envelope (HasEncryptionEnvelope) — the keys an erasure
-	// revokes. A tagged event with a bare "$encryption_key_id" but no envelope is
-	// plaintext as far as crypto-shredding is concerned: its key is not listed here and
-	// the event counts as CleartextEvents.
+	// KeyIDs lists the distinct master key ids (sorted) of the attributed events that
+	// carry a COMPLETE field-encryption envelope (HasEncryptionEnvelope) — the keys an
+	// erasure revokes. An attributed event with a bare "$encryption_key_id" but no
+	// envelope is plaintext as far as crypto-shredding is concerned: its key is not listed
+	// here and the event counts as CleartextEvents.
 	KeyIDs []string
 
-	// CleartextEvents is the number of tagged events that carry NO complete
+	// CleartextEvents is the number of attributed events that carry NO complete
 	// field-encryption envelope (!HasEncryptionEnvelope). Crypto-shredding cannot reach
 	// them (there is no key to revoke), so their payload stays readable after an erasure;
 	// see ErasureResult.CleartextEvents.
 	CleartextEvents int
 
 	// Partial is true when completeness cannot be proven — e.g. the store contains
-	// untagged (legacy) events that could belong to the subject. Callers MUST treat
-	// a partial footprint as incomplete (never a silent partial).
+	// events that carry no subject tag and that the tagger could not attribute to anyone
+	// (no tagger configured, the tagger derived nothing, or the event is encrypted and
+	// undecryptable), any of which could belong to the subject. Callers MUST treat a
+	// partial footprint as incomplete (never a silent partial).
 	Partial bool
 }
 
@@ -190,6 +347,7 @@ type SubjectResolver struct {
 	batchSize     int
 	index         SubjectIndexAdapter
 	authoritative bool
+	tagger        SubjectTagger // nil → the store's own SubjectTagger
 }
 
 // SubjectResolverOption configures a SubjectResolver.
@@ -225,26 +383,55 @@ func WithResolverIndex(idx SubjectIndexAdapter) SubjectResolverOption {
 // — every stream touching a subject is recorded — so an index-backed resolve may report
 // a non-partial footprint. Without it, an index-backed resolve is honestly marked Partial.
 //
-// An index-backed resolve never observes untagged events, so this assertion is the ONLY
-// thing standing between a legacy (pre-tagging) event the backfill could not attribute
-// and a footprint — and hence an erasure certificate — that claims completeness. Use it
-// only when BOTH hold:
+// An index-backed resolve never observes the events outside the indexed streams, so this
+// assertion is the ONLY thing standing between a legacy (pre-tagging) event the backfill
+// could not attribute and a footprint — and hence an erasure certificate — that claims
+// completeness. Use it only when ALL hold:
 //
 //   - the index was populated by BackfillSubjectIndexWithReport and the report shows
-//     Untagged == 0 (every scanned event was attributed to at least one subject), or the
-//     untagged events are known to carry no PII; an Undecryptable count means the tagger
-//     never saw those events' encrypted fields, so their subjects were taken from existing
-//     tags only; and
+//     Untagged == 0 (every scanned event was attributed to at least one subject, by its
+//     persisted tags or by the tagger), or the untagged events are known to carry no PII;
+//     an Undecryptable count means untagged encrypted events the tagger could not see,
+//     each of them also counted as Untagged;
+//   - the resolver attributes untagged events with the SAME tagger the backfill used —
+//     the store's own SubjectTagger by default, or the one passed to WithResolverTagger —
+//     since an event the backfill indexed under a derived subject is found in the footprint
+//     only if the resolver derives it the same way; and
 //   - no write has bypassed the index writer since (WithSubjectIndexWriter on every store
 //     instance that appends, or a transactionally-consistent index such as the PostgreSQL
-//     adapter's drift-free StreamsBySubject).
+//     adapter's drift-free StreamsBySubject — which indexes PERSISTED tags only, so a
+//     derived-only historical event is reachable through it only via the scan or a
+//     backfilled index).
 //
 // Otherwise prefer the scan-backed resolver, which proves completeness by observing the
-// untagged events itself.
+// unattributable events itself.
 func WithAuthoritativeIndex() SubjectResolverOption {
 	return func(r *SubjectResolver) {
 		r.authoritative = true
 	}
+}
+
+// WithResolverTagger sets the SubjectTagger the resolver uses to attribute events that
+// carry no persisted "$subjects" tag (events written before tagging was enabled, or by a
+// store without a tagger). By default the resolver uses the store's own SubjectTagger
+// (WithSubjectTagger), so attribution matches the append-time rule with no extra
+// configuration; pass a tagger here when resolving through a store that has none, or to
+// use the tagger a BackfillSubjectIndex run was made with. The tagger runs only for
+// untagged events (zero overhead when every event is tagged) and sees each one exactly as
+// the append path would have — decrypted, envelope stripped; an undecryptable encrypted
+// event is never handed to it and stays unattributed. A DataEraser or DataExporter
+// configured with this resolver attributes with the same tagger. A nil tagger is ignored.
+func WithResolverTagger(tagger SubjectTagger) SubjectResolverOption {
+	return func(r *SubjectResolver) {
+		if tagger != nil {
+			r.tagger = tagger
+		}
+	}
+}
+
+// attribute attributes se with the resolver's tagger (EventStore.attributeSubjects).
+func (r *SubjectResolver) attribute(ctx context.Context, se StoredEvent) subjectAttribution {
+	return r.store.attributeSubjects(ctx, r.tagger, se)
 }
 
 // NewSubjectResolver creates a resolver for the given store.
@@ -258,7 +445,21 @@ func NewSubjectResolver(store *EventStore, opts ...SubjectResolverOption) *Subje
 
 // Resolve returns the subject's footprint. It is read-only and therefore doubles
 // as an erasure preview.
+//
+// An event is the subject's when attributeSubjects attributes it to the subject: by its
+// persisted "$subjects" tag or, for an untagged event, by the tagger (the store's, or
+// WithResolverTagger's) run over its plaintext. An untagged event the tagger cannot
+// attribute to anyone makes the footprint Partial on the scan path; on the index path
+// Partial is decided by WithAuthoritativeIndex alone (see there for what that assertion
+// requires).
 func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*SubjectFootprint, error) {
+	return r.resolve(ctx, subjectID, nil)
+}
+
+// resolve is Resolve recording, when matched is non-nil, every event it attributes to
+// the subject — so DataEraser can verify exactly the events it is about to shred, whose
+// derived attribution revocation may destroy (see erasureMatches).
+func (r *SubjectResolver) resolve(ctx context.Context, subjectID string, matched erasureMatches) (*SubjectFootprint, error) {
 	if subjectID == "" {
 		return nil, ErrSubjectIDRequired
 	}
@@ -271,8 +472,9 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 	// Index-backed fast path. An index is used ONLY when explicitly injected
 	// (WithResolverIndex) — never auto-detected from the adapter — so a store gaining a
 	// SubjectIndexAdapter never silently switches resolution away from the scan (which
-	// can prove completeness by observing untagged events) to an index (which cannot).
-	// Pass store.Adapter() to WithResolverIndex to opt into a drift-free adapter index.
+	// can prove completeness by observing unattributable events) to an index (which
+	// cannot). Pass store.Adapter() to WithResolverIndex to opt into a drift-free adapter
+	// index.
 	if idx := r.index; idx != nil {
 		streams, err := idx.StreamsBySubject(ctx, subjectID)
 		if err != nil {
@@ -286,13 +488,19 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 				}
 				return nil, fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
 			}
+			// The whole stream is in hand: attribute each event once, recording the
+			// subject's own and noting whether a co-tenant shares the stream.
+			shared := false
 			for _, se := range stored {
-				if eventTagsSubject(se.Metadata, subjectID) {
-					r.record(fp, streamSet, keySet, se)
+				at := r.attribute(ctx, se)
+				if at.to(subjectID) {
+					r.record(fp, streamSet, keySet, matched, se)
+				}
+				if at.toOther(subjectID) {
+					shared = true
 				}
 			}
-			// The whole stream is in hand: note whether a co-tenant shares it.
-			if _, mine := streamSet[streamID]; mine && streamSharedWithOthers(stored, subjectID) {
+			if _, mine := streamSet[streamID]; mine && shared {
 				sharedSet[streamID] = struct{}{}
 			}
 		}
@@ -321,20 +529,22 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 			break
 		}
 		for _, se := range batch {
+			at := r.attribute(ctx, se)
 			switch {
-			case eventTagsSubject(se.Metadata, subjectID):
-				r.record(fp, streamSet, keySet, se)
-			case len(GetSubjectTags(se.Metadata)) == 0:
-				// An untagged event: tagging was not universally applied, so the
-				// footprint cannot be proven complete.
+			case at.to(subjectID):
+				r.record(fp, streamSet, keySet, matched, se)
+			case !at.attributed():
+				// Neither a tag nor the tagger attributes this event to anyone: it could
+				// be the subject's, so the footprint cannot be proven complete.
 				fp.Partial = true
 			}
 		}
 		position = batch[len(batch)-1].GlobalPosition
 	}
 	// A co-tenant's event can precede the subject's first event in a shared stream, so
-	// sharing cannot be settled during the single pass without remembering every tagged
-	// stream in the store. Re-read the footprint streams instead: O(the subject's events).
+	// sharing cannot be settled during the single pass without remembering every
+	// attributed stream in the store. Re-read the footprint streams instead: O(the
+	// subject's events).
 	if err := r.detectSharedStreams(ctx, subjectID, streamSet, sharedSet); err != nil {
 		return nil, err
 	}
@@ -343,7 +553,7 @@ func (r *SubjectResolver) Resolve(ctx context.Context, subjectID string) (*Subje
 }
 
 // detectSharedStreams loads each footprint stream and records in sharedSet the ones in
-// which another subject is tagged (see SubjectFootprint.SharedStreams).
+// which another subject is attributed (see SubjectFootprint.SharedStreams).
 func (r *SubjectResolver) detectSharedStreams(ctx context.Context, subjectID string, streamSet, sharedSet map[string]struct{}) error {
 	for streamID := range streamSet {
 		if err := ctx.Err(); err != nil {
@@ -356,28 +566,15 @@ func (r *SubjectResolver) detectSharedStreams(ctx context.Context, subjectID str
 			}
 			return fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
 		}
-		if streamSharedWithOthers(stored, subjectID) {
+		if r.store.streamSharedWithOthers(ctx, r.tagger, stored, subjectID) {
 			sharedSet[streamID] = struct{}{}
 		}
 	}
 	return nil
 }
 
-// streamSharedWithOthers reports whether any event in the stream is tagged for a subject
-// other than subjectID. Untagged events do not count: they make a footprint Partial, not
-// a stream shared.
-func streamSharedWithOthers(stored []StoredEvent, subjectID string) bool {
-	for i := range stored {
-		for _, s := range GetSubjectTags(stored[i].Metadata) {
-			if s != subjectID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (r *SubjectResolver) record(fp *SubjectFootprint, streamSet, keySet map[string]struct{}, se StoredEvent) {
+func (r *SubjectResolver) record(fp *SubjectFootprint, streamSet, keySet map[string]struct{}, matched erasureMatches, se StoredEvent) {
+	matched.add(se)
 	fp.EventCount++
 	fp.StreamEventCounts[se.StreamID]++
 	streamSet[se.StreamID] = struct{}{}

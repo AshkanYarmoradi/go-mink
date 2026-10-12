@@ -90,6 +90,11 @@ func WithErasureMarker(streamID string) DataEraserOption {
 // ErasureRequest (no Streams/Filter/KeyIDs) is automatically resolved to the
 // subject's complete footprint. A partial footprint propagates to
 // ErasureResult.Partial — never a silent partial.
+//
+// The eraser attributes untagged events (on every request shape, in the shared-key
+// guard and during verification) with the resolver's tagger — WithResolverTagger, or
+// the store's own SubjectTagger by default — so an event is shredded and verified under
+// exactly the rule it was resolved and indexed under.
 func WithEraseSubjectResolver(r *SubjectResolver) DataEraserOption {
 	return func(e *DataEraser) {
 		e.resolver = r
@@ -133,10 +138,11 @@ func WithErasureHook(hooks ...ErasureHook) DataEraserOption {
 }
 
 // WithSharedKeyGuard makes Erase refuse — BEFORE any (irreversible) revocation — to
-// revoke a key that also protects events tagged for a subject other than the target,
-// or untagged events whose ownership cannot be proven. This catches the per-tenant-key
-// blast radius (erasing one subject would crypto-shred the whole tenant). On a shared
-// key it returns *SharedKeyError (errors.Is ErrSharedKeyRevocation). Pair with
+// revoke a key that also protects events attributed (tagged, or derived by the tagger)
+// to a subject other than the target, or events that cannot be attributed to anyone and
+// whose ownership therefore cannot be proven. This catches the per-tenant-key blast
+// radius (erasing one subject would crypto-shred the whole tenant). On a shared key it
+// returns *SharedKeyError (errors.Is ErrSharedKeyRevocation). Pair with
 // AllowSharedKeyRevocation to override. Zero overhead when unset. Requires a scannable
 // adapter (SubscriptionAdapter).
 func WithSharedKeyGuard() DataEraserOption {
@@ -199,7 +205,7 @@ func WithDerivedAggregateIDs() DataEraserOption {
 // WITHOUT a sink, Erase runs the very same verification internally (events checked
 // against key revocation, sibling-store residual counts, the non-vacuous rule, marker
 // and read-model outcomes — nothing is emitted) and purges only if that would have been
-// Verified. A KeyIDs-only or explicit-Streams erasure that checked no subject-tagged
+// Verified. A KeyIDs-only or explicit-Streams erasure that checked no subject-attributed
 // event is vacuous and never purges. Otherwise the index is kept so a re-run can still
 // resolve the subject through it, and ErasureResult.Notes says so (that note is
 // result-only; see ErasureResult.Notes). The outcome is reported in
@@ -284,14 +290,15 @@ type ErasureResult struct {
 	// Streams lists the streams that contained matched events (sorted).
 	Streams []string
 
-	// SharedStreams lists the subset of Streams (sorted) in which an event tagged for a
-	// subject OTHER than this one was observed — streams shared with co-tenants. Key
-	// revocation is unaffected (it is scoped to the subject's own events), but the
-	// built-in sibling-store erasers purge only the exclusive streams and report the
-	// shared ones as SubjectErasureOutcome.SharedStreamsSkipped (see
-	// SubjectFootprint.SharedStreams, SubjectFootprintIDs). Computed on every request
-	// shape: from the resolver (SubjectID-only), from the listed streams (Streams), or by
-	// re-reading the matched streams after the scan (Filter).
+	// SharedStreams lists the subset of Streams (sorted) in which an event attributed
+	// (tagged, or derived by the tagger) to a subject OTHER than this one was observed —
+	// streams shared with co-tenants. Key revocation is unaffected (it is scoped to the
+	// subject's own events), but the built-in sibling-store erasers purge only the
+	// exclusive streams and report the shared ones as
+	// SubjectErasureOutcome.SharedStreamsSkipped (see SubjectFootprint.SharedStreams,
+	// SubjectFootprintIDs). Computed on every request shape: from the resolver
+	// (SubjectID-only), from the listed streams (Streams), or by re-reading the matched
+	// streams after the scan (Filter).
 	SharedStreams []string
 
 	// EventsScanned is the number of events examined during key discovery.
@@ -361,6 +368,41 @@ type ErasureResult struct {
 
 	// Errors holds non-fatal per-key / marker failures (partial-failure contract).
 	Errors []error
+
+	// attributed remembers the events this erasure attributed to the subject BEFORE
+	// revoking their keys, so the certificate verifies exactly those events (see
+	// erasureMatches). Internal; nil on a result the eraser did not build.
+	attributed erasureMatches
+}
+
+// erasureMatches records, by stream and version, the events an erasure attributed to
+// its subject (persisted tag or tagger-derived) before it revoked anything. Revocation
+// can destroy a derived attribution: an untagged event whose subject the tagger derived
+// from an encrypted field is undecryptable — hence unattributable — once its key is
+// shredded. Verifying the certificate by re-attributing after the revoke would then
+// find nothing to attest. So Erase verifies the events it matched, whose attribution it
+// established while they were still readable; a standalone Verify, which has no such
+// memo, attributes afresh and reports what it can no longer attribute. A nil
+// erasureMatches is an empty, write-ignoring memo.
+type erasureMatches map[string]map[int64]struct{}
+
+// add records se; a nil memo ignores the write.
+func (m erasureMatches) add(se StoredEvent) {
+	if m == nil {
+		return
+	}
+	versions, ok := m[se.StreamID]
+	if !ok {
+		versions = map[int64]struct{}{}
+		m[se.StreamID] = versions
+	}
+	versions[se.Version] = struct{}{}
+}
+
+// has reports whether se was recorded.
+func (m erasureMatches) has(se StoredEvent) bool {
+	_, ok := m[se.StreamID][se.Version]
+	return ok
 }
 
 // Failed reports whether the erasure did not fully succeed: any non-nil Errors (e.g. a
@@ -420,15 +462,18 @@ func (e *DataEraser) Erase(ctx context.Context, req ErasureRequest) (*ErasureRes
 		return nil, NewErasureError(req.SubjectID, ErrErasureNotConfigured)
 	}
 
-	result := &ErasureResult{SubjectID: req.SubjectID, ErasedAt: time.Now()}
+	result := &ErasureResult{SubjectID: req.SubjectID, ErasedAt: time.Now(), attributed: erasureMatches{}}
 	keySet := make(map[string]struct{}, len(req.KeyIDs))
 	streamSet := make(map[string]struct{})
 
 	// A SubjectID-only request resolves to the subject's complete footprint (keys +
-	// streams). A partial footprint propagates to the result — never silently.
+	// streams). A partial footprint propagates to the result — never silently. The
+	// events the resolver attributes to the subject are remembered (result.attributed)
+	// so the certificate can verify them after their keys — and, for a derived-only
+	// encrypted event, their attributability — are gone.
 	resolved := false
 	if e.resolver != nil && len(req.Streams) == 0 && req.Filter == nil && len(req.KeyIDs) == 0 {
-		fp, err := e.resolver.Resolve(ctx, req.SubjectID)
+		fp, err := e.resolver.resolve(ctx, req.SubjectID, result.attributed)
 		if err != nil {
 			return nil, NewErasureError(req.SubjectID, err)
 		}
@@ -588,27 +633,48 @@ func (e *DataEraser) validateRequest(req ErasureRequest) error {
 	return nil
 }
 
+// tagger returns the SubjectTagger the eraser attributes untagged events with: the
+// resolver's (WithResolverTagger), or nil for the store's own SubjectTagger.
+func (e *DataEraser) tagger() SubjectTagger {
+	if e.resolver != nil {
+		return e.resolver.tagger
+	}
+	return nil
+}
+
+// attribute attributes se under the shared rule (EventStore.attributeSubjects) with the
+// eraser's tagger.
+func (e *DataEraser) attribute(ctx context.Context, se StoredEvent) subjectAttribution {
+	return e.store.attributeSubjects(ctx, e.tagger(), se)
+}
+
 // discoverKeys walks the subject's matched events (by stream or scan) and calls fn
 // for each, mirroring DataExporter's enumeration so the two share one subject model.
 // It also records on result the matched streams that are shared with other subjects
-// (result.SharedStreams) so the sibling-store purge can leave their rows alone.
+// (result.SharedStreams) so the sibling-store purge can leave their rows alone, and
+// remembers the matched events attributed to the subject (result.attributed) for the
+// certificate.
 //
 // Stream-scoped discovery (req.Streams) is subject-scoped within each listed stream:
 // a stream can be shared by several subjects (a conversation, an order with buyer
 // and seller), and revoking every key found in it would crypto-shred the co-tenants.
-// So, within a listed stream, if ANY event carries "$subjects" tags, only the events
-// tagged with the target subject are considered. Two kinds of event are then left out:
+// Events are attributed under the shared rule (attributeSubjects: persisted "$subjects"
+// tag, or — for an untagged event — the tagger run over its plaintext). So, within a
+// listed stream, if ANY event is attributable to some subject, only the events
+// attributed to the target subject are considered. Two kinds of event are then left out:
 //
-//   - events tagged for OTHER subjects only — a co-tenant's, correctly out of scope;
-//   - UNTAGGED events (written before tagging was enabled) in a stream that also carries
-//     tags — these may well be the subject's own, but nothing attributes them, so their
-//     keys are not collected and they are not shredded. Such a stream makes the result
-//     Partial (the erasure cannot be proven complete) and a count-only note says so.
+//   - events attributed to OTHER subjects only — a co-tenant's, correctly out of scope;
+//   - UNATTRIBUTABLE events (untagged, and the tagger derives nothing — or cannot see
+//     them because they are encrypted and undecryptable) in a stream that also holds
+//     attributable events — these may well be the subject's own, but nothing attributes
+//     them, so their keys are not collected and they are not shredded. Such a stream
+//     makes the result Partial (the erasure cannot be proven complete) and a count-only
+//     note says so.
 //
-// A stream with no tagged events at all keeps the legacy behavior — every matched event,
-// hence every key, is collected — and the result/certificate carries a note counting
-// such streams. The scan path (req.Filter) is unchanged: the caller's filter defines
-// its scope.
+// A stream with no attributable event at all keeps the legacy behavior — every matched
+// event, hence every key, is collected — and the result/certificate carries a note
+// counting such streams. The scan path (req.Filter) is unchanged: the caller's filter
+// defines its scope.
 func (e *DataEraser) discoverKeys(ctx context.Context, req ErasureRequest, result *ErasureResult, fn func(StoredEvent)) error {
 	if len(req.Streams) > 0 {
 		return e.discoverKeysByStream(ctx, req, result, fn)
@@ -619,7 +685,7 @@ func (e *DataEraser) discoverKeys(ctx context.Context, req ErasureRequest, resul
 // discoverKeysByStream is the stream-scoped half of discoverKeys: it loads each listed
 // stream, hands the subject's matched events to fn (see collectStreamKeys for the
 // subject-scoping rule), records which matched streams are shared with other subjects,
-// and finally annotates result with the legacy/untagged scope notes.
+// and finally annotates result with the legacy/unattributable scope notes.
 func (e *DataEraser) discoverKeysByStream(ctx context.Context, req ErasureRequest, result *ErasureResult, fn func(StoredEvent)) error {
 	var scope streamScopeCounts
 	sharedSet := map[string]struct{}{}
@@ -634,9 +700,9 @@ func (e *DataEraser) discoverKeysByStream(ctx context.Context, req ErasureReques
 		if !found {
 			continue
 		}
-		tally := e.collectStreamKeys(stored, req, fn)
+		tally := e.collectStreamKeys(ctx, stored, req, result.attributed, fn)
 		scope.add(tally)
-		if tally.matched && streamSharedWithOthers(stored, req.SubjectID) {
+		if tally.matched && tally.shared {
 			sharedSet[streamID] = struct{}{}
 		}
 	}
@@ -663,31 +729,51 @@ func (e *DataEraser) loadErasureStream(ctx context.Context, subjectID, streamID 
 
 // streamKeyTally is what collectStreamKeys reports about one listed stream.
 type streamKeyTally struct {
-	// tagged is true when at least one event in the stream carries "$subjects" tags,
-	// i.e. the stream is subject-scoped rather than legacy.
-	tagged bool
+	// scoped is true when at least one event in the stream is attributable to some
+	// subject (persisted tag, or derived by the tagger), i.e. the stream is
+	// subject-scoped rather than legacy.
+	scoped bool
 	// matched is true when at least one of the subject's events was handed to fn.
 	matched bool
-	// untagged counts the matched events of a tagged stream that carry no tag at all —
-	// unattributable: not a co-tenant's, not provably the subject's — and were skipped.
+	// untagged counts the matched events of a scoped stream that could not be attributed
+	// to anyone — not a co-tenant's, not provably the subject's — and were skipped.
 	untagged int
+	// shared is true when some event in the stream (matched or not) is attributed to a
+	// subject other than the target (see ErasureResult.SharedStreams).
+	shared bool
 }
 
 // collectStreamKeys applies discoverKeys' subject-scoping rule to one loaded stream:
-// in a tagged stream only the events tagged for req.SubjectID reach fn (other subjects'
-// and untagged events are skipped, the latter counted); in a legacy stream with no tags
-// every event matching req reaches fn.
-func (e *DataEraser) collectStreamKeys(stored []StoredEvent, req ErasureRequest, fn func(StoredEvent)) streamKeyTally {
-	tally := streamKeyTally{tagged: streamHasSubjectTags(stored)}
-	for _, se := range stored {
+// in a scoped stream only the events attributed to req.SubjectID reach fn (other
+// subjects' and unattributable events are skipped, the latter counted) and are
+// remembered in attributed; in a legacy stream, where nothing is attributable, every
+// event matching req reaches fn (and none is remembered — the certificate attests only
+// events attributed to the subject). Each event is attributed once, whatever it is used
+// for, so the tagger runs at most once per untagged event.
+func (e *DataEraser) collectStreamKeys(ctx context.Context, stored []StoredEvent, req ErasureRequest, attributed erasureMatches, fn func(StoredEvent)) streamKeyTally {
+	var tally streamKeyTally
+	ats := make([]subjectAttribution, len(stored))
+	for i := range stored {
+		ats[i] = e.attribute(ctx, stored[i])
+		if ats[i].attributed() {
+			tally.scoped = true
+		}
+		if ats[i].toOther(req.SubjectID) {
+			tally.shared = true
+		}
+	}
+	for i, se := range stored {
 		if !e.matches(se, req) {
 			continue
 		}
-		if tally.tagged && !eventTagsSubject(se.Metadata, req.SubjectID) {
-			if len(GetSubjectTags(se.Metadata)) == 0 {
-				tally.untagged++ // unattributable: not the co-tenant's, not provably the subject's
+		if tally.scoped {
+			if !ats[i].to(req.SubjectID) {
+				if !ats[i].attributed() {
+					tally.untagged++ // unattributable: not the co-tenant's, not provably the subject's
+				}
+				continue // not the subject's event (another subject's, or unattributable)
 			}
-			continue // not the subject's event (another subject's, or untagged)
+			attributed.add(se)
 		}
 		tally.matched = true
 		fn(se)
@@ -698,14 +784,14 @@ func (e *DataEraser) collectStreamKeys(stored []StoredEvent, req ErasureRequest,
 // streamScopeCounts accumulates, across the listed streams, the per-stream tallies that
 // discoverKeysByStream turns into result notes.
 type streamScopeCounts struct {
-	legacyStreams   int // listed streams with no subject tags (every key collected)
-	mixedStreams    int // tagged streams that also held untagged, skipped events
-	untaggedSkipped int // untagged events skipped across the mixed streams
+	legacyStreams   int // listed streams with no attributable event (every key collected)
+	mixedStreams    int // scoped streams that also held unattributable, skipped events
+	untaggedSkipped int // unattributable events skipped across the mixed streams
 }
 
 // add folds one stream's tally into the counts.
 func (c *streamScopeCounts) add(t streamKeyTally) {
-	if !t.tagged {
+	if !t.scoped {
 		c.legacyStreams++
 	}
 	if t.untagged > 0 {
@@ -715,20 +801,20 @@ func (c *streamScopeCounts) add(t streamKeyTally) {
 }
 
 // annotate records the count-only scope notes on result (listed is the number of
-// streams the request named). Skipped untagged events make the result Partial: the
-// subject's own pre-tagging events may hide among them, so the erasure cannot claim
-// completeness (mirrors the scan resolver's rule for untagged events) and the
+// streams the request named). Skipped unattributable events make the result Partial:
+// the subject's own pre-tagging events may hide among them, so the erasure cannot claim
+// completeness (mirrors the scan resolver's rule for unattributable events) and the
 // certificate cannot be Verified.
 func (c streamScopeCounts) annotate(result *ErasureResult, listed int) {
 	if c.legacyStreams > 0 {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"%d of %d listed stream(s) carry no subject tags; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams",
+			"%d of %d listed stream(s) hold no event attributable to any subject; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams",
 			c.legacyStreams, listed))
 	}
 	if c.untaggedSkipped > 0 {
 		result.Partial = true
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"%d untagged event(s) in %d listed stream(s) that also carry subject tags could not be attributed to any subject and were not shredded; keys were collected only from events tagged for the subject",
+			"%d untagged event(s) in %d listed stream(s) that also hold subject-attributed events could not be attributed to any subject and were not shredded; keys were collected only from events attributed to the subject",
 			c.untaggedSkipped, c.mixedStreams))
 	}
 }
@@ -755,7 +841,7 @@ func (e *DataEraser) discoverKeysByScan(ctx context.Context, req ErasureRequest,
 		if len(batch) == 0 {
 			break
 		}
-		e.collectScanKeys(batch, req, matchedStreams, fn)
+		e.collectScanKeys(ctx, batch, req, matchedStreams, result.attributed, fn)
 		position = batch[len(batch)-1].GlobalPosition
 	}
 	// A co-tenant's event can precede the subject's first matched event in a stream, so
@@ -768,19 +854,27 @@ func (e *DataEraser) discoverKeysByScan(ctx context.Context, req ErasureRequest,
 	return nil
 }
 
-// collectScanKeys hands fn every event in batch that matches req and records the
-// stream of each such event in matchedStreams.
-func (e *DataEraser) collectScanKeys(batch []StoredEvent, req ErasureRequest, matchedStreams map[string]struct{}, fn func(StoredEvent)) {
+// collectScanKeys hands fn every event in batch that matches req, records the stream of
+// each such event in matchedStreams and remembers in attributed the matched events that
+// are attributed to req.SubjectID — the ones the certificate may attest. The caller's
+// filter alone decides what is shredded; attribution only decides what is attested, so
+// an untagged event matched by a broad filter is shredded but, unless the tagger
+// attributes it to the subject, not certified as the subject's (as before).
+func (e *DataEraser) collectScanKeys(ctx context.Context, batch []StoredEvent, req ErasureRequest, matchedStreams map[string]struct{}, attributed erasureMatches, fn func(StoredEvent)) {
 	for _, se := range batch {
-		if e.matches(se, req) {
-			matchedStreams[se.StreamID] = struct{}{}
-			fn(se)
+		if !e.matches(se, req) {
+			continue
 		}
+		matchedStreams[se.StreamID] = struct{}{}
+		if attributed != nil && e.attribute(ctx, se).to(req.SubjectID) {
+			attributed.add(se)
+		}
+		fn(se)
 	}
 }
 
 // sharedStreamsOf loads each stream in streams and returns, sorted, the ones in which
-// a subject other than subjectID is tagged (see SubjectFootprint.SharedStreams).
+// a subject other than subjectID is attributed (see SubjectFootprint.SharedStreams).
 func (e *DataEraser) sharedStreamsOf(ctx context.Context, subjectID string, streams map[string]struct{}) ([]string, error) {
 	shared := map[string]struct{}{}
 	for streamID := range streams {
@@ -794,22 +888,11 @@ func (e *DataEraser) sharedStreamsOf(ctx context.Context, subjectID string, stre
 			}
 			return nil, NewErasureError(subjectID, fmt.Errorf("failed to load stream %q: %w", streamID, err))
 		}
-		if streamSharedWithOthers(stored, subjectID) {
+		if e.store.streamSharedWithOthers(ctx, e.tagger(), stored, subjectID) {
 			shared[streamID] = struct{}{}
 		}
 	}
 	return sortedSet(shared), nil
-}
-
-// streamHasSubjectTags reports whether any event in the stream carries "$subjects"
-// tags, i.e. subject tagging was in effect for it.
-func streamHasSubjectTags(stored []StoredEvent) bool {
-	for i := range stored {
-		if len(GetSubjectTags(stored[i].Metadata)) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func (e *DataEraser) matches(se StoredEvent, req ErasureRequest) bool {
@@ -930,9 +1013,12 @@ func (e *DataEraser) runErasureHooks(ctx context.Context, subjectID string, resu
 }
 
 // detectSharedKeys scans the store and reports (via *SharedKeyError) any key in keySet
-// that also protects events tagged for a subject other than target, or untagged events
-// whose ownership cannot be proven. Returns (nil, nil) when every key is exclusive to
-// the target. Requires a SubscriptionAdapter (the guard cannot verify otherwise).
+// that also protects events attributed (tagged, or tagger-derived) to a subject other
+// than target, or events that cannot be attributed to anyone and whose ownership
+// therefore cannot be proven. Returns (nil, nil) when every key is exclusive to the
+// target. Requires a SubscriptionAdapter (the guard cannot verify otherwise). It runs
+// BEFORE revocation, while every event under the candidate keys is still decryptable,
+// so a derived attribution is as good here as a persisted tag.
 func (e *DataEraser) detectSharedKeys(ctx context.Context, target string, keySet map[string]struct{}) (*SharedKeyError, error) {
 	if _, ok := e.store.Adapter().(adapters.SubscriptionAdapter); !ok {
 		return nil, NewErasureError(target, fmt.Errorf("shared-key guard needs event scanning: %w", ErrErasureScanNotSupported))
@@ -961,9 +1047,9 @@ func (e *DataEraser) detectSharedKeys(ctx context.Context, target string, keySet
 			if _, want := keySet[keyID]; !want {
 				continue
 			}
-			tags := GetSubjectTags(se.Metadata)
-			exclusive := len(tags) > 0 // untagged → ownership unprovable → treat as shared
-			for _, s := range tags {
+			at := e.attribute(ctx, se)
+			exclusive := at.attributed() // unattributable → ownership unprovable → treat as shared
+			for _, s := range at.subjects {
 				if s != target {
 					exclusive = false
 					others[s] = struct{}{}

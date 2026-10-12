@@ -56,41 +56,41 @@ func TestDataEraser_CollectStreamKeys_SubjectScoping(t *testing.T) {
 			name:         "legacy stream hands every matched event to fn",
 			stored:       []StoredEvent{plain(1), plain(2)},
 			req:          ErasureRequest{SubjectID: subject},
-			wantTally:    streamKeyTally{tagged: false, matched: true},
+			wantTally:    streamKeyTally{scoped: false, matched: true},
 			wantVersions: []int64{1, 2},
 		},
 		{
-			name:         "tagged stream keeps only the subject's events",
+			name:         "tagged stream keeps only the subject's events and notes the co-tenant",
 			stored:       []StoredEvent{tagged(1, subject), tagged(2, "other"), tagged(3, "other", subject)},
 			req:          ErasureRequest{SubjectID: subject},
-			wantTally:    streamKeyTally{tagged: true, matched: true},
+			wantTally:    streamKeyTally{scoped: true, matched: true, shared: true},
 			wantVersions: []int64{1, 3},
 		},
 		{
 			name:         "untagged events in a tagged stream are counted, not handed over",
 			stored:       []StoredEvent{tagged(1, subject), plain(2), plain(3)},
 			req:          ErasureRequest{SubjectID: subject},
-			wantTally:    streamKeyTally{tagged: true, matched: true, untagged: 2},
+			wantTally:    streamKeyTally{scoped: true, matched: true, untagged: 2},
 			wantVersions: []int64{1},
 		},
 		{
-			name:      "only another subject's events: nothing matched, nothing untagged",
+			name:      "only another subject's events: nothing matched, nothing untagged, shared",
 			stored:    []StoredEvent{tagged(1, "other")},
 			req:       ErasureRequest{SubjectID: subject},
-			wantTally: streamKeyTally{tagged: true},
+			wantTally: streamKeyTally{scoped: true, shared: true},
 		},
 		{
 			name:         "request filter applies before subject scoping",
 			stored:       []StoredEvent{plain(1), plain(2)},
 			req:          ErasureRequest{SubjectID: subject, Filter: rejectVersion(1)},
-			wantTally:    streamKeyTally{tagged: false, matched: true},
+			wantTally:    streamKeyTally{scoped: false, matched: true},
 			wantVersions: []int64{2},
 		},
 		{
 			name:         "a filtered-out untagged event is not counted as untagged",
 			stored:       []StoredEvent{tagged(1, subject), plain(2)},
 			req:          ErasureRequest{SubjectID: subject, Filter: rejectVersion(2)},
-			wantTally:    streamKeyTally{tagged: true, matched: true},
+			wantTally:    streamKeyTally{scoped: true, matched: true},
 			wantVersions: []int64{1},
 		},
 		{
@@ -101,18 +101,70 @@ func TestDataEraser_CollectStreamKeys_SubjectScoping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &DataEraser{}
+			// A zero EventStore has no tagger: attribution is by persisted tags only.
+			e := &DataEraser{store: &EventStore{}}
 			var got []int64
-			tally := e.collectStreamKeys(tt.stored, tt.req, func(se StoredEvent) { got = append(got, se.Version) })
+			attributed := erasureMatches{}
+			tally := e.collectStreamKeys(context.Background(), tt.stored, tt.req, attributed, func(se StoredEvent) { got = append(got, se.Version) })
 			assert.Equal(t, tt.wantTally, tally)
 			assert.Equal(t, tt.wantVersions, got)
+			// Only a scoped stream's attributed events are remembered for the certificate;
+			// a legacy stream's events are shredded but not attested.
+			for _, se := range tt.stored {
+				want := tally.scoped && containsInt64(tt.wantVersions, se.Version)
+				assert.Equal(t, want, attributed.has(se), "version %d", se.Version)
+			}
 		})
 	}
 }
 
+// containsInt64 reports whether xs contains v.
+func containsInt64(xs []int64, v int64) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// A derived attribution scopes a listed stream exactly like a persisted tag: with a
+// tagger, an untagged event the tagger attributes to the subject is matched and
+// remembered, one it attributes to a co-tenant is skipped and makes the stream shared,
+// and one it cannot attribute is skipped and counted.
+func TestDataEraser_CollectStreamKeys_DerivedAttribution(t *testing.T) {
+	const subject = "u1"
+	byUser := func(v int64, userID string) StoredEvent {
+		return StoredEvent{StreamID: "s", Version: v, Metadata: Metadata{UserID: userID}}
+	}
+	store := New(memory.NewAdapter(), WithSubjectTagger(userIDTagger))
+	e := &DataEraser{store: store}
+
+	var got []int64
+	attributed := erasureMatches{}
+	tally := e.collectStreamKeys(context.Background(),
+		[]StoredEvent{byUser(1, subject), byUser(2, "other"), byUser(3, "")},
+		ErasureRequest{SubjectID: subject}, attributed,
+		func(se StoredEvent) { got = append(got, se.Version) })
+	assert.Equal(t, streamKeyTally{scoped: true, matched: true, untagged: 1, shared: true}, tally)
+	assert.Equal(t, []int64{1}, got)
+	assert.True(t, attributed.has(byUser(1, subject)))
+	assert.False(t, attributed.has(byUser(2, "other")))
+
+	// The resolver's tagger, when set, overrides the store's.
+	e = &DataEraser{store: store, resolver: NewSubjectResolver(store, WithResolverTagger(func(string, []byte, Metadata) []string { return nil }))}
+	got = nil
+	tally = e.collectStreamKeys(context.Background(),
+		[]StoredEvent{byUser(1, subject), byUser(2, "other")},
+		ErasureRequest{SubjectID: subject}, nil,
+		func(se StoredEvent) { got = append(got, se.Version) })
+	assert.Equal(t, streamKeyTally{matched: true}, tally, "nothing attributable: legacy scope")
+	assert.Equal(t, []int64{1, 2}, got)
+}
+
 func TestStreamScopeCounts_Annotate_NotesAndPartial(t *testing.T) {
-	const legacyNote = "1 of 3 listed stream(s) carry no subject tags; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams"
-	const untaggedNote = "4 untagged event(s) in 2 listed stream(s) that also carry subject tags could not be attributed to any subject and were not shredded; keys were collected only from events tagged for the subject"
+	const legacyNote = "1 of 3 listed stream(s) hold no event attributable to any subject; every key found in them was collected (legacy scope), which also shreds any co-tenant sharing those streams"
+	const untaggedNote = "4 untagged event(s) in 2 listed stream(s) that also hold subject-attributed events could not be attributed to any subject and were not shredded; keys were collected only from events attributed to the subject"
 
 	tests := []struct {
 		name        string
@@ -122,22 +174,22 @@ func TestStreamScopeCounts_Annotate_NotesAndPartial(t *testing.T) {
 	}{
 		{
 			name:    "every stream tagged and attributed: no notes, not partial",
-			tallies: []streamKeyTally{{tagged: true, matched: true}, {tagged: true}, {tagged: true, matched: true}},
+			tallies: []streamKeyTally{{scoped: true, matched: true}, {scoped: true}, {scoped: true, matched: true}},
 		},
 		{
 			name:      "a legacy stream is noted but does not make the result partial",
-			tallies:   []streamKeyTally{{tagged: false, matched: true}, {tagged: true, matched: true}, {tagged: true}},
+			tallies:   []streamKeyTally{{scoped: false, matched: true}, {scoped: true, matched: true}, {scoped: true}},
 			wantNotes: []string{legacyNote},
 		},
 		{
 			name:        "skipped untagged events are summed over the mixed streams and make the result partial",
-			tallies:     []streamKeyTally{{tagged: true, matched: true, untagged: 3}, {tagged: true, untagged: 1}, {tagged: true}},
+			tallies:     []streamKeyTally{{scoped: true, matched: true, untagged: 3}, {scoped: true, untagged: 1}, {scoped: true}},
 			wantNotes:   []string{untaggedNote},
 			wantPartial: true,
 		},
 		{
 			name:        "legacy note precedes the untagged note",
-			tallies:     []streamKeyTally{{tagged: false}, {tagged: true, untagged: 3}, {tagged: true, untagged: 1}},
+			tallies:     []streamKeyTally{{scoped: false}, {scoped: true, untagged: 3}, {scoped: true, untagged: 1}},
 			wantNotes:   []string{legacyNote, untaggedNote},
 			wantPartial: true,
 		},
@@ -211,18 +263,40 @@ func TestDataEraser_LoadErasureStream(t *testing.T) {
 }
 
 func TestDataEraser_CollectScanKeys_RecordsMatchedStreams(t *testing.T) {
-	e := &DataEraser{}
+	e := &DataEraser{store: New(memory.NewAdapter(), WithSubjectTagger(userIDTagger))}
 	batch := []StoredEvent{
-		{StreamID: "a", Version: 1},
+		{StreamID: "a", Version: 1, Metadata: setSubjectTags(Metadata{}, []string{"s"})}, // tagged for the subject
 		{StreamID: "b", Version: 1},
-		{StreamID: "a", Version: 2},
+		{StreamID: "a", Version: 2, Metadata: Metadata{UserID: "s"}}, // derived for the subject
+		{StreamID: "a", Version: 3},                                  // matched by the filter, nobody's
 	}
 	req := ErasureRequest{SubjectID: "s", Filter: func(se StoredEvent) bool { return se.StreamID != "b" }}
 	matched := map[string]struct{}{}
+	attributed := erasureMatches{}
 	var seen []int64
-	e.collectScanKeys(batch, req, matched, func(se StoredEvent) { seen = append(seen, se.Version) })
+	e.collectScanKeys(context.Background(), batch, req, matched, attributed, func(se StoredEvent) { seen = append(seen, se.Version) })
 	assert.Equal(t, map[string]struct{}{"a": {}}, matched)
-	assert.Equal(t, []int64{1, 2}, seen)
+	assert.Equal(t, []int64{1, 2, 3}, seen, "the caller's filter alone decides what is shredded")
+	assert.True(t, attributed.has(batch[0]), "a tagged match is attested")
+	assert.True(t, attributed.has(batch[2]), "a tagger-derived match is attested")
+	assert.False(t, attributed.has(batch[3]), "an unattributable match is shredded but not attested")
+
+	// A nil memo is ignored (no attribution work at all).
+	seen = nil
+	e.collectScanKeys(context.Background(), batch, req, map[string]struct{}{}, nil, func(se StoredEvent) { seen = append(seen, se.Version) })
+	assert.Equal(t, []int64{1, 2, 3}, seen)
+}
+
+func TestErasureMatches_NilSafe(t *testing.T) {
+	var m erasureMatches
+	m.add(StoredEvent{StreamID: "s", Version: 1}) // ignored, no panic
+	assert.False(t, m.has(StoredEvent{StreamID: "s", Version: 1}))
+
+	m = erasureMatches{}
+	m.add(StoredEvent{StreamID: "s", Version: 1})
+	assert.True(t, m.has(StoredEvent{StreamID: "s", Version: 1}))
+	assert.False(t, m.has(StoredEvent{StreamID: "s", Version: 2}))
+	assert.False(t, m.has(StoredEvent{StreamID: "t", Version: 1}))
 }
 
 // =============================================================================
@@ -280,7 +354,7 @@ func TestAttestableStores_DropsStoresThatSkippedSharedStreams(t *testing.T) {
 }
 
 func TestCertificateDraft_GateVacuous(t *testing.T) {
-	const vacuousNote = "no subject-tagged events could be verified: the erasure was scoped by key ids, explicit streams or untagged events, so the certificate cannot attest that the subject's events are unrecoverable"
+	const vacuousNote = "no events attributed to the subject could be verified: the erasure was scoped by key ids, explicit streams or unattributable events, so the certificate cannot attest that the subject's events are unrecoverable"
 	tests := []struct {
 		name          string
 		eventsChecked int
@@ -459,11 +533,18 @@ func TestSubjectBackfill_IndexEvent(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:      "tagger-derived and existing tags are merged, de-duplicated, order-preserving",
+			name:      "a tagged event is indexed from its persisted tags alone; the tagger is not consulted",
 			se:        StoredEvent{StreamID: "s-1", Metadata: setSubjectTags(Metadata{}, []string{"b", "c"})},
 			tagger:    tagsAB,
 			wantRep:   BackfillReport{Scanned: 1, Indexed: 1},
-			wantCalls: []refactorIndexCall{{stream: "s-1", subjects: []string{"a", "b", "c"}}},
+			wantCalls: []refactorIndexCall{{stream: "s-1", subjects: []string{"b", "c"}}},
+		},
+		{
+			name:      "an untagged event is indexed under what the tagger derives",
+			se:        StoredEvent{StreamID: "s-0"},
+			tagger:    tagsAB,
+			wantRep:   BackfillReport{Scanned: 1, Indexed: 1},
+			wantCalls: []refactorIndexCall{{stream: "s-0", subjects: []string{"a", "b"}}},
 		},
 		{
 			name:    "no subject from either source counts as untagged and writes nothing",
@@ -481,10 +562,10 @@ func TestSubjectBackfill_IndexEvent(t *testing.T) {
 			wantErr:   `mink: backfill index stream "s-3": db down`,
 		},
 		{
-			name:      "an encrypted event the store cannot decrypt is indexed from its existing tags only",
+			name:      "a tagged encrypted event the store cannot decrypt is indexed from its tags and is not counted undecryptable (never decrypted)",
 			se:        StoredEvent{StreamID: "s-4", Metadata: setSubjectTags(refactorEnvelopedMeta("k"), []string{"c"})},
 			tagger:    tagsAB,
-			wantRep:   BackfillReport{Scanned: 1, Indexed: 1, Undecryptable: 1},
+			wantRep:   BackfillReport{Scanned: 1, Indexed: 1},
 			wantCalls: []refactorIndexCall{{stream: "s-4", subjects: []string{"c"}}},
 		},
 		{
@@ -556,7 +637,7 @@ func TestSubjectBackfill_IndexBatch(t *testing.T) {
 }
 
 func TestWarnUndecryptable_LogsOnlyWhenSomethingWasUndecryptable(t *testing.T) {
-	const msg = "mink: subject index backfill could not decrypt some events; indexed them from their existing subject tags only"
+	const msg = "mink: subject index backfill could not decrypt some untagged events; they could not be attributed to any subject and were counted as untagged"
 	tests := []struct {
 		name     string
 		rep      BackfillReport

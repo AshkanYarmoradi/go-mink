@@ -58,7 +58,7 @@ func TestErase_StreamsScope_PartiallyTaggedStreamIsPartial(t *testing.T) {
 	assert.True(t, res.Failed())
 	assert.Empty(t, res.SharedStreams, "an untagged event does not make the stream shared")
 	require.Len(t, res.Notes, 1)
-	assert.Contains(t, res.Notes[0], "1 untagged event(s) in 1 listed stream(s) that also carry subject tags")
+	assert.Contains(t, res.Notes[0], "1 untagged event(s) in 1 listed stream(s) that also hold subject-attributed events")
 	assert.NotContains(t, res.Notes[0], "User-u1", "notes carry counts only")
 
 	assert.False(t, cert.Verified, "a partial erasure cannot be attested")
@@ -81,7 +81,7 @@ func TestErase_StreamsScope_PartialOnlyForMixedStreams(t *testing.T) {
 	assert.False(t, res.Partial, "no mixed stream: completeness is not in doubt on this path")
 	assert.Equal(t, []string{"k-default", "key-u1"}, res.KeysRevoked, "legacy scope collects the untagged stream's key")
 	require.Len(t, res.Notes, 1, "only the legacy-scope note: %v", res.Notes)
-	assert.Contains(t, res.Notes[0], "1 of 2 listed stream(s) carry no subject tags")
+	assert.Contains(t, res.Notes[0], "1 of 2 listed stream(s) hold no event attributable to any subject")
 }
 
 // A bare "$encryption_key_id" with no encrypted-fields list / wrapped DEK is plaintext
