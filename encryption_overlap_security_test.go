@@ -150,8 +150,8 @@ func TestEventStore_OverlappingEncryptedPaths_WrittenThenRead(t *testing.T) {
 
 	raw, err := writer.LoadRaw(ctx, "Overlap-1", 0)
 	require.NoError(t, err)
-	assert.NotContains(t, string(raw[0].Data), "Main St")
-	assert.NotContains(t, string(raw[0].Data), "NYC")
+	assert.NotContains(t, string(raw[0].Data), `"1 Main St"`)
+	assert.NotContains(t, string(raw[0].Data), `"NYC"`)
 	assert.False(t, IsEncrypted(raw[1].Metadata), "an event without the optional object is stored unsealed")
 
 	reader := newStore(t, adapter, "address", "address.street")

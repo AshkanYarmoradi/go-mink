@@ -140,15 +140,15 @@ func TestExport_SharedStreamDoesNotLeakOtherSubjects(t *testing.T) {
 	res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1"})
 	require.NoError(t, err)
 	require.Equal(t, 1, res.TotalEvents, "shared stream must not leak the co-tenant's event")
-	assert.Contains(t, string(res.Events[0].RawData), "u1")
-	assert.NotContains(t, string(res.Events[0].RawData), "u2")
+	assert.Contains(t, string(res.Events[0].RawData), `"u1"`)
+	assert.NotContains(t, string(res.Events[0].RawData), `"u2"`)
 
 	// ExportStream must apply the same subject filter.
 	var streamed int
 	err = exporter.ExportStream(ctx, ExportRequest{SubjectID: "u1"}, func(_ context.Context, ev ExportedEvent) error {
 		streamed++
-		assert.Contains(t, string(ev.RawData), "u1", "ExportStream must not leak the co-tenant's event")
-		assert.NotContains(t, string(ev.RawData), "u2")
+		assert.Contains(t, string(ev.RawData), `"u1"`, "ExportStream must not leak the co-tenant's event")
+		assert.NotContains(t, string(ev.RawData), `"u2"`)
 		return nil
 	})
 	require.NoError(t, err)

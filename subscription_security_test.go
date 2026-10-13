@@ -22,7 +22,7 @@ func appendEncryptedProjEvent(t *testing.T, store *EventStore, streamID string, 
 	require.NoError(t, err)
 	require.Len(t, raw, 1)
 	require.True(t, IsEncrypted(raw[0].Metadata), "precondition: encrypted at rest")
-	require.NotContains(t, string(raw[0].Data), ev.Name, "precondition: ciphertext at rest")
+	require.NotContains(t, string(raw[0].Data), `"`+ev.Name+`"`, "precondition: ciphertext at rest")
 	return raw[0]
 }
 

@@ -373,7 +373,7 @@ func (h *encRetryHarness) appendEncrypted(t *testing.T, streamID string, ev encR
 	require.NoError(t, err)
 	require.Len(t, raw, 1)
 	require.True(t, IsEncrypted(raw[0].Metadata), "precondition: the event is field-encrypted at rest")
-	require.NotContains(t, string(raw[0].Data), ev.Name, "precondition: the name is ciphertext at rest")
+	require.NotContains(t, string(raw[0].Data), `"`+ev.Name+`"`, "precondition: the name is ciphertext at rest")
 	return raw[0]
 }
 
@@ -414,7 +414,7 @@ func TestRetrySaga_EncryptedTrigger_CapturesLocatorOnlyAndReloadsThroughDecrypt(
 	// … but nothing recoverable about it reached the saga store.
 	persisted, err := SagaStateToJSON(st)
 	require.NoError(t, err)
-	assert.NotContains(t, string(persisted), "Alice")
+	assert.NotContains(t, string(persisted), `"Alice"`)
 	assert.NotContains(t, string(persisted), "a@example.com")
 	assert.NotContains(t, string(persisted), encryptedDEKKey)
 

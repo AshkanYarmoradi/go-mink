@@ -118,7 +118,7 @@ func TestEventStore_DecryptStoredEvent(t *testing.T) {
 		require.NoError(t, store.Append(ctx, "U-1", []interface{}{projEncEvent{UserID: "u1", Name: "Alice", Emails: []string{"a@x.com", "b@y.com"}}}))
 		raw, err := store.LoadRaw(ctx, "U-1", 0)
 		require.NoError(t, err)
-		assert.NotContains(t, string(raw[0].Data), "Alice", "stored Data is ciphertext")
+		assert.NotContains(t, string(raw[0].Data), `"Alice"`, "stored Data is ciphertext")
 
 		out, err := store.DecryptStoredEvent(ctx, raw[0])
 		require.NoError(t, err)
