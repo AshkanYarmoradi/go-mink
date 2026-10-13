@@ -573,10 +573,15 @@ Exported 15 events to order_backup.json
 ```
 
 The export contains event payloads (field-encrypted data is written as stored — the CLI
-holds no keys), so the file is written with mode `0600` through `config.WriteSecureFile`: an
-existing, more permissive output file is tightened to `0600` before any content is written
-(best-effort on Windows, where POSIX permission bits are not enforced), then truncated,
-written and synced.
+holds no keys), so the file is written with mode `0600` through `config.WriteSecureFile`, an
+atomic replace: the content goes to a fresh `0600` temporary file beside the destination
+(`.<name>.<random>.tmp`), is synced, and is then renamed over the output path, so the
+directory entry is swapped rather than the existing file opened for truncation. A
+pre-existing, more permissive output file ends up `0600` with the new content, a symlink or
+hard link planted at the output path is replaced rather than followed, readers see either
+the old file or the complete new one, and on failure the temporary file is removed and the
+old file is left untouched. This needs write permission on the output *directory*, not only
+on the file (mode bits are best-effort on Windows, where POSIX permissions are not enforced).
 
 #### Stream Statistics
 
@@ -880,14 +885,25 @@ Mink
 ### Configuration File
 
 The CLI looks for `mink.yaml` in the current directory or parent directories, stopping at
-the nearest directory that contains a `go.mod`: a directory holding `go.mod` is still
+the nearest directory that contains a `go.mod` file: a directory holding `go.mod` is still
 searched, but nothing above the Go module boundary is, so a `mink.yaml` planted in a shared
 parent directory can never take over your database URL, migrations directory or
 code-generation output paths (without any `go.mod` on the path the search continues to the
-filesystem root). The file can contain a literal database URL, so `mink init` writes it with
-mode `0600` (`config.ConfigFileMode`) through `config.WriteSecureFile`, which also tightens
-an existing, more permissive `mink.yaml` to `0600` before replacing its content (as does
-`config.SaveFile`).
+filesystem root; a *directory* named `go.mod` is not a module file and is walked past, as
+the `go` tool does). The search fails closed: only "does not exist" counts as `mink.yaml` or
+`go.mod` being absent, and any other error while looking — permission denied on a directory
+in the chain, an I/O error — aborts the search with `config search aborted: …` (every command surfaces that error;
+the ones that fall back to built-in defaults do so only when no `mink.yaml` exists, never
+when the search was aborted, and a genuinely missing file still reads `no mink.yaml
+found: …`) rather than being treated as "no `go.mod` here", which would let an ancestor
+`mink.yaml` take over. The file can contain a literal database URL, so `mink init` writes it
+with mode `0600` (`config.ConfigFileMode`) through `config.WriteSecureFile` (as does
+`config.SaveFile`), which replaces the file atomically: the content is written and synced to
+a fresh `0600` temporary file next to it (`.mink.yaml.<random>.tmp`) that is then renamed
+over `mink.yaml`. An existing, more permissive `mink.yaml` therefore ends up `0600` with the
+new content, a symlink or hard link at that path is replaced rather than followed, and on
+failure the temporary file is removed and the old `mink.yaml` is left untouched; the write
+needs write permission on the directory, not only on the file.
 
 ```yaml
 version: "1"

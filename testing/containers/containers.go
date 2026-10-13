@@ -26,6 +26,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,9 +49,19 @@ var (
 	// letters, digits and underscores, and be at most MaxSchemaNameBytes (63)
 	// bytes — PostgreSQL silently truncates longer identifiers, so a 64-byte name
 	// would otherwise be dropped as whichever 63-byte schema shares its head.
-	// DropSchema returns it (without touching the database) when handed a name
-	// it did not generate itself.
+	// DropSchema and DropSchemaUnsafe return it (without touching the database)
+	// for any other value.
 	ErrInvalidSchemaName = errors.New("containers: schema name must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 bytes")
+
+	// ErrSchemaNotOwned indicates that DropSchema was handed a schema name this
+	// PostgresContainer instance did not create: a well-formed identifier is not
+	// enough, the name must have been returned by CreateSchema on the SAME
+	// instance (ownership is recorded per instance, not per process). "public",
+	// another test's schema, or a schema created through a different
+	// StartPostgres handle are all refused before the database is contacted, so
+	// a test can only ever drop its own schemas. DropSchemaUnsafe is the
+	// explicit opt-out for cleaning up a schema that was created elsewhere.
+	ErrSchemaNotOwned = errors.New("containers: schema was not created by this container instance; use DropSchemaUnsafe to drop a schema created elsewhere")
 
 	// ErrInvalidPort indicates the port is not valid.
 	ErrInvalidPort = errors.New("containers: port must be a valid number between 1 and 65535")
@@ -87,6 +98,12 @@ const (
 )
 
 // PostgresContainer represents a PostgreSQL test container.
+//
+// Each instance remembers the schema names its CreateSchema has returned and
+// DropSchema will only drop those (see ErrSchemaNotOwned), so hold on to the
+// handle that created a schema to clean it up. The zero value is usable; the
+// ownership set is created lazily and guarded by a mutex, so one handle may be
+// shared by parallel subtests.
 type PostgresContainer struct {
 	Host     string
 	Port     string
@@ -94,6 +111,11 @@ type PostgresContainer struct {
 	User     string
 	Password string
 	connStr  string
+
+	// mu guards owned. owned holds every schema name CreateSchema has returned
+	// on this instance; DropSchema refuses any name that is not in it.
+	mu    sync.Mutex
+	owned map[string]struct{}
 }
 
 // PostgresOption configures a PostgreSQL container.
@@ -274,6 +296,11 @@ func (c *PostgresContainer) MustDB(ctx context.Context) *sql.DB {
 // 63-byte identifier limit, so the server cannot silently truncate the
 // uniqueness suffix away (which would make successive calls resolve to the same
 // schema) and DropSchema accepts every name this method returns.
+//
+// The returned name is recorded as owned by this instance (for the lifetime of
+// the instance, a successful drop does not forget it), which is what entitles a
+// later DropSchema on the same instance to drop it. A name is recorded only
+// after the CREATE SCHEMA statement succeeds.
 func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix string) (string, error) {
 	if err := validateSchemaPrefix(prefix); err != nil {
 		return "", err
@@ -283,26 +310,85 @@ func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix
 	if err != nil {
 		return "", fmt.Errorf("containers: failed to create schema: %w", err)
 	}
+	c.recordSchema(schema)
 	return schema, nil
 }
 
-// DropSchema drops a test schema (and everything in it, CASCADE).
+// DropSchema drops a test schema (and everything in it, CASCADE) that this
+// PostgresContainer instance created.
 //
-// The schema name is interpolated into DDL, so it is validated first: it must
-// be a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ of at most
-// MaxSchemaNameBytes (63) bytes — which every name returned by CreateSchema
-// satisfies. Any other value (empty, leading digit, quotes, semicolons,
-// whitespace, non-ASCII, or 64+ bytes) returns ErrInvalidSchemaName and the
-// database is not contacted. The character rule stops a caller-supplied name
-// from escaping the quoted identifier; the length rule stops PostgreSQL from
-// silently truncating a longer name onto an existing 63-byte schema, so that
-// something other than the intended test schema is never dropped.
+// Two checks run before the database is contacted, in this order:
+//
+//  1. The schema name is interpolated into DDL, so it is validated: it must be
+//     a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ of at most
+//     MaxSchemaNameBytes (63) bytes — which every name returned by CreateSchema
+//     satisfies. Any other value (empty, leading digit, quotes, semicolons,
+//     whitespace, non-ASCII, or 64+ bytes) returns ErrInvalidSchemaName. The
+//     character rule stops a caller-supplied name from escaping the quoted
+//     identifier; the length rule stops PostgreSQL from silently truncating a
+//     longer name onto an existing 63-byte schema.
+//  2. The name must have been returned by CreateSchema on this same instance;
+//     otherwise ErrSchemaNotOwned is returned. A valid identifier alone proves
+//     nothing about whose schema it is — "public", a schema created by another
+//     test, or one created through a different StartPostgres handle are all
+//     refused — so a test can only ever drop the schemas it created.
+//
+// Together the two rules make it impossible to drop anything other than a
+// schema this instance created. Dropping an owned schema is idempotent (DROP
+// SCHEMA IF EXISTS), so cleanup may safely run more than once. To drop a
+// schema that was created elsewhere, opt in explicitly with DropSchemaUnsafe.
 func (c *PostgresContainer) DropSchema(ctx context.Context, db *sql.DB, schema string) error {
 	if err := validateSchemaName(schema); err != nil {
 		return err
 	}
+	if !c.ownsSchema(schema) {
+		return ErrSchemaNotOwned
+	}
+	return c.dropSchema(ctx, db, schema)
+}
+
+// DropSchemaUnsafe drops a schema (and everything in it, CASCADE) WITHOUT the
+// ownership check DropSchema applies, for the rare case of cleaning up a schema
+// that was created elsewhere — by another PostgresContainer instance, by a
+// previous process that crashed before its cleanup ran, or by hand.
+//
+// The identifier validation is unchanged: the name must be a plain identifier
+// of at most MaxSchemaNameBytes bytes or ErrInvalidSchemaName is returned
+// before the database is contacted. Everything else is the caller's
+// responsibility: nothing stops this method from dropping "public" or another
+// running test's schema, so prefer DropSchema with the handle that created the
+// schema whenever you have it.
+func (c *PostgresContainer) DropSchemaUnsafe(ctx context.Context, db *sql.DB, schema string) error {
+	if err := validateSchemaName(schema); err != nil {
+		return err
+	}
+	return c.dropSchema(ctx, db, schema)
+}
+
+// dropSchema executes the DROP SCHEMA statement. Callers must have validated
+// the name (validateSchemaName) first; quoteIdentifier is only defence in depth.
+func (c *PostgresContainer) dropSchema(ctx context.Context, db *sql.DB, schema string) error {
 	_, err := db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
 	return err
+}
+
+// recordSchema marks schema as created by (and therefore droppable through)
+// this instance.
+func (c *PostgresContainer) recordSchema(schema string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.owned == nil {
+		c.owned = make(map[string]struct{})
+	}
+	c.owned[schema] = struct{}{}
+}
+
+// ownsSchema reports whether CreateSchema on this instance returned schema.
+func (c *PostgresContainer) ownsSchema(schema string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.owned[schema]
+	return ok
 }
 
 // waitForPostgres waits for PostgreSQL to be ready.

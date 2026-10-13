@@ -35,6 +35,29 @@ func recoveredPanic(t *testing.T, mw Middleware, cmd Command) *PanicError {
 	return panicErr
 }
 
+// RecoveryMiddleware keeps its original signature so callers that store it as
+// a function value keep compiling; the configurable form is a separate function.
+var (
+	_ func() Middleware                  = RecoveryMiddleware
+	_ func(...RecoveryOption) Middleware = RecoveryMiddlewareWithOptions
+)
+
+func TestRecoveryMiddlewareWithOptions_NoOptions_MatchesRecoveryMiddleware(t *testing.T) {
+	cmd := recoverySensitiveCommand{OrderID: "order-1", CardNumber: "4111111111111111"}
+
+	plain := recoveredPanic(t, RecoveryMiddleware(), cmd)
+	withOpts := recoveredPanic(t, RecoveryMiddlewareWithOptions(), cmd)
+
+	assert.Equal(t, plain.CommandType, withOpts.CommandType)
+	assert.Equal(t, plain.Value, withOpts.Value)
+	assert.Equal(t, plain.CommandData, withOpts.CommandData)
+	assert.Equal(t, "redacted panic value of type string", withOpts.Value,
+		"no options keeps the summarised Value default")
+	assert.Equal(t, `{"commandType":"RecoverySensitiveCommand","aggregateId":"order-1"}`, withOpts.CommandData,
+		"no options keeps the summary CommandData default")
+	assert.NotContains(t, withOpts.CommandData, "4111")
+}
+
 func TestRecoveryMiddleware_DefaultCommandDataOmitsCommandFields(t *testing.T) {
 	cmd := recoverySensitiveCommand{OrderID: "order-1", CardNumber: "4111111111111111"}
 
@@ -66,21 +89,21 @@ func TestRecoveryMiddleware_DefaultCommandData_EmptyAggregateIDOmitted(t *testin
 func TestRecoveryMiddleware_WithPanicCommandCapture_RecordsFullCommand(t *testing.T) {
 	cmd := recoverySensitiveCommand{OrderID: "order-1", CardNumber: "4111111111111111"}
 
-	panicErr := recoveredPanic(t, RecoveryMiddleware(WithPanicCommandCapture()), cmd)
+	panicErr := recoveredPanic(t, RecoveryMiddlewareWithOptions(WithPanicCommandCapture()), cmd)
 
 	assert.Contains(t, panicErr.CommandData, `"cardNumber":"4111111111111111"`)
 	assert.Contains(t, panicErr.CommandData, `"orderId":"order-1"`)
 }
 
 func TestRecoveryMiddleware_WithPanicCommandCapture_UnmarshalableCommand(t *testing.T) {
-	panicErr := recoveredPanic(t, RecoveryMiddleware(WithPanicCommandCapture()), unmarshalableCommand{})
+	panicErr := recoveredPanic(t, RecoveryMiddlewareWithOptions(WithPanicCommandCapture()), unmarshalableCommand{})
 
 	assert.Equal(t, "", panicErr.CommandData, "an unserializable command yields no data rather than an error")
 	assert.Equal(t, "UnmarshalableCommand", panicErr.CommandType)
 }
 
 func TestRecoveryMiddleware_WithOptions_StillPassesThroughSuccess(t *testing.T) {
-	mw := RecoveryMiddleware(WithPanicCommandCapture())
+	mw := RecoveryMiddlewareWithOptions(WithPanicCommandCapture())
 	result, err := mw(func(ctx context.Context, cmd Command) (CommandResult, error) {
 		return NewSuccessResult("agg-1", 1), nil
 	})(context.Background(), middlewareTestCommand{Value: "ok"})

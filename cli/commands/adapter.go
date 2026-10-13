@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -124,7 +125,7 @@ func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func
 
 	cfg, _, err := loadConfig()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("no mink.yaml found: %w", err)
+		return nil, nil, nil, configSearchError(err)
 	}
 
 	factory, err := NewAdapterFactory(cfg)
@@ -144,6 +145,18 @@ func getAdapterWithConfig(ctx context.Context) (CLIAdapter, *config.Config, func
 func getAdapter(ctx context.Context) (CLIAdapter, func(), error) {
 	adapter, _, cleanup, err := getAdapterWithConfig(ctx)
 	return adapter, cleanup, err
+}
+
+// configSearchError converts a config.FindConfig failure into the error a command
+// reports. A genuinely missing mink.yaml (os.ErrNotExist anywhere up to the module
+// boundary) becomes the familiar "no mink.yaml found"; an ABORTED search — a
+// permission or I/O failure while walking up, which FindConfig treats as fail-closed
+// — is returned unchanged, so an operator never mistakes it for a missing file.
+func configSearchError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no mink.yaml found: %w", err)
+	}
+	return err
 }
 
 // loadConfig is a helper that loads config from the current working directory.
@@ -173,7 +186,10 @@ func loadConfigOrDefault() (*config.Config, string, error) {
 // the project root: the directory that holds the mink.yaml in use, or cwd when
 // no config was found and the defaults are used. Commands that write files
 // derived from config values use root as the containment boundary.
-// Returns (config, root, cwd, error) - error only for os.Getwd failures.
+// Returns (config, root, cwd, error) - error for os.Getwd failures and for an
+// aborted config search (a permission or I/O failure while walking up to the
+// module boundary): defaults are used only when no mink.yaml exists, never when
+// one could not be read.
 func loadConfigOrDefaultWithRoot() (*config.Config, string, string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -182,7 +198,10 @@ func loadConfigOrDefaultWithRoot() (*config.Config, string, string, error) {
 
 	root, cfg, err := config.FindConfig(cwd)
 	if err != nil {
-		return config.DefaultConfig(), cwd, cwd, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return config.DefaultConfig(), cwd, cwd, nil
+		}
+		return nil, "", "", err
 	}
 
 	return cfg, root, cwd, nil
@@ -211,7 +230,7 @@ func (e *MigrationEnv) Close() {
 func SetupMigrationEnv(ctx context.Context) (*MigrationEnv, bool, error) {
 	cfg, cwd, err := loadConfig()
 	if err != nil {
-		return nil, false, fmt.Errorf("no mink.yaml found: %w", err)
+		return nil, false, configSearchError(err)
 	}
 
 	if cfg.Database.Driver == "memory" {
@@ -271,7 +290,12 @@ func SetupDiagnosticEnv(ctx context.Context) (*DiagnosticEnv, DiagnosticSkipReas
 
 	_, cfg, err := config.FindConfig(cwd)
 	if err != nil {
-		return nil, DiagnosticSkipNoConfig, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, DiagnosticSkipNoConfig, nil
+		}
+		// An aborted search (unreadable directory on the way to the module
+		// boundary) is a real failure, not "no config": surface it.
+		return nil, DiagnosticNotSkipped, err
 	}
 
 	if cfg.Database.Driver == "memory" {

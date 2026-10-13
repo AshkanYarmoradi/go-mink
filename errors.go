@@ -354,6 +354,12 @@ func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, c
 // treated like any other value, because its message is under the application's
 // control and may embed a payload.
 //
+// It never panics itself, so it is safe to call from inside a deferred
+// recover. A typed nil pointer — panic((*runtime.TypeAssertionError)(nil)) —
+// is reported as its type followed by "(nil)" without its Error method being
+// called, and a runtime error whose Error method panics falls back to the
+// type-only summary.
+//
 // RecoveryMiddleware, the projection engine and the upcaster chain apply it to
 // every recovered panic, so a handler, projection or upcaster that panics with
 // the payload it was processing never copies that payload into an error or a
@@ -362,10 +368,28 @@ func PanicValueSummary(v interface{}) string {
 	if v == nil {
 		return "nil panic value"
 	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		// Calling Error() on a typed nil pointer would panic again inside the
+		// recovery path; the type alone is the whole summary.
+		return fmt.Sprintf("redacted panic value of type %T (nil)", v)
+	}
 	if re, ok := v.(runtime.Error); ok && isRuntimePackageType(reflect.TypeOf(v)) {
-		return fmt.Sprintf("%T: %s", v, re.Error())
+		if msg, ok := safeErrorMessage(re); ok {
+			return fmt.Sprintf("%T: %s", v, msg)
+		}
 	}
 	return fmt.Sprintf("redacted panic value of type %T", v)
+}
+
+// safeErrorMessage returns err.Error(), or ok == false if that call panicked,
+// so a misbehaving Error method can never escape a recovery path.
+func safeErrorMessage(err error) (msg string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			msg, ok = "", false
+		}
+	}()
+	return err.Error(), true
 }
 
 // isRuntimePackageType reports whether t, or the type it points to, is declared

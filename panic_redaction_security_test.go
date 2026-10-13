@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -168,10 +169,32 @@ func TestPanicValueSummary(t *testing.T) {
 			contains:    []string{"*runtime.TypeAssertionError", "interface conversion"},
 			notContains: []string{redactionSecret},
 		},
+		{
+			// Calling Error() on this value panics; the summary must not.
+			name:  "typed nil runtime error is reported as its type without calling Error",
+			value: (*runtime.TypeAssertionError)(nil),
+			want:  "redacted panic value of type *runtime.TypeAssertionError (nil)",
+		},
+		{
+			name:  "typed nil PanicNilError is reported as its type",
+			value: (*runtime.PanicNilError)(nil),
+			want:  "redacted panic value of type *runtime.PanicNilError (nil)",
+		},
+		{
+			name:  "typed nil runtime.Error implemented outside package runtime",
+			value: (*redactionRuntimeError)(nil),
+			want:  "redacted panic value of type *mink.redactionRuntimeError (nil)",
+		},
+		{
+			name:  "typed nil plain pointer is reported as its type",
+			value: (*redactionOrder)(nil),
+			want:  "redacted panic value of type *mink.redactionOrder (nil)",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := PanicValueSummary(tt.value)
+			var got string
+			require.NotPanics(t, func() { got = PanicValueSummary(tt.value) })
 			if tt.want != "" {
 				assert.Equal(t, tt.want, got)
 			}
@@ -197,6 +220,70 @@ func TestIsRuntimePackageType(t *testing.T) {
 	assert.Equal(t, "redacted panic value of type *mink.redactionRuntimeError",
 		PanicValueSummary(&redactionRuntimeError{payload: "x"}),
 		"a pointer to a non-runtime type is followed to its element and still redacted")
+}
+
+// misbehavingError is an error whose Error method panics.
+type misbehavingError struct{}
+
+func (misbehavingError) Error() string { panic("Error() misbehaved") }
+
+func TestSafeErrorMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+		wantOK  bool
+	}{
+		{
+			name:    "message is returned",
+			err:     errors.New("boom"),
+			wantMsg: "boom",
+			wantOK:  true,
+		},
+		{
+			name:   "panicking Error method is contained",
+			err:    misbehavingError{},
+			wantOK: false,
+		},
+		{
+			name:   "typed nil receiver that dereferences itself is contained",
+			err:    (*runtime.TypeAssertionError)(nil),
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg string
+			var ok bool
+			require.NotPanics(t, func() { msg, ok = safeErrorMessage(tt.err) })
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantMsg, msg)
+		})
+	}
+}
+
+// TestPanicValueSummary_NeverPanics pins that the summary is safe to call from
+// inside a deferred recover for runtime-package values whose Error method
+// cannot be trusted: typed nils and a zero value whose Error method may
+// dereference nil type descriptors depending on the Go version. The result is
+// either the message or the type-only fallback, but never a second panic.
+func TestPanicValueSummary_NeverPanics(t *testing.T) {
+	tests := []struct {
+		name  string
+		value interface{}
+	}{
+		{name: "typed nil TypeAssertionError", value: (*runtime.TypeAssertionError)(nil)},
+		{name: "zero value TypeAssertionError", value: &runtime.TypeAssertionError{}},
+		{name: "typed nil PanicNilError", value: (*runtime.PanicNilError)(nil)},
+		{name: "zero value PanicNilError", value: &runtime.PanicNilError{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			require.NotPanics(t, func() { got = PanicValueSummary(tt.value) })
+			assert.Contains(t, got, fmt.Sprintf("%T", tt.value))
+		})
+	}
 }
 
 // =============================================================================
@@ -248,10 +335,16 @@ func TestPanicError_Error_NeverPrintsMoreThanSummary(t *testing.T) {
 			err:      NewPanicError("CreateOrder", nil, ""),
 			contains: []string{"nil panic value"},
 		},
+		{
+			name:     "raw typed nil runtime error is summarized without calling its Error method",
+			err:      NewPanicError("CreateOrder", (*runtime.TypeAssertionError)(nil), ""),
+			contains: []string{"redacted panic value of type *runtime.TypeAssertionError (nil)"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := tt.err.Error()
+			var msg string
+			require.NotPanics(t, func() { msg = tt.err.Error() })
 			assert.True(t, strings.HasPrefix(msg, `mink: handler panicked while processing "CreateOrder": `), msg)
 			for _, s := range tt.contains {
 				assert.Contains(t, msg, s)
@@ -338,10 +431,47 @@ func TestRecoveryMiddleware_DefaultValue_RuntimeErrorKeepsMessage(t *testing.T) 
 	assert.NotContains(t, err.Error(), redactionSecret)
 }
 
+// TestRecoveryMiddleware_TypedNilRuntimeErrorPanic_DoesNotUnwind pins the
+// regression where a handler panicking with a typed nil runtime error — whose
+// Error method panics when called — unwound through the recovery path itself.
+func TestRecoveryMiddleware_TypedNilRuntimeErrorPanic_DoesNotUnwind(t *testing.T) {
+	handler := func(ctx context.Context, cmd Command) (CommandResult, error) {
+		panic((*runtime.TypeAssertionError)(nil))
+	}
+
+	tests := []struct {
+		name string
+		mw   Middleware
+	}{
+		{name: "default", mw: RecoveryMiddleware()},
+		{name: "with value capture", mw: RecoveryMiddlewareWithOptions(WithPanicValueCapture())},
+		{name: "with value and command capture", mw: RecoveryMiddlewareWithOptions(WithPanicValueCapture(), WithPanicCommandCapture())},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				result CommandResult
+				err    error
+			)
+			require.NotPanics(t, func() {
+				result, err = tt.mw(handler)(context.Background(), middlewareTestCommand{Value: redactionSecret})
+			})
+			require.Error(t, err)
+			assert.True(t, result.IsError())
+			var panicErr *PanicError
+			require.ErrorAs(t, err, &panicErr)
+			assert.ErrorIs(t, err, ErrHandlerPanicked)
+			assert.Contains(t, panicErr.Error(), "redacted panic value of type *runtime.TypeAssertionError (nil)")
+			assert.NotContains(t, panicErr.Error(), redactionSecret)
+			assert.NotEmpty(t, panicErr.Stack)
+		})
+	}
+}
+
 func TestRecoveryMiddleware_WithPanicValueCapture_KeepsRawValue(t *testing.T) {
 	cmd := recoverySensitiveCommand{OrderID: "order-1", CardNumber: redactionSecret}
 
-	result, err := RecoveryMiddleware(WithPanicValueCapture())(panicWithCommandHandler)(context.Background(), cmd)
+	result, err := RecoveryMiddlewareWithOptions(WithPanicValueCapture())(panicWithCommandHandler)(context.Background(), cmd)
 	require.Error(t, err)
 	assert.True(t, result.IsError())
 	var panicErr *PanicError
@@ -360,7 +490,7 @@ func TestRecoveryMiddleware_WithPanicValueCapture_StringPanic(t *testing.T) {
 	raw := "cannot charge card " + redactionSecret
 	handler := func(ctx context.Context, cmd Command) (CommandResult, error) { panic(raw) }
 
-	_, err := RecoveryMiddleware(WithPanicValueCapture())(handler)(context.Background(), middlewareTestCommand{})
+	_, err := RecoveryMiddlewareWithOptions(WithPanicValueCapture())(handler)(context.Background(), middlewareTestCommand{})
 	var panicErr *PanicError
 	require.ErrorAs(t, err, &panicErr)
 
@@ -376,7 +506,7 @@ func TestRecoveryMiddleware_WithPanicValueCapture_RuntimeError(t *testing.T) {
 		return NewSuccessResult(o.ID, 0), nil
 	}
 
-	_, err := RecoveryMiddleware(WithPanicValueCapture())(handler)(context.Background(), middlewareTestCommand{})
+	_, err := RecoveryMiddlewareWithOptions(WithPanicValueCapture())(handler)(context.Background(), middlewareTestCommand{})
 	var panicErr *PanicError
 	require.ErrorAs(t, err, &panicErr)
 
@@ -389,7 +519,7 @@ func TestRecoveryMiddleware_WithPanicValueCapture_RuntimeError(t *testing.T) {
 func TestRecoveryMiddleware_WithPanicValueCapture_AndCommandCapture(t *testing.T) {
 	cmd := recoverySensitiveCommand{OrderID: "order-1", CardNumber: redactionSecret}
 
-	panicErr := recoveredPanicValue(t, RecoveryMiddleware(WithPanicValueCapture(), WithPanicCommandCapture()), cmd)
+	panicErr := recoveredPanicValue(t, RecoveryMiddlewareWithOptions(WithPanicValueCapture(), WithPanicCommandCapture()), cmd)
 
 	assert.Equal(t, cmd, panicErr.Value)
 	assert.Contains(t, panicErr.CommandData, `"cardNumber":"`+redactionSecret+`"`)

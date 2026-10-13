@@ -208,22 +208,27 @@ func NewAggregateHandler[C Command, A Aggregate](
 // Validation middleware - calls cmd.Validate()
 func ValidationMiddleware() CommandMiddleware
 
-// Recovery middleware - catches panics and returns a *PanicError. By default
+// Recovery middleware - catches panics and returns a *PanicError.
 // PanicError.Value is PanicValueSummary(r) — the panic value's type, plus its
 // message only for a Go runtime error — and PanicError.CommandData is only
 // {"commandType": ..., "aggregateId": ...}; PanicError.Error() never prints more
-// than the summary. WithPanicValueCapture() keeps the raw panic value in Value and
+// than the summary. RecoveryMiddleware() keeps its original no-arg signature;
+// RecoveryMiddlewareWithOptions() is the configurable form (identical with no
+// options): WithPanicValueCapture() keeps the raw panic value in Value and
 // WithPanicCommandCapture() records the full JSON-serialized command (both opt-in:
 // handlers panic with the payloads they process, and commands carry PII/secrets).
-func RecoveryMiddleware(opts ...RecoveryOption) CommandMiddleware
+func RecoveryMiddleware() CommandMiddleware
+func RecoveryMiddlewareWithOptions(opts ...RecoveryOption) CommandMiddleware
 type RecoveryOption func(*recoveryConfig)
 func WithPanicCommandCapture() RecoveryOption
 func WithPanicValueCapture() RecoveryOption
 
 // Payload-safe description of a recovered panic value: "<type>: <message>" for a
 // Go runtime error, "redacted panic value of type <type>" for anything else
-// (strings included), "nil panic value" for nil. Used by RecoveryMiddleware, the
-// projection engine and UpcasterChain; reusable by application-level recover().
+// (strings included), "redacted panic value of type <type> (nil)" for a typed nil
+// pointer (its Error() is never called), "nil panic value" for nil. Never panics.
+// Used by RecoveryMiddleware, the projection engine and UpcasterChain; reusable by
+// application-level recover().
 func PanicValueSummary(v interface{}) string
 
 // Logging middleware - logs command execution
