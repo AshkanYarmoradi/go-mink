@@ -2,6 +2,8 @@ package mink
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -116,41 +118,125 @@ func TestRedactDestination_NeverLeaksSecrets(t *testing.T) {
 	}
 }
 
-func TestOutboxProcessor_ProcessBatch_LogsRedactedDestination(t *testing.T) {
-	store := memory.NewOutboxStore()
-	ctx := context.Background()
+func TestDestinationDigest(t *testing.T) {
+	const dest = "unknown:https://alice:hunter2@hooks.example.com/hook?token=s3cret"
+	sum := sha256.Sum256([]byte(dest))
+	got := destinationDigest(dest)
+	assert.Equal(t, hex.EncodeToString(sum[:])[:12], got, "first 12 hex digits of sha256(destination)")
+	assert.Len(t, got, destinationDigestHexLen)
+	assert.Regexp(t, `^[0-9a-f]{12}$`, got)
+	assert.Equal(t, got, destinationDigest(dest), "deterministic, so an operator can match it to the stored row")
+	assert.NotEqual(t, destinationDigest("kafka:orders"), destinationDigest("kafka:order"), "distinct inputs are told apart")
+	assert.Regexp(t, `^[0-9a-f]{12}$`, destinationDigest(""), "an empty destination has a digest too")
+	for _, part := range []string{"unknown", "alice", "hunter2", "hooks", "s3cret", "://"} {
+		assert.NotContains(t, got, part)
+	}
+}
 
-	// No publisher is registered for "unknown", so the processor logs the
-	// destination on the failure path; it must be the redacted form.
-	dest := "unknown:https://alice:hunter2@hooks.example.com/hook?token=s3cret"
-	require.NoError(t, store.Schedule(ctx, []*adapters.OutboxMessage{{
-		AggregateID: "order-1",
-		EventType:   "OrderCreated",
-		Destination: dest,
-		Payload:     []byte(`{"id":"1"}`),
-	}}))
+// capturingMarkStore records the error the processor persists through MarkFailed,
+// keyed by message id, so tests can assert on what lands in last_error.
+type capturingMarkStore struct {
+	*memory.OutboxStore
+	mu     sync.Mutex
+	failed map[string]error
+}
+
+func (s *capturingMarkStore) MarkFailed(ctx context.Context, id string, lastErr error) error {
+	s.mu.Lock()
+	if s.failed == nil {
+		s.failed = make(map[string]error)
+	}
+	s.failed[id] = lastErr
+	s.mu.Unlock()
+	return s.OutboxStore.MarkFailed(ctx, id, lastErr)
+}
+
+func (s *capturingMarkStore) persisted(id string) (error, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err, ok := s.failed[id]
+	return err, ok
+}
+
+// TestOutboxProcessor_ProcessBatch_UnroutableDestination_ReportsOnlyDigest pins
+// the contract for a destination with NO registered publisher: nothing is known
+// about its format, so a poisoned row may carry a credential in its prefix or as
+// its bare value — exactly what redactDestination (URL-only) would echo. The log
+// line and the persisted ErrPublisherNotFound therefore carry only a one-way
+// digest and the length, never the prefix or the value.
+func TestOutboxProcessor_ProcessBatch_UnroutableDestination_ReportsOnlyDigest(t *testing.T) {
+	ctx := context.Background()
+	store := &capturingMarkStore{OutboxStore: memory.NewOutboxStore()}
+
+	// secrets are fragments that must appear nowhere in a log line or last_error.
+	secrets := []string{"AKIAIOSFODNN7EXAMPLE", "xoxb-", "bare-secret", "alice", "hunter2", "s3cret", "hooks.example.com", "123456789012", "topic-with-secret", "://"}
+	dests := []string{
+		"AKIAIOSFODNN7EXAMPLE:https://alice:hunter2@hooks.example.com/hook?token=s3cret", // credential as the prefix
+		"xoxb-bare-secret-token-value",                                      // bare credential, no separator
+		"unknown:https://alice:hunter2@hooks.example.com/hook?token=s3cret", // URL with credentials
+		"sns:arn:aws:sns:us-east-1:123456789012:topic-with-secret",          // non-URL, redactDestination would pass it through
+	}
+	msgs := make([]*adapters.OutboxMessage, 0, len(dests))
+	for _, dest := range dests {
+		msgs = append(msgs, &adapters.OutboxMessage{
+			AggregateID: "order-1", EventType: "OrderCreated", Destination: dest, Payload: []byte(`{"id":"1"}`),
+		})
+	}
+	require.NoError(t, store.Schedule(ctx, msgs))
 
 	logger := &argsRecordingLogger{}
-	processor := NewOutboxProcessor(store, WithProcessorLogger(logger))
+	// Only "webhook" is registered; none of the stored prefixes match it.
+	processor := NewOutboxProcessor(store, WithPublisher(newMockPublisher("webhook")), WithProcessorLogger(logger))
 	require.NoError(t, processor.processBatch(ctx))
+	assert.Equal(t, len(dests), store.CountByStatus()[adapters.OutboxFailed], "every unroutable message is marked failed")
 
-	entry, ok := logger.find("No publisher for destination")
-	require.True(t, ok, "expected the no-publisher error to be logged")
-
-	logged, ok := entry.argValue("destination")
-	require.True(t, ok)
-	assert.Equal(t, "unknown:https://hooks.example.com", logged)
-
-	prefix, ok := entry.argValue("prefix")
-	require.True(t, ok)
-	assert.Equal(t, "unknown", prefix)
-
-	for _, leaked := range []string{"alice", "hunter2", "token", "s3cret"} {
-		assert.NotContains(t, entry.rendered(), leaked)
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	entriesByID := make(map[string]loggedEntry)
+	for _, e := range logger.entries {
+		if e.msg != "No publisher for destination" {
+			continue
+		}
+		id, ok := e.argValue("id")
+		require.True(t, ok, "the log line identifies the row by message id")
+		entriesByID[id.(string)] = e
 	}
+	require.Len(t, entriesByID, len(dests), "one log line per unroutable message")
 
-	// The message itself is still marked failed exactly as before.
-	assert.Equal(t, 1, store.CountByStatus()[adapters.OutboxFailed])
+	for _, msg := range msgs {
+		dest := msg.Destination
+		digest := destinationDigest(dest)
+		entry, ok := entriesByID[msg.ID]
+		require.True(t, ok, "message %q was logged", msg.ID)
+
+		// Log line: fixed message, digest, length — no destination, no prefix.
+		gotDigest, ok := entry.argValue("destination_digest")
+		require.True(t, ok)
+		assert.Equal(t, digest, gotDigest)
+		gotLen, ok := entry.argValue("destination_length")
+		require.True(t, ok)
+		assert.Equal(t, len(dest), gotLen)
+		_, hasDest := entry.argValue("destination")
+		assert.False(t, hasDest, "the destination (even redacted) is not logged for an unroutable row")
+		_, hasPrefix := entry.argValue("prefix")
+		assert.False(t, hasPrefix, "the prefix is not logged for an unroutable row")
+		rendered := entry.rendered()
+		assert.NotContains(t, rendered, dest)
+		assert.NotContains(t, rendered, destinationPrefix(dest))
+		for _, s := range secrets {
+			assert.NotContains(t, rendered, s, "log line for %q", dest)
+		}
+
+		// Persisted last_error: the sentinel plus the digest, nothing else.
+		persisted, ok := store.persisted(msg.ID)
+		require.True(t, ok, "MarkFailed was called for %q", msg.ID)
+		assert.ErrorIs(t, persisted, ErrPublisherNotFound)
+		assert.Equal(t, "mink: publisher not found for destination: destination digest "+digest, persisted.Error())
+		assert.NotContains(t, persisted.Error(), destinationPrefix(dest))
+		for _, s := range secrets {
+			assert.NotContains(t, persisted.Error(), s, "last_error for %q", dest)
+		}
+	}
 }
 
 // TestOutboxProcessor_Metrics_ReceiveOnlyPrefix pins the contract the metrics
@@ -195,7 +281,7 @@ func TestOutboxProcessor_Metrics_ReceiveOnlyPrefix(t *testing.T) {
 // cardinality bound the metrics package documents: a stored destination whose
 // prefix has no registered publisher is tenant- or attacker-controlled, so its
 // failure is recorded under the fixed UnregisteredDestinationLabel — never under
-// the prefix itself — while the log line still names the prefix for diagnosis.
+// the prefix itself — while the log line identifies the row by digest for diagnosis.
 func TestOutboxProcessor_Metrics_UnregisteredPrefixUsesFixedLabel(t *testing.T) {
 	store := memory.NewOutboxStore()
 	ctx := context.Background()
@@ -234,24 +320,32 @@ func TestOutboxProcessor_Metrics_UnregisteredPrefixUsesFixedLabel(t *testing.T) 
 	assert.Empty(t, metrics.processedCalls, "an unroutable message is never reported as processed")
 	assert.Equal(t, len(hostile), store.CountByStatus()[adapters.OutboxFailed])
 
-	// The log line keeps the (redacted) destination and the prefix for diagnosis.
+	// The log line identifies each row by its destination digest — never by the
+	// stored prefix or value, which are hostile data of unknown shape.
 	logger.mu.Lock()
 	defer logger.mu.Unlock()
-	var loggedPrefixes []string
+	var loggedDigests []string
 	for _, e := range logger.entries {
 		if e.msg != "No publisher for destination" {
 			continue
 		}
-		prefix, ok := e.argValue("prefix")
-		require.True(t, ok, "the no-publisher log line must name the prefix")
-		loggedPrefixes = append(loggedPrefixes, prefix.(string))
-		assert.NotContains(t, e.rendered(), "hunter2", "the log line must not leak URL credentials")
+		digest, ok := e.argValue("destination_digest")
+		require.True(t, ok, "the no-publisher log line must carry the destination digest")
+		loggedDigests = append(loggedDigests, digest.(string))
+		_, hasPrefix := e.argValue("prefix")
+		assert.False(t, hasPrefix, "the no-publisher log line must not name the prefix")
+		rendered := e.rendered()
+		assert.NotContains(t, rendered, "hunter2", "the log line must not leak URL credentials")
+		for _, dest := range hostile {
+			assert.NotContains(t, rendered, dest)
+			assert.NotContains(t, rendered, destinationPrefix(dest))
+		}
 	}
-	wantPrefixes := make([]string, 0, len(hostile))
+	wantDigests := make([]string, 0, len(hostile))
 	for _, dest := range hostile {
-		wantPrefixes = append(wantPrefixes, destinationPrefix(dest))
+		wantDigests = append(wantDigests, destinationDigest(dest))
 	}
-	assert.ElementsMatch(t, wantPrefixes, loggedPrefixes)
+	assert.ElementsMatch(t, wantDigests, loggedDigests)
 }
 
 // TestUnregisteredDestinationLabel_IsAPlainLabelValue guards the constant the

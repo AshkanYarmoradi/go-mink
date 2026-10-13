@@ -782,7 +782,7 @@ if errors.As(err, &concErr) {
 var ErrSagaTypeMismatch            // *SagaTypeMismatchError{CorrelationID, SagaID, ExpectedType, ActualType}
 var ErrResidualCountUnsupported    // a subject store cannot count residual rows (SubjectResidualCounter)
 var ErrRetentionUnscopedPolicy     // a RetentionPolicy with no matchers at all
-var ErrRetentionSharedKey          // *RetentionSharedKeyError{KeyID, OutOfScope}: shred guard refused a shared key
+var ErrRetentionSharedKey          // *RetentionSharedKeyError{KeyID, OutOfScope}: shred guard refused a shared key; Error() prints the count only (KeyID is programmatic, never logged)
 var ErrRetentionUnencryptedMatches // a Shred policy matched events with no encryption envelope
 var ErrRetentionMaxScanNeedsCheckpoint // WithRetentionMaxScan configured without WithRetentionCheckpoint (non-fatal; sweep runs unbounded)
 var ErrAnonymizerSecretRequired    // Anonymizer.Validate() on an empty HMAC secret

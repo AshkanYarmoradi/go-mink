@@ -78,6 +78,79 @@ func TestUpcastingSerializer_DeserializeWithVersion_PanickingUpcaster(t *testing
 	assert.ErrorIs(t, err, ErrUpcastFailed)
 }
 
+// volatileUpcaster is a stateful upcaster whose identity accessors panic once its
+// Upcast has panicked — the shape a recovery path must survive without ever
+// calling back into the upcaster. Its accessors behave at registration time.
+type volatileUpcaster struct {
+	eventType string
+	from, to  int
+	poisoned  bool
+}
+
+func (u *volatileUpcaster) EventType() string { u.guard(); return u.eventType }
+func (u *volatileUpcaster) FromVersion() int  { u.guard(); return u.from }
+func (u *volatileUpcaster) ToVersion() int    { u.guard(); return u.to }
+func (u *volatileUpcaster) Upcast([]byte, Metadata) ([]byte, error) {
+	u.poisoned = true
+	panic("upcast exploded")
+}
+
+func (u *volatileUpcaster) guard() {
+	if u.poisoned {
+		panic("ACCESSOR-CALLED-AFTER-FAILED-UPCAST")
+	}
+}
+
+// TestUpcasterChain_Upcast_AccessorsPanicAfterFailedUpcast: the recovery
+// guarantee must not depend on the upcaster still answering EventType /
+// FromVersion / ToVersion after its Upcast panicked. The chain captures the
+// transition before calling Upcast and reports only those captured values.
+func TestUpcasterChain_Upcast_AccessorsPanicAfterFailedUpcast(t *testing.T) {
+	chain := NewUpcasterChain()
+	u := &volatileUpcaster{eventType: "OrderCreated", from: 1, to: 2}
+	require.NoError(t, chain.Register(u), "accessors work until Upcast has failed")
+	require.NoError(t, chain.Register(newNoopUpcaster("OrderCreated", 2, 3)))
+
+	var (
+		out     []byte
+		version int
+		err     error
+	)
+	require.NotPanics(t, func() {
+		out, version, err = chain.Upcast("OrderCreated", 1, []byte(`{"id":"o1"}`), Metadata{})
+	}, "a stateful upcaster whose accessors panic after a failed Upcast must not defeat the recovery")
+	require.True(t, u.poisoned, "Upcast ran and poisoned the accessors")
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, 1, version)
+
+	assert.ErrorIs(t, err, ErrUpcastFailed)
+	var ue *UpcastError
+	require.ErrorAs(t, err, &ue)
+	assert.Equal(t, "OrderCreated", ue.EventType, "identity comes from the values captured before Upcast")
+	assert.Equal(t, 1, ue.FromVersion)
+	assert.Equal(t, 2, ue.ToVersion)
+	assert.Contains(t, err.Error(), `upcaster for "OrderCreated" (version 1 -> 2) panicked`)
+	assert.Contains(t, err.Error(), "redacted panic value of type string")
+	assert.NotContains(t, err.Error(), "ACCESSOR-CALLED-AFTER-FAILED-UPCAST", "the recovery path never called back into the upcaster")
+	assert.NotContains(t, err.Error(), "upcast exploded", "the raw panic value is never echoed")
+}
+
+func TestSafeUpcast_AccessorsPanicAfterFailedUpcast(t *testing.T) {
+	u := &volatileUpcaster{eventType: "OrderCreated", from: 1, to: 2}
+	var (
+		out []byte
+		err error
+	)
+	require.NotPanics(t, func() {
+		out, err = safeUpcast(u, []byte(`{}`), Metadata{})
+	})
+	require.True(t, u.poisoned)
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Equal(t, `mink: upcaster for "OrderCreated" (version 1 -> 2) panicked: redacted panic value of type string`, err.Error())
+}
+
 func TestSafeUpcast_PassesThrough(t *testing.T) {
 	u := newTestUpcaster("OrderCreated", 1, 2, addJSONFieldUpcastFn("currency", "USD"))
 	out, err := safeUpcast(u, []byte(`{"id":"o1"}`), Metadata{})

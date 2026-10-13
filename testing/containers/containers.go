@@ -34,14 +34,23 @@ import (
 
 // Validation errors.
 var (
-	// ErrInvalidSchemaPrefix indicates the schema prefix contains invalid characters.
-	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must contain only alphanumeric characters and underscores")
+	// ErrInvalidSchemaPrefix indicates the schema prefix is not usable: it must be
+	// a plain identifier (letters, digits and underscores, not starting with a
+	// digit) of at most MaxSchemaPrefixBytes bytes, so that the complete
+	// "<prefix>_<UnixNano>" name CreateSchema builds from it fits PostgreSQL's
+	// 63-byte identifier limit. A longer prefix would make the server silently
+	// truncate the generated name (collapsing successive schemas onto one) and
+	// DropSchema would then refuse the untruncated name, leaking the schema.
+	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 43 bytes")
 
 	// ErrInvalidSchemaName indicates a schema name is not a plain PostgreSQL
-	// identifier: it must start with a letter or underscore and contain only
-	// ASCII letters, digits and underscores. DropSchema returns it (without
-	// touching the database) when handed a name it did not generate itself.
-	ErrInvalidSchemaName = errors.New("containers: schema name must start with a letter or underscore and contain only alphanumeric characters and underscores")
+	// identifier: it must start with a letter or underscore, contain only ASCII
+	// letters, digits and underscores, and be at most MaxSchemaNameBytes (63)
+	// bytes — PostgreSQL silently truncates longer identifiers, so a 64-byte name
+	// would otherwise be dropped as whichever 63-byte schema shares its head.
+	// DropSchema returns it (without touching the database) when handed a name
+	// it did not generate itself.
+	ErrInvalidSchemaName = errors.New("containers: schema name must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 bytes")
 
 	// ErrInvalidPort indicates the port is not valid.
 	ErrInvalidPort = errors.New("containers: port must be a valid number between 1 and 65535")
@@ -56,6 +65,26 @@ var (
 // before the identifier is interpolated into DDL, so the quoting in
 // quoteIdentifier is defence in depth rather than the only barrier.
 var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+const (
+	// MaxSchemaNameBytes is the longest schema name DropSchema accepts: 63 bytes,
+	// PostgreSQL's identifier limit (NAMEDATALEN-1). The server does not reject a
+	// longer identifier, it silently truncates it, so without this bound a
+	// caller-supplied 64-byte name would be dropped as whichever existing schema
+	// shares its first 63 bytes. Longer names fail with ErrInvalidSchemaName.
+	MaxSchemaNameBytes = 63
+
+	// schemaSuffixBytes is the length of the "_<UnixNano>" suffix CreateSchema
+	// appends to a prefix: an underscore plus the 19 decimal digits a Unix
+	// nanosecond timestamp has from 2001 until int64 overflows in 2262.
+	schemaSuffixBytes = 1 + 19
+
+	// MaxSchemaPrefixBytes is the longest prefix CreateSchema (and therefore
+	// WithSchemaPrefix) accepts: 43 bytes, so that "<prefix>_<UnixNano>" always
+	// fits MaxSchemaNameBytes and DropSchema accepts every name CreateSchema
+	// returns. Longer prefixes fail with ErrInvalidSchemaPrefix.
+	MaxSchemaPrefixBytes = MaxSchemaNameBytes - schemaSuffixBytes
+)
 
 // PostgresContainer represents a PostgreSQL test container.
 type PostgresContainer struct {
@@ -237,7 +266,14 @@ func (c *PostgresContainer) MustDB(ctx context.Context) *sql.DB {
 	return db
 }
 
-// CreateSchema creates a unique test schema.
+// CreateSchema creates a unique test schema named "<prefix>_<UnixNano>".
+//
+// The prefix must be a plain identifier of at most MaxSchemaPrefixBytes (43)
+// bytes; anything else returns ErrInvalidSchemaPrefix before the database is
+// contacted. The bound guarantees the generated name never exceeds PostgreSQL's
+// 63-byte identifier limit, so the server cannot silently truncate the
+// uniqueness suffix away (which would make successive calls resolve to the same
+// schema) and DropSchema accepts every name this method returns.
 func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix string) (string, error) {
 	if err := validateSchemaPrefix(prefix); err != nil {
 		return "", err
@@ -253,12 +289,14 @@ func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix
 // DropSchema drops a test schema (and everything in it, CASCADE).
 //
 // The schema name is interpolated into DDL, so it is validated first: it must
-// be a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ — which every name
-// returned by CreateSchema satisfies. Any other value (empty, leading digit,
-// quotes, semicolons, whitespace, non-ASCII) returns ErrInvalidSchemaName and
-// the database is not contacted. This stops a caller-supplied name from
-// escaping the quoted identifier and dropping something other than the
-// intended test schema.
+// be a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ of at most
+// MaxSchemaNameBytes (63) bytes — which every name returned by CreateSchema
+// satisfies. Any other value (empty, leading digit, quotes, semicolons,
+// whitespace, non-ASCII, or 64+ bytes) returns ErrInvalidSchemaName and the
+// database is not contacted. The character rule stops a caller-supplied name
+// from escaping the quoted identifier; the length rule stops PostgreSQL from
+// silently truncating a longer name onto an existing 63-byte schema, so that
+// something other than the intended test schema is never dropped.
 func (c *PostgresContainer) DropSchema(ctx context.Context, db *sql.DB, schema string) error {
 	if err := validateSchemaName(schema); err != nil {
 		return err
@@ -298,12 +336,12 @@ func quoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-// validateSchemaPrefix validates a schema prefix for use in test schema names.
+// validateSchemaPrefix validates a schema prefix for use in test schema names:
+// a non-empty identifier (identifierRegex) of at most MaxSchemaPrefixBytes
+// bytes, so that the "<prefix>_<UnixNano>" name built from it always passes
+// validateSchemaName. Returns ErrInvalidSchemaPrefix otherwise.
 func validateSchemaPrefix(prefix string) error {
-	if prefix == "" {
-		return ErrInvalidSchemaPrefix
-	}
-	if !identifierRegex.MatchString(prefix) {
+	if prefix == "" || len(prefix) > MaxSchemaPrefixBytes || !identifierRegex.MatchString(prefix) {
 		return ErrInvalidSchemaPrefix
 	}
 	return nil
@@ -311,9 +349,12 @@ func validateSchemaPrefix(prefix string) error {
 
 // validateSchemaName validates a full schema name before it is interpolated
 // into DDL (see DropSchema). It accepts exactly the identifiers matched by
-// identifierRegex and returns ErrInvalidSchemaName for anything else.
+// identifierRegex that are at most MaxSchemaNameBytes bytes long, and returns
+// ErrInvalidSchemaName for anything else. The length check matters because
+// PostgreSQL truncates, rather than rejects, longer identifiers: a 64-byte name
+// would otherwise address the existing schema that shares its first 63 bytes.
 func validateSchemaName(schema string) error {
-	if schema == "" || !identifierRegex.MatchString(schema) {
+	if schema == "" || len(schema) > MaxSchemaNameBytes || !identifierRegex.MatchString(schema) {
 		return ErrInvalidSchemaName
 	}
 	return nil
@@ -340,7 +381,9 @@ type integrationTestConfig struct {
 	timeout      time.Duration
 }
 
-// WithSchemaPrefix sets the schema prefix.
+// WithSchemaPrefix sets the schema prefix. It must satisfy CreateSchema's
+// rules (a plain identifier of at most MaxSchemaPrefixBytes bytes) or
+// NewIntegrationTest fails the test with ErrInvalidSchemaPrefix.
 func WithSchemaPrefix(prefix string) IntegrationTestOption {
 	return func(c *integrationTestConfig) {
 		c.schemaPrefix = prefix

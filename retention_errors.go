@@ -45,15 +45,27 @@ var (
 // refused to revoke during a retention sweep. OutOfScope is the number of events
 // encrypted under KeyID that no Shred policy in the sweep covers (PII-free: a count, never
 // the events). It matches ErrRetentionSharedKey via errors.Is.
+//
+// Error() prints only the count, never KeyID: per-subject key resolvers derive key ids
+// from data-subject ids ("key-<subjectID>"), so a key id in an error message — which ends
+// up in logs, CLI output and RetentionReport renderings — would disclose the subject.
+// This mirrors SharedKeyError, whose message likewise carries counts only.
 type RetentionSharedKeyError struct {
-	KeyID      string
+	// KeyID is the encryption key the guard refused to revoke. It is exposed for
+	// programmatic use (matching it against RetentionReport.SharedKeysSkipped,
+	// choosing a per-scope key, auditing) and MUST NOT be logged or printed: with a
+	// per-subject key resolver it names a data subject.
+	KeyID string
+	// OutOfScope is the number of events encrypted under KeyID that lie outside every
+	// Shred policy in the sweep. A count only; it is the one field Error() renders.
 	OutOfScope int
 }
 
-// Error returns the error message.
+// Error returns the error message. It reports the out-of-scope event count only; the
+// key id is deliberately omitted (see KeyID) so the message is safe to log.
 func (e *RetentionSharedKeyError) Error() string {
-	return fmt.Sprintf("mink: retention refused to revoke key %q: it also protects %d event(s) outside the Shred policy scope (blast-radius guard); use a per-scope key or WithAllowSharedKeyRevocation",
-		e.KeyID, e.OutOfScope)
+	return fmt.Sprintf("mink: retention refused to revoke an encryption key: it also protects %d event(s) outside the Shred policy scope (blast-radius guard); use a per-scope key or WithAllowSharedKeyRevocation",
+		e.OutOfScope)
 }
 
 // Is reports whether this error matches the target error.

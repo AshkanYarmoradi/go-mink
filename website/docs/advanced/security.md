@@ -535,7 +535,8 @@ opt-in — unset, `Apply` scans from position 0 as before. A `RedactFields` /
 A shared-key **blast-radius guard is on by default**: `ActionShred` revokes a key only when
 *every* event encrypted under it is covered by a Shred policy of the sweep; a key that also
 protects out-of-scope events is listed in `report.SharedKeysSkipped` with a
-`*RetentionSharedKeyError` (`mink.ErrRetentionSharedKey`), and
+`*RetentionSharedKeyError` (`mink.ErrRetentionSharedKey`; its message carries the
+out-of-scope count only, never the key id — `KeyID` is for programmatic use), and
 `mink.WithAllowSharedKeyRevocation()` opts out. A refused (or failed) Shred match counts in
 `report.Skipped`, not `Acted`, and with a checkpoint it is re-swept on every later run until
 its key is revoked. Matched events with no encryption envelope (`mink.HasEncryptionEnvelope`)

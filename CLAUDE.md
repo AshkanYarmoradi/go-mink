@@ -159,10 +159,10 @@ Typed errors implement `Is()` for `errors.Is()` compatibility:
 // Providers: kms.ErrKeyPermanentlyDeleted / kms.KeyPermanentlyDeletedError{KeyID} (also Is(encryption.ErrKeyRevoked)), kms.ErrAliasNotFound (missing alias = unknown state, never Revoked); vault: EncryptionError for an invalid Transit key name
 // Outbox publishers: webhook.ErrInvalidDestination, ErrHostNotAllowed, ErrHTTPSRequired, ErrInvalidHeader ("webhook: " prefix); sns.ErrReservedAttribute, ErrInvalidAttributeName
 // Read models (repository.go): ErrUnknownFilterField (wraps ErrInvalidQuery) / UnknownFilterFieldError{Field}
-// Adapters: postgres.ErrSubjectTagMalformed / postgres.SubjectTagMalformedError{SubjectID, Rows, Streams}; containers.ErrInvalidSchemaName
+// Adapters: postgres.ErrSubjectTagMalformed / postgres.SubjectTagMalformedError{SubjectID, Rows, Streams}; containers.ErrInvalidSchemaName (DropSchema: not a plain identifier or > MaxSchemaNameBytes = 63) / containers.ErrInvalidSchemaPrefix (CreateSchema / WithSchemaPrefix: > MaxSchemaPrefixBytes = 43)
 // Export (export_errors.go): ErrExportFailed, ErrExportPartialFootprint, ErrExportScanNotSupported, ErrNoExportSources, ErrSubjectIDRequired; Typed: ExportError
 // Erasure (eraser_errors.go): ErrErasureFailed, ErrErasureNotConfigured, ErrErasureScanNotSupported, ErrErasureSubjectRequired, ErrNoErasureSources, ErrSharedKeyRevocation, ErrResidualCountUnsupported; Typed: ErasureError, SharedKeyError (Error() prints counts only — never OtherSubjects, never SharedKeys ids)
-// Retention (retention_errors.go): ErrRetentionUnscopedPolicy, ErrRetentionSharedKey, ErrRetentionUnencryptedMatches, ErrRetentionMaxScanNeedsCheckpoint; Typed: RetentionSharedKeyError{KeyID, OutOfScope} (Error() does print KeyID)
+// Retention (retention_errors.go): ErrRetentionUnscopedPolicy, ErrRetentionSharedKey, ErrRetentionUnencryptedMatches, ErrRetentionMaxScanNeedsCheckpoint; Typed: RetentionSharedKeyError{KeyID, OutOfScope} (Error() prints the OutOfScope count only — never KeyID, which is programmatic and must not be logged; RetentionReport.KeysToRevoke / SharedKeysSkipped and the `mink gdpr retain` key lists do print ids)
 // Anonymizer (anonymize.go): ErrAnonymizerSecretRequired (from Anonymizer.Validate)
 // Sagas (saga.go): ErrSagaTypeMismatch, ErrSagaNotRetryable (ErrSagaTimedOut lives in errors.go); Typed: SagaTypeMismatchError, SagaNotRetryableError, SagaFailedError
 ```

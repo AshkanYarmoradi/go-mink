@@ -463,11 +463,7 @@ func (r *SubjectResolver) resolve(ctx context.Context, subjectID string, matched
 	if subjectID == "" {
 		return nil, ErrSubjectIDRequired
 	}
-
-	fp := &SubjectFootprint{SubjectID: subjectID, StreamEventCounts: map[string]int{}}
-	streamSet := map[string]struct{}{}
-	sharedSet := map[string]struct{}{}
-	keySet := map[string]struct{}{}
+	b := newFootprintBuilder(subjectID, matched)
 
 	// Index-backed fast path. An index is used ONLY when explicitly injected
 	// (WithResolverIndex) — never auto-detected from the adapter — so a store gaining a
@@ -475,44 +471,63 @@ func (r *SubjectResolver) resolve(ctx context.Context, subjectID string, matched
 	// can prove completeness by observing unattributable events) to an index (which
 	// cannot). Pass store.Adapter() to WithResolverIndex to opt into a drift-free adapter
 	// index.
-	if idx := r.index; idx != nil {
-		streams, err := idx.StreamsBySubject(ctx, subjectID)
-		if err != nil {
-			return nil, fmt.Errorf("mink: subject index for %q: %w", subjectID, err)
-		}
-		for _, streamID := range streams {
-			stored, err := r.store.LoadRaw(ctx, streamID, 0)
-			if err != nil {
-				if errors.Is(err, ErrStreamNotFound) {
-					continue
-				}
-				return nil, fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
-			}
-			// The whole stream is in hand: attribute each event once, recording the
-			// subject's own and noting whether a co-tenant shares the stream.
-			shared := false
-			for _, se := range stored {
-				at := r.attribute(ctx, se)
-				if at.to(subjectID) {
-					r.record(fp, streamSet, keySet, matched, se)
-				}
-				if at.toOther(subjectID) {
-					shared = true
-				}
-			}
-			if _, mine := streamSet[streamID]; mine && shared {
-				sharedSet[streamID] = struct{}{}
-			}
-		}
-		r.finalize(fp, streamSet, sharedSet, keySet)
-		// An index only proves completeness when the caller asserts it is authoritative;
-		// otherwise it may have drifted behind best-effort append-time writes, so the
-		// footprint cannot be proven complete.
-		fp.Partial = !r.authoritative
-		return fp, nil
+	if r.index != nil {
+		return r.resolveByIndex(ctx, subjectID, b)
 	}
 
 	// Scan fallback.
+	return r.resolveByScan(ctx, subjectID, b)
+}
+
+// resolveByIndex is the index-backed half of resolve: it loads every stream the index
+// lists for the subject and attributes each of their events once (collectIndexedStream).
+// An index only proves completeness when the caller asserts it is authoritative;
+// otherwise it may have drifted behind best-effort append-time writes, so the footprint
+// cannot be proven complete.
+func (r *SubjectResolver) resolveByIndex(ctx context.Context, subjectID string, b *footprintBuilder) (*SubjectFootprint, error) {
+	streams, err := r.index.StreamsBySubject(ctx, subjectID)
+	if err != nil {
+		return nil, fmt.Errorf("mink: subject index for %q: %w", subjectID, err)
+	}
+	for _, streamID := range streams {
+		stored, found, err := r.loadFootprintStream(ctx, subjectID, streamID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		r.collectIndexedStream(ctx, subjectID, streamID, stored, b)
+	}
+	fp := b.finalize()
+	fp.Partial = !r.authoritative
+	return fp, nil
+}
+
+// collectIndexedStream handles one indexed stream, which is in hand whole: it attributes
+// each event once, recording the subject's own and noting whether a co-tenant shares
+// the stream. The stream is marked shared only when it is also the subject's — the
+// index may list a stream none of whose events attribute to the subject any more.
+func (r *SubjectResolver) collectIndexedStream(ctx context.Context, subjectID, streamID string, stored []StoredEvent, b *footprintBuilder) {
+	shared := false
+	for _, se := range stored {
+		at := r.attribute(ctx, se)
+		if at.to(subjectID) {
+			b.record(se)
+		}
+		if at.toOther(subjectID) {
+			shared = true
+		}
+	}
+	if _, mine := b.streamSet[streamID]; mine && shared {
+		b.sharedSet[streamID] = struct{}{}
+	}
+}
+
+// resolveByScan is the scan-based half of resolve: it walks the whole store (which
+// needs a SubscriptionAdapter), attributing every event (attributeBatch), and then
+// settles which footprint streams are shared with other subjects.
+func (r *SubjectResolver) resolveByScan(ctx context.Context, subjectID string, b *footprintBuilder) (*SubjectFootprint, error) {
 	if _, ok := r.store.Adapter().(adapters.SubscriptionAdapter); !ok {
 		return nil, ErrExportScanNotSupported
 	}
@@ -528,67 +543,111 @@ func (r *SubjectResolver) resolve(ctx context.Context, subjectID string, matched
 		if len(batch) == 0 {
 			break
 		}
-		for _, se := range batch {
-			at := r.attribute(ctx, se)
-			switch {
-			case at.to(subjectID):
-				r.record(fp, streamSet, keySet, matched, se)
-			case !at.attributed():
-				// Neither a tag nor the tagger attributes this event to anyone: it could
-				// be the subject's, so the footprint cannot be proven complete.
-				fp.Partial = true
-			}
-		}
+		r.attributeBatch(ctx, subjectID, batch, b)
 		position = batch[len(batch)-1].GlobalPosition
 	}
 	// A co-tenant's event can precede the subject's first event in a shared stream, so
 	// sharing cannot be settled during the single pass without remembering every
 	// attributed stream in the store. Re-read the footprint streams instead: O(the
 	// subject's events).
-	if err := r.detectSharedStreams(ctx, subjectID, streamSet, sharedSet); err != nil {
+	if err := r.detectSharedStreams(ctx, subjectID, b); err != nil {
 		return nil, err
 	}
-	r.finalize(fp, streamSet, sharedSet, keySet)
-	return fp, nil
+	return b.finalize(), nil
 }
 
-// detectSharedStreams loads each footprint stream and records in sharedSet the ones in
-// which another subject is attributed (see SubjectFootprint.SharedStreams).
-func (r *SubjectResolver) detectSharedStreams(ctx context.Context, subjectID string, streamSet, sharedSet map[string]struct{}) error {
-	for streamID := range streamSet {
+// attributeBatch attributes one scan batch: the subject's events are recorded; an event
+// neither a tag nor the tagger attributes to anyone could be the subject's, so it makes
+// the footprint Partial (it cannot be proven complete).
+func (r *SubjectResolver) attributeBatch(ctx context.Context, subjectID string, batch []StoredEvent, b *footprintBuilder) {
+	for _, se := range batch {
+		at := r.attribute(ctx, se)
+		switch {
+		case at.to(subjectID):
+			b.record(se)
+		case !at.attributed():
+			b.fp.Partial = true
+		}
+	}
+}
+
+// detectSharedStreams loads each footprint stream and records in b.sharedSet the ones
+// in which another subject is attributed (see SubjectFootprint.SharedStreams).
+func (r *SubjectResolver) detectSharedStreams(ctx context.Context, subjectID string, b *footprintBuilder) error {
+	for streamID := range b.streamSet {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		stored, err := r.store.LoadRaw(ctx, streamID, 0)
+		stored, found, err := r.loadFootprintStream(ctx, subjectID, streamID)
 		if err != nil {
-			if errors.Is(err, ErrStreamNotFound) {
-				continue
-			}
-			return fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
+			return err
+		}
+		if !found {
+			continue
 		}
 		if r.store.streamSharedWithOthers(ctx, r.tagger, stored, subjectID) {
-			sharedSet[streamID] = struct{}{}
+			b.sharedSet[streamID] = struct{}{}
 		}
 	}
 	return nil
 }
 
-func (r *SubjectResolver) record(fp *SubjectFootprint, streamSet, keySet map[string]struct{}, matched erasureMatches, se StoredEvent) {
-	matched.add(se)
-	fp.EventCount++
-	fp.StreamEventCounts[se.StreamID]++
-	streamSet[se.StreamID] = struct{}{}
-	// One predicate for "would revoking this event's key erase it?": only a complete
-	// envelope names a key worth revoking; anything less is cleartext to an erasure.
-	if HasEncryptionEnvelope(se.Metadata) {
-		keySet[GetEncryptionKeyID(se.Metadata)] = struct{}{}
-	} else {
-		fp.CleartextEvents++
+// loadFootprintStream loads one of the subject's streams for resolution. A stream that
+// no longer exists is not an error: it is reported as found == false so the caller
+// skips it; any other load failure is wrapped with the stream and subject it concerned.
+func (r *SubjectResolver) loadFootprintStream(ctx context.Context, subjectID, streamID string) (stored []StoredEvent, found bool, err error) {
+	stored, err = r.store.LoadRaw(ctx, streamID, 0)
+	if err != nil {
+		if errors.Is(err, ErrStreamNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("mink: load stream %q for subject %q: %w", streamID, subjectID, err)
+	}
+	return stored, true, nil
+}
+
+// footprintBuilder accumulates a SubjectFootprint while resolve walks the subject's
+// events (by index or by scan): the footprint under construction plus the stream, shared
+// stream and key sets that finalize sorts into it, and the erasureMatches memo (nil for
+// a plain Resolve) that records every event attributed to the subject.
+type footprintBuilder struct {
+	fp        *SubjectFootprint
+	streamSet map[string]struct{}
+	sharedSet map[string]struct{}
+	keySet    map[string]struct{}
+	matched   erasureMatches
+}
+
+// newFootprintBuilder starts an empty footprint for subjectID.
+func newFootprintBuilder(subjectID string, matched erasureMatches) *footprintBuilder {
+	return &footprintBuilder{
+		fp:        &SubjectFootprint{SubjectID: subjectID, StreamEventCounts: map[string]int{}},
+		streamSet: map[string]struct{}{},
+		sharedSet: map[string]struct{}{},
+		keySet:    map[string]struct{}{},
+		matched:   matched,
 	}
 }
 
-func (r *SubjectResolver) finalize(fp *SubjectFootprint, streamSet, sharedSet, keySet map[string]struct{}) {
-	fp.Streams = sortedSet(streamSet)
-	fp.SharedStreams = sortedSet(sharedSet)
-	fp.KeyIDs = sortedSet(keySet)
+// record adds one event attributed to the subject to the footprint and the memo.
+func (b *footprintBuilder) record(se StoredEvent) {
+	b.matched.add(se)
+	b.fp.EventCount++
+	b.fp.StreamEventCounts[se.StreamID]++
+	b.streamSet[se.StreamID] = struct{}{}
+	// One predicate for "would revoking this event's key erase it?": only a complete
+	// envelope names a key worth revoking; anything less is cleartext to an erasure.
+	if HasEncryptionEnvelope(se.Metadata) {
+		b.keySet[GetEncryptionKeyID(se.Metadata)] = struct{}{}
+	} else {
+		b.fp.CleartextEvents++
+	}
+}
+
+// finalize sorts the accumulated sets into the footprint and returns it.
+func (b *footprintBuilder) finalize() *SubjectFootprint {
+	b.fp.Streams = sortedSet(b.streamSet)
+	b.fp.SharedStreams = sortedSet(b.sharedSet)
+	b.fp.KeyIDs = sortedSet(b.keySet)
+	return b.fp
 }

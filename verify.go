@@ -230,7 +230,7 @@ func residualNotes(rep *VerificationReport) []string {
 	if n := len(rep.ResidualRecoverable); n > 0 {
 		notes = append(notes, fmt.Sprintf("%d event(s) remain recoverable: their key is only soft-revoked and can still be restored within its grace window", n))
 	}
-	if n := len(rep.UnattributedRecoverable) + len(rep.UnattributedRedacted); n > 0 {
+	if len(rep.UnattributedRecoverable)+len(rep.UnattributedRedacted) > 0 {
 		notes = append(notes, unattributedNote(len(rep.UnattributedRecoverable), len(rep.UnattributedRedacted)))
 	}
 	for _, rs := range rep.ResidualStores {
@@ -468,7 +468,7 @@ func (d *certificateDraft) gateSubjectStores(outcomes []SubjectErasureOutcome) {
 // as UnattributedRecoverable (forcing Partial) while its PII is still readable or
 // recoverable, or as UnattributedRedacted once permanently crypto-shredded.
 func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, streams []string, rep *VerificationReport, attributed erasureMatches) error {
-	cfg := e.store.EncryptionConfig()
+	v := &streamVerifier{eraser: e, subjectID: subjectID, attributed: attributed, rep: rep, cfg: e.store.EncryptionConfig()}
 	for _, streamID := range streams {
 		stored, err := e.store.LoadRaw(ctx, streamID, 0)
 		if err != nil {
@@ -477,39 +477,75 @@ func (e *DataEraser) verifyStreams(ctx context.Context, subjectID string, stream
 			}
 			return NewErasureError(subjectID, fmt.Errorf("load stream %q: %w", streamID, err))
 		}
-		for _, se := range stored {
-			ref := fmt.Sprintf("%s@%d", se.StreamID, se.Version)
-			if !attributed.has(se) {
-				at := e.attribute(ctx, se)
-				if !at.to(subjectID) {
-					if !at.attributed() {
-						rep.recordUnattributed(ref, se.Metadata, cfg)
-					}
-					continue // another subject's event, or nobody's to check
-				}
-			}
-			rep.EventsChecked++
-			// Same predicate as key discovery: only a complete envelope is ciphertext a
-			// revocation erases. Anything less (legacy plaintext, a bare key id, a damaged
-			// envelope) is readable or unshreddable PII — residual cleartext either way.
-			if !HasEncryptionEnvelope(se.Metadata) {
-				rep.ResidualCleartext = append(rep.ResidualCleartext, ref)
-				continue
-			}
-			// Only a PERMANENT revocation counts as erased. A soft-revoked key
-			// (restorable within its grace window) leaves the PII recoverable, so it
-			// is surfaced separately and must block verification.
-			switch revocationState(cfg, se.Metadata) {
-			case encryption.Revoked:
-				rep.RedactedEvents++
-			case encryption.SoftRevoked:
-				rep.ResidualRecoverable = append(rep.ResidualRecoverable, ref)
-			default:
-				rep.ResidualEncrypted = append(rep.ResidualEncrypted, ref)
-			}
-		}
+		v.verifyStream(ctx, stored)
 	}
 	return nil
+}
+
+// streamVerifier carries what verifyStreams threads through every event of the
+// subject's streams: whose events are checked, which ones the erasure attributed before
+// revoking, the report being filled, and the encryption config that answers a key's
+// revocation state.
+type streamVerifier struct {
+	eraser     *DataEraser
+	subjectID  string
+	attributed erasureMatches
+	rep        *VerificationReport
+	cfg        *FieldEncryptionConfig
+}
+
+// verifyStream checks one loaded stream: each event that is the subject's
+// (ownsEvent) is counted and classified on the report (recordChecked); the rest are
+// skipped — another subject's, or filed as unattributed on the way out.
+func (v *streamVerifier) verifyStream(ctx context.Context, stored []StoredEvent) {
+	for _, se := range stored {
+		ref := fmt.Sprintf("%s@%d", se.StreamID, se.Version)
+		if !v.ownsEvent(ctx, se, ref) {
+			continue // another subject's event, or nobody's to check
+		}
+		v.rep.recordChecked(ref, se.Metadata, v.cfg)
+	}
+}
+
+// ownsEvent reports whether se is the subject's to check: the erasure attributed it to
+// the subject before revoking (attributed), or attributeSubjects attributes it to the
+// subject now. An event nobody can attribute is NOT silently skipped: it is filed on
+// the report (recordUnattributed) before ownsEvent reports false.
+func (v *streamVerifier) ownsEvent(ctx context.Context, se StoredEvent, ref string) bool {
+	if v.attributed.has(se) {
+		return true
+	}
+	at := v.eraser.attribute(ctx, se)
+	if at.to(v.subjectID) {
+		return true
+	}
+	if !at.attributed() {
+		v.rep.recordUnattributed(ref, se.Metadata, v.cfg)
+	}
+	return false
+}
+
+// recordChecked counts one of the subject's events as checked and classifies it. Same
+// predicate as key discovery: only a complete envelope is ciphertext a revocation
+// erases. Anything less (legacy plaintext, a bare key id, a damaged envelope) is
+// readable or unshreddable PII — residual cleartext either way. Of the encrypted events
+// only a PERMANENT revocation counts as erased: a soft-revoked key (restorable within
+// its grace window) leaves the PII recoverable, so it is surfaced separately and must
+// block verification.
+func (r *VerificationReport) recordChecked(ref string, m Metadata, cfg *FieldEncryptionConfig) {
+	r.EventsChecked++
+	if !HasEncryptionEnvelope(m) {
+		r.ResidualCleartext = append(r.ResidualCleartext, ref)
+		return
+	}
+	switch revocationState(cfg, m) {
+	case encryption.Revoked:
+		r.RedactedEvents++
+	case encryption.SoftRevoked:
+		r.ResidualRecoverable = append(r.ResidualRecoverable, ref)
+	default:
+		r.ResidualEncrypted = append(r.ResidualEncrypted, ref)
+	}
 }
 
 // recordUnattributed files an event of the subject's streams that nobody could

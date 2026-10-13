@@ -330,8 +330,9 @@ checkpoint) and revokes a key only if **every** field-encrypted event under it i
 a Shred policy of this sweep (static matchers *and* age-eligible; `RedactFields` /
 `Anonymize` matches do not count). A key that also protects out-of-scope events is skipped,
 listed in `report.SharedKeysSkipped`, and reported as a `*mink.RetentionSharedKeyError`
-(`errors.Is(err, mink.ErrRetentionSharedKey)`; it carries the key id and an out-of-scope
-*count*, never events), so `report.Failed()` is true. `report.KeysToRevoke` is the
+(`errors.Is(err, mink.ErrRetentionSharedKey)`; its `KeyID` field carries the key id for
+programmatic use and `OutOfScope` an out-of-scope *count*, never events — and its message
+prints only the count), so `report.Failed()` is true. `report.KeysToRevoke` is the
 guard-approved set. `DryRun` runs the same guard, so it previews the exact blast radius
 `Apply` would act on. Keep keys exclusive by giving each retention scope its own key
 (`WithSubjectKeyResolver` / `WithTenantKeyResolver`); `mink.WithAllowSharedKeyRevocation()`
@@ -339,9 +340,12 @@ disables the guard — dangerous, and only after a `DryRun` has shown that the w
 radius is acceptable. **Accounting is honest:** a Shred match counts in `report.Acted` only
 when its key ended up in `report.KeysRevoked`; a match whose key the guard refused, failed to
 revoke, or could not be revoked (no encryption configured) counts in `report.Skipped` and is
-re-swept by the next run (`DryRun` leaves both at `0`). Note that `RetentionSharedKeyError`
-and the report's key lists *do* print key ids — an operator needs them to split keys — so
-treat retention output as sensitive when key ids embed subject ids.
+re-swept by the next run (`DryRun` leaves both at `0`). Note that the report's key lists
+(`KeysToRevoke` / `SharedKeysSkipped`, and the matching `mink gdpr retain` lines) *do* print
+key ids — an operator needs them to split keys — so treat retention output as sensitive when
+key ids embed subject ids. `RetentionSharedKeyError.Error()` itself prints only the
+out-of-scope count: under per-subject keys the id would name the subject, so the message is
+safe to log, but its `KeyID` field is for programmatic use and must not be.
 
 **Nothing is shredded silently.** A Shred policy collects keys only from events carrying a
 complete encryption envelope (`mink.HasEncryptionEnvelope`); matched events with no envelope

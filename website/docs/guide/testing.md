@@ -526,6 +526,17 @@ func TestWithIsolatedSchema(t *testing.T) {
 }
 ```
 
+`CreateSchema` names the schema `<prefix>_<UnixNano>`. The prefix must be a plain identifier
+(`^[A-Za-z_][A-Za-z0-9_]*$`) of at most 43 bytes (`containers.MaxSchemaPrefixBytes`), so the
+generated name always fits PostgreSQL's 63-byte identifier limit and the server can never
+silently truncate the uniqueness suffix away; anything else fails with
+`containers.ErrInvalidSchemaPrefix` before the database is contacted
+(`NewIntegrationTest(containers.WithSchemaPrefix(...))` fails the test the same way).
+`DropSchema` validates the name it is handed — a plain identifier of at most 63 bytes
+(`containers.MaxSchemaNameBytes`), which every `CreateSchema` result satisfies — and refuses
+anything else with `containers.ErrInvalidSchemaName` without touching the database, so a test
+can never drop a schema other than its own.
+
 ### Integration Test Fixture
 
 ```go
@@ -754,8 +765,9 @@ assert.Len(t, events, 1)
 ### 3. Isolate Integration Tests
 
 ```go
-// Good: Use schema isolation
-schema := container.CreateSchema(ctx, t, "test_"+t.Name())
+// Good: Use schema isolation (prefix: a plain identifier of at most 43 bytes —
+// CreateSchema appends the unique suffix, so don't build it from t.Name())
+schema := container.CreateSchema(ctx, t, "test_order")
 defer container.DropSchema(ctx, t, schema)
 ```
 

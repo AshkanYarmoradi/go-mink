@@ -1031,11 +1031,18 @@ type OutboxRoute struct {
 ### Outbox Processor
 
 Background worker that polls for pending messages and delivers them via registered publishers.
-Log lines that name a destination (the processor's "No publisher for destination" and the
-`EventStoreWithOutbox` "Failed to transform outbox payload" lines) reduce it to its origin —
-`<prefix>:scheme://host[:port]`, with userinfo, path, query and fragment dropped — so a
-webhook URL carrying a token in its path or query never reaches your logs; non-URL
-destinations such as `kafka:orders` are logged as-is.
+Log lines that name a destination treat it as sensitive. A destination whose prefix the
+application registered (the `EventStoreWithOutbox` "Failed to transform outbox payload" line)
+is reduced to its origin — `<prefix>:scheme://host[:port]`, with userinfo, path, query and
+fragment dropped — so a webhook URL carrying a token in its path or query never reaches your
+logs; non-URL destinations such as `kafka:orders` are logged as-is. A destination with **no**
+registered publisher is stored data of unknown format (even its prefix may be a credential),
+so the processor's "No publisher for destination" line never prints it: it carries the message
+`id`, a `destination_digest` (the first 12 hex digits of the SHA-256 of the stored value —
+enough to match the row, useless for recovering it) and the `destination_length`, and the
+error persisted as the message's `last_error` reads
+`mink: publisher not found for destination: destination digest <12 hex>`
+(`errors.Is(err, mink.ErrPublisherNotFound)` still holds).
 
 ```go
 import (
@@ -1249,8 +1256,9 @@ processor := mink.NewOutboxProcessor(outboxStore,
 //   NO registered publisher is stored, uncontrolled data ("tenant-123:https://…", a
 //   typo), so its failure is recorded under the fixed mink.UnregisteredDestinationLabel
 //   ("unregistered") instead — the label set is bounded by the registered publishers
-//   plus that one value; the "No publisher for destination" log line still names the
-//   prefix. (The metrics package records the value it is given verbatim; there is no
+//   plus that one value; the "No publisher for destination" log line identifies the row
+//   by message id, destination digest and length only, never by the prefix or the value.
+//   (The metrics package records the value it is given verbatim; there is no
 //   option to label by full destination. Avoid a publisher named "unregistered".)
 // - outbox_messages_dead_lettered_total
 // - outbox_batch_duration_seconds

@@ -353,7 +353,10 @@ A **panic** inside a user upcaster is recovered by `UpcasterChain.Upcast` (and t
 event type and the `FromVersion -> ToVersion` transition that failed, with no partial data —
 it never unwinds into the caller. The error carries only `mink.PanicValueSummary` of the
 recovered value (its type, plus the message for a Go runtime error), so neither the event
-payload nor a panic message formatted from it reaches the error:
+payload nor a panic message formatted from it reaches the error. The transition
+(`EventType` / `FromVersion` / `ToVersion`) is read *before* `Upcast` runs and the recovery
+reports only those captured values — it never calls back into the upcaster — so an upcaster
+whose accessors panic once its `Upcast` has failed still yields the `*UpcastError`:
 
 ```go
 // UpcastError -- detailed upcasting failure

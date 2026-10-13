@@ -743,6 +743,44 @@ type streamKeyTally struct {
 	shared bool
 }
 
+// note folds one event's attribution into the stream-level flags: any attributable
+// event makes the stream scoped; one attributed to a subject other than subjectID makes
+// it shared.
+func (t *streamKeyTally) note(at subjectAttribution, subjectID string) {
+	if at.attributed() {
+		t.scoped = true
+	}
+	if at.toOther(subjectID) {
+		t.shared = true
+	}
+}
+
+// ownedBySubject reports whether a scoped stream's matched event is attributed to
+// subjectID and so may be handed to fn. An event that is nobody's — not a co-tenant's,
+// not provably the subject's — is counted as untagged on the way out.
+func (t *streamKeyTally) ownedBySubject(at subjectAttribution, subjectID string) bool {
+	if at.to(subjectID) {
+		return true
+	}
+	if !at.attributed() {
+		t.untagged++ // unattributable: not the co-tenant's, not provably the subject's
+	}
+	return false
+}
+
+// attributeStream attributes every event of a loaded stream exactly once, in stream
+// order, and notes on tally whether the stream is subject-scoped and whether a co-tenant
+// shares it. The attributions are returned by index so collectStreamKeys can reuse
+// them without running the tagger again.
+func (e *DataEraser) attributeStream(ctx context.Context, stored []StoredEvent, subjectID string, tally *streamKeyTally) []subjectAttribution {
+	ats := make([]subjectAttribution, len(stored))
+	for i := range stored {
+		ats[i] = e.attribute(ctx, stored[i])
+		tally.note(ats[i], subjectID)
+	}
+	return ats
+}
+
 // collectStreamKeys applies discoverKeys' subject-scoping rule to one loaded stream:
 // in a scoped stream only the events attributed to req.SubjectID reach fn (other
 // subjects' and unattributable events are skipped, the latter counted) and are
@@ -752,25 +790,13 @@ type streamKeyTally struct {
 // for, so the tagger runs at most once per untagged event.
 func (e *DataEraser) collectStreamKeys(ctx context.Context, stored []StoredEvent, req ErasureRequest, attributed erasureMatches, fn func(StoredEvent)) streamKeyTally {
 	var tally streamKeyTally
-	ats := make([]subjectAttribution, len(stored))
-	for i := range stored {
-		ats[i] = e.attribute(ctx, stored[i])
-		if ats[i].attributed() {
-			tally.scoped = true
-		}
-		if ats[i].toOther(req.SubjectID) {
-			tally.shared = true
-		}
-	}
+	ats := e.attributeStream(ctx, stored, req.SubjectID, &tally)
 	for i, se := range stored {
 		if !e.matches(se, req) {
 			continue
 		}
 		if tally.scoped {
-			if !ats[i].to(req.SubjectID) {
-				if !ats[i].attributed() {
-					tally.untagged++ // unattributable: not the co-tenant's, not provably the subject's
-				}
+			if !tally.ownedBySubject(ats[i], req.SubjectID) {
 				continue // not the subject's event (another subject's, or unattributable)
 			}
 			attributed.add(se)

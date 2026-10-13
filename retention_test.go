@@ -338,7 +338,8 @@ func TestRetention_SharedKeyGuard_SkipsSharedKey(t *testing.T) {
 	require.Len(t, skes, 1, "exactly one error per shared key")
 	assert.Equal(t, "k", skes[0].KeyID)
 	assert.Equal(t, 1, skes[0].OutOfScope, "Order-o1 is the one event outside the policy")
-	assert.Contains(t, skes[0].Error(), `"k"`)
+	assert.Contains(t, skes[0].Error(), "1 event(s) outside the Shred policy scope")
+	assert.NotContains(t, skes[0].Error(), `"k"`, "the message never names the key: a per-subject key id is a subject id")
 	assert.ErrorIs(t, skes[0], ErrRetentionSharedKey)
 	assert.Equal(t, ErrRetentionSharedKey, errors.Unwrap(skes[0]))
 

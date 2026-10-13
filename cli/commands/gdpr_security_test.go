@@ -103,7 +103,7 @@ func TestGdprRetain_SeededStore_PrintsBlastRadius(t *testing.T) {
 	assert.Contains(t, out, "Errors:              2")
 	assert.Contains(t, out, "1 key(s) refused by the shared-key guard")
 	assert.Contains(t, out, "1 matched event(s) carry no encryption envelope")
-	assert.Contains(t, out, `refused to revoke key "k-shared"`)
+	assert.Contains(t, out, "retention refused to revoke an encryption key")
 	assert.Contains(t, out, "1 event(s) outside the Shred policy scope")
 	assert.Contains(t, out, "remain in plaintext")
 
