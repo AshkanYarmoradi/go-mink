@@ -293,7 +293,7 @@ func main() {
 
 	// Create application
 	cfg := app.Config{
-		DatabaseURL:    getEnv("DATABASE_URL", "postgres://postgres:mink@localhost:5432/minkshop?sslmode=disable"),
+		DatabaseURL:    getEnv("DATABASE_URL", "postgres://postgres:mink@localhost:5432/minkshop?sslmode=verify-full"), // TLS-only fallback; local dev overrides DATABASE_URL explicitly
 		DatabaseSchema: getEnv("DATABASE_SCHEMA", "mink"),
 		MaxConnections: 20,
 	}
@@ -367,7 +367,10 @@ package observability
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -378,6 +381,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/credentials"
 
 	"go-mink.dev"
 )
@@ -388,15 +392,52 @@ type TracingConfig struct {
 	ServiceVersion string
 	Environment    string
 	OTLPEndpoint   string
+	// OTLPCAFile is an optional PEM bundle for the private CA that signed the
+	// collector's certificate. Empty means the system trust store.
+	OTLPCAFile string
+	// OTLPInsecure exports traces in PLAINTEXT. Development only. It defaults to
+	// false so a missing setting can never downgrade transport security, and
+	// otlpTransport refuses it when Environment == "production".
+	OTLPInsecure bool
+}
+
+// otlpTransport selects the transport security for the collector connection:
+// TLS 1.2+ with certificate verification by default; plaintext only when explicitly
+// opted into for local development.
+func otlpTransport(cfg TracingConfig) (otlptracegrpc.Option, error) {
+	if cfg.OTLPInsecure {
+		if cfg.Environment == "production" {
+			return nil, fmt.Errorf("refusing plaintext OTLP export in production")
+		}
+		return otlptracegrpc.WithInsecure(), nil // DEV ONLY
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if cfg.OTLPCAFile != "" {
+		pem, err := os.ReadFile(cfg.OTLPCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read OTLP CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("OTLP CA file %q contains no certificates", cfg.OTLPCAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)), nil
 }
 
 // InitTracing initializes OpenTelemetry tracing.
 func InitTracing(ctx context.Context, cfg TracingConfig) (func(), error) {
-	// Create OTLP exporter
+	transport, err := otlpTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create OTLP exporter: TLS to the collector unless cfg.OTLPInsecure (dev only)
 	exporter, err := otlptrace.New(ctx,
 		otlptracegrpc.NewClient(
 			otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint),
-			otlptracegrpc.WithInsecure(),
+			transport,
 		),
 	)
 	if err != nil {
@@ -547,6 +588,11 @@ func main() {
 		ServiceVersion: "1.0.0",
 		Environment:    getEnv("ENVIRONMENT", "development"),
 		OTLPEndpoint:   getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		// Private CA that signed the collector's certificate (empty = system trust store).
+		OTLPCAFile: getEnv("OTEL_EXPORTER_OTLP_CERTIFICATE", ""),
+		// DEV ONLY: plaintext export. Off unless explicitly opted in, and refused when
+		// ENVIRONMENT=production (see otlpTransport).
+		OTLPInsecure: getEnv("OTEL_EXPORTER_OTLP_INSECURE", "false") == "true",
 	})
 	if err != nil {
 		log.Printf("Warning: Failed to initialize tracing: %v", err)
@@ -935,7 +981,13 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENTRYPOINT ["/app/minkshop"]
 ```
 
-Create `docker-compose.prod.yml`:
+Create `docker-compose.prod.yml`. Every hop is encrypted: the app reaches PostgreSQL with
+`sslmode=verify-full` (server certificate **and** hostname checked against your CA) and
+ships traces to Jaeger over TLS. Put the certificates in `./certs/` before starting:
+`ca.crt` (your CA), `postgres.crt`/`postgres.key` issued for the hostname `postgres`, and
+`jaeger.crt`/`jaeger.key` issued for `jaeger`. PostgreSQL refuses a key file that other
+users can read, so for the Alpine image run
+`chown 70:70 certs/postgres.key && chmod 600 certs/postgres.key` on the host first.
 
 ```yaml
 version: '3.8'
@@ -947,12 +999,22 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-      - "9090:9090"
+      # 9090 (metrics) is deliberately NOT published: Prometheus scrapes minkshop:9090
+      # over the private compose network.
     environment:
-      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/minkshop?sslmode=disable
+      # verify-full = TLS + server-certificate + hostname verification against ca.crt.
+      # sslmode=disable (plaintext) and sslmode=require (no certificate check) are
+      # development-only settings and must never reach production.
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/minkshop?sslmode=verify-full&sslrootcert=/etc/ssl/certs/postgres-ca.crt
       - DATABASE_SCHEMA=mink
       - ENVIRONMENT=production
+      # The OTLP exporter from Part 3 uses TLS unless OTEL_EXPORTER_OTLP_INSECURE=true,
+      # which is a dev-only switch and is deliberately absent here.
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+      - OTEL_EXPORTER_OTLP_CERTIFICATE=/etc/ssl/certs/otel-ca.crt
+    volumes:
+      - ./certs/ca.crt:/etc/ssl/certs/postgres-ca.crt:ro
+      - ./certs/ca.crt:/etc/ssl/certs/otel-ca.crt:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -965,11 +1027,18 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # Serve TLS; the client's verify-full rejects anything else.
+    command: >
+      postgres -c ssl=on
+               -c ssl_cert_file=/certs/postgres.crt
+               -c ssl_key_file=/certs/postgres.key
     environment:
       POSTGRES_DB: minkshop
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./certs/postgres.crt:/certs/postgres.crt:ro
+      - ./certs/postgres.key:/certs/postgres.key:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -980,16 +1049,22 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
-      - "16686:16686"  # UI
-      - "4317:4317"    # OTLP gRPC
+      - "127.0.0.1:16686:16686"  # UI on loopback only; reach it over SSH/VPN or put it behind auth
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      # TLS on the OTLP gRPC receiver; the app verifies it against ca.crt (see above).
+      - COLLECTOR_OTLP_GRPC_TLS_ENABLED=true
+      - COLLECTOR_OTLP_GRPC_TLS_CERT=/certs/jaeger.crt
+      - COLLECTOR_OTLP_GRPC_TLS_KEY=/certs/jaeger.key
+    volumes:
+      - ./certs/jaeger.crt:/certs/jaeger.crt:ro
+      - ./certs/jaeger.key:/certs/jaeger.key:ro
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9091:9090"
+      - "127.0.0.1:9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
@@ -997,7 +1072,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
     volumes:
@@ -1047,7 +1122,8 @@ scrape_configs:
   - [ ] Error handling covers all cases
 
 - [ ] **Security**
-  - [ ] TLS enabled
+  - [ ] TLS enabled end-to-end: PostgreSQL `sslmode=verify-full` + `sslrootcert`, OTLP exporter over TLS (no `WithInsecure()`), HTTPS at the ingress
+  - [ ] Metrics (`:9090`) and the Jaeger/Prometheus/Grafana UIs not published to the internet (loopback or private network, or behind auth)
   - [ ] Secrets in environment variables
   - [ ] Database credentials rotated
   - [ ] Non-root container user
@@ -1064,7 +1140,22 @@ scrape_configs:
 # Set environment variables
 export POSTGRES_PASSWORD=your-secure-password
 export GRAFANA_PASSWORD=your-grafana-password
-export DATABASE_URL="postgres://minkshop:${POSTGRES_PASSWORD}@localhost:5432/minkshop?sslmode=require"
+# TLS is mandatory in production: verify-full checks the server certificate AND the
+# hostname against the CA you mount (the same ca.crt the compose file gives the app).
+# Never use sslmode=disable (plaintext) or sslmode=require (no certificate check) here.
+#
+# Inside the compose network the app reaches PostgreSQL as "postgres" — the hostname its
+# certificate was issued for — and the service publishes no port. For the host-side CLI
+# commands below, either:
+#  (a) publish the port on loopback (add `ports: ["127.0.0.1:5432:5432"]` to the postgres
+#      service) and resolve the certificate's name locally (`127.0.0.1 postgres` in
+#      /etc/hosts) — verify-full then works unchanged:
+export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/minkshop?sslmode=verify-full&sslrootcert=./certs/ca.crt"
+#  (b) or connect to localhost with sslmode=verify-ca: the certificate is still checked
+#      against ca.crt, only the hostname check is skipped (verify-full against localhost
+#      fails that check). Acceptable on loopback only — sslmode=require would skip the CA
+#      check entirely.
+# export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/minkshop?sslmode=verify-ca&sslrootcert=./certs/ca.crt"
 
 # Start services
 docker-compose -f docker-compose.prod.yml up -d

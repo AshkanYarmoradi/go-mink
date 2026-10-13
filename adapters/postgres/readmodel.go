@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -1449,7 +1450,7 @@ func (r *PostgresRepository[T]) getWithExecutor(ctx context.Context, exec dbExec
 	model := new(T)
 	sc := r.getScanTargets(model)
 
-	if err := row.Scan(sc.ptrs...); err == sql.ErrNoRows {
+	if err := row.Scan(sc.ptrs...); errors.Is(err, sql.ErrNoRows) {
 		return nil, mink.ErrNotFound
 	} else if err != nil {
 		// A NULL-in-non-nullable failure surfaces as the bare typed error,

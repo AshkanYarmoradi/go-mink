@@ -724,8 +724,188 @@ func TestExportFilters(t *testing.T) {
 		assert.False(t, combined(event))
 	})
 
-	t.Run("CombineFilters with no filters matches all", func(t *testing.T) {
-		assert.True(t, CombineFilters()(event))
+	t.Run("CombineFilters with no filters matches nothing", func(t *testing.T) {
+		// An empty conjunction is not a wildcard in a GDPR export: it would select the
+		// whole store for one subject.
+		assert.False(t, CombineFilters()(event))
+	})
+
+	t.Run("CombineFilters with a nil filter fails closed", func(t *testing.T) {
+		assert.False(t, CombineFilters(FilterByTenantID("tenant-1"), nil)(event))
+		assert.False(t, CombineFilters(nil)(event))
+	})
+
+	t.Run("empty selectors match nothing", func(t *testing.T) {
+		// Each of these would otherwise match every event lacking that attribute.
+		untenanted := StoredEvent{StreamID: "Customer-x", Type: "exportCustomerCreated"}
+		tests := []struct {
+			name   string
+			filter ExportFilter
+		}{
+			{"FilterByTenantID(\"\")", FilterByTenantID("")},
+			{"FilterByUserID(\"\")", FilterByUserID("")},
+			{"FilterByMetadata(k, \"\")", FilterByMetadata("region", "")},
+			{"FilterByMetadata(\"\", v)", FilterByMetadata("", "eu")},
+			{"FilterByStreamPrefix(\"\")", FilterByStreamPrefix("")},
+			{"FilterByStreamCategory(\"\")", FilterByStreamCategory("")},
+			{"FilterByStreams()", FilterByStreams()},
+			{"FilterByStreams(\"\")", FilterByStreams("")},
+			{"FilterByEventTypes()", FilterByEventTypes()},
+			{"SubjectOrUntaggedFilter(\"\")", SubjectOrUntaggedFilter("")},
+			{"CombineFilters()", CombineFilters()},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				assert.False(t, tt.filter(event), "must not match a populated event")
+				assert.False(t, tt.filter(untenanted), "must not match an event with the attribute absent")
+			})
+		}
+	})
+
+	t.Run("FilterByStreams is exact", func(t *testing.T) {
+		f := FilterByStreams("Customer-cust-1", "Order-ord-9")
+		assert.True(t, f(event))
+		assert.False(t, f(StoredEvent{StreamID: "Customer-cust-10"}), "no prefix semantics")
+		assert.False(t, f(StoredEvent{StreamID: "Customer-cust"}))
+		assert.True(t, f(StoredEvent{StreamID: "Order-ord-9"}))
+	})
+
+	t.Run("FilterByStreamCategory matches text before the first dash", func(t *testing.T) {
+		f := FilterByStreamCategory("Customer")
+		assert.True(t, f(event))
+		assert.True(t, f(StoredEvent{StreamID: "Customer-x-y-z"}))
+		assert.True(t, f(StoredEvent{StreamID: "Customer"}), "a dash-less id is its own category")
+		assert.False(t, f(StoredEvent{StreamID: "CustomerArchive-1"}), "not a prefix match")
+		assert.False(t, f(StoredEvent{StreamID: "Order-1"}))
+	})
+
+	t.Run("FilterByStreamPrefix is a plain prefix (user-1 matches user-10)", func(t *testing.T) {
+		loose := FilterByStreamPrefix("user-1")
+		assert.True(t, loose(StoredEvent{StreamID: "user-1"}))
+		assert.True(t, loose(StoredEvent{StreamID: "user-10"}), "documented caveat: a bare id prefix over-matches")
+		assert.True(t, loose(StoredEvent{StreamID: "user-123"}))
+
+		tight := FilterByStreamPrefix("user-1-")
+		assert.True(t, tight(StoredEvent{StreamID: "user-1-profile"}))
+		assert.False(t, tight(StoredEvent{StreamID: "user-10-profile"}), "a trailing separator scopes it")
+	})
+
+	t.Run("SubjectOrUntaggedFilter", func(t *testing.T) {
+		tagged := func(subjects ...string) StoredEvent {
+			return StoredEvent{Metadata: setSubjectTags(Metadata{}, subjects)}
+		}
+		f := SubjectOrUntaggedFilter("u1")
+		assert.True(t, f(tagged("u1")), "own event")
+		assert.True(t, f(tagged("u2", "u1")), "shared event that includes the subject")
+		assert.False(t, f(tagged("u2")), "another subject's event")
+		assert.True(t, f(StoredEvent{}), "untagged: unattributable, still exported")
+		assert.True(t, f(StoredEvent{Metadata: Metadata{Custom: map[string]string{"other": "x"}}}))
+		assert.False(t, SubjectFilter("u1")(StoredEvent{}), "contrast: SubjectFilter drops untagged")
+	})
+}
+
+// A request with explicit Streams and no Filter is scoped to the subject by default: on a
+// stream shared between subjects, events tagged for OTHER subjects are dropped, events
+// tagged for the subject are kept, and untagged (unattributable) events are kept as before.
+func TestDataExporter_Export_StreamScopedDropsOtherSubjects(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.NewAdapter(), WithSubjectTagger(userIDTagger))
+	store.RegisterEvents(exportOrderPlaced{})
+
+	appendOrder := func(userID string) {
+		t.Helper()
+		var opts []AppendOption
+		if userID != "" {
+			opts = append(opts, WithAppendMetadata(Metadata{UserID: userID}))
+		}
+		require.NoError(t, store.Append(ctx, "Order-shared",
+			[]interface{}{exportOrderPlaced{OrderID: "o-" + userID, CustomerID: userID, Amount: 1}}, opts...))
+	}
+	appendOrder("u1") // tagged u1
+	appendOrder("u2") // tagged u2
+	appendOrder("")   // untagged
+
+	exporter := NewDataExporter(store)
+	req := ExportRequest{SubjectID: "u1", Streams: []string{"Order-shared"}}
+
+	t.Run("Export keeps own and untagged, drops other subjects", func(t *testing.T) {
+		res, err := exporter.Export(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, 2, res.TotalEvents)
+		for _, e := range res.Events {
+			data := e.Data.(exportOrderPlaced)
+			assert.NotEqual(t, "u2", data.CustomerID, "u2's event must not reach u1's export")
+		}
+		assert.Equal(t, []string{"Order-shared"}, res.Streams)
+	})
+
+	t.Run("ExportStream applies the same rule", func(t *testing.T) {
+		var seen []string
+		err := exporter.ExportStream(ctx, req, func(_ context.Context, e ExportedEvent) error {
+			seen = append(seen, e.Data.(exportOrderPlaced).CustomerID)
+			return nil
+		})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"u1", ""}, seen)
+	})
+
+	t.Run("other subject sees only its own and untagged", func(t *testing.T) {
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u2", Streams: []string{"Order-shared"}})
+		require.NoError(t, err)
+		assert.Equal(t, 2, res.TotalEvents)
+	})
+
+	t.Run("unknown subject gets only untagged", func(t *testing.T) {
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "nobody", Streams: []string{"Order-shared"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, res.TotalEvents)
+		assert.Equal(t, "", res.Events[0].Data.(exportOrderPlaced).CustomerID)
+	})
+
+	t.Run("explicit filter overrides the default", func(t *testing.T) {
+		// SubjectFilter is stricter (drops untagged too)...
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1", Streams: []string{"Order-shared"}, Filter: SubjectFilter("u1")})
+		require.NoError(t, err)
+		assert.Equal(t, 1, res.TotalEvents)
+		// ...and a caller who deliberately wants the whole stream can say so.
+		res, err = exporter.Export(ctx, ExportRequest{SubjectID: "u1", Streams: []string{"Order-shared"}, Filter: FilterByStreams("Order-shared")})
+		require.NoError(t, err)
+		assert.Equal(t, 3, res.TotalEvents)
+	})
+
+	t.Run("time window still applies with the default filter", func(t *testing.T) {
+		past := time.Now().Add(-time.Hour)
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1", Streams: []string{"Order-shared"}, ToTime: &past})
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.TotalEvents)
+	})
+}
+
+// The new filters work end-to-end over a scan, not only as predicates.
+func TestDataExporter_Export_ScanWithStreamFilters(t *testing.T) {
+	store, _ := newExportTestStore(t)
+	ctx := context.Background()
+	seedExportEvents(t, ctx, store)
+	exporter := NewDataExporter(store)
+
+	t.Run("FilterByStreams", func(t *testing.T) {
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "cust-1", Filter: FilterByStreams("Customer-cust-1", "Order-ord-1")})
+		require.NoError(t, err)
+		assert.Equal(t, 2, res.TotalEvents)
+		assert.ElementsMatch(t, []string{"Customer-cust-1", "Order-ord-1"}, res.Streams)
+	})
+
+	t.Run("FilterByStreamCategory", func(t *testing.T) {
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "customers", Filter: FilterByStreamCategory("Customer")})
+		require.NoError(t, err)
+		assert.Equal(t, 2, res.TotalEvents)
+		assert.ElementsMatch(t, []string{"Customer-cust-1", "Customer-cust-2"}, res.Streams)
+	})
+
+	t.Run("empty tenant selector exports nothing", func(t *testing.T) {
+		res, err := exporter.Export(ctx, ExportRequest{SubjectID: "x", Filter: FilterByTenantID("")})
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.TotalEvents, "an empty selector must not export the store")
 	})
 }
 

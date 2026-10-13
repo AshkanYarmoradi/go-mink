@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 	"go-mink.dev/adapters"
+	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
 )
@@ -503,7 +503,10 @@ func newStreamExportCommand() *cobra.Command {
 				output = streamID + ".json"
 			}
 
-			if err := os.WriteFile(output, data, 0644); err != nil {
+			// Event payloads can carry PII, so the export is written
+			// owner-read/write only — also when it replaces an existing, more
+			// permissive file (see config.WriteSecureFile).
+			if err := config.WriteSecureFile(output, data); err != nil {
 				return err
 			}
 

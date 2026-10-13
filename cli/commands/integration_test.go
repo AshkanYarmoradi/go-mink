@@ -1181,9 +1181,9 @@ func TestMigrateDownCommand_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists, "Table should exist after migration up")
 
-	// Now rollback
+	// Now rollback (--yes: the rollback confirmation needs a terminal)
 	cmdDown := NewMigrateCommand()
-	cmdDown.SetArgs([]string{"down"})
+	cmdDown.SetArgs([]string{"down", "--yes"})
 	err = cmdDown.Execute()
 	assert.NoError(t, err)
 
@@ -1225,7 +1225,7 @@ func TestMigrateDownCommand_NoDownFile_Integration(t *testing.T) {
 
 	// Try to rollback - should skip because no down file
 	cmdDown := NewMigrateCommand()
-	cmdDown.SetArgs([]string{"down"})
+	cmdDown.SetArgs([]string{"down", "--yes"})
 	err = cmdDown.Execute()
 	assert.NoError(t, err)
 
@@ -1259,7 +1259,7 @@ func TestMigrateDownCommand_MultipleSteps_Integration(t *testing.T) {
 
 	// Rollback 2 steps
 	cmdDown := NewMigrateCommand()
-	cmdDown.SetArgs([]string{"down", "--steps", "2"})
+	cmdDown.SetArgs([]string{"down", "--steps", "2", "--yes"})
 	err = cmdDown.Execute()
 	assert.NoError(t, err)
 

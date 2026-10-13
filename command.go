@@ -30,7 +30,11 @@ type IdempotentCommand interface {
 	Command
 
 	// IdempotencyKey returns a unique key for deduplication.
-	// Commands with the same key will only be processed once.
+	// Commands with the same key will only be processed once (within the same
+	// idempotency scope — by default the tenant in the context; see
+	// IdempotencyConfig.Scope). Returning "" does not disable deduplication:
+	// GetIdempotencyKey then derives the key from the command's content, so an
+	// unset key never collides with every other command that left it unset.
 	IdempotencyKey() string
 }
 

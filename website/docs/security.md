@@ -50,11 +50,30 @@ store := mink.New(adapter, mink.WithFieldEncryption(cfg))
 Encryption metadata lives in `Metadata.Custom` (no DB schema changes). It is
 zero-overhead when unconfigured.
 
+> **Security note — the envelope is library-owned.** `Append` / `SaveAggregate` (and the
+> outbox wrapper) strip the four envelope keys (`$encrypted_fields`, `$encryption_key_id`,
+> `$encrypted_dek`, `$encryption_algorithm`) from caller-supplied `Metadata.Custom` before
+> anything is stamped — `mink.SanitizeReservedMetadata` is the exported helper — so a writer
+> that controls metadata (an HTTP API copying request headers, say) cannot make plaintext look
+> encrypted, point decryption or erasure at another key, or skip encryption. In the same pass
+> a caller-supplied `$schema_version` is **dropped** — the upcaster chain's latest version is
+> stamped instead (`mink.WithCallerSchemaVersion()` lets trusted migration tooling keep an
+> in-range value for a type that has upcasters; `ReEncryptStream` preserves it on its own) —
+> and a configured `SubjectTagger` **replaces** caller-supplied `$subjects` tags
+> (`mink.WithCallerSubjectTags()` restores merging for trusted writers); the same tag policy
+> governs `EncryptStoredEvent` / `ReEncryptStreamInPlace`, so a tag forged *at rest* cannot
+> pick the wrapping key either. Decryption **fails
+> closed**: a field listed in `$encrypted_fields` that is absent or not a string returns
+> `encryption.ErrDecryptionFailed` naming the field, instead of passing a substituted value
+> through as plaintext — and integers above 2^53 survive the encrypt/decrypt round trip exactly.
+
 ## Crypto-shredding (key revocation)
 
 The GDPR right to erasure is implemented by **crypto-shredding**: revoke a key and
-the data encrypted under it becomes permanently unrecoverable. Providers opt in to
-the optional `encryption.Revocable` interface:
+the data encrypted under it becomes unrecoverable once the provider has destroyed the
+key material — immediately for the local provider, only after the pending-deletion
+window for AWS KMS (see the table). Providers opt in to the optional
+`encryption.Revocable` interface:
 
 ```go
 // RevokeKey is idempotent. IsRevoked reports current state.
@@ -64,8 +83,8 @@ err := encryption.Revoke(provider, "tenant-A")   // or provider.(Revocable).Revo
 | Provider | Revocation mechanism | Notes |
 |----------|---------------------|-------|
 | **local** | deletes/zeroes key material | testing only; immediate, permanent |
-| **AWS KMS** | `ScheduleKeyDeletion` (via `KMSRevocationClient`) | key is immediately unusable; destroyed after the pending window (7–30 days) |
-| **Vault Transit** | `DeleteKey` (via `VaultRevocationClient`) | requires `deletion_allowed` on the key |
+| **AWS KMS** | `ScheduleKeyDeletion` (via `KMSRevocationClient`) | key is immediately unusable but **not yet destroyed**: `CancelKeyDeletion` can restore it until the pending window (7–30 days, `WithPendingDeletionWindow`) elapses. The provider reports it as `SoftRevoked` (still recoverable) via `RevocationState` until AWS completes the deletion, so `Verify` does not certify the erasure inside the window. Ids are resolved through `DescribeKey` **at call time**, so **stamp key ARNs, never aliases**: `RevokeKey("alias/x")` shreds whatever the alias points at *then*, re-pointing the alias later changes what `IsRevoked` answers, and a deleted alias is indistinguishable from a deleted key. `UnrevokeKey` (client implementing `KMSDeletionCanceller`) is state-driven and retryable — `CancelKeyDeletion` + `EnableKey` for a pending key, `EnableKey` alone for a key left merely disabled by an earlier half-finished restore, a no-op for an enabled key — and returns `*kms.KeyPermanentlyDeletedError` (`errors.Is` → `kms.ErrKeyPermanentlyDeleted` and `encryption.ErrKeyRevoked`) once the deletion has completed; the context-free revocation calls are bounded by `WithRevocationTimeout` (30s default) |
+| **Vault Transit** | `DeleteKey` (via `VaultRevocationClient`) | requires `deletion_allowed` on the key. Key names are validated before any request — non-empty, no `/`, no control bytes, not the whole segment `.` or `..`; anything else (spaces, `?`, `%`, non-ASCII, an inner `a..b`) is accepted and `url.PathEscape`d before the `VaultClient` sees it — so an untrusted tenant/subject id can never escape the Transit mount while existing key names keep decrypting. `RevokeKey`/`IsRevoked` are bounded by `vault.WithRevocationTimeout` (`DefaultRevocationTimeout` 30s) |
 
 KMS/Vault gain revocation through an **optional client sub-interface**, so the base
 `KMSClient`/`VaultClient` you inject is never forced to change. A provider whose
@@ -90,6 +109,12 @@ interface (falling back to `IsRevoked` for providers without it). This is what l
 `Verify` distinguish a still-recoverable soft-revocation from a permanent shred and
 refuse to certify the former (see [Accountability](#accountability--the-discovery-race)).
 
+On AWS KMS every scheduled deletion is recoverable until AWS completes it, so the
+provider implements both interfaces natively: `SoftRevokeKey(keyID, window)` schedules
+deletion with a pending window derived from the grace duration (rounded up to whole days,
+clamped to the 7–30 days AWS accepts), `UnrevokeKey` cancels it and re-enables the key, and
+`RevocationState` reports `SoftRevoked` until the deletion has actually completed.
+
 ## Subject discovery
 
 A data subject usually spans many streams (a user *and* their orders, payments,
@@ -105,13 +130,50 @@ store := mink.New(adapter,
 )
 
 resolver := mink.NewSubjectResolver(store)
-fp, _ := resolver.Resolve(ctx, "user-123") // fp.Streams, fp.KeyIDs, fp.EventCount, fp.Partial
+fp, _ := resolver.Resolve(ctx, "user-123")
+// fp.Streams, fp.SharedStreams, fp.ExclusiveStreams(), fp.KeyIDs, fp.CleartextEvents,
+// fp.EventCount, fp.Partial
 ```
 
-The resolver uses an adapter subject index when available (`SubjectIndexAdapter`),
-else a scan. If completeness can't be proven (legacy untagged events), `fp.Partial`
-is `true` — **never a silent partial**. `Resolve` is read-only, so it doubles as an
-erasure preview.
+The resolver uses a subject index when one is injected (`WithResolverIndex` — never
+auto-detected), else a scan. If completeness can't be proven (untagged events nobody can
+attribute), `fp.Partial` is `true` — **never a silent partial**. `Resolve` is read-only, so
+it doubles as an erasure preview.
+
+**One attribution rule.** An event belongs to a subject when it is *attributed* to them,
+and the same rule decides this for the resolver, `DataEraser`, `DataExporter`, `Verify` and
+`BackfillSubjectIndex`, so an event cannot be indexed, exported, shredded or verified under
+different rules. A persisted `$subjects` tag **wins**: a tagged event belongs to exactly
+those subjects and the tagger is not consulted (attribution costs nothing extra when every
+event is tagged). An **untagged** event — written before tagging was enabled, or by a store
+without a tagger — is attributed by running the `SubjectTagger` over it exactly as the
+append path would have: decrypted first, through the store's own decrypt path, with the
+encryption envelope stripped. An encrypted event that *cannot* be decrypted (a revoked key,
+a handler that swallowed the failure, no encryption config) is **never** handed to the
+tagger — a tagger run over ciphertext, or over a payload missing its encrypted fields, would
+silently mis-attribute — and stays unattributed. The tagger is the store's own
+`WithSubjectTagger` by default; `mink.WithResolverTagger(tagger)` overrides it for a
+resolver and for every eraser or exporter configured with that resolver (to resolve through
+a store that has no tagger, or to use the tagger a backfill ran with). With no tagger at all,
+attribution is persisted tags only. So a legacy event whose subject is derivable from its
+payload or `Metadata` is in the footprint, exported, shredded and attested like a tagged
+one; only events the tagger cannot attribute either make the footprint `Partial`.
+
+**Shared vs exclusive streams.** `fp.SharedStreams` is the subset of `fp.Streams` in which
+the resolver saw an event attributed — tagged, or tagger-derived — to *another* subject (an
+order with buyer and seller, a conversation); `fp.ExclusiveStreams()` is the rest. Key
+revocation is unaffected — it is scoped to the subject's own events — but rows that sibling
+stores key by a stream id cannot be attributed to one subject on a shared stream, so the
+built-in erasers purge and count only the exclusive streams (see
+[Sibling stores](#sibling-stores--audit-saga-snapshots-outbox-idempotency)).
+Unattributable events never make a stream shared; they make the footprint `Partial`.
+
+**What counts as encrypted.** `fp.KeyIDs` lists only the keys of events that carry a
+*complete* envelope — `mink.HasEncryptionEnvelope` (`$encrypted_fields` + `$encryption_key_id`
++ `$encrypted_dek`); an attributed event with a bare `$encryption_key_id` and nothing else is
+plaintext as far as crypto-shredding is concerned and counts in `fp.CleartextEvents`. The
+same predicate drives `DataEraser` key discovery, the shared-key guard, `Verify` and
+`RetentionManager`, so a key that protects no ciphertext is never revoked anywhere.
 
 ## Data export (Article 15 / 20)
 
@@ -122,8 +184,28 @@ alone:
 ```go
 exporter := mink.NewDataExporter(store, mink.WithExportSubjectResolver(resolver))
 res, _ := exporter.Export(ctx, mink.ExportRequest{SubjectID: "user-123"})
-// res.Events, res.RedactedCount, res.Partial
+// res.Events, res.RedactedCount, res.Partial — exactly the events the footprint counted,
+// tagged or attributed by the tagger (see "One attribution rule" above)
 ```
+
+**Shared streams are subject-scoped by default.** When you pass explicit `Streams` and no
+`Filter`, the exporter keeps the events attributed to `SubjectID` and the events nobody can
+attribute: events tagged for *other* subjects are dropped, and so are untagged events the
+tagger (the store's `WithSubjectTagger`, or the resolver's `WithResolverTagger`) attributes
+to other subjects only, while untagged events nobody can attribute are still exported — so a
+shared "order" stream never leaks a co-subject's events into an Article 15 export. Without a
+tagger this is exactly `mink.SubjectOrUntaggedFilter(SubjectID)`; the public
+`SubjectFilter` / `SubjectOrUntaggedFilter` predicates look at persisted tags only. Pass an
+explicit `Filter` (e.g. `mink.FilterByStreams(...)`) to export a whole stream deliberately,
+or `mink.SubjectFilter` to drop untagged events as well.
+
+**Filters fail closed.** An empty selector matches *nothing*: `FilterByTenantID("")`,
+`FilterByUserID("")`, `FilterByStreamPrefix("")` and `FilterByMetadata` with an empty key
+or value select no events, and `CombineFilters()` with no filters (or a `nil` filter)
+matches nothing — an empty conjunction is not a wildcard in a GDPR export.
+`FilterByStreamPrefix` is a plain prefix match (`"user-1"` also matches `"user-10"`); use
+`FilterByStreams(ids...)` for exact stream ids or `FilterByStreamCategory("user")` for a
+whole category.
 
 ## Data erasure (Article 17)
 
@@ -141,13 +223,73 @@ eraser := mink.NewDataEraser(store,
     mink.WithCertificateSink(writeToAuditStore),
 )
 res, _ := eraser.Erase(ctx, mink.ErasureRequest{SubjectID: "user-123"})
-// res.KeysRevoked, res.RedactedReadModels, res.SideEffects, res.Partial, res.Errors
+// res.KeysRevoked, res.KeysFailed, res.CleartextEvents, res.Streams, res.SharedStreams,
+// res.RedactedReadModels, res.SideEffects, res.Partial, res.Errors, res.Notes,
+// res.SubjectIndexPurged
 
-report, _ := eraser.Verify(ctx, "user-123") // report.Verified, report.ResidualEncrypted/Cleartext
+report, _ := eraser.Verify(ctx, "user-123")
+// report.Verified, report.Vacuous, report.Partial, report.ResidualEncrypted /
+// ResidualRecoverable / ResidualCleartext, report.UnattributedRecoverable /
+// UnattributedRedacted, report.ResidualStores, report.UncheckedStores, report.Notes
 ```
 
 `Erase` is idempotent. Partial failures (a read-model hook, a side-effect hook) are
-reported in `res.Errors`, never fatal.
+reported in `res.Errors`, never fatal. The eraser attributes events — on every request
+shape, in the shared-key guard and during verification — with the resolver's tagger
+(`WithResolverTagger`, or the store's own `SubjectTagger` by default), so an event is
+shredded and verified under exactly the rule it was resolved and indexed under.
+
+**What the certificate attests.** The `ErasureCertificate` handed to `WithCertificateSink`
+is PII-free and is `Verified` only when it could *positively* attest the erasure: every
+event attributed to the subject that was checked is unrecoverable, every key was revoked
+(`res.KeysFailed` is empty), every sibling store that could be counted is clean, the
+footprint is complete, and the marker (if configured) was written. It is **never vacuously
+verified**: an erasure that revoked keys or targeted streams but checked zero attributed
+events — a `KeyIDs`-only request, explicit `Streams` over events nobody can attribute, a
+legacy untagged store with no tagger — yields `Verified=false` with a `Notes` entry saying so
+(a genuinely empty footprint is verified with a "nothing to erase" note). Because a
+*derived-only* encrypted event (untagged, attributed through the tagger) becomes
+unattributable the moment its key is revoked, `Erase` records every event it attributed to
+the subject **before** revoking and the certificate verifies exactly those events (plus any
+still attributable afterwards) — so such an event is attested rather than vacuous. `Verify`
+applies the same non-vacuous rule: a report that checked zero subject-attributed events sets
+`report.Vacuous` with `Verified=false` and a note — nothing could be attested; it is not a
+finding of residual PII. That is what an index-backed resolver returns after
+`WithSubjectIndexPurge` (re-verify with a scan-backed resolver or after a backfill), and what
+a *standalone* post-shred `Verify` returns for a subject whose events were all derived-only
+and encrypted — the certificate `Erase` emitted is the attestation for that case, and a
+subject with tagged *and* derived-only events stays certifiable through an authoritative
+index. `cert.StoresVerified` / `cert.StoresUnchecked` name the sibling stores that
+were proven clean / could not be counted (see
+[Sibling stores](#sibling-stores--audit-saga-snapshots-outbox-idempotency)); a store that
+had to skip footprint streams shared with other subjects is dropped from `StoresVerified`
+with a note and keeps the certificate unverified. `res.CleartextEvents` counts matched
+events with no complete encryption envelope (`mink.HasEncryptionEnvelope`) that stay
+readable after the erasure. All notes are counts and store names only — never ids.
+
+**Unattributable events are disclosed, not skipped.** `Verify` and the certificate look at
+every event in the subject's footprint streams. An event that carries no tag and that the
+tagger cannot attribute to *anyone* (no tagger, nothing derived, or encrypted and
+undecryptable) may well be the subject's own, so it is never silently passed over: if its
+PII is still readable or recoverable (no complete envelope, or a live / soft-revoked key) it
+is listed in `report.UnattributedRecoverable` and **forces `Partial`** — hence
+`Verified=false`, also behind an authoritative index; if it is permanently crypto-shredded
+(complete envelope, key revoked) it is listed in `report.UnattributedRedacted` and does not
+block (whoever it belonged to, nothing is recoverable). Both are `"stream@version"` lists;
+the certificate's `Partial` is `true` whenever the verification found recoverable
+unattributable events, even if `res.Partial` is `false`, and a count-only note explains the
+split.
+
+**Stream-scoped erasure.** With `ErasureRequest.Streams`, a listed stream that holds *any*
+attributable event — tagged, or tagger-derived — contributes only the keys of events
+attributed to the target subject, so a co-tenant's key on a shared stream is never revoked
+(a co-tenant's derived-only event also lists the stream in `res.SharedStreams`). A listed
+stream with no attributable event at all keeps the all-keys behavior ("legacy scope") and is
+called out in `res.Notes` (and on the certificate). A listed stream holding *both*
+attributable and unattributable events makes the result `Partial` (so `res.Failed()` is
+true and the certificate is not `Verified`) with a count-only note: the unattributable
+events in it — possibly the subject's own pre-tagging history — were not shredded. Without
+a tagger, "attributable" simply means "tagged".
 
 > **Per-subject vs per-tenant keys.** Crypto-shredding erases *everything* under a
 > revoked key. For subject-scoped erasure, use per-subject keys; with per-tenant
@@ -173,13 +315,47 @@ mgr := mink.NewRetentionManager(store, []mink.RetentionPolicy{
             return analytics.Pseudonymize(ctx, e, anonymizer) // you own the read-side write
         }},
 })
-report, _ := mgr.DryRun(ctx) // preview, no changes
-report, _ = mgr.Apply(ctx)   // report.Matched, report.KeysRevoked, report.Skipped, report.Errors
+report, _ := mgr.DryRun(ctx) // preview: report.KeysToRevoke, report.SharedKeysSkipped, report.UnencryptedMatches
+report, _ = mgr.Apply(ctx)   // report.Matched, report.Acted, report.Skipped, report.KeysRevoked, report.Errors
 ```
 
 Actions preserve the append-only log: `ActionShred` revokes keys; `ActionRedactFields`
 and `ActionAnonymize` **cannot** mutate event rows, so they delegate to the policy's
 `Apply` hook (applied to read models / external stores).
+
+**Shred guard (on by default).** `ActionShred` revokes a *master* key, which erases every
+event encrypted under it — not only the events the policy matched. Before any irreversible
+revocation the manager therefore scans the whole store (from position 0, regardless of any
+checkpoint) and revokes a key only if **every** field-encrypted event under it is covered by
+a Shred policy of this sweep (static matchers *and* age-eligible; `RedactFields` /
+`Anonymize` matches do not count). A key that also protects out-of-scope events is skipped,
+listed in `report.SharedKeysSkipped`, and reported as a `*mink.RetentionSharedKeyError`
+(`errors.Is(err, mink.ErrRetentionSharedKey)`; its `KeyID` field carries the key id for
+programmatic use and `OutOfScope` an out-of-scope *count*, never events — and its message
+prints only the count), so `report.Failed()` is true. `report.KeysToRevoke` is the
+guard-approved set. `DryRun` runs the same guard, so it previews the exact blast radius
+`Apply` would act on. Keep keys exclusive by giving each retention scope its own key
+(`WithSubjectKeyResolver` / `WithTenantKeyResolver`); `mink.WithAllowSharedKeyRevocation()`
+disables the guard — dangerous, and only after a `DryRun` has shown that the whole blast
+radius is acceptable. **Accounting is honest:** a Shred match counts in `report.Acted` only
+when its key ended up in `report.KeysRevoked`; a match whose key the guard refused, failed to
+revoke, or could not be revoked (no encryption configured) counts in `report.Skipped` and is
+re-swept by the next run (`DryRun` leaves both at `0`). Note that the report's key lists
+(`KeysToRevoke` / `SharedKeysSkipped`, and the matching `mink gdpr retain` lines) *do* print
+key ids — an operator needs them to split keys — so treat retention output as sensitive when
+key ids embed subject ids. `RetentionSharedKeyError.Error()` itself prints only the
+out-of-scope count: under per-subject keys the id would name the subject, so the message is
+safe to log, but its `KeyID` field is for programmatic use and must not be.
+
+**Nothing is shredded silently.** A Shred policy collects keys only from events carrying a
+complete encryption envelope (`mink.HasEncryptionEnvelope`); matched events with no envelope
+(legacy cleartext, or a bare `$encryption_key_id` with no field list / wrapped DEK) are counted
+in `report.UnencryptedMatches` and surface `mink.ErrRetentionUnencryptedMatches`, so a
+sweep that left matched plaintext behind reports `Failed()` instead of a quiet `Skipped`. A
+policy with **no matchers at all** (`Category`, `StreamPrefix`, `EventTypes`, `TenantID`
+empty and no `MaxAge`) would match every event: `Validate()` rejects it with
+`mink.ErrRetentionUnscopedPolicy` and every run leaves it inert. `StreamPrefix` is a plain
+prefix (`"user-1"` also matches `"user-10"`) — end it with the id separator.
 
 **Scheduling is yours.** `Apply` performs a single sweep and returns — go-mink does not
 run it on a timer. Wire it to your own cron/gocron at your SLA's cadence.
@@ -203,6 +379,15 @@ events and resumes the remainder next run (it needs a checkpoint; without one it
 reported loudly and runs unbounded) — which bounds the first run after enabling retention
 on an already-large store. A capped run sets `report.Truncated`.
 
+The checkpoint and the shred guard compose safely: the persisted frontier is held back to
+just before the first Shred match whose key was *not* revoked in this sweep (refused by the
+guard, failed `RevokeKey`, or no encryption configured), so those events are re-scanned,
+re-matched and re-reported on every later run until the key is revoked — after
+`WithAllowSharedKeyRevocation`, a covering Shred policy or a key split — with no checkpoint
+reset. `WithRetentionMaxScan` never truncates a sweep whose resume point is held at such an
+undecided match (it scans to HEAD, like the pending-event fallback), so a refused key cannot
+starve the aged tail.
+
 **Fail-loud validation.** A `RedactFields`/`Anonymize` policy with *no* `Apply` hook can
 never act. `mgr.Validate()` (or `policy.Validate()`) surfaces this up front, and every
 `Apply`/`DryRun` reports it via `report.Errors` / `report.Failed()` rather than silently
@@ -214,8 +399,14 @@ replacing PII subject identifiers:
 
 ```go
 anon := mink.NewAnonymizer(hmacSecret)
+if err := anon.Validate(); err != nil { // mink.ErrAnonymizerSecretRequired on an empty secret
+    log.Fatal(err)
+}
 pseudo := anon.Pseudonymize("email", "alice@example.com") // stable, irreversible
 ```
+
+An empty secret degrades the HMAC to an unkeyed hash whose pseudonyms can be recovered by
+guessing the input, so call `Validate()` at startup — `NewAnonymizer` itself never fails.
 
 ## Key lifecycle
 
@@ -268,31 +459,90 @@ and **idempotency** response payloads. Register them so `Erase` reaches them too
 eraser := mink.NewDataEraser(store,
     mink.WithEraseSubjectResolver(resolver),
     mink.WithSubjectStore(
-        mink.NewAuditSubjectEraser(auditStore),        // deletes rows where actor|aggregate_id == subject
-        mink.NewSagaSubjectEraser(sagaStore),          // deletes sagas where correlation_id == subject
-        mink.NewSnapshotSubjectEraser(adapter),        // deletes snapshots for the footprint's streams
-        mink.NewOutboxSubjectEraser(outboxStore),      // deletes outbox rows where aggregate_id == subject
-        mink.NewIdempotencySubjectEraser(idempStore),  // deletes idempotency records where aggregate_id == subject
+        mink.NewAuditSubjectEraser(auditStore),        // actor == subject OR aggregate_id in SubjectFootprintIDs
+        mink.NewSagaSubjectEraser(sagaStore),          // correlation_id in SubjectFootprintIDs
+        mink.NewSnapshotSubjectEraser(adapter),        // the snapshot of every footprint stream (shared ones too)
+        mink.NewOutboxSubjectEraser(outboxStore),      // aggregate_id in SubjectFootprintIDs
+        mink.NewIdempotencySubjectEraser(idempStore),  // aggregate_id in SubjectFootprintIDs
     ),
+    // mink.WithDerivedAggregateIDs(), // ONLY with globally unique aggregate ids (UUIDs) — see below
 )
-// res.SubjectStores reports what each erased; a per-store failure is non-fatal, but a
-// failed or Skipped store blocks the certificate's Verified flag.
+// res.SubjectStores reports what each erased (FootprintAware, SharedStreamsSkipped); a
+// per-store failure is non-fatal, but a failed or Skipped store — or one that had to skip
+// shared streams — blocks the certificate's Verified flag, and Verify / the certificate
+// COUNT what remains in each store (SubjectResidualCounter).
 ```
 
-The purges use optional adapter sub-interfaces (`SubjectAuditPurger` / `SubjectSagaPurger`
-/ `SubjectOutboxPurger` / `SubjectIdempotencyPurger`) implemented on the memory and
-PostgreSQL stores; a store that lacks its purger is reported as `Skipped`, not failed. The
-**default outbox path stores ciphertext** (shredded with the key) — the outbox eraser is
-for a `route.Transform` that emits a *decrypted* payload and for dead-lettered rows; it
-matches on `aggregate_id`, so register a custom `SubjectErasable` if your subject↔row
-association differs or the sink is external.
+**The built-in erasers are footprint-aware.** The rows the library writes are *not* keyed
+by the bare subject id: the outbox's `AggregateID` is the **producing stream id** (the
+stream the event was appended to — `"User-u1"`, never `"u1"`), the audit and idempotency
+`AggregateID` columns hold the **raw aggregate id** the command targeted (`"u1"` for stream
+`"User-u1"` — the part after the first `-`), and a saga's `CorrelationID` is whatever its
+correlation function derived. A purge that only matched `== subjectID` would therefore
+silently miss every library-produced row. Each built-in eraser instead purges by
+`mink.SubjectFootprintIDs(subjectID, fp)`: the subject id plus every **exclusive** stream
+in the subject's *resolved footprint* (`fp.ExclusiveStreams()` — `SubjectFootprint.Streams`
+minus `SubjectFootprint.SharedStreams`, from the resolver passed to
+`WithEraseSubjectResolver`), de-duplicated — so resolve before you erase: with no footprint
+only the id-keyed rows can be reached.
+
+*Shared streams are skipped, not purged.* A footprint stream on which an event attributed to
+another subject (tagged, or tagger-derived) was observed cannot be attributed to one subject: its co-tenant's pending outbox messages,
+an in-flight saga correlated on it, or another subject's audit/idempotency rows would go
+with it. The built-in erasers therefore leave rows keyed by such a stream in place, report
+how many streams they skipped in `res.SubjectStores[i].SharedStreamsSkipped`, add a
+count-only note to `res.Notes`, and keep the certificate unverified (the store is dropped
+from `cert.StoresVerified`); `res.Failed()` is *not* set — the store did what was safe. The
+snapshot eraser is the exception: a snapshot is a rebuildable cache, so it is deleted on
+every footprint stream.
+
+*Derived aggregate ids are opt-in.* The audit/idempotency `AggregateID` and most saga
+correlation ids carry the aggregate id **without its type**, so a derived id collides across
+aggregate types: `"Order-123"` and `"User-123"` both derive `"123"`, and purging by it would
+delete *another* aggregate's — possibly another subject's — accountability rows and
+idempotency records. `SubjectFootprintIDs` therefore excludes them by default. When your
+aggregate ids are globally unique (UUIDs, or ids that embed their type) opt in with
+`mink.WithDerivedAggregateIDs()`, which switches the built-in erasers to
+`mink.SubjectFootprintIDsWithDerived(subjectID, fp)` — the same set plus the id after the
+**first** `-` of each *exclusive* stream (`"User-u1"` → `"u1"`, `"Order-ord-42"` →
+`"ord-42"`). Custom `SubjectErasable` implementations choose between the two helpers
+themselves. `res.SubjectStores[i].FootprintAware` reports whether the footprint path ran; a
+store that offers only the legacy id-equality purger falls back to the bare subject id.
+
+The purges use optional adapter sub-interfaces: the id-equality purgers
+(`SubjectAuditPurger` / `SubjectSagaPurger` / `SubjectOutboxPurger` /
+`SubjectIdempotencyPurger`) and their footprint-aware counterparts
+(`SubjectAuditFootprintPurger` / `SubjectSagaFootprintPurger` /
+`SubjectOutboxFootprintPurger` / `SubjectIdempotencyFootprintPurger`, with matching
+`Subject*Counter` methods so verification can count what remains), implemented on the
+memory and PostgreSQL stores. A store that lacks its purger is reported as `Skipped`,
+not failed. Every built-in eraser also implements `mink.SubjectResidualCounter`, so
+`Verify` and the certificate count the rows still attributable to the subject in each
+registered store: a non-zero count lands in `report.ResidualStores` and blocks `Verified`;
+a store that cannot be counted (a custom `SubjectErasable` without the interface, or a
+store returning `mink.ErrResidualCountUnsupported`) is listed under
+`report.UncheckedStores` / `cert.StoresUnchecked` — disclosed, not certified — while a
+hard count error fails `Verify` and leaves the certificate unverified. The **default
+outbox path stores ciphertext** (shredded with the key) — the
+outbox eraser matters for a `route.Transform` that emits a *decrypted* payload and for
+dead-lettered rows. If your subject↔row association differs (an app-defined column, an
+external sink), register a custom `SubjectErasable`.
 
 ### Blast-radius guard (per-tenant keys)
 
 With `WithTenantKeyResolver`, one key protects a whole tenant, so erasing a single subject
 would crypto-shred everyone under it. `WithSharedKeyGuard()` detects this **before** the
 irreversible revoke and fails with `*SharedKeyError`; pair with `AllowSharedKeyRevocation()`
-to proceed deliberately (per-subject keys avoid the problem entirely).
+to proceed deliberately (per-subject keys avoid the problem entirely). The error *message*
+carries **counts only** — the number of shared keys and the number of other subjects
+(`OtherSubjectCount`) — never the other subjects' identifiers and not the key ids either
+(under `WithSubjectKeyResolver` a key id embeds a subject id), because error strings get
+logged; `SharedKeyError.SharedKeys` / `OtherSubjects` are available for programmatic use
+and must not be logged or written to an audit trail. A key is "shared" when it also protects
+an event attributed — tagged, or derived by the tagger — to another subject, or an event
+nobody can attribute (its ownership cannot be proven), so a co-tenant's untagged legacy
+event is caught too. The guard, like every other key-acting path, ignores events without a
+complete envelope: a bare `$encryption_key_id` never makes a key "shared".
 
 ### Accountability & the discovery race
 
@@ -319,11 +569,17 @@ store := mink.New(adapter,
     mink.WithSubjectTagger(tagger),
     mink.WithSubjectIndexWriter(idx), // append-time indexing keeps it complete
 )
-// One-time migration for pre-adoption history:
-mink.BackfillSubjectIndex(ctx, store, tagger, idx, 1000)
+// One-time migration for pre-adoption history. The report is PII-free:
+// Scanned == Indexed + Untagged. A tagged event is indexed from its tags alone; an untagged
+// one from what the tagger derives over its decrypted plaintext. Undecryptable counts the
+// UNTAGGED encrypted events the tagger could not see (each also counted in Untagged).
+rep, err := mink.BackfillSubjectIndexWithReport(ctx, store, tagger, idx, 1000)
+// (mink.BackfillSubjectIndex is the same call returning just rep.Scanned)
 
-// After a clean backfill (or with a transactionally-consistent index) you may assert
-// completeness; without the assertion an index-backed resolve is honestly Partial.
+// Assert completeness ONLY when the backfill left nothing unattributed (rep.Untagged == 0,
+// or the untagged events are known to carry no PII), the resolver attributes with the SAME
+// tagger (the store's own here; otherwise mink.WithResolverTagger(tagger)) and no writer
+// bypasses the index; without the assertion an index-backed resolve is honestly Partial.
 resolver := mink.NewSubjectResolver(store, mink.WithResolverIndex(idx), mink.WithAuthoritativeIndex())
 ```
 
@@ -332,15 +588,57 @@ not fatal), so an index can silently drift behind the log. `WithResolverIndex` t
 treats the index as possibly-incomplete and marks the footprint `Partial` unless you also
 pass `WithAuthoritativeIndex` to assert completeness — so a drifted index can never
 produce a falsely-complete footprint that makes `Erase` miss streams while certifying
-success. Reconcile a drifted index with `BackfillSubjectIndex`. Without any index, legacy
-untagged events keep a footprint `Partial` (never a *silent* partial).
+success. An index-backed resolve never *sees* events outside the indexed streams, so that
+assertion is the only thing standing between a legacy event the backfill could not attribute
+and a certificate that claims completeness. Make it only when **all** hold:
+`BackfillSubjectIndexWithReport` reported `Untagged == 0` — every scanned event was
+attributed to at least one subject, by its tags or by the tagger — or the untagged events
+are known to carry no PII (an `Undecryptable` count means untagged encrypted events the
+tagger could not see, each also counted as `Untagged`); the resolver attributes untagged
+events with the **same** tagger the backfill used (the store's own by default, or
+`WithResolverTagger`), since an event indexed under a derived subject is found in the
+footprint only if the resolver derives it the same way; **and** every store instance that
+appends carries `WithSubjectIndexWriter` — or the index is transactionally consistent, like
+the PostgreSQL adapter's drift-free `StreamsBySubject` (persisted tags only, see below).
+Otherwise prefer the scan-backed resolver, which proves completeness by observing the
+unattributable events itself. Reconcile a drifted index with `BackfillSubjectIndex`. Without
+any index, untagged events the tagger cannot attribute keep a footprint `Partial` (never a
+*silent* partial).
+
+**Backfill attributes tags first, then plaintext.** `BackfillSubjectIndex` indexes a tagged
+event from its persisted `$subjects` tags alone — the tagger is *not* re-run over it (to
+re-attribute history under a changed tagger, re-tag it, e.g. with `ReEncryptStream`, which
+re-applies the tag policy). An untagged event is handed to your tagger **decrypted**, through
+the store's own decrypt path — a tagger that reads an email out of an encrypted field would
+otherwise index nothing. An untagged event that cannot be decrypted (a revoked key, a handler
+that swallowed the failure, or no encryption config for an encrypted event) is never handed
+to the tagger: it stays unattributed, counts in both `Undecryptable` and `Untagged`, and a
+single warning with the count is logged. A tagged encrypted event is never decrypted by the
+backfill, so it never counts as `Undecryptable`. Because the backfill and the resolver
+attribute under the same rule, an index-backed resolve finds every event the backfill
+indexed — provided the resolver uses the same tagger.
+
+**Purging the index after erasure (opt-in).** `mink.WithSubjectIndexPurge(idx)` makes
+`Erase` delete the subject's index entries (`SubjectIndexPurger.DeleteSubject`, implemented
+by `MemorySubjectIndex` and `postgres.SubjectIndex`) at the very end — and only when
+`res.Failed()` is false **and** the erasure verified: with a certificate sink, the emitted
+certificate is `Verified`; without one, `Erase` runs the very same verification internally
+(nothing is emitted) and purges only if it would have been `Verified`. A `KeyIDs`-only or
+explicit-`Streams` erasure that checked no subject-attributed event is vacuous and never purges;
+otherwise the index is kept and `res.Notes` says so (that note is result-only — the decision
+is taken after the certificate). `res.SubjectIndexPurged` reports the outcome. Trade-off: an
+index-backed resolver then resolves an *empty* footprint for that subject (it does not fall
+back to a scan) and `Verify` reports `Vacuous`, not `Verified` — so re-verify with a
+scan-backed resolver or re-run `BackfillSubjectIndex`.
 
 A **drift-free** alternative on PostgreSQL is the event-store adapter's own
 `StreamsBySubject` — inject it with `mink.WithResolverIndex(adapter)`. It reads the
 events' `$subjects` tags directly (JSONB), so it cannot fall out of sync with the log
-(no separate table to maintain). Indexes are always explicit (`WithResolverIndex`) — never
+(no separate table to maintain) — but it indexes **persisted** tags only, so a derived-only
+historical event (untagged, attributable by the tagger) is reachable only through the scan
+or a backfilled index. Indexes are always explicit (`WithResolverIndex`) — never
 auto-detected — so a store gaining an index never silently swaps the completeness-proving
-scan for one that can't detect untagged events.
+scan for one that can't detect unattributable events.
 
 > **Subject identifiers are plaintext and are NOT shredded.** The `$subjects` tag and
 > `Metadata` (UserID / CorrelationID) are stored in cleartext so they stay scannable, so
@@ -348,6 +646,13 @@ scan for one that can't detect untagged events.
 > log forever. If your subject id is itself PII (an email, a national id), you have not
 > fully erased the person. Tag with an **opaque/pseudonymous** id (see `Anonymizer`) and
 > treat metadata identifiers as PII under the same discipline.
+
+> **Subject ids must be globally unique across tenants.** The `$subjects` tag, the subject
+> index (`mink_subject_index` / `StreamsBySubject`) and the sibling-store purges all key on
+> the bare subject id — none of them is tenant-scoped. If tenant A's `user-1` and tenant
+> B's `user-1` share an id, one subject's export returns both people's events and one
+> erasure shreds both. Tag with an id that is unique on its own (a UUID, or one that embeds
+> the tenant such as `"acme:user-1"`), never with a per-tenant sequence number.
 
 ## From the command line
 

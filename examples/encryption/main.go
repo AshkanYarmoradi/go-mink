@@ -4,7 +4,22 @@
 // - Encrypting PII fields (email, phone) at rest
 // - Decrypting transparently on load
 // - Per-tenant encryption keys
-// - Crypto-shredding (key revocation makes data unrecoverable)
+// - Crypto-shredding (key revocation makes the ENCRYPTED fields unrecoverable)
+//
+// # READ THIS BEFORE COPYING THE SETUP INTO A REAL SERVICE
+//
+// 1. encryption/local is for DEVELOPMENT AND TESTING ONLY. Its keys live in process
+// memory, are generated at startup and vanish when the process exits: there is no
+// HSM, no key-usage audit trail, no rotation and no durable record of a revocation.
+// Production deployments inject encryption/kms (AWS KMS) or encryption/vault
+// (HashiCorp Vault Transit) instead; the rest of the configuration is identical
+// because every provider implements encryption.Provider.
+//
+// 2. Crypto-shredding covers ONLY the fields listed in WithEncryptedFields. Every
+// other field (here: customer_id, name, country) is stored in plaintext, stays
+// readable after the key is revoked, and is NOT erased. Either encrypt every PII
+// field or keep PII out of unencrypted fields. This demo deliberately leaves `name`
+// in plaintext and prints it after shredding so the gap is visible.
 package main
 
 import (
@@ -73,7 +88,10 @@ func (c *Customer) ApplyEvent(event interface{}) error {
 func main() {
 	ctx := context.Background()
 
-	// 1. Set up encryption keys (one per tenant)
+	// 1. Set up encryption keys (one per tenant).
+	//
+	// DEVELOPMENT/TESTING ONLY: encryption/local holds raw AES-256 keys in process
+	// memory. In production inject encryption/kms or encryption/vault here.
 	tenantAKey := generateKey()
 	tenantBKey := generateKey()
 
@@ -86,11 +104,15 @@ func main() {
 	}
 	defer func() { _ = provider.Close() }()
 
-	// 2. Configure field-level encryption
+	// 2. Configure field-level encryption.
+	//
+	// Only email and phone are encrypted — and therefore only email and phone can be
+	// crypto-shredded. name and country stay in plaintext so they remain queryable,
+	// which also means key revocation does NOT erase them. Treat the encrypted-field
+	// list as your PII inventory: anything not on it survives erasure.
 	encConfig := mink.NewFieldEncryptionConfig(
 		mink.WithEncryptionProvider(provider),
 		mink.WithDefaultKeyID("tenant-A"),
-		// Encrypt email and phone — name and country remain queryable
 		mink.WithEncryptedFields("CustomerCreated", "email", "phone"),
 		// Per-tenant key resolver
 		mink.WithTenantKeyResolver(func(tenantID string) string {
@@ -115,6 +137,9 @@ func main() {
 
 	fmt.Println("=== Field-Level Encryption Demo ===")
 	fmt.Println()
+	fmt.Println("NOTE: encryption/local is a development/testing provider. Use encryption/kms or")
+	fmt.Println("      encryption/vault in production.")
+	fmt.Println()
 
 	// Save a customer with tenant A key
 	customer := NewCustomer("cust-1")
@@ -129,6 +154,7 @@ func main() {
 	fmt.Printf("Raw data at rest: %s\n", raw[0].Data)
 	fmt.Printf("Encrypted fields: %v\n", mink.GetEncryptedFields(raw[0].Metadata))
 	fmt.Printf("Key ID: %s\n", mink.GetEncryptionKeyID(raw[0].Metadata))
+	fmt.Println("(name, country and customer_id are visible in the raw data above: they are NOT encrypted)")
 	fmt.Println()
 
 	// Load — automatically decrypted
@@ -175,7 +201,13 @@ func main() {
 		log.Fatal(err)
 	}
 	e := eventsB2[0].Data.(CustomerCreated)
-	fmt.Printf("Tenant B after shredding: Name=%s, Email=%s (encrypted)\n", e.Name, e.Email)
+	fmt.Println("Tenant B after shredding:")
+	fmt.Printf("  Email   = %q  <- ciphertext: encrypted field, unrecoverable\n", e.Email)
+	fmt.Printf("  Phone   = %q  <- ciphertext: encrypted field, unrecoverable\n", e.Phone)
+	fmt.Printf("  Name    = %q  <- PLAINTEXT: not in WithEncryptedFields, NOT erased\n", e.Name)
+	fmt.Printf("  Country = %q  <- PLAINTEXT: not in WithEncryptedFields, NOT erased\n", e.Country)
+	fmt.Println("  Crypto-shredding only erases configured encrypted fields. To shred the name too, add it:")
+	fmt.Println(`  mink.WithEncryptedFields("CustomerCreated", "name", "email", "phone")`)
 	fmt.Println()
 
 	// Tenant A data is still accessible

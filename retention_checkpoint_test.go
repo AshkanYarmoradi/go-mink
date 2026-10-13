@@ -16,13 +16,21 @@ const retentionCP = "__mink_retention__"
 
 // newPlainRetentionStore is a memory store with no field encryption. The checkpoint tests
 // that only exercise scan/resume/cap mechanics (not actual crypto-shredding) use it so a
-// matched Shred is a harmless no-op (no key to revoke) and later appends never hit a revoked
-// key — keeping the frontier assertions about positions, not encryption.
+// matched Shred is a harmless no-op (no key to revoke; reported as UnencryptedMatches) and
+// later appends never hit a revoked key — keeping the frontier assertions about positions,
+// not encryption.
 func newPlainRetentionStore(t *testing.T) *EventStore {
 	t.Helper()
 	store := New(memory.NewAdapter())
 	store.RegisterEvents(eraseUserCreated{})
 	return store
+}
+
+// matchAllUsers is a Shred policy that matches every event these tests append (all are
+// eraseUserCreated). A policy with no matcher at all is rejected as unscoped, so the
+// event-type matcher is what makes "match everything in this store" explicit.
+func matchAllUsers() RetentionPolicy {
+	return RetentionPolicy{Name: "all", EventTypes: []string{"eraseUserCreated"}, Action: ActionShred}
 }
 
 func appendUsers(t *testing.T, ctx context.Context, store *EventStore, prefix string, n int) {
@@ -43,7 +51,7 @@ func TestRetention_CheckpointResumesFromHandledPrefix(t *testing.T) {
 		// MaxAge 0 ⇒ every event matches immediately, so all scanned events are settled and
 		// the frontier advances to HEAD.
 		return NewRetentionManager(store,
-			[]RetentionPolicy{{Name: "all", Action: ActionShred}},
+			[]RetentionPolicy{matchAllUsers()},
 			WithRetentionCheckpoint(cp, retentionCP))
 	}
 
@@ -79,7 +87,9 @@ func TestRetention_CheckpointResumesFromHandledPrefix(t *testing.T) {
 // before the pending one, so the young events are re-examined next run.
 func TestRetention_CheckpointFreezesAtPendingEvent(t *testing.T) {
 	ctx := context.Background()
-	store, provider := newEraseTestStore(t, "k")
+	// One key per stream, so the aged streams' keys are exclusive to the sweep and the
+	// shared-key guard lets them go while the young streams' keys are never touched.
+	store, provider := newRetentionKeyedStore(t, "o0", "o1", "y0", "y1")
 	cp := memory.NewCheckpointStore()
 
 	// Two "old" events, then a real gap, then two "young" ones. The gap (120ms) is
@@ -87,13 +97,13 @@ func TestRetention_CheckpointFreezesAtPendingEvent(t *testing.T) {
 	// aged and young ones are pending deterministically. (The memory adapter stamps
 	// time.Now() at append with no injection hook, so a small real gap is the only way to
 	// give events different ages.)
-	require.NoError(t, store.Append(ctx, "User-o0", []interface{}{eraseUserCreated{UserID: "o0", Email: "o0@x.y"}}))
-	require.NoError(t, store.Append(ctx, "User-o1", []interface{}{eraseUserCreated{UserID: "o1", Email: "o1@x.y"}}))
+	appendUnderTenant(t, ctx, store, "User-o0", "o0")
+	appendUnderTenant(t, ctx, store, "User-o1", "o1")
 	oldHead, err := store.GetLastPosition(ctx)
 	require.NoError(t, err)
 	time.Sleep(120 * time.Millisecond)
-	require.NoError(t, store.Append(ctx, "User-y0", []interface{}{eraseUserCreated{UserID: "y0", Email: "y0@x.y"}}))
-	require.NoError(t, store.Append(ctx, "User-y1", []interface{}{eraseUserCreated{UserID: "y1", Email: "y1@x.y"}}))
+	appendUnderTenant(t, ctx, store, "User-y0", "y0")
+	appendUnderTenant(t, ctx, store, "User-y1", "y1")
 
 	mgr := NewRetentionManager(store,
 		[]RetentionPolicy{{Name: "users", StreamPrefix: "User-", MaxAge: 60 * time.Millisecond, Action: ActionShred}},
@@ -103,8 +113,11 @@ func TestRetention_CheckpointFreezesAtPendingEvent(t *testing.T) {
 
 	assert.Equal(t, 2, rep.Matched, "only the two aged events match; the young two are pending")
 	assert.Equal(t, 4, rep.Scanned, "the sweep still scans to HEAD, acting past the freeze")
-	revoked, _ := provider.IsRevoked("k")
-	assert.True(t, revoked, "the aged events were crypto-shredded")
+	assert.Equal(t, []string{"k-o0", "k-o1"}, rep.KeysRevoked, "the aged events were crypto-shredded")
+	for _, k := range []string{"k-y0", "k-y1"} {
+		revoked, _ := provider.IsRevoked(k)
+		assert.False(t, revoked, "a pending event's key %q must survive", k)
+	}
 
 	pos, err := cp.GetCheckpoint(ctx, retentionCP)
 	require.NoError(t, err)
@@ -119,7 +132,7 @@ func TestRetention_CheckpointDryRunPersistsNothing(t *testing.T) {
 	appendUsers(t, ctx, store, "A-", 3)
 
 	mgr := NewRetentionManager(store,
-		[]RetentionPolicy{{Name: "all", Action: ActionShred}},
+		[]RetentionPolicy{matchAllUsers()},
 		WithRetentionCheckpoint(cp, retentionCP))
 
 	dry, err := mgr.DryRun(ctx)
@@ -144,7 +157,7 @@ func TestRetention_UnconfiguredScanIsUnchanged(t *testing.T) {
 	store := newPlainRetentionStore(t)
 	appendUsers(t, ctx, store, "A-", 4)
 
-	mgr := NewRetentionManager(store, []RetentionPolicy{{Name: "all", Action: ActionShred}})
+	mgr := NewRetentionManager(store, []RetentionPolicy{matchAllUsers()})
 
 	rep1, err := mgr.Apply(ctx)
 	require.NoError(t, err)
@@ -169,7 +182,7 @@ func TestRetention_MaxScanBoundsAndResumes(t *testing.T) {
 
 	newMgr := func() *RetentionManager {
 		return NewRetentionManager(store,
-			[]RetentionPolicy{{Name: "all", Action: ActionShred}},
+			[]RetentionPolicy{matchAllUsers()},
 			WithRetentionCheckpoint(cp, retentionCP),
 			WithRetentionMaxScan(2))
 	}
@@ -235,7 +248,7 @@ func TestRetention_MaxScanWithoutCheckpointIsLoud(t *testing.T) {
 	appendUsers(t, ctx, store, "A-", 5)
 
 	mgr := NewRetentionManager(store,
-		[]RetentionPolicy{{Name: "all", Action: ActionShred}},
+		[]RetentionPolicy{matchAllUsers()},
 		WithRetentionMaxScan(2))
 	rep, err := mgr.Apply(ctx)
 	require.NoError(t, err)

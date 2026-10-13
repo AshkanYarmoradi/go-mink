@@ -2,7 +2,10 @@ package mink
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -270,13 +273,23 @@ func (p *OutboxProcessor) processBatch(ctx context.Context) error {
 	for prefix, msgs := range messagesByPrefix {
 		publisher, ok := p.publishers[prefix]
 		if !ok {
-			// No publisher for this destination prefix; mark as failed
+			// No publisher for this destination prefix; mark as failed. The
+			// destination is stored data nobody registered, so nothing about its
+			// format is known: a poisoned row may carry a credential in its prefix
+			// or as its bare value, where redactDestination (which only understands
+			// URLs) would echo it. Neither the prefix nor the value therefore reaches
+			// the log or the persisted last_error — only a one-way digest and the
+			// length, enough to match the row in the outbox for diagnosis. The prefix
+			// is likewise NOT a bounded label value: the failure is recorded under
+			// the fixed UnregisteredDestinationLabel.
 			for _, msg := range msgs {
-				p.logger.Error("No publisher for destination", "destination", msg.Destination, "prefix", prefix)
-				if err := p.store.MarkFailed(ctx, msg.ID, fmt.Errorf("%w: %s", ErrPublisherNotFound, prefix)); err != nil {
+				digest := destinationDigest(msg.Destination)
+				p.logger.Error("No publisher for destination",
+					"id", msg.ID, "destination_digest", digest, "destination_length", len(msg.Destination))
+				if err := p.store.MarkFailed(ctx, msg.ID, fmt.Errorf("%w: destination digest %s", ErrPublisherNotFound, digest)); err != nil {
 					p.logger.Error("Failed to mark message as failed", "id", msg.ID, "error", err)
 				}
-				p.metrics.RecordMessageFailed(prefix)
+				p.metrics.RecordMessageFailed(UnregisteredDestinationLabel)
 			}
 			continue
 		}
@@ -350,6 +363,44 @@ func (p *OutboxProcessor) runCleanup(ctx context.Context) {
 	}
 }
 
+// UnregisteredDestinationLabel is the destination label under which the
+// OutboxProcessor reports, via OutboxMetrics.RecordMessageFailed, a message
+// whose destination prefix has no registered Publisher.
+//
+// A destination is stored data, so an unregistered prefix is whatever was
+// written to the outbox ("tenant-123:https://…", a typo, a decommissioned
+// publisher) and is unbounded; recording it verbatim would let every distinct
+// stored value create a new metric series. Collapsing all such failures onto
+// this one fixed value keeps the "destination" label set bounded by the
+// registered publishers plus this label. The "No publisher for destination"
+// log line identifies the offending row by message id, destination digest
+// (see destinationDigest) and destination length — never by the prefix or the
+// value, whose format is unknown and may embed a credential. Avoid registering
+// a Publisher whose Destination() is this value, or its failures would merge
+// with the unroutable ones.
+const UnregisteredDestinationLabel = "unregistered"
+
+// destinationDigestHexLen is the number of hex digits destinationDigest keeps:
+// 48 bits, ample to tell outbox rows apart for diagnosis and useless for
+// recovering the destination.
+const destinationDigestHexLen = 12
+
+// destinationDigest returns a short one-way fingerprint of an outbox
+// destination: the first destinationDigestHexLen lowercase hex digits of its
+// SHA-256. The processor uses it in place of the destination wherever a
+// destination with NO registered publisher must be reported (the "No publisher
+// for destination" log line and the ErrPublisherNotFound persisted as the
+// message's last error). Such a destination is stored data whose format nobody
+// registered, so even its prefix may be a credential; the digest lets an
+// operator match the report to the row (sha256 of the stored value) without the
+// value, or any part of it, ever leaving the store. Destinations that DO route
+// to a registered publisher keep redactDestination: the application registered
+// that prefix, so its format is known.
+func destinationDigest(dest string) string {
+	sum := sha256.Sum256([]byte(dest))
+	return hex.EncodeToString(sum[:])[:destinationDigestHexLen]
+}
+
 // destinationPrefix extracts the prefix from a destination string.
 // For example, "webhook:https://example.com" returns "webhook".
 func destinationPrefix(destination string) string {
@@ -357,4 +408,48 @@ func destinationPrefix(destination string) string {
 		return destination[:idx]
 	}
 	return destination
+}
+
+// redactDestination returns a log-safe rendering of an outbox destination
+// whose prefix the application registered (so its format is known).
+//
+// URL-shaped destinations such as "webhook:https://user:token@host/hook?key=…"
+// may embed credentials in the URL's userinfo or query string — and the most
+// common webhook providers put the bearer secret in the PATH
+// ("https://hooks.slack.com/services/T0/B0/<secret>",
+// "https://discord.com/api/webhooks/<id>/<token>") — while routing failures
+// are logged with the destination. For a destination that contains a URL only
+// its origin, "<prefix>:scheme://host" (host includes the port when one was
+// given), is kept: userinfo, path, query and fragment are all dropped. A
+// destination that does not contain a URL ("kafka:topic", "sns:arn:aws:sns:…")
+// is returned unchanged, and a URL that cannot be parsed is replaced by
+// "<prefix>:<redacted>" rather than echoed. Because a non-URL destination
+// passes through verbatim, this is NOT used for a destination with no
+// registered publisher — nothing is known about such a value, so the
+// processor reports it only by destinationDigest.
+func redactDestination(dest string) string {
+	i := strings.Index(dest, "://")
+	if i < 0 {
+		return dest
+	}
+	// Walk back over the scheme ([A-Za-z0-9+.-]) to find where the URL starts;
+	// whatever precedes it is the publisher prefix (e.g. "webhook:").
+	start := i
+	for start > 0 && isSchemeByte(dest[start-1]) {
+		start--
+	}
+	head, rawURL := dest[:start], dest[start:]
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return head + "<redacted>"
+	}
+	origin := url.URL{Scheme: u.Scheme, Host: u.Host}
+	return head + origin.String()
+}
+
+// isSchemeByte reports whether c may appear in a URL scheme.
+func isSchemeByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		c == '+' || c == '-' || c == '.'
 }

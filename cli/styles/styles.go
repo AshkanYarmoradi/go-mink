@@ -3,6 +3,8 @@
 package styles
 
 import (
+	"strconv"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -199,12 +201,15 @@ func FormatWarning(msg string) string { return formatMessage(WarningStyle, IconW
 // FormatInfo formats an info message with icon
 func FormatInfo(msg string) string { return formatMessage(InfoStyle, IconInfo, msg) }
 
-// FormatStep formats a step in a process
+// FormatStep formats a step in a process as "[step/total] msg".
+//
+// The counters are rendered with strconv.Itoa so that values above 9 (and
+// negative values) print correctly instead of being folded into a single rune.
 func FormatStep(step int, total int, msg string) string {
 	stepStyle := lipgloss.NewStyle().
 		Foreground(TextMuted).
 		Width(8)
-	return stepStyle.Render("["+string(rune('0'+step))+"/"+string(rune('0'+total))+"]") + " " + msg
+	return stepStyle.Render("["+strconv.Itoa(step)+"/"+strconv.Itoa(total)+"]") + " " + msg
 }
 
 // FormatKeyValue formats a key-value pair

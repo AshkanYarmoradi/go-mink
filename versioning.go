@@ -122,6 +122,11 @@ func (c *UpcasterChain) Validate() error {
 // Returns the transformed data, the final version, and any error.
 // If no upcasters exist for the event type or the data is already at the latest version,
 // the original data is returned unchanged.
+//
+// A panic inside a registered Upcaster is recovered and reported as an *UpcastError
+// (errors.Is(err, ErrUpcastFailed)) naming the event type and version transition —
+// never the payload — so one malformed historical event cannot unwind through
+// Load/LoadAggregate into the caller.
 func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, metadata Metadata) ([]byte, int, error) {
 	c.mu.RLock()
 	upcasters := c.upcasters[eventType]
@@ -135,27 +140,58 @@ func (c *UpcasterChain) Upcast(eventType string, fromVersion int, data []byte, m
 	currentData := data
 
 	for _, u := range upcasters {
-		if u.FromVersion() < currentVersion {
+		// Read the transition once, BEFORE Upcast runs. Everything reported about
+		// a failed step (the gap error, the *UpcastError, the panic message in
+		// safeUpcast) uses these captured ints, never a fresh accessor call: a
+		// stateful upcaster whose accessors panic after its Upcast failed must not
+		// turn the recovered failure back into a panic that escapes Load.
+		from, to := u.FromVersion(), u.ToVersion()
+		if from < currentVersion {
 			continue
 		}
-		if u.FromVersion() > currentVersion {
+		if from > currentVersion {
 			// Gap: an upcaster is registered for a higher version, but nothing
-			// bridges currentVersion → u.FromVersion(). Returning the partially
-			// upcasted data here would silently deserialize stale bytes against
-			// the latest struct, so fail loudly instead of corrupting data.
-			return nil, currentVersion, NewSchemaVersionGapError(eventType, currentVersion, u.FromVersion())
+			// bridges currentVersion → from. Returning the partially upcasted data
+			// here would silently deserialize stale bytes against the latest
+			// struct, so fail loudly instead of corrupting data.
+			return nil, currentVersion, NewSchemaVersionGapError(eventType, currentVersion, from)
 		}
 
-		result, err := u.Upcast(currentData, metadata)
+		result, err := safeUpcast(u, currentData, metadata)
 		if err != nil {
-			return nil, currentVersion, NewUpcastError(eventType, u.FromVersion(), u.ToVersion(), err)
+			return nil, currentVersion, NewUpcastError(eventType, from, to, err)
 		}
 
 		currentData = result
-		currentVersion = u.ToVersion()
+		currentVersion = to
 	}
 
 	return currentData, currentVersion, nil
+}
+
+// safeUpcast invokes u.Upcast, converting a panic inside the (user-supplied)
+// upcaster into an ordinary error. Upcasters run over stored bytes on every
+// Load/LoadAggregate, so a panic on one malformed historical event would otherwise
+// unwind through the event store into the caller. The error names the event type
+// and version transition and carries only PanicValueSummary of the recovered
+// value — its type and, for a Go runtime error, its message — so neither the
+// event payload nor a panic value formatted from it reaches the error. Upcast
+// wraps it in an *UpcastError, so errors.Is(err, ErrUpcastFailed) holds.
+//
+// The event type and versions are read before Upcast is called and the deferred
+// recovery uses only those captured values: it never calls back into the
+// upcaster, so an upcaster whose accessors panic once its Upcast has failed
+// cannot defeat the recovery.
+func safeUpcast(u Upcaster, data []byte, metadata Metadata) (result []byte, err error) {
+	eventType, from, to := u.EventType(), u.FromVersion(), u.ToVersion()
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("mink: upcaster for %q (version %d -> %d) panicked: %s",
+				eventType, from, to, PanicValueSummary(r))
+		}
+	}()
+	return u.Upcast(data, metadata)
 }
 
 // HasUpcasters reports whether any upcasters are registered for the given event type.

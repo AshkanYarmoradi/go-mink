@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -24,6 +25,17 @@ type EventStore struct {
 	maxEventSize  int                    // 0 = unlimited
 	subjectTagger SubjectTagger          // nil by default — zero overhead when unused
 	subjectIndex  SubjectIndexWriter     // nil by default — zero overhead when unused
+
+	// callerSubjectTags (WithCallerSubjectTags) merges caller-supplied $subjects tags
+	// with the tagger's output instead of letting the tagger's output replace them.
+	// Only consulted when a SubjectTagger is configured.
+	callerSubjectTags bool
+
+	// callerSchemaVersion (WithCallerSchemaVersion) honors a caller-supplied
+	// $schema_version on Append/SaveAggregate when it is an integer within
+	// [1, latest] for an event type that has upcasters. Off by default: the
+	// caller's value is dropped and the latest version is stamped.
+	callerSchemaVersion bool
 
 	// Aggregate replay-safety (replay-type-safety); zero overhead when unused.
 	strictReplay bool     // WithStrictReplay: fail LoadAggregate on an unregistered type
@@ -112,6 +124,40 @@ func WithFieldEncryption(config *FieldEncryptionConfig) Option {
 func WithSubjectTagger(tagger SubjectTagger) Option {
 	return func(es *EventStore) {
 		es.subjectTagger = tagger
+	}
+}
+
+// WithCallerSubjectTags makes the configured SubjectTagger MERGE its output with any
+// $subjects tags the caller already placed in Metadata.Custom, instead of replacing
+// them (the default). Use it only when your application intentionally adds extra
+// subjects at append time and every writer is trusted: with merging, a writer can
+// attribute an event to another subject, select that subject's encryption key (see
+// WithSubjectKeyResolver), and inject the event into that subject's erasure
+// footprint. It has no effect when no SubjectTagger is configured — caller-supplied
+// tags are then always kept as-is (explicit manual tagging).
+func WithCallerSubjectTags() Option {
+	return func(es *EventStore) {
+		es.callerSubjectTags = true
+	}
+}
+
+// WithCallerSchemaVersion makes Append and SaveAggregate honor a caller-supplied
+// "$schema_version" in Metadata.Custom when upcasters are registered for the event
+// type and the value is an integer within [1, latest version]. By default (without
+// this option) a caller-supplied value is always dropped and the chain's latest
+// version is stamped, because an application-level writer that controls metadata
+// could otherwise downgrade a single event's version and have the upcaster chain
+// re-run over already-current data on Load (poisoning that event's replay).
+//
+// Enable it only for trusted migration tooling that re-appends events carried
+// from another store together with their original version marker. Out-of-range,
+// unparsable and no-upcasters values are still replaced, and without an
+// UpcasterChain configured the value is still dropped (there is no range to
+// validate it against). ReEncryptStream does not need this option: it re-appends
+// through an internal trusted path that preserves the marker itself.
+func WithCallerSchemaVersion() Option {
+	return func(es *EventStore) {
+		es.callerSchemaVersion = true
 	}
 }
 
@@ -295,6 +341,11 @@ type AppendOption func(*appendConfig)
 type appendConfig struct {
 	metadata        Metadata
 	expectedVersion int64
+
+	// trustedMetadata (withTrustedMetadata) marks the metadata as originating from
+	// the store itself (a re-append of an event it already holds) rather than from
+	// an application caller; see withTrustedMetadata.
+	trustedMetadata bool
 }
 
 // ExpectVersion sets the expected stream version for optimistic concurrency.
@@ -311,8 +362,56 @@ func WithAppendMetadata(m Metadata) AppendOption {
 	}
 }
 
+// withTrustedMetadata is the UNEXPORTED append option used only by the library's
+// own re-append paths (ReEncryptStream), whose metadata comes from events the
+// store already holds rather than from an application caller. It changes exactly
+// one policy of prepareEventData: "$schema_version" is persisted verbatim (present
+// or absent) instead of being dropped or re-stamped, because the value was stamped
+// by this library when the source event was written and the data being re-appended
+// is at the version the caller says it is (ReEncryptStream re-stamps the latest
+// version itself when its Load upcasted the data).
+//
+// Everything else is unchanged: the field-encryption envelope is always stripped and
+// re-stamped, and the "$subjects" policy is the same as for a caller (the configured
+// SubjectTagger's output replaces the carried-over tags unless WithCallerSubjectTags
+// is set). The carried-over tags are deliberately NOT trusted: they may have been
+// written in the merge era or by a tagger-less writer, and letting a stored tag pick
+// the wrapping key — or keep the event in another subject's footprint while it is
+// wrapped under this subject's key — is the hole the replace policy closes.
+func withTrustedMetadata() AppendOption {
+	return func(c *appendConfig) {
+		c.trustedMetadata = true
+	}
+}
+
 // Append stores events to the specified stream.
 // Events can be Go structs which will be serialized using the configured serializer.
+//
+// Reserved metadata: Metadata.Custom keys with a "$" prefix are the library's
+// namespace. Some of them are library-owned and are sanitized before anything is
+// stamped, so a caller that controls Metadata.Custom (e.g. an HTTP API copying
+// request headers into metadata) cannot forge them:
+//
+//   - "$encrypted_fields", "$encryption_key_id", "$encrypted_dek" and
+//     "$encryption_algorithm" (the field-encryption envelope) are ALWAYS removed;
+//     the encryption path re-stamps them when configured. See
+//     SanitizeReservedMetadata.
+//   - "$schema_version" is DROPPED by default: with upcasters configured the
+//     chain's latest version for the event type is always stamped, and without an
+//     UpcasterChain nothing is stamped. A writer must not be able to downgrade a
+//     single event's version and have the chain re-run over current data on Load.
+//     WithCallerSchemaVersion restores honoring a caller value that is an integer
+//     within [1, latest version] for a type that has upcasters (migration tooling);
+//     every other value is still replaced. The library's own re-append path
+//     (ReEncryptStream) preserves the marker verbatim through an internal trusted
+//     option, since there the value was stamped by the store itself.
+//   - "$subjects" is replaced by the configured SubjectTagger's output; without a
+//     tagger it is kept as supplied. WithCallerSubjectTags restores merging. The
+//     same policy applies to the re-append / in-place re-encryption paths.
+//
+// Every other key — including other "$"-prefixed keys such as the erasure marker's
+// "$erasure_marker_subject" — is stored as supplied. The caller's map is never
+// mutated: sanitization copies it only when a reserved key is actually present.
 func (s *EventStore) Append(ctx context.Context, streamID string, events []interface{}, opts ...AppendOption) error {
 	if s.serializerErr != nil {
 		return s.serializerErr
@@ -355,7 +454,7 @@ func (s *EventStore) Append(ctx context.Context, streamID string, events []inter
 			return fmt.Errorf("mink: failed to serialize event %d: %w", i, err)
 		}
 
-		if err := s.prepareEventData(ctx, streamID, &eventData); err != nil {
+		if err := s.prepareEventDataWith(ctx, streamID, &eventData, config.trustedMetadata); err != nil {
 			return fmt.Errorf("mink: failed to prepare event %d: %w", i, err)
 		}
 		s.collectSubjects(eventData.Metadata, subjectSet)
@@ -434,6 +533,11 @@ func (s *EventStore) LoadRaw(ctx context.Context, streamID string, fromVersion i
 // After a successful save, if the aggregate implements VersionSetter, the version
 // is updated to reflect the new stream version (and OriginalVersion is advanced),
 // allowing subsequent modifications without reloading.
+//
+// Reserved metadata: every event is run through the same sanitization as Append
+// (see its doc comment) before anything is stamped, so the field-encryption
+// envelope, "$schema_version" and "$subjects" are library-derived, never
+// caller-supplied.
 func (s *EventStore) SaveAggregate(ctx context.Context, agg Aggregate) error {
 	if s.serializerErr != nil {
 		return s.serializerErr
@@ -668,7 +772,7 @@ func (s *EventStore) DecryptStoredEvent(ctx context.Context, stored StoredEvent)
 	// are unchanged and the markers are intentionally kept so the event still reports as
 	// encrypted/unrecoverable.
 	if !bytes.Equal(dec, stored.Data) {
-		stored.Metadata = stripEncryptionMetadata(stored.Metadata)
+		stored.Metadata = SanitizeReservedMetadata(stored.Metadata)
 	}
 	stored.Data = dec
 	return stored, nil
@@ -697,22 +801,23 @@ func (s *EventStore) decryptStoredEvents(ctx context.Context, events []StoredEve
 // EncryptStoredEvent is the encode counterpart to DecryptStoredEvent: it seals a
 // stored event's configured fields under the current FieldEncryptionConfig and
 // stamps the current envelope in its metadata, exactly as the append path
-// (prepareEventData) would — the configured SubjectTagger runs first so the wrapping
-// key is resolved identically. It is a passthrough (input returned unchanged) when
-// no encryption is configured, the event type has no configured fields, or the event
-// is already encrypted. Zero overhead when unused.
+// (prepareEventData) would: any stale, incomplete envelope keys are stripped
+// (SanitizeReservedMetadata) and the configured SubjectTagger runs first under the
+// SAME "$subjects" policy as Append — its output REPLACES the stored tags unless
+// WithCallerSubjectTags is set — so the wrapping key is resolved identically and a
+// forged tag at rest (written in the merge era or by a tagger-less writer) cannot
+// select another subject's key or keep the event in that subject's erasure
+// footprint. It is a passthrough (input returned unchanged) when no encryption is
+// configured, the event type has no configured fields, or the event is already
+// encrypted. Zero overhead when unused.
 func (s *EventStore) EncryptStoredEvent(ctx context.Context, stored StoredEvent) (StoredEvent, error) {
 	if s.encryption == nil || IsEncrypted(stored.Metadata) || !s.encryption.HasEncryptedFields(stored.Type) {
 		return stored, nil
 	}
-	md := stored.Metadata
+	md := SanitizeReservedMetadata(stored.Metadata)
 	// Tag the subject(s) before encryption so resolveKeyID picks the same per-subject
 	// key the live append path would (subject-scoped field keys).
-	if s.subjectTagger != nil {
-		if subjects := s.subjectTagger(stored.Type, stored.Data, md); len(subjects) > 0 {
-			md = setSubjectTags(md, subjects)
-		}
-	}
+	md = s.applySubjectTagPolicy(stored.Type, stored.Data, md)
 	encData, encMeta, err := s.encryption.encryptFields(ctx, stored.StreamID, stored.Type, stored.Data, md)
 	if err != nil {
 		return StoredEvent{}, err
@@ -849,27 +954,127 @@ func (s *EventStore) writeSubjectIndex(ctx context.Context, streamID string, set
 	}
 }
 
-// prepareEventData stamps the schema version and encrypts fields as needed.
-// This is the shared logic used by Append, SaveAggregate, and the outbox wrapper.
-// streamID is bound into the field-encryption AAD so ciphertext cannot be
-// relocated to a different stream.
-func (s *EventStore) prepareEventData(ctx context.Context, streamID string, eventData *EventData) error {
-	if upcasters := s.upcasters.Load(); upcasters != nil {
-		// Stamp the latest schema version, but respect a version the caller has
-		// already set explicitly (e.g. when re-appending an event carried from
-		// elsewhere) rather than clobbering it.
-		if !hasSchemaVersion(eventData.Metadata) {
-			eventData.Metadata = SetSchemaVersion(eventData.Metadata, upcasters.LatestVersion(eventData.Type))
+// reservedEncryptionMetadataKeys are the library-owned field-encryption envelope
+// keys that a caller must never be able to supply (see SanitizeReservedMetadata).
+var reservedEncryptionMetadataKeys = []string{
+	encryptedFieldsKey, encryptionKeyIDKey, encryptedDEKKey, encryptionAlgorithmKey,
+}
+
+// SanitizeReservedMetadata returns m with the library-owned field-encryption
+// envelope keys removed from Metadata.Custom: "$encrypted_fields",
+// "$encryption_key_id", "$encrypted_dek" and "$encryption_algorithm". The event
+// store applies it to every event on Append, SaveAggregate and the outbox wrapper
+// BEFORE stamping anything, so a caller that controls Metadata.Custom cannot make
+// plaintext look encrypted, point decryption or erasure at another key, or skip
+// encryption; the encryption path re-stamps the envelope when configured.
+//
+// It is copy-on-write: when none of the keys is present the input is returned
+// unchanged (same map, no allocation); otherwise a copy without them is returned.
+// The caller's map is never mutated. Other "$"-prefixed keys are left alone — the
+// "$schema_version" and "$subjects" policies are applied separately by the store
+// (see Append). Exported so applications and tests can assert the policy.
+func SanitizeReservedMetadata(m Metadata) Metadata {
+	return withoutCustomKeys(m, reservedEncryptionMetadataKeys...)
+}
+
+// explicitSchemaVersionValid reports whether m carries a caller-supplied
+// "$schema_version" that may be honored: an integer within [1, latest]. A missing,
+// unparsable or out-of-range value must not be persisted verbatim, because
+// deserializeWithUpcast routes the upcaster chain by it on Load.
+func explicitSchemaVersionValid(m Metadata, latest int) bool {
+	if !hasSchemaVersion(m) {
+		return false
+	}
+	v, err := strconv.Atoi(m.Custom[schemaVersionKey])
+	if err != nil {
+		return false
+	}
+	return v >= DefaultSchemaVersion && v <= latest
+}
+
+// applySchemaVersionPolicy applies the untrusted-caller "$schema_version" policy
+// described on Append: with upcasters configured the latest version for the type
+// is stamped unless WithCallerSchemaVersion is set and the caller's value is valid
+// for a type that has upcasters; without upcasters a caller value is dropped.
+func (s *EventStore) applySchemaVersionPolicy(eventType string, m Metadata) Metadata {
+	upcasters := s.upcasters.Load()
+	if upcasters == nil {
+		if hasSchemaVersion(m) {
+			return withoutCustomKeys(m, schemaVersionKey)
 		}
+		return m
+	}
+	latest := upcasters.LatestVersion(eventType)
+	if s.callerSchemaVersion && upcasters.HasUpcasters(eventType) && explicitSchemaVersionValid(m, latest) {
+		return m
+	}
+	return SetSchemaVersion(m, latest)
+}
+
+// applySubjectTagPolicy runs the configured SubjectTagger over an event and records
+// its output under the store's "$subjects" policy: the tagger's output REPLACES any
+// tags already present (caller-supplied or carried over from a stored event) unless
+// WithCallerSubjectTags is set, in which case they are merged (existing first). With
+// no tagger configured the metadata is returned untouched (zero overhead). It is the
+// single policy shared by the append path (prepareEventData) and the in-place
+// re-encryption path (EncryptStoredEvent), so the key resolveKeyID selects from the
+// first tag is chosen by the tagger on both.
+func (s *EventStore) applySubjectTagPolicy(eventType string, data []byte, m Metadata) Metadata {
+	if s.subjectTagger == nil {
+		return m
+	}
+	subjects := s.subjectTagger(eventType, data, m)
+	if s.callerSubjectTags {
+		if len(subjects) > 0 {
+			return setSubjectTags(m, subjects)
+		}
+		return m
+	}
+	return replaceSubjectTags(m, subjects)
+}
+
+// prepareEventData sanitizes reserved metadata, stamps the schema version, tags
+// the data subject(s) and encrypts fields as needed, treating the metadata as
+// caller-supplied (untrusted). This is the shared logic used by Append,
+// SaveAggregate, and the outbox wrapper; see prepareEventDataWith.
+func (s *EventStore) prepareEventData(ctx context.Context, streamID string, eventData *EventData) error {
+	return s.prepareEventDataWith(ctx, streamID, eventData, false)
+}
+
+// prepareEventDataWith is prepareEventData with an explicit trust level for the
+// metadata. trusted is set only through withTrustedMetadata (the store's own
+// re-append path) and keeps "$schema_version" verbatim; see that option for why
+// nothing else — in particular not "$subjects" — is trusted. streamID is bound into
+// the field-encryption AAD so ciphertext cannot be relocated to a different stream.
+func (s *EventStore) prepareEventDataWith(ctx context.Context, streamID string, eventData *EventData, trusted bool) error {
+	// Reserved-metadata sanitization runs BEFORE anything is stamped, so nothing a
+	// caller places under a library-owned key survives into storage:
+	//
+	//   1. The field-encryption envelope is always removed (copy-on-write; the
+	//      common path without reserved keys allocates nothing).
+	eventData.Metadata = SanitizeReservedMetadata(eventData.Metadata)
+
+	//   2. "$schema_version": a caller-supplied value is dropped by default. With
+	//      upcasters configured the chain's latest version is stamped — a caller
+	//      value is honored only under WithCallerSchemaVersion and only when it is
+	//      an integer within [1, latest] of a type that has upcasters (e.g. when
+	//      re-appending an event carried from elsewhere); an out-of-range, forged
+	//      or downgraded value would otherwise mis-route the upcaster chain on
+	//      Load. Without upcasters nothing is stamped and a caller-supplied value
+	//      is dropped. Trusted metadata (withTrustedMetadata) skips this step: the
+	//      marker, present or absent, is persisted verbatim.
+	if !trusted {
+		eventData.Metadata = s.applySchemaVersionPolicy(eventData.Type, eventData.Metadata)
 	}
 
-	// Tag the data subject(s) before encryption so the tag stays queryable in
-	// plaintext metadata (zero overhead when no tagger is configured).
-	if s.subjectTagger != nil {
-		if subjects := s.subjectTagger(eventData.Type, eventData.Data, eventData.Metadata); len(subjects) > 0 {
-			eventData.Metadata = setSubjectTags(eventData.Metadata, subjects)
-		}
-	}
+	//   3. "$subjects": tag the data subject(s) before encryption so the tag stays
+	//      queryable in plaintext metadata and resolveKeyID sees it. The tagger's
+	//      output REPLACES caller-supplied tags by default, so a writer cannot
+	//      attribute an event to another subject, wrap it under that subject's key,
+	//      or inject it into their erasure footprint; WithCallerSubjectTags opts back
+	//      into merging. Without a tagger, caller-supplied tags are left untouched
+	//      (explicit manual tagging; zero overhead).
+	eventData.Metadata = s.applySubjectTagPolicy(eventData.Type, eventData.Data, eventData.Metadata)
 
 	if s.encryption != nil && s.encryption.HasEncryptedFields(eventData.Type) {
 		encData, encMeta, err := s.encryption.encryptFields(ctx, streamID, eventData.Type, eventData.Data, eventData.Metadata)

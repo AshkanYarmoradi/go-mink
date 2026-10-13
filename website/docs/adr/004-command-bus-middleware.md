@@ -86,8 +86,17 @@ func (b *CommandBus) Dispatch(ctx context.Context, cmd Command) (CommandResult, 
 > The snippets below are **simplified illustrations** of how each middleware is
 > implemented internally, not the exact public signatures. In particular the
 > real `IdempotencyMiddleware` takes an `IdempotencyConfig` (use
-> `mink.DefaultIdempotencyConfig(store)`), not a bare `IdempotencyStore`. See the
-> "Middleware Order" section below for accurate usage.
+> `mink.DefaultIdempotencyConfig(store)`), not a bare `IdempotencyStore`, and scopes
+> keys per tenant by default (`IdempotencyConfig.Scope`); the real
+> `RecoveryMiddleware()` returns a typed `*PanicError` whose
+> `Value` is only a `PanicValueSummary` of the recovered value (its type, plus the
+> message for a Go runtime error) and whose `CommandData` is only a
+> type/aggregate-id summary — the opt-in `WithPanicValueCapture()` /
+> `WithPanicCommandCapture()` options are passed to
+> `RecoveryMiddlewareWithOptions(opts ...RecoveryOption)`, not to
+> `RecoveryMiddleware()` itself; and `CorrelationIDMiddleware(nil)`
+> generates a random v4 UUID. See the "Middleware Order" section below for
+> accurate usage.
 
 ```go
 // Validation

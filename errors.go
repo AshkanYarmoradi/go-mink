@@ -6,6 +6,8 @@ package mink
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 
 	"go-mink.dev/adapters"
 )
@@ -267,16 +269,44 @@ func NewHandlerNotFoundError(cmdType string) *HandlerNotFoundError {
 // PanicError provides detailed information about a handler panic.
 type PanicError struct {
 	CommandType string
-	Value       interface{}
-	Stack       string
+	// Value is the recovered panic value as recorded by RecoveryMiddleware.
+	//
+	// By default it holds PanicValueSummary(r): a string naming the panic value's
+	// dynamic type and, for a Go runtime error, its message — never the panic
+	// value itself. Handlers routinely panic with the command, the aggregate, an
+	// event, or a message formatted from one of them, and the summary keeps that
+	// payload out of error values, logs and crash reports. The raw recovered
+	// value is kept here only when RecoveryMiddleware is configured with
+	// WithPanicValueCapture().
+	Value interface{}
+	Stack string
 	// CommandData contains a sanitized JSON representation of the command for debugging.
 	// Sensitive fields should be masked by the caller before setting this field.
 	CommandData string
+
+	// summary is the payload-safe rendering of Value that Error() prints when
+	// Value holds the raw recovered value (WithPanicValueCapture).
+	summary string
 }
 
-// Error returns the error message.
+// Error returns the error message. It never prints more than the payload-safe
+// summary of the panic value (see PanicValueSummary): a string Value is printed
+// as given — by default it already is that summary — and any other Value is
+// reduced to its summary, so a PanicError built from a raw struct, error or
+// other payload-bearing value does not render that payload.
 func (e *PanicError) Error() string {
-	return fmt.Sprintf("mink: handler panicked while processing %q: %v", e.CommandType, e.Value)
+	return fmt.Sprintf("mink: handler panicked while processing %q: %s", e.CommandType, e.valueSummary())
+}
+
+// valueSummary returns the payload-safe text Error() prints for Value.
+func (e *PanicError) valueSummary() string {
+	if e.summary != "" {
+		return e.summary
+	}
+	if s, ok := e.Value.(string); ok {
+		return s
+	}
+	return PanicValueSummary(e.Value)
 }
 
 // Is reports whether this error matches the target error.
@@ -289,7 +319,8 @@ func (e *PanicError) Unwrap() error {
 	return ErrHandlerPanicked
 }
 
-// NewPanicError creates a new PanicError.
+// NewPanicError creates a new PanicError. It stores value as given; pass
+// PanicValueSummary(value) to keep a payload-bearing panic value out of the error.
 func NewPanicError(cmdType string, value interface{}, stack string) *PanicError {
 	return &PanicError{
 		CommandType: cmdType,
@@ -300,6 +331,7 @@ func NewPanicError(cmdType string, value interface{}, stack string) *PanicError 
 
 // NewPanicErrorWithCommand creates a new PanicError with command data for debugging.
 // The commandData should be a sanitized representation of the command (sensitive fields masked).
+// Like NewPanicError it stores value as given; see PanicValueSummary.
 func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, commandData string) *PanicError {
 	return &PanicError{
 		CommandType: cmdType,
@@ -307,6 +339,66 @@ func NewPanicErrorWithCommand(cmdType string, value interface{}, stack string, c
 		Stack:       stack,
 		CommandData: commandData,
 	}
+}
+
+// PanicValueSummary returns a payload-safe description of a recovered panic
+// value, suitable for error messages and logs.
+//
+// For a Go runtime error — a runtime.Error whose type is declared in package
+// runtime, such as a nil dereference, an index out of range or a failed type
+// assertion — it returns the error's type and message, which carry no user data
+// and are essential for debugging. For any other value, strings included, it
+// returns only the value's dynamic type, e.g. "redacted panic value of type
+// *main.Order": a string panic is often a message formatted from the command,
+// the event or its data. A runtime.Error implemented outside package runtime is
+// treated like any other value, because its message is under the application's
+// control and may embed a payload.
+//
+// It never panics itself, so it is safe to call from inside a deferred
+// recover. A typed nil pointer — panic((*runtime.TypeAssertionError)(nil)) —
+// is reported as its type followed by "(nil)" without its Error method being
+// called, and a runtime error whose Error method panics falls back to the
+// type-only summary.
+//
+// RecoveryMiddleware, the projection engine and the upcaster chain apply it to
+// every recovered panic, so a handler, projection or upcaster that panics with
+// the payload it was processing never copies that payload into an error or a
+// log. Applications that recover panics themselves can use it the same way.
+func PanicValueSummary(v interface{}) string {
+	if v == nil {
+		return "nil panic value"
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		// Calling Error() on a typed nil pointer would panic again inside the
+		// recovery path; the type alone is the whole summary.
+		return fmt.Sprintf("redacted panic value of type %T (nil)", v)
+	}
+	if re, ok := v.(runtime.Error); ok && isRuntimePackageType(reflect.TypeOf(v)) {
+		if msg, ok := safeErrorMessage(re); ok {
+			return fmt.Sprintf("%T: %s", v, msg)
+		}
+	}
+	return fmt.Sprintf("redacted panic value of type %T", v)
+}
+
+// safeErrorMessage returns err.Error(), or ok == false if that call panicked,
+// so a misbehaving Error method can never escape a recovery path.
+func safeErrorMessage(err error) (msg string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			msg, ok = "", false
+		}
+	}()
+	return err.Error(), true
+}
+
+// isRuntimePackageType reports whether t, or the type it points to, is declared
+// in the Go runtime package.
+func isRuntimePackageType(t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.PkgPath() == "runtime"
 }
 
 // Projection-related errors

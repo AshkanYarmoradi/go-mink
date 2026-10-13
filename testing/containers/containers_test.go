@@ -64,6 +64,17 @@ func invalidContainer() *PostgresContainer {
 	}
 }
 
+// schemaExists reports whether a schema of that name exists in the database.
+func schemaExists(t *testing.T, ctx context.Context, db *sql.DB, schema string) bool {
+	t.Helper()
+	var exists bool
+	err := db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+		schema).Scan(&exists)
+	require.NoError(t, err)
+	return exists
+}
+
 // startPostgresWithDB starts a PostgreSQL container and returns a DB connection.
 func startPostgresWithDB(t *testing.T) (*PostgresContainer, context.Context, *sql.DB) {
 	t.Helper()
@@ -327,6 +338,29 @@ func TestPostgresContainer_Schema_Integration(t *testing.T) {
 			schema).Scan(&exists)
 		require.NoError(t, err)
 		assert.False(t, exists)
+	})
+
+	t.Run("DropSchema refuses a schema created by another container instance", func(t *testing.T) {
+		other := StartPostgres(t) // same database, different handle
+
+		schema, err := container.CreateSchema(ctx, db, "owned")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = container.DropSchema(context.Background(), db, schema) })
+
+		err = other.DropSchema(ctx, db, schema)
+		require.ErrorIs(t, err, ErrSchemaNotOwned)
+		assert.True(t, schemaExists(t, ctx, db, schema), "a refused drop leaves the schema in place")
+
+		// The explicit opt-out drops it from the other handle.
+		require.NoError(t, other.DropSchemaUnsafe(ctx, db, schema))
+		assert.False(t, schemaExists(t, ctx, db, schema))
+	})
+
+	t.Run("DropSchema refuses public", func(t *testing.T) {
+		require.True(t, schemaExists(t, ctx, db, "public"), "precondition")
+		err := container.DropSchema(ctx, db, "public")
+		require.ErrorIs(t, err, ErrSchemaNotOwned)
+		assert.True(t, schemaExists(t, ctx, db, "public"), "public survives a DropSchema attempt")
 	})
 
 	t.Run("CreateSchema fails with closed connection", func(t *testing.T) {

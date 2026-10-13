@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -20,6 +21,12 @@ import (
 	"go-mink.dev/adapters/memory"
 	minkmetrics "go-mink.dev/middleware/metrics"
 )
+
+// metricsAddr is where the /metrics endpoint listens. It is bound to the loopback
+// interface on purpose: a metrics endpoint leaks operational detail (event types,
+// stream names, error rates) and must not be reachable from other hosts unless it is
+// deliberately exposed behind network policy or authentication.
+const metricsAddr = "127.0.0.1:9090"
 
 // =============================================================================
 // Domain Events
@@ -46,6 +53,32 @@ type ProfileUpdated struct {
 }
 
 // =============================================================================
+// Metrics server
+// =============================================================================
+
+// newMetricsServer builds the HTTP server that exposes the Prometheus handler.
+//
+// It deliberately avoids http.ListenAndServe(":9090", nil):
+//   - addr should be a loopback address (see metricsAddr), not ":9090", which binds
+//     every interface;
+//   - it uses its own ServeMux so nothing else registered on http.DefaultServeMux
+//     (pprof, expvar, ...) is exposed alongside /metrics;
+//   - it sets ReadHeaderTimeout / ReadTimeout / WriteTimeout / IdleTimeout so a slow
+//     or stalled client cannot hold a connection open indefinitely (Slowloris).
+func newMetricsServer(addr string, metricsHandler http.Handler) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metricsHandler)
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -68,13 +101,14 @@ func main() {
 	metricsInstance.MustRegister()
 
 	fmt.Println("📊 Metrics middleware initialized")
-	fmt.Println("   - Prometheus metrics available at :9090/metrics")
+	fmt.Printf("   - Prometheus metrics available at http://%s/metrics (loopback only)\n", metricsAddr)
 	fmt.Println()
 
-	// Start Prometheus HTTP server in background
+	// Start the Prometheus HTTP server in the background: loopback-bound, dedicated
+	// mux, request timeouts set (see newMetricsServer).
+	metricsServer := newMetricsServer(metricsAddr, promhttp.Handler())
 	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		if err := http.ListenAndServe(":9090", nil); err != nil && err != http.ErrServerClosed {
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("metrics server stopped: %v", err)
 		}
 	}()
@@ -183,7 +217,7 @@ func main() {
 	fmt.Println()
 
 	// In a real application, these would be scraped by Prometheus
-	fmt.Println("   Sample metrics (view full metrics at http://localhost:9090/metrics):")
+	fmt.Printf("   Sample metrics (view full metrics at http://%s/metrics):\n", metricsAddr)
 	fmt.Println()
 	fmt.Println("   mink_example_commands_total{service=\"user-service\",command_type=\"...\",status=\"success\"}")
 	fmt.Println("   mink_example_eventstore_operations_total{service=\"user-service\",operation=\"append\"}")
@@ -215,11 +249,12 @@ func main() {
 	fmt.Println("   - Monitor error rates by aggregate type")
 	fmt.Println("   - Set up alerts for high latency or error spikes")
 	fmt.Println("   - Use Grafana dashboards for visualization")
+	fmt.Println("   - Keep /metrics on a private interface; expose it to Prometheus via network policy, not the internet")
 	fmt.Println()
 
 	fmt.Println("=== Example Complete ===")
 	fmt.Println()
-	fmt.Println("Prometheus metrics endpoint still running at http://localhost:9090/metrics")
+	fmt.Printf("Prometheus metrics endpoint still running at http://%s/metrics\n", metricsAddr)
 	fmt.Println("Press Ctrl+C to exit")
 
 	// Keep server running

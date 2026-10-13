@@ -3,9 +3,10 @@ package mink
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"runtime/debug"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ValidationMiddleware validates commands before they reach the handler.
@@ -21,20 +22,77 @@ func ValidationMiddleware() Middleware {
 	}
 }
 
+// RecoveryOption configures RecoveryMiddlewareWithOptions.
+type RecoveryOption func(*recoveryConfig)
+
+// recoveryConfig holds RecoveryMiddleware's settings.
+type recoveryConfig struct {
+	captureCommand bool
+	captureValue   bool
+}
+
+// WithPanicCommandCapture makes RecoveryMiddlewareWithOptions record the
+// entire JSON-serialized command in PanicError.CommandData when a handler
+// panics.
+//
+// This is opt-in because commands routinely carry personal or secret data
+// (addresses, tokens, card details) that would otherwise be copied verbatim
+// into error values, logs and crash reports. Enable it only when everything
+// that consumes PanicError is trusted to handle the command's contents.
+func WithPanicCommandCapture() RecoveryOption {
+	return func(c *recoveryConfig) {
+		c.captureCommand = true
+	}
+}
+
+// WithPanicValueCapture makes RecoveryMiddlewareWithOptions keep the raw
+// recovered panic value in PanicError.Value when a handler panics.
+//
+// By default PanicError.Value holds only PanicValueSummary(r) — the panic
+// value's type and, for a Go runtime error, its message — because handlers
+// commonly panic with the command, the aggregate, an event, or a message
+// formatted from one of them, which would otherwise be copied verbatim into
+// error values, logs and crash reports. This is opt-in for the same reason as
+// WithPanicCommandCapture: enable it only when everything that consumes
+// PanicError is trusted to handle the panic value's contents. PanicError.Error()
+// prints the summary regardless, so the raw value is exposed only through the
+// Value field.
+func WithPanicValueCapture() RecoveryOption {
+	return func(c *recoveryConfig) {
+		c.captureValue = true
+	}
+}
+
 // RecoveryMiddleware recovers from panics in handlers and returns them as errors.
-// It captures a sanitized representation of the command data for debugging.
+//
+// The returned PanicError holds only non-sensitive context. PanicError.Value
+// is PanicValueSummary of the recovered value — its type and, for a Go runtime
+// error, its message — never the value itself. PanicError.CommandData is a
+// small JSON object with the command type and, for an AggregateCommand, the
+// aggregate ID — never the command's own fields. It is equivalent to
+// RecoveryMiddlewareWithOptions() with no options; use that function with
+// WithPanicValueCapture or WithPanicCommandCapture to record the raw details.
 func RecoveryMiddleware() Middleware {
+	return RecoveryMiddlewareWithOptions()
+}
+
+// RecoveryMiddlewareWithOptions is RecoveryMiddleware with configuration.
+//
+// With no options it behaves exactly like RecoveryMiddleware. Pass
+// WithPanicValueCapture() to keep the raw recovered value in PanicError.Value
+// and WithPanicCommandCapture() to record the full JSON-serialized command in
+// PanicError.CommandData. See each option for its privacy trade-off.
+func RecoveryMiddlewareWithOptions(opts ...RecoveryOption) Middleware {
+	var cfg recoveryConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	return func(next MiddlewareFunc) MiddlewareFunc {
 		return func(ctx context.Context, cmd Command) (result CommandResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					stack := string(debug.Stack())
-					// Capture command data for debugging (best effort, ignore errors)
-					var commandData string
-					if data, jsonErr := json.Marshal(cmd); jsonErr == nil {
-						commandData = string(data)
-					}
-					panicErr := NewPanicErrorWithCommand(cmd.CommandType(), r, stack, commandData)
+					panicErr := newRecoveredPanicError(cmd, r, string(debug.Stack()), cfg)
 					result = NewErrorResult(panicErr)
 					err = panicErr
 				}
@@ -42,6 +100,48 @@ func RecoveryMiddleware() Middleware {
 			return next(ctx, cmd)
 		}
 	}
+}
+
+// newRecoveredPanicError builds the PanicError RecoveryMiddlewareWithOptions
+// returns for a recovered panic value r. Value holds PanicValueSummary(r) unless captureValue
+// is set, in which case the raw value is kept and the summary is retained
+// separately so that Error() still prints no more than the summary.
+func newRecoveredPanicError(cmd Command, r interface{}, stack string, cfg recoveryConfig) *PanicError {
+	summary := PanicValueSummary(r)
+	value := interface{}(summary)
+	if cfg.captureValue {
+		value = r
+	}
+	panicErr := NewPanicErrorWithCommand(cmd.CommandType(), value, stack, panicCommandData(cmd, cfg.captureCommand))
+	if cfg.captureValue {
+		panicErr.summary = summary
+	}
+	return panicErr
+}
+
+// panicCommandData builds the CommandData recorded in a PanicError. With full
+// set it is the JSON-serialized command (best effort: an unserializable command
+// yields ""); otherwise it is a JSON summary of the command type and, for an
+// AggregateCommand, the aggregate ID.
+func panicCommandData(cmd Command, full bool) string {
+	if full {
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+
+	summary := struct {
+		CommandType string `json:"commandType"`
+		AggregateID string `json:"aggregateId,omitempty"`
+	}{CommandType: cmd.CommandType()}
+	if ac, ok := cmd.(AggregateCommand); ok {
+		summary.AggregateID = ac.AggregateID()
+	}
+	// A struct of plain strings always marshals.
+	data, _ := json.Marshal(summary)
+	return string(data)
 }
 
 // LoggingMiddleware logs command execution.
@@ -259,9 +359,9 @@ func CorrelationIDFromContext(ctx context.Context) string {
 // CorrelationIDMiddleware creates middleware that propagates correlation IDs.
 func CorrelationIDMiddleware(generator func() string) Middleware {
 	if generator == nil {
-		generator = func() string {
-			return fmt.Sprintf("%d", time.Now().UnixNano())
-		}
+		// A random UUID: the previous nanosecond-timestamp default was predictable
+		// and collided for commands dispatched within the same tick.
+		generator = uuid.NewString
 	}
 
 	return func(next MiddlewareFunc) MiddlewareFunc {

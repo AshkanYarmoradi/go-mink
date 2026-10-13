@@ -511,20 +511,56 @@ func TestWithPostgres(t *testing.T) {
 func TestWithIsolatedSchema(t *testing.T) {
     container := containers.StartPostgres(t)
     ctx := context.Background()
+    db := container.MustDB(ctx)
 
-    // Create isolated schema for this test
-    schema := container.CreateSchema(ctx, t, "test_order")
-    defer container.DropSchema(ctx, t, schema)
+    // Create an isolated schema for this test: "test_order_<UnixNano>"
+    schema, err := container.CreateSchema(ctx, db, "test_order")
+    require.NoError(t, err)
+    t.Cleanup(func() {
+        // Drop it through the same container handle that created it —
+        // DropSchema refuses a schema this instance did not create.
+        _ = container.DropSchema(context.Background(), db, schema)
+        _ = db.Close()
+    })
 
-    // Initialize mink tables in schema
-    container.SetupMinkSchema(ctx, t, schema)
-
-    // Get connection for schema
-    db := container.MustDBWithSchema(ctx, schema)
+    // Point the adapter at the schema and initialize mink's tables in it
+    adapter, err := postgres.NewAdapterWithDB(db, postgres.WithSchema(schema))
+    require.NoError(t, err)
+    require.NoError(t, adapter.Initialize(ctx))
 
     // Run tests with isolated data...
 }
 ```
+
+`CreateSchema` names the schema `<prefix>_<UnixNano>`. The prefix must be a plain identifier
+(`^[A-Za-z_][A-Za-z0-9_]*$`) of at most 43 bytes (`containers.MaxSchemaPrefixBytes`), so the
+generated name always fits PostgreSQL's 63-byte identifier limit and the server can never
+silently truncate the uniqueness suffix away; anything else fails with
+`containers.ErrInvalidSchemaPrefix` before the database is contacted
+(`NewIntegrationTest(containers.WithSchemaPrefix(...))` fails the test the same way).
+`DropSchema` runs two checks, in this order, before any SQL is sent:
+
+1. **Identifier validation** — the name must be a plain identifier of at most 63 bytes
+   (`containers.MaxSchemaNameBytes`), which every `CreateSchema` result satisfies; anything
+   else fails with `containers.ErrInvalidSchemaName`. This stops a caller-supplied name from
+   escaping the quoted identifier (SQL injection) or being silently truncated by PostgreSQL
+   onto an existing 63-byte schema.
+2. **Ownership** — the name must have been returned by `CreateSchema` on the *same*
+   `PostgresContainer` instance; otherwise it fails with `containers.ErrSchemaNotOwned`. A
+   valid identifier says nothing about whose schema it is, so `public`, another test's
+   schema, or a schema created through a different `StartPostgres` handle are all refused
+   and left in place. Validation runs first, so a malformed name never yields
+   `ErrSchemaNotOwned`.
+
+Together the two rules mean a test can drop only the schemas its own container instance
+created. Ownership is recorded only after `CREATE SCHEMA` succeeds and lives for the
+lifetime of the instance — a drop does not forget it, so `DropSchema` stays idempotent
+(`DROP SCHEMA IF EXISTS … CASCADE`) and cleanup may run twice — and the set is guarded by a
+mutex, so one handle may be shared by parallel subtests. Keep the handle that created a
+schema to clean it up (`NewIntegrationTest` does). `DropSchemaUnsafe(ctx, db, name)` is the
+explicit escape hatch for a schema created elsewhere (another handle, a previous process
+that crashed before its cleanup ran, by hand): it applies the same identifier validation but
+no ownership check, confers no ownership, and will drop `public` if asked.
 
 ### Integration Test Fixture
 
@@ -754,9 +790,12 @@ assert.Len(t, events, 1)
 ### 3. Isolate Integration Tests
 
 ```go
-// Good: Use schema isolation
-schema := container.CreateSchema(ctx, t, "test_"+t.Name())
-defer container.DropSchema(ctx, t, schema)
+// Good: Use schema isolation (prefix: a plain identifier of at most 43 bytes —
+// CreateSchema appends the unique suffix, so don't build it from t.Name())
+schema, err := container.CreateSchema(ctx, db, "test_order")
+require.NoError(t, err)
+// Drop through the handle that created it: DropSchema refuses any other schema
+t.Cleanup(func() { _ = container.DropSchema(context.Background(), db, schema) })
 ```
 
 ### 4. Skip Slow Tests in Short Mode

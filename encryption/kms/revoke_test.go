@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
@@ -19,15 +20,49 @@ type mockKMSRevocationClient struct {
 	state     types.KeyState
 	scheduled int
 	notFound  bool // simulate a CMK whose deletion has completed (DescribeKey → NotFound)
+
+	// canonicalID is the KeyMetadata.KeyId DescribeKey reports, mirroring how AWS
+	// resolves an alias/ARN input to the bare key id. Empty echoes the input id.
+	canonicalID string
+	// scheduledIDs / windows record the KeyId and PendingWindowInDays of every
+	// ScheduleKeyDeletion call so tests can assert what the provider sent to AWS.
+	scheduledIDs []string
+	windows      []int32
+	// describeCall holds what the provider handed the most recent DescribeKey call
+	// (ctx threading), observed at call time; nil until DescribeKey has been called.
+	describeCall *ctxFacts
+	// describeFunc overrides DescribeKey when set (error injection, blocking, ...).
+	describeFunc func(ctx context.Context, params *kms.DescribeKeyInput) (*kms.DescribeKeyOutput, error)
 }
 
-func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, _ *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
+// ctxFacts is what a test double records about the context a call arrived with —
+// the facts the tests assert — instead of retaining the context itself.
+type ctxFacts struct {
+	hasDeadline bool
+	deadline    time.Time
+	traceID     interface{} // the ctxKey{} value threaded by the caller, if any
+}
+
+func observeCtx(ctx context.Context) *ctxFacts {
+	dl, ok := ctx.Deadline()
+	return &ctxFacts{hasDeadline: ok, deadline: dl, traceID: ctx.Value(ctxKey{})}
+}
+
+func (m *mockKMSRevocationClient) ScheduleKeyDeletion(_ context.Context, params *kms.ScheduleKeyDeletionInput, _ ...func(*kms.Options)) (*kms.ScheduleKeyDeletionOutput, error) {
 	m.scheduled++
+	m.scheduledIDs = append(m.scheduledIDs, derefString(params.KeyId))
+	if params.PendingWindowInDays != nil {
+		m.windows = append(m.windows, *params.PendingWindowInDays)
+	}
 	m.state = types.KeyStatePendingDeletion
 	return &kms.ScheduleKeyDeletionOutput{}, nil
 }
 
-func (m *mockKMSRevocationClient) DescribeKey(_ context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
+func (m *mockKMSRevocationClient) DescribeKey(ctx context.Context, params *kms.DescribeKeyInput, _ ...func(*kms.Options)) (*kms.DescribeKeyOutput, error) {
+	m.describeCall = observeCtx(ctx)
+	if m.describeFunc != nil {
+		return m.describeFunc(ctx, params)
+	}
 	if m.notFound {
 		return nil, &types.NotFoundException{}
 	}
@@ -35,7 +70,19 @@ func (m *mockKMSRevocationClient) DescribeKey(_ context.Context, params *kms.Des
 	if st == "" {
 		st = types.KeyStateEnabled
 	}
-	return &kms.DescribeKeyOutput{KeyMetadata: &types.KeyMetadata{KeyId: params.KeyId, KeyState: st}}, nil
+	id := params.KeyId
+	if m.canonicalID != "" {
+		canonical := m.canonicalID
+		id = &canonical
+	}
+	return &kms.DescribeKeyOutput{KeyMetadata: &types.KeyMetadata{KeyId: id, KeyState: st}}, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // A key pending deletion (or disabled) is unusable for crypto operations — mirror AWS

@@ -4,6 +4,7 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
 	"go-mink.dev/adapters"
 )
 
@@ -27,6 +29,13 @@ type writerFactory func(topic string) kafkaWriter
 
 // Publisher publishes outbox messages to Kafka topics.
 // Destination format: "kafka:topic-name"
+//
+// Security default: with no WithTransport / WithTLS / WithSASL option the
+// publisher uses the kafka-go default transport, which connects to the
+// brokers over PLAINTEXT without authentication. Any network observer can
+// read the event payloads and any client can write to the topics. For
+// production use configure WithTLS (encryption + broker authentication) and,
+// where the cluster requires it, WithSASL (client authentication).
 type Publisher struct {
 	brokers      []string
 	balancer     kafkago.Balancer
@@ -64,7 +73,70 @@ func WithBatchTimeout(d time.Duration) Option {
 	}
 }
 
+// WithTransport sets the kafka-go Transport shared by every writer this
+// publisher creates — connection pooling, dial/idle timeouts, client id,
+// TLS, SASL, and so on. Passing nil restores the kafka-go default transport
+// (plaintext, unauthenticated).
+//
+// It replaces whatever transport was configured so far, including TLS/SASL
+// settings applied by an earlier WithTLS/WithSASL. To layer TLS or SASL onto
+// a custom transport, apply WithTransport first and WithTLS/WithSASL after it.
+func WithTransport(t *kafkago.Transport) Option {
+	return func(p *Publisher) {
+		if t == nil {
+			// Store an untyped nil so kafka-go falls back to its default
+			// transport instead of calling methods on a nil *Transport.
+			p.transport = nil
+			return
+		}
+		p.transport = t
+	}
+}
+
+// WithTLS enables TLS for every broker connection using the given
+// configuration (server-certificate verification, client certificates for
+// mTLS, minimum version, ...). A nil config disables TLS again.
+//
+// The setting is applied to the publisher's transport, creating a transport
+// when none has been configured yet; combine it with WithSASL for an
+// encrypted and authenticated connection. Without this option the publisher
+// talks PLAINTEXT to the brokers.
+func WithTLS(cfg *tls.Config) Option {
+	return func(p *Publisher) {
+		p.ownedTransport().TLS = cfg
+	}
+}
+
+// WithSASL enables SASL client authentication for every broker connection
+// using the given mechanism — for example plain.Mechanism{...} from
+// github.com/segmentio/kafka-go/sasl/plain, or scram.Mechanism(...) from
+// .../sasl/scram. A nil mechanism disables SASL again.
+//
+// SASL/PLAIN sends the credentials in the clear during the handshake, so
+// always pair it with WithTLS. The setting is applied to the publisher's
+// transport, creating a transport when none has been configured yet. Without
+// this option the publisher connects to the brokers unauthenticated.
+func WithSASL(m sasl.Mechanism) Option {
+	return func(p *Publisher) {
+		p.ownedTransport().SASL = m
+	}
+}
+
+// ownedTransport returns the *kafkago.Transport the publisher's writers use,
+// creating one when no concrete transport has been configured yet.
+func (p *Publisher) ownedTransport() *kafkago.Transport {
+	if t, ok := p.transport.(*kafkago.Transport); ok && t != nil {
+		return t
+	}
+	t := &kafkago.Transport{}
+	p.transport = t
+	return t
+}
+
 // New creates a new Kafka Publisher.
+//
+// By default it connects to localhost:9092 over plaintext without
+// authentication; see WithTLS and WithSASL to secure the connection.
 func New(opts ...Option) *Publisher {
 	p := &Publisher{
 		brokers:      []string{"localhost:9092"},

@@ -53,11 +53,15 @@ func TestE2E_Retention_ShredAndDryRunOnPG(t *testing.T) {
 		{Name: "people", StreamPrefix: "person-", Action: mink.ActionShred},
 	})
 
-	// Dry-run reports matches but changes nothing.
+	// Dry-run reports matches and previews the blast radius — both person streams are
+	// under "k" and both match, so the key is exclusive to the policy — but changes nothing.
 	dry, err := mgr.DryRun(p.Ctx)
 	require.NoError(t, err)
 	assert.True(t, dry.DryRun)
 	assert.GreaterOrEqual(t, dry.Matched, 2)
+	assert.Equal(t, []string{"k"}, dry.KeysToRevoke, "the preview names the key Apply would revoke")
+	assert.Empty(t, dry.SharedKeysSkipped, "every event under the key is in scope")
+	assert.False(t, dry.Failed(), "%v", dry.Errors)
 	revoked, err := provider.IsRevoked("k")
 	require.NoError(t, err)
 	assert.False(t, revoked, "dry-run must not revoke the key")
@@ -109,4 +113,33 @@ func TestE2E_Retention_RedactActionAndAnonymizer(t *testing.T) {
 	assert.Equal(t, p1, p2, "same (scope,value) -> same pseudonym")
 	assert.NotContains(t, p1, "alice", "the original value is not recoverable from the pseudonym")
 	assert.NotEqual(t, a.Pseudonymize("name", "x"), a.Pseudonymize("email", "x"), "scope separates pseudonyms")
+}
+
+// TestE2E_Retention_SharedKeyGuardOnPG: over a real PG log, a Shred policy scoped to one
+// category whose single key also protects another category is refused by the blast-radius
+// guard (key listed, report failed, nothing revoked), while WithAllowSharedKeyRevocation
+// knowingly shreds it.
+func TestE2E_Retention_SharedKeyGuardOnPG(t *testing.T) {
+	p, provider := newRetentionStore(t)
+	require.NoError(t, p.Store.Append(p.Ctx, "person-x", []interface{}{e2ePerson{PersonID: "x", Email: "x@example.com"}}))
+	require.NoError(t, p.Store.Append(p.Ctx, "staff-s", []interface{}{e2ePerson{PersonID: "s", Email: "s@example.com"}}))
+
+	policies := []mink.RetentionPolicy{{Name: "people", Category: "person", Action: mink.ActionShred}}
+
+	guarded, err := mink.NewRetentionManager(p.Store, policies).Apply(p.Ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k"}, guarded.SharedKeysSkipped)
+	assert.Empty(t, guarded.KeysRevoked)
+	assert.True(t, guarded.Failed())
+	revoked, err := provider.IsRevoked("k")
+	require.NoError(t, err)
+	assert.False(t, revoked, "the guard must not revoke a key shared with the staff stream")
+
+	allowed, err := mink.NewRetentionManager(p.Store, policies, mink.WithAllowSharedKeyRevocation()).Apply(p.Ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k"}, allowed.KeysRevoked)
+	assert.False(t, allowed.Failed(), "%v", allowed.Errors)
+	revoked, err = provider.IsRevoked("k")
+	require.NoError(t, err)
+	assert.True(t, revoked)
 }

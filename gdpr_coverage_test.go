@@ -78,10 +78,17 @@ func TestRetention_CategoryAndEventTypeMatchers(t *testing.T) {
 	assert.Equal(t, 0, rep2.Matched)
 }
 
-func TestDedupeStrings(t *testing.T) {
-	assert.Equal(t, []string{"a", "b"}, dedupeStrings([]string{"a", "b", "a", "b", "a"}))
-	assert.Equal(t, []string{"x"}, dedupeStrings([]string{"x"}))
-	assert.Empty(t, dedupeStrings(nil))
+func TestCleanSubjects(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"}, cleanSubjects([]string{"a", "b", "a", "b", "a"}))
+	assert.Equal(t, []string{"x"}, cleanSubjects([]string{"", "x", ""}), "empty ids are dropped")
+	assert.Nil(t, cleanSubjects([]string{"", ""}), "only empty ids is no subject")
+	assert.Nil(t, cleanSubjects(nil))
+
+	// A fresh slice: the tagger's own buffer is never retained or aliased.
+	in := []string{"x"}
+	out := cleanSubjects(in)
+	out[0] = "mutated"
+	assert.Equal(t, "x", in[0])
 }
 
 func TestExportStream_AutoResolvesSubject(t *testing.T) {
@@ -133,15 +140,15 @@ func TestExport_SharedStreamDoesNotLeakOtherSubjects(t *testing.T) {
 	res, err := exporter.Export(ctx, ExportRequest{SubjectID: "u1"})
 	require.NoError(t, err)
 	require.Equal(t, 1, res.TotalEvents, "shared stream must not leak the co-tenant's event")
-	assert.Contains(t, string(res.Events[0].RawData), "u1")
-	assert.NotContains(t, string(res.Events[0].RawData), "u2")
+	assert.Contains(t, string(res.Events[0].RawData), `"u1"`)
+	assert.NotContains(t, string(res.Events[0].RawData), `"u2"`)
 
 	// ExportStream must apply the same subject filter.
 	var streamed int
 	err = exporter.ExportStream(ctx, ExportRequest{SubjectID: "u1"}, func(_ context.Context, ev ExportedEvent) error {
 		streamed++
-		assert.Contains(t, string(ev.RawData), "u1", "ExportStream must not leak the co-tenant's event")
-		assert.NotContains(t, string(ev.RawData), "u2")
+		assert.Contains(t, string(ev.RawData), `"u1"`, "ExportStream must not leak the co-tenant's event")
+		assert.NotContains(t, string(ev.RawData), `"u2"`)
 		return nil
 	})
 	require.NoError(t, err)
@@ -154,6 +161,10 @@ func TestErasureErrorStrings(t *testing.T) {
 	ske := &SharedKeyError{SubjectID: "u1", SharedKeys: []string{"tenant-A"}, OtherSubjects: []string{"u2"}}
 	msg := ske.Error()
 	assert.Contains(t, msg, "u1") // the target subject
-	assert.Contains(t, msg, "u2") // a co-tenant subject sharing the key
+	assert.NotContains(t, msg, "tenant-A", "key ids are not printed: under a per-subject key resolver they embed subject ids")
+	assert.Contains(t, msg, "1 key(s) shared with 1 other subject(s)")
+	assert.Equal(t, []string{"tenant-A"}, ske.SharedKeys, "the key ids stay available for programmatic use")
+	assert.NotContains(t, msg, "u2", "a co-tenant's identifier must never appear in a loggable error message")
+	assert.Equal(t, []string{"u2"}, ske.OtherSubjects, "the sample stays available for programmatic use")
 	assert.ErrorIs(t, ske, ErrSharedKeyRevocation)
 }

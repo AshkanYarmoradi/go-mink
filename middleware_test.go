@@ -113,7 +113,8 @@ func TestRecoveryMiddleware(t *testing.T) {
 		var panicErr *PanicError
 		require.ErrorAs(t, err, &panicErr)
 		assert.Equal(t, "TestCommand", panicErr.CommandType)
-		assert.Equal(t, "something went wrong", panicErr.Value)
+		assert.Equal(t, "redacted panic value of type string", panicErr.Value,
+			"by default Value holds PanicValueSummary, not the raw panic value")
 		assert.NotEmpty(t, panicErr.Stack)
 	})
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 )
 
@@ -48,9 +49,21 @@ type BinaryFormatReporter interface {
 
 // EventRegistry maps event type names to Go types.
 // It is used by the JSONSerializer to deserialize events to the correct type.
+//
+// A name binds to exactly one Go type: the FIRST registration for a name wins, and
+// a later Register / RegisterAll of a DIFFERENT Go type under the same name is
+// rejected and recorded (see Conflicts) instead of silently replacing the mapping —
+// which would make every stored event of that name deserialize into the wrong
+// struct. Re-registering the same Go type under the same name is an idempotent
+// no-op.
 type EventRegistry struct {
 	mu    sync.RWMutex
 	types map[string]reflect.Type
+
+	// conflicts holds the event type names for which a registration of a different
+	// Go type was rejected. It is nil until the first conflict, so a conflict-free
+	// registry pays nothing for the bookkeeping.
+	conflicts map[string]struct{}
 }
 
 // NewEventRegistry creates a new empty EventRegistry.
@@ -62,31 +75,76 @@ func NewEventRegistry() *EventRegistry {
 
 // Register adds a mapping from eventType to the Go type of the example.
 // The example should be a value (not a pointer) of the event type.
+//
+// If eventType is already bound to a different Go type, the existing binding is
+// kept and the conflict is recorded; see Conflicts.
 func (r *EventRegistry) Register(eventType string, example interface{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	t := reflect.TypeOf(example)
-	// If a pointer was passed, get the element type
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	r.types[eventType] = t
+	r.register(eventType, indirectEventType(reflect.TypeOf(example)))
 }
 
 // RegisterAll registers multiple events using their struct names as type names.
 // Each example should be a value (not a pointer) of the event type.
+//
+// Two distinct Go types sharing a struct name (e.g. the same name in two packages)
+// collide on the derived name: the first wins and the conflict is recorded; see
+// Conflicts. Use Register with an explicit, distinct name for the second one.
 func (r *EventRegistry) RegisterAll(examples ...interface{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for _, example := range examples {
-		t := reflect.TypeOf(example)
-		if t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-		r.types[t.Name()] = t
+		t := indirectEventType(reflect.TypeOf(example))
+		r.register(t.Name(), t)
 	}
+}
+
+// register binds eventType to t unless the name is already bound to a different
+// type, in which case the first binding is kept and the conflict recorded. The
+// caller must hold r.mu for writing.
+func (r *EventRegistry) register(eventType string, t reflect.Type) {
+	if existing, ok := r.types[eventType]; ok {
+		if existing != t {
+			if r.conflicts == nil {
+				r.conflicts = make(map[string]struct{})
+			}
+			r.conflicts[eventType] = struct{}{}
+		}
+		return
+	}
+	r.types[eventType] = t
+}
+
+// indirectEventType returns the element type when t is a pointer type, else t.
+func indirectEventType(t reflect.Type) reflect.Type {
+	if t.Kind() == reflect.Pointer {
+		return t.Elem()
+	}
+	return t
+}
+
+// Conflicts returns, sorted, the event type names for which a Register /
+// RegisterAll call attempted to bind a different Go type than the one already
+// registered. Each such attempt was rejected — the first registration always wins
+// and Lookup keeps returning it — so a non-empty result signals a configuration
+// bug worth failing startup on: two Go types claim the same event name, and events
+// of that name would deserialize into whichever happened to register first. It
+// returns nil when no conflict has occurred.
+func (r *EventRegistry) Conflicts() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(r.conflicts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.conflicts))
+	for name := range r.conflicts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Lookup returns the Go type for the given event type name.
@@ -140,12 +198,15 @@ func NewJSONSerializerWithRegistry(registry *EventRegistry) *JSONSerializer {
 	}
 }
 
-// Register adds an event type to the serializer's registry.
+// Register adds an event type to the serializer's registry. A name already bound to a
+// different Go type is NOT overwritten: the first registration wins and the conflict is
+// recorded — see EventRegistry.Conflicts (reachable via Registry()).
 func (s *JSONSerializer) Register(eventType string, example interface{}) {
 	s.registry.Register(eventType, example)
 }
 
 // RegisterAll registers multiple events using their struct names as type names.
+// Conflicting registrations follow the same first-wins rule as Register.
 func (s *JSONSerializer) RegisterAll(examples ...interface{}) {
 	s.registry.RegisterAll(examples...)
 }

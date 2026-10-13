@@ -13,10 +13,12 @@ import (
 var (
 	_ mink.SubjectIndexAdapter = (*SubjectIndex)(nil)
 	_ mink.SubjectIndexWriter  = (*SubjectIndex)(nil)
+	_ mink.SubjectIndexPurger  = (*SubjectIndex)(nil)
 )
 
-// SubjectIndex is a PostgreSQL-backed subject index implementing both the read
-// (mink.SubjectIndexAdapter) and write (mink.SubjectIndexWriter) sides. It records which
+// SubjectIndex is a PostgreSQL-backed subject index implementing the read
+// (mink.SubjectIndexAdapter), write (mink.SubjectIndexWriter) and purge
+// (mink.SubjectIndexPurger, for mink.WithSubjectIndexPurge) sides. It records which
 // streams touch each data subject in a mink_subject_index table so a SubjectResolver can
 // resolve a subject's footprint in O(the subject's streams) instead of scanning the whole
 // event store. Populate it at append time (mink.WithSubjectIndexWriter) and/or backfill
@@ -140,4 +142,19 @@ func (s *SubjectIndex) StreamsBySubject(ctx context.Context, subjectID string) (
 		streams = append(streams, sid)
 	}
 	return streams, rows.Err()
+}
+
+// DeleteSubject removes every entry recorded for subjectID. Idempotent: an unknown
+// (or empty) subject is a no-op. Implements mink.SubjectIndexPurger, so a
+// mink.DataEraser configured with mink.WithSubjectIndexPurge can drop the erased
+// subject's entries at the end of a verified erasure.
+func (s *SubjectIndex) DeleteSubject(ctx context.Context, subjectID string) error {
+	if subjectID == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM `+s.fullTableName()+` WHERE subject_id = $1`, subjectID); err != nil {
+		return fmt.Errorf("mink/postgres/subjectindex: failed to delete subject %q: %w", subjectID, err)
+	}
+	return nil
 }

@@ -903,6 +903,164 @@ type SubjectIdempotencyPurger interface {
 	DeleteIdempotencyBySubject(ctx context.Context, subjectID string) (int64, error)
 }
 
+// Footprint-aware subject purgers and counters.
+//
+// The id-equality purgers above (SubjectSagaPurger, SubjectOutboxPurger,
+// SubjectIdempotencyPurger, SubjectAuditPurger) match a single column against the
+// bare subject id. That is correct only when an application keys its rows by the
+// subject id itself. The library-produced rows are NOT keyed that way: the outbox's
+// AggregateID column holds the producing STREAM id (e.g. "User-u1", never "u1"), the
+// idempotency and audit AggregateID columns hold the aggregate/stream id the command
+// targeted, and a saga's CorrelationID is whatever the saga's correlation function
+// derived. A purge keyed on the bare subject id therefore silently misses every one
+// of those rows.
+//
+// The footprint-aware interfaces below take an id set derived from the subject's
+// RESOLVED footprint — the streams a SubjectResolver found for the subject — so the
+// purge reaches the rows the library actually wrote. The id set mink.DataEraser
+// (through the built-in mink.New*SubjectEraser erasers) passes to every method below
+// is exactly:
+//   - the subject id itself, so rows an application keyed by the bare subject id are
+//     still reached;
+//   - every EXCLUSIVE footprint stream id — a stream whose subject-tagged events all
+//     belong to this subject. A stream the subject SHARES with other subjects (one
+//     that also carries another subject's tags) is skipped: its rows are neither
+//     purged nor counted, because they may belong to someone else;
+//   - the aggregate id derived from each exclusive stream (the text after the FIRST
+//     '-' of a "Type-id" stream id, e.g. "User-u1" → "u1") ONLY when the eraser is
+//     configured with mink.WithDerivedAggregateIDs; by default no derived ids are
+//     passed, because an aggregate id is not necessarily unique across aggregate
+//     types.
+//
+// For the saga purger/counter the same id set is passed as the candidate correlation
+// ids. The matching counters receive the identical set during verification, so
+// mink.DataEraser.Verify proves nothing attributable to that set remains.
+//
+// Common contract for every method taking an id slice:
+//   - an empty (or all-empty-string) slice returns (0, nil) WITHOUT touching the
+//     store, so a subject with no footprint is a cheap no-op;
+//   - ids are matched EXACTLY (no prefix/LIKE semantics) and are de-duplicated by
+//     the store before use, so a repeated id never double-counts;
+//   - the returned count is the number of rows removed (or matched, for counters).
+//
+// Stores MAY implement them; the mink erasers detect support and skip (rather than
+// fail) when absent.
+
+// SubjectOutboxFootprintPurger is an OPTIONAL OutboxStore extension that deletes
+// outbox messages whose AggregateID is any of aggregateIDs. The outbox's AggregateID
+// column holds the producing STREAM id (the stream the event was appended to), so the
+// mink eraser passes the footprint id set described above (the subject id plus the
+// subject's EXCLUSIVE footprint streams; derived aggregate ids only with
+// mink.WithDerivedAggregateIDs) here — the bare subject id alone, as used by
+// SubjectOutboxPurger, never matches a library-produced row.
+type SubjectOutboxFootprintPurger interface {
+	// DeleteOutboxByAggregateIDs removes outbox messages whose AggregateID equals any
+	// of aggregateIDs (exact match, de-duplicated) and returns the count removed. An
+	// empty slice returns (0, nil) without touching the store.
+	DeleteOutboxByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+
+// SubjectAuditFootprintPurger is an OPTIONAL AuditStore extension that deletes audit
+// entries whose AggregateID is any of aggregateIDs. The audit AggregateID is the
+// aggregate/stream id the audited command targeted (a STREAM id such as "User-u1"),
+// so the mink eraser passes the footprint id set described above (subject id plus
+// EXCLUSIVE footprint streams; derived aggregate ids only with
+// mink.WithDerivedAggregateIDs) here; it uses SubjectAuditPurger separately for rows
+// whose Actor is the subject itself.
+type SubjectAuditFootprintPurger interface {
+	// DeleteAuditByAggregateIDs removes audit entries whose AggregateID equals any of
+	// aggregateIDs (exact match, de-duplicated) and returns the count removed. An
+	// empty slice returns (0, nil) without touching the store.
+	DeleteAuditByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+
+// SubjectIdempotencyFootprintPurger is an OPTIONAL IdempotencyStore extension that
+// deletes idempotency records whose AggregateID is any of aggregateIDs. The record's
+// AggregateID is the aggregate/stream id the command affected (a STREAM id), so the
+// mink eraser passes the footprint id set described above (subject id plus EXCLUSIVE
+// footprint streams; derived aggregate ids only with mink.WithDerivedAggregateIDs)
+// here.
+type SubjectIdempotencyFootprintPurger interface {
+	// DeleteIdempotencyByAggregateIDs removes idempotency records whose AggregateID
+	// equals any of aggregateIDs (exact match, de-duplicated) and returns the count
+	// removed. An empty slice returns (0, nil) without touching the store.
+	DeleteIdempotencyByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+
+// SubjectSagaFootprintPurger is an OPTIONAL SagaStore extension that deletes saga
+// states whose CorrelationID is any of correlationIDs. A saga's correlation id is
+// derived by the saga's correlation function — frequently the subject's stream or
+// aggregate id rather than the bare subject id — so the mink eraser passes the
+// footprint id set described above as the candidate correlation ids: the subject id,
+// the subject's EXCLUSIVE footprint streams and, only with
+// mink.WithDerivedAggregateIDs, their derived aggregate ids. Shared streams are never
+// passed.
+type SubjectSagaFootprintPurger interface {
+	// DeleteSagasByCorrelationIDs removes saga states whose CorrelationID equals any
+	// of correlationIDs (exact match, de-duplicated) and returns the count removed.
+	// An empty slice returns (0, nil) without touching the store.
+	DeleteSagasByCorrelationIDs(ctx context.Context, correlationIDs []string) (int64, error)
+}
+
+// SubjectOutboxCounter is an OPTIONAL OutboxStore extension that counts outbox
+// messages whose AggregateID is any of aggregateIDs (the producing STREAM ids). The
+// mink eraser's verification step passes the same footprint id set the purge
+// received (see above) to prove no outbox row for it remains after a purge.
+type SubjectOutboxCounter interface {
+	// CountOutboxByAggregateIDs returns the number of outbox messages whose
+	// AggregateID equals any of aggregateIDs (exact match, de-duplicated). An empty
+	// slice returns (0, nil) without touching the store.
+	CountOutboxByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+
+// SubjectAuditCounter is an OPTIONAL AuditStore extension that counts the audit
+// entries attributable to a subject: rows whose Actor equals subjectID OR whose
+// AggregateID equals any of aggregateIDs (the same footprint id set the purge
+// received, see above). The mink eraser's verification step uses it to prove the
+// audit trail holds nothing attributable to the subject after a purge.
+type SubjectAuditCounter interface {
+	// CountAuditBySubject returns the number of audit entries whose Actor equals
+	// subjectID or whose AggregateID equals any of aggregateIDs (exact match,
+	// de-duplicated). An empty subjectID disables the Actor predicate and an empty
+	// slice disables the AggregateID predicate; when both are empty it returns
+	// (0, nil) without touching the store.
+	CountAuditBySubject(ctx context.Context, subjectID string, aggregateIDs []string) (int64, error)
+}
+
+// SubjectIdempotencyCounter is an OPTIONAL IdempotencyStore extension that counts
+// idempotency records whose AggregateID is any of aggregateIDs (the same footprint
+// id set the purge received, see above), for the mink eraser's verification step.
+type SubjectIdempotencyCounter interface {
+	// CountIdempotencyByAggregateIDs returns the number of idempotency records whose
+	// AggregateID equals any of aggregateIDs (exact match, de-duplicated). An empty
+	// slice returns (0, nil) without touching the store.
+	CountIdempotencyByAggregateIDs(ctx context.Context, aggregateIDs []string) (int64, error)
+}
+
+// SubjectSagaCounter is an OPTIONAL SagaStore extension that counts saga states
+// whose CorrelationID is any of correlationIDs, for the mink eraser's verification
+// step (see SubjectSagaFootprintPurger for how the ids are derived).
+type SubjectSagaCounter interface {
+	// CountSagasByCorrelationIDs returns the number of saga states whose
+	// CorrelationID equals any of correlationIDs (exact match, de-duplicated). An
+	// empty slice returns (0, nil) without touching the store.
+	CountSagasByCorrelationIDs(ctx context.Context, correlationIDs []string) (int64, error)
+}
+
+// SagaCorrelationTypeFinder is an OPTIONAL SagaStore extension that finds a saga by
+// its correlation id AND its saga type. SagaStore.FindByCorrelationID is not scoped
+// by type, so when two saga types derive the same correlation id (e.g. both key on
+// the order id) a saga of type B can hydrate from — and then overwrite — type A's
+// row. Stores SHOULD implement this so a manager can resolve the row that belongs
+// to the saga type it is driving.
+type SagaCorrelationTypeFinder interface {
+	// FindByCorrelationIDAndType returns the most recently started saga whose
+	// CorrelationID equals correlationID AND whose Type equals sagaType (both exact
+	// matches). It returns an error satisfying errors.Is(err, ErrSagaNotFound) when
+	// no such saga exists.
+	FindByCorrelationIDAndType(ctx context.Context, correlationID, sagaType string) (*SagaState, error)
+}
+
 // OutboxStatus represents the current status of an outbox message.
 type OutboxStatus int
 
