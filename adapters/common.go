@@ -2,8 +2,10 @@
 package adapters
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Version constants for optimistic concurrency control.
@@ -122,8 +124,9 @@ func CheckVersion(streamID string, expected, current int64, exists bool) error {
 	}
 }
 
-// CopyIdempotencyRecord creates a deep copy of an IdempotencyRecord.
-// This is useful to avoid external mutations of stored records.
+// CopyIdempotencyRecord creates a deep copy of an IdempotencyRecord, including
+// its Response payload, so the copy never shares a buffer with the original.
+// This is used to isolate stored records from external mutation.
 func CopyIdempotencyRecord(record *IdempotencyRecord) *IdempotencyRecord {
 	if record == nil {
 		return nil
@@ -133,7 +136,7 @@ func CopyIdempotencyRecord(record *IdempotencyRecord) *IdempotencyRecord {
 		CommandType: record.CommandType,
 		AggregateID: record.AggregateID,
 		Version:     record.Version,
-		Response:    record.Response,
+		Response:    bytes.Clone(record.Response),
 		Success:     record.Success,
 		Error:       record.Error,
 		ProcessedAt: record.ProcessedAt,
@@ -165,4 +168,21 @@ func DefaultLimit(limit, defaultValue int) int {
 		return defaultValue
 	}
 	return limit
+}
+
+// SanitizeSQLComment makes a caller-supplied value (such as the mink.yaml project
+// name) safe to interpolate into generated SQL. It strips every control character
+// (CR, LF, TAB, NUL, DEL, ...) and the Unicode line/paragraph separators so the
+// value cannot terminate the `--` line comment it lands in and smuggle a statement
+// into the DDL, and it doubles single quotes so the value would also stay inert
+// inside a quoted SQL string literal. The visible text is otherwise preserved.
+// Both built-in adapters' GenerateSchema use it.
+func SanitizeSQLComment(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.ReplaceAll(s, "'", "''")
 }

@@ -41,15 +41,19 @@ func (r *e2ePeopleReadModel) wasRedacted(subjectID string) bool {
 	return contains(r.redacted, subjectID)
 }
 
-// newGDPRStore builds a PostgreSQL store with field encryption (per-subject keys or one shared
-// key), subject tagging, and a subject index — the setup a GDPR erasure needs.
-func newGDPRStore(t *testing.T, perSubjectKeys bool) (*e2ePG, *local.Provider, *mink.MemorySubjectIndex) {
-	t.Helper()
-	provider, err := local.New()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = provider.Close() })
+// e2eUserIDTagger tags each event with its UserID metadata as the data subject.
+func e2eUserIDTagger(_ string, _ []byte, md mink.Metadata) []string {
+	if md.UserID != "" {
+		return []string{md.UserID}
+	}
+	return nil
+}
 
-	encOpts := []mink.EncryptionOption{
+// e2eEncryptionOptions returns the field-encryption options every GDPR e2e store shares:
+// the provider, the encrypted e2ePerson.email field and a crypto-shredding decryption
+// handler (a revoked key delivers the event with its field left as stored).
+func e2eEncryptionOptions(provider *local.Provider) []mink.EncryptionOption {
+	return []mink.EncryptionOption{
 		mink.WithEncryptionProvider(provider),
 		mink.WithEncryptedFields("e2ePerson", "email"),
 		mink.WithDecryptionErrorHandler(func(err error, _ string, _ mink.Metadata) error {
@@ -59,6 +63,17 @@ func newGDPRStore(t *testing.T, perSubjectKeys bool) (*e2ePG, *local.Provider, *
 			return err
 		}),
 	}
+}
+
+// newGDPRStore builds a PostgreSQL store with field encryption (per-subject keys or one shared
+// key), subject tagging, and a subject index — the setup a GDPR erasure needs.
+func newGDPRStore(t *testing.T, perSubjectKeys bool) (*e2ePG, *local.Provider, *mink.MemorySubjectIndex) {
+	t.Helper()
+	provider, err := local.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Close() })
+
+	encOpts := e2eEncryptionOptions(provider)
 	if perSubjectKeys {
 		encOpts = append(encOpts, mink.WithSubjectKeyResolver(func(s string) string { return "key-" + s }))
 	} else {
@@ -67,23 +82,27 @@ func newGDPRStore(t *testing.T, perSubjectKeys bool) (*e2ePG, *local.Provider, *
 		require.NoError(t, provider.AddKey("shared-key", key))
 		encOpts = append(encOpts, mink.WithDefaultKeyID("shared-key"))
 	}
-
-	tagger := func(_ string, _ []byte, md mink.Metadata) []string {
-		if md.UserID != "" {
-			return []string{md.UserID}
-		}
-		return nil
-	}
 	idx := mink.NewMemorySubjectIndex()
 
 	p := newE2EPGBase(t)
 	p.Store = mink.New(p.Adapter,
 		mink.WithFieldEncryption(mink.NewFieldEncryptionConfig(encOpts...)),
-		mink.WithSubjectTagger(tagger),
+		mink.WithSubjectTagger(e2eUserIDTagger),
 		mink.WithSubjectIndexWriter(idx),
 	)
 	p.Store.RegisterEvents(e2ePerson{}, mink.ErasureMarker{})
 	return p, provider, idx
+}
+
+// newLegacyWriter builds a second store over p's adapter that encrypts e2ePerson under
+// keyID but has NO subject tagger and no index writer — the writer that produced history
+// before subject tagging was enabled. Events it appends carry no "$subjects" tag.
+func newLegacyWriter(t *testing.T, p *e2ePG, provider *local.Provider, keyID string) *mink.EventStore {
+	t.Helper()
+	opts := append(e2eEncryptionOptions(provider), mink.WithDefaultKeyID(keyID))
+	store := mink.New(p.Adapter, mink.WithFieldEncryption(mink.NewFieldEncryptionConfig(opts...)))
+	store.RegisterEvents(e2ePerson{})
+	return store
 }
 
 // addSubjectKey loads a fresh per-subject master key into the provider.
@@ -244,4 +263,76 @@ func TestE2E_GDPR_ExportOnPostgres(t *testing.T) {
 	assert.True(t, frankExport.Events[0].Redacted, "crypto-shredded event is redacted in the export")
 	assert.Nil(t, frankExport.Events[0].Data, "redacted event carries no decrypted data")
 	assert.Equal(t, 1, frankExport.RedactedCount)
+}
+
+// TestE2E_GDPR_DerivedAttributionOnPostgres: a historical, untagged event (written before
+// subject tagging was enabled: Metadata.UserID set, no "$subjects" tag) is attributed through
+// the tagger by ONE rule shared by the backfill, the resolver, the exporter, the eraser and
+// the certificate — so it is indexed, resolved, exported, shredded and attested like a tagged
+// event, against real PostgreSQL.
+func TestE2E_GDPR_DerivedAttributionOnPostgres(t *testing.T) {
+	p, provider, idx := newGDPRStore(t, true)
+	addSubjectKey(t, provider, "hank")
+	addSubjectKey(t, provider, "ivy")
+	appendPerson(t, p, "ivy", "ivy@example.com") // a tagged neighbour, indexed at append time
+
+	legacy := newLegacyWriter(t, p, provider, "key-hank")
+	require.NoError(t, legacy.Append(p.Ctx, "person-hank",
+		[]interface{}{e2ePerson{PersonID: "hank", Email: "hank@example.com"}},
+		mink.WithAppendMetadata(mink.Metadata{UserID: "hank"})))
+	raw, err := p.Store.LoadRaw(p.Ctx, "person-hank", 0)
+	require.NoError(t, err)
+	require.Len(t, raw, 1)
+	require.Empty(t, mink.GetSubjectTags(raw[0].Metadata), "precondition: the historical event carries no persisted tag")
+	require.True(t, mink.HasEncryptionEnvelope(raw[0].Metadata), "precondition: encrypted under key-hank")
+
+	// The append-time index writer never saw hank: the backfill attributes him through the
+	// tagger (over the DECRYPTED event) and reports a clean run.
+	rep, err := mink.BackfillSubjectIndexWithReport(p.Ctx, p.Store, e2eUserIDTagger, idx, 100)
+	require.NoError(t, err)
+	assert.Equal(t, mink.BackfillReport{Scanned: 2, Indexed: 2}, rep, "every event attributed: the index may be asserted authoritative")
+
+	// The resolver attributes the same way, so the derived-only event IS the footprint.
+	resolver := mink.NewSubjectResolver(p.Store, mink.WithResolverIndex(idx), mink.WithAuthoritativeIndex())
+	fp, err := resolver.Resolve(p.Ctx, "hank")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"person-hank"}, fp.Streams)
+	assert.Equal(t, 1, fp.EventCount)
+	assert.Equal(t, []string{"key-hank"}, fp.KeyIDs)
+	assert.Empty(t, fp.SharedStreams)
+	assert.False(t, fp.Partial)
+
+	// Export (Art. 15/20) includes the derived-only event, decrypted.
+	exp, err := mink.NewDataExporter(p.Store, mink.WithExportSubjectResolver(resolver)).
+		Export(p.Ctx, mink.ExportRequest{SubjectID: "hank"})
+	require.NoError(t, err)
+	require.Len(t, exp.Events, 1)
+	assert.False(t, exp.Partial)
+	b, _ := json.Marshal(exp.Events[0].Data)
+	assert.Contains(t, string(b), "hank@example.com")
+
+	// Erase (Art. 17): the key is discovered through the derived attribution and revoked; the
+	// certificate verifies the very event matched before the revoke.
+	var cert mink.ErasureCertificate
+	eraser := mink.NewDataEraser(p.Store,
+		mink.WithEraseSubjectResolver(resolver),
+		mink.WithCertificateSink(func(_ context.Context, c mink.ErasureCertificate) error { cert = c; return nil }),
+	)
+	res, err := eraser.Erase(p.Ctx, mink.ErasureRequest{SubjectID: "hank"})
+	require.NoError(t, err)
+	assert.False(t, res.Failed(), "erasure fully succeeded: %v", res.Errors)
+	assert.Equal(t, []string{"key-hank"}, res.KeysRevoked)
+	assert.Equal(t, 1, res.EventsScanned)
+	assert.Equal(t, 1, cert.EventsChecked, "the derived-only event is attested")
+	assert.True(t, cert.Verified, "%v", cert.Notes)
+	assert.NotEqual(t, "hank@example.com", loadedEmail(t, p, "hank"), "hank's PII is shredded")
+	assert.Equal(t, "ivy@example.com", loadedEmail(t, p, "ivy"), "the neighbour is unaffected")
+
+	// Post-shred the derived-only event can no longer be attributed: a standalone Verify is
+	// honestly Vacuous rather than a positive attestation built on nothing.
+	vr, err := eraser.Verify(p.Ctx, "hank")
+	require.NoError(t, err)
+	assert.True(t, vr.Vacuous)
+	assert.False(t, vr.Verified)
+	assert.Equal(t, 0, vr.EventsChecked)
 }

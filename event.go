@@ -121,6 +121,40 @@ func (m Metadata) WithCustom(key, value string) Metadata {
 	return m
 }
 
+// withoutCustomKeys returns m with the given Custom keys removed.
+//
+// It is copy-on-write: when none of the keys is present it returns m unchanged,
+// sharing the caller's map with no allocation (the common append path), and
+// otherwise it returns a fresh map without them. The caller's map is never
+// mutated. A map left empty by the removal becomes nil.
+func withoutCustomKeys(m Metadata, keys ...string) Metadata {
+	if len(m.Custom) == 0 {
+		return m
+	}
+	present := 0
+	for _, k := range keys {
+		if _, ok := m.Custom[k]; ok {
+			present++
+		}
+	}
+	if present == 0 {
+		return m
+	}
+	custom := make(map[string]string, len(m.Custom))
+	for k, v := range m.Custom {
+		custom[k] = v
+	}
+	for _, k := range keys {
+		delete(custom, k)
+	}
+	if len(custom) == 0 {
+		m.Custom = nil
+		return m
+	}
+	m.Custom = custom
+	return m
+}
+
 // IsEmpty reports whether the Metadata has no values set.
 func (m Metadata) IsEmpty() bool {
 	return m.CorrelationID == "" &&

@@ -1,0 +1,165 @@
+package mink
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUpcasterChain_Upcast_RecoversPanic(t *testing.T) {
+	chain := NewUpcasterChain()
+	require.NoError(t, chain.Register(newTestUpcaster("OrderCreated", 1, 2, func([]byte, Metadata) ([]byte, error) {
+		panic("index out of range in user upcaster")
+	})))
+	require.NoError(t, chain.Register(newNoopUpcaster("OrderCreated", 2, 3)))
+
+	payload := []byte(`{"secret":"SENSITIVE-PAYLOAD-VALUE"}`)
+
+	var (
+		out     []byte
+		version int
+		err     error
+	)
+	require.NotPanics(t, func() {
+		out, version, err = chain.Upcast("OrderCreated", 1, payload, Metadata{})
+	}, "a panicking upcaster must not unwind through Load/LoadAggregate")
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, 1, version, "the version reported is the one the failed transition started from")
+
+	// Same error contract as an upcaster that returns an error.
+	assert.ErrorIs(t, err, ErrUpcastFailed)
+	var ue *UpcastError
+	require.ErrorAs(t, err, &ue)
+	assert.Equal(t, "OrderCreated", ue.EventType)
+	assert.Equal(t, 1, ue.FromVersion)
+	assert.Equal(t, 2, ue.ToVersion)
+
+	// Descriptive (event type, versions, summary of the panic value) but never the
+	// payload — nor the raw panic value, which may be a message formatted from it.
+	assert.Contains(t, err.Error(), "panicked")
+	assert.Contains(t, err.Error(), "redacted panic value of type string")
+	assert.NotContains(t, err.Error(), "index out of range in user upcaster")
+	assert.Contains(t, err.Error(), `"OrderCreated"`)
+	assert.NotContains(t, err.Error(), "SENSITIVE-PAYLOAD-VALUE")
+}
+
+func TestUpcasterChain_Upcast_PanicAfterSuccessfulStep(t *testing.T) {
+	chain := NewUpcasterChain()
+	require.NoError(t, chain.Register(newTestUpcaster("OrderCreated", 1, 2, addJSONFieldUpcastFn("currency", "USD"))))
+	require.NoError(t, chain.Register(newTestUpcaster("OrderCreated", 2, 3, func([]byte, Metadata) ([]byte, error) {
+		panic("second step")
+	})))
+
+	out, version, err := chain.Upcast("OrderCreated", 1, []byte(`{"id":"o1"}`), Metadata{})
+	require.Error(t, err)
+	assert.Nil(t, out, "partially upcasted data is never returned alongside an error")
+	assert.Equal(t, 2, version)
+	var ue *UpcastError
+	require.ErrorAs(t, err, &ue)
+	assert.Equal(t, 2, ue.FromVersion)
+	assert.Equal(t, 3, ue.ToVersion)
+}
+
+func TestUpcastingSerializer_DeserializeWithVersion_PanickingUpcaster(t *testing.T) {
+	chain := NewUpcasterChain()
+	require.NoError(t, chain.Register(newTestUpcaster("OrderCreated", 1, 2, func([]byte, Metadata) ([]byte, error) {
+		panic("boom")
+	})))
+	inner := NewJSONSerializer()
+	inner.Register("OrderCreated", OrderCreated{})
+	s := NewUpcastingSerializer(inner, chain)
+
+	var err error
+	require.NotPanics(t, func() {
+		_, err = s.DeserializeWithVersion([]byte(`{"id":"o1"}`), "OrderCreated", 1, Metadata{})
+	})
+	assert.ErrorIs(t, err, ErrUpcastFailed)
+}
+
+// volatileUpcaster is a stateful upcaster whose identity accessors panic once its
+// Upcast has panicked — the shape a recovery path must survive without ever
+// calling back into the upcaster. Its accessors behave at registration time.
+type volatileUpcaster struct {
+	eventType string
+	from, to  int
+	poisoned  bool
+}
+
+func (u *volatileUpcaster) EventType() string { u.guard(); return u.eventType }
+func (u *volatileUpcaster) FromVersion() int  { u.guard(); return u.from }
+func (u *volatileUpcaster) ToVersion() int    { u.guard(); return u.to }
+func (u *volatileUpcaster) Upcast([]byte, Metadata) ([]byte, error) {
+	u.poisoned = true
+	panic("upcast exploded")
+}
+
+func (u *volatileUpcaster) guard() {
+	if u.poisoned {
+		panic("ACCESSOR-CALLED-AFTER-FAILED-UPCAST")
+	}
+}
+
+// TestUpcasterChain_Upcast_AccessorsPanicAfterFailedUpcast: the recovery
+// guarantee must not depend on the upcaster still answering EventType /
+// FromVersion / ToVersion after its Upcast panicked. The chain captures the
+// transition before calling Upcast and reports only those captured values.
+func TestUpcasterChain_Upcast_AccessorsPanicAfterFailedUpcast(t *testing.T) {
+	chain := NewUpcasterChain()
+	u := &volatileUpcaster{eventType: "OrderCreated", from: 1, to: 2}
+	require.NoError(t, chain.Register(u), "accessors work until Upcast has failed")
+	require.NoError(t, chain.Register(newNoopUpcaster("OrderCreated", 2, 3)))
+
+	var (
+		out     []byte
+		version int
+		err     error
+	)
+	require.NotPanics(t, func() {
+		out, version, err = chain.Upcast("OrderCreated", 1, []byte(`{"id":"o1"}`), Metadata{})
+	}, "a stateful upcaster whose accessors panic after a failed Upcast must not defeat the recovery")
+	require.True(t, u.poisoned, "Upcast ran and poisoned the accessors")
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, 1, version)
+
+	assert.ErrorIs(t, err, ErrUpcastFailed)
+	var ue *UpcastError
+	require.ErrorAs(t, err, &ue)
+	assert.Equal(t, "OrderCreated", ue.EventType, "identity comes from the values captured before Upcast")
+	assert.Equal(t, 1, ue.FromVersion)
+	assert.Equal(t, 2, ue.ToVersion)
+	assert.Contains(t, err.Error(), `upcaster for "OrderCreated" (version 1 -> 2) panicked`)
+	assert.Contains(t, err.Error(), "redacted panic value of type string")
+	assert.NotContains(t, err.Error(), "ACCESSOR-CALLED-AFTER-FAILED-UPCAST", "the recovery path never called back into the upcaster")
+	assert.NotContains(t, err.Error(), "upcast exploded", "the raw panic value is never echoed")
+}
+
+func TestSafeUpcast_AccessorsPanicAfterFailedUpcast(t *testing.T) {
+	u := &volatileUpcaster{eventType: "OrderCreated", from: 1, to: 2}
+	var (
+		out []byte
+		err error
+	)
+	require.NotPanics(t, func() {
+		out, err = safeUpcast(u, []byte(`{}`), Metadata{})
+	})
+	require.True(t, u.poisoned)
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Equal(t, `mink: upcaster for "OrderCreated" (version 1 -> 2) panicked: redacted panic value of type string`, err.Error())
+}
+
+func TestSafeUpcast_PassesThrough(t *testing.T) {
+	u := newTestUpcaster("OrderCreated", 1, 2, addJSONFieldUpcastFn("currency", "USD"))
+	out, err := safeUpcast(u, []byte(`{"id":"o1"}`), Metadata{})
+	require.NoError(t, err)
+	assertJSONField(t, out, "currency", "USD")
+
+	failing := newTestUpcaster("OrderCreated", 1, 2, func([]byte, Metadata) ([]byte, error) {
+		return nil, assert.AnError
+	})
+	_, err = safeUpcast(failing, []byte(`{}`), Metadata{})
+	assert.ErrorIs(t, err, assert.AnError, "an ordinary upcaster error is returned unchanged")
+}

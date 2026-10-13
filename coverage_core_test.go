@@ -22,11 +22,11 @@ func TestIsShutdownError(t *testing.T) {
 	assert.False(t, isShutdownError(nil))
 }
 
-// --- stripEncryptionMetadata (encryption.go) ---
+// --- SanitizeReservedMetadata (store.go) — the single envelope-stripping helper ---
 
 func TestStripEncryptionMetadata(t *testing.T) {
 	// nil Custom is returned unchanged.
-	out := stripEncryptionMetadata(Metadata{})
+	out := SanitizeReservedMetadata(Metadata{})
 	assert.Nil(t, out.Custom)
 
 	md := Metadata{Custom: map[string]string{
@@ -37,7 +37,7 @@ func TestStripEncryptionMetadata(t *testing.T) {
 		"$subjects":            `["u1"]`,
 		"tenant":               "t1",
 	}}
-	out = stripEncryptionMetadata(md)
+	out = SanitizeReservedMetadata(md)
 	assert.NotContains(t, out.Custom, encryptedFieldsKey)
 	assert.NotContains(t, out.Custom, encryptionKeyIDKey)
 	assert.NotContains(t, out.Custom, encryptedDEKKey)

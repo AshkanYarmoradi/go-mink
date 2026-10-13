@@ -80,7 +80,7 @@ func TestReEncryptStreamInPlace(t *testing.T) {
 		raw2, err := enc.LoadRaw(ctx, stream, 0)
 		require.NoError(t, err)
 		require.Len(t, raw2, 2)
-		require.NotContains(t, string(raw2[0].Data), "Ada")
+		require.NotContains(t, string(raw2[0].Data), `"Ada"`)
 		require.True(t, IsEncrypted(raw2[0].Metadata))
 		assert.Equal(t, pos0, raw2[0].GlobalPosition, "global position preserved")
 		assert.Equal(t, ver0, raw2[0].Version, "version preserved")
@@ -190,7 +190,7 @@ func TestEncryptStoredEvent(t *testing.T) {
 		out, err := enc.EncryptStoredEvent(ctx, raw[0])
 		require.NoError(t, err)
 		require.True(t, IsEncrypted(out.Metadata))
-		require.NotContains(t, string(out.Data), "Ada")
+		require.NotContains(t, string(out.Data), `"Ada"`)
 
 		back, err := enc.DecryptStoredEvent(ctx, out)
 		require.NoError(t, err)

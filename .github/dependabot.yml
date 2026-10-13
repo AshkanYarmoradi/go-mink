@@ -9,3 +9,19 @@ updates:
     directory: "/website"
     schedule:
       interval: "weekly"
+
+  # Keep the SHA-pinned third-party actions in .github/workflows fresh. Pinning to a
+  # full commit SHA (with a trailing "# vX.Y.Z" comment) is what makes the supply chain
+  # tamper-resistant; Dependabot bumps the SHA and the version comment together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Container image tags used by the test infrastructure in docker-compose.test.yml
+  # (PostgreSQL / Kafka). There is no Dockerfile in this repository, so no "docker"
+  # ecosystem entry is configured.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"

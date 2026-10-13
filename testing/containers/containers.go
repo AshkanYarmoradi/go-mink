@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,8 +35,33 @@ import (
 
 // Validation errors.
 var (
-	// ErrInvalidSchemaPrefix indicates the schema prefix contains invalid characters.
-	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must contain only alphanumeric characters and underscores")
+	// ErrInvalidSchemaPrefix indicates the schema prefix is not usable: it must be
+	// a plain identifier (letters, digits and underscores, not starting with a
+	// digit) of at most MaxSchemaPrefixBytes bytes, so that the complete
+	// "<prefix>_<UnixNano>" name CreateSchema builds from it fits PostgreSQL's
+	// 63-byte identifier limit. A longer prefix would make the server silently
+	// truncate the generated name (collapsing successive schemas onto one) and
+	// DropSchema would then refuse the untruncated name, leaking the schema.
+	ErrInvalidSchemaPrefix = errors.New("containers: schema prefix must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 43 bytes")
+
+	// ErrInvalidSchemaName indicates a schema name is not a plain PostgreSQL
+	// identifier: it must start with a letter or underscore, contain only ASCII
+	// letters, digits and underscores, and be at most MaxSchemaNameBytes (63)
+	// bytes — PostgreSQL silently truncates longer identifiers, so a 64-byte name
+	// would otherwise be dropped as whichever 63-byte schema shares its head.
+	// DropSchema and DropSchemaUnsafe return it (without touching the database)
+	// for any other value.
+	ErrInvalidSchemaName = errors.New("containers: schema name must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 bytes")
+
+	// ErrSchemaNotOwned indicates that DropSchema was handed a schema name this
+	// PostgresContainer instance did not create: a well-formed identifier is not
+	// enough, the name must have been returned by CreateSchema on the SAME
+	// instance (ownership is recorded per instance, not per process). "public",
+	// another test's schema, or a schema created through a different
+	// StartPostgres handle are all refused before the database is contacted, so
+	// a test can only ever drop its own schemas. DropSchemaUnsafe is the
+	// explicit opt-out for cleaning up a schema that was created elsewhere.
+	ErrSchemaNotOwned = errors.New("containers: schema was not created by this container instance; use DropSchemaUnsafe to drop a schema created elsewhere")
 
 	// ErrInvalidPort indicates the port is not valid.
 	ErrInvalidPort = errors.New("containers: port must be a valid number between 1 and 65535")
@@ -43,10 +70,40 @@ var (
 	ErrEmptyPassword = errors.New("containers: password cannot be empty")
 )
 
-// identifierRegex validates PostgreSQL identifiers (schema names, etc.)
+// identifierRegex validates PostgreSQL identifiers (schema names, prefixes):
+// an ASCII letter or underscore followed by ASCII letters, digits or
+// underscores. Both CreateSchema (prefix) and DropSchema (full name) enforce it
+// before the identifier is interpolated into DDL, so the quoting in
+// quoteIdentifier is defence in depth rather than the only barrier.
 var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+const (
+	// MaxSchemaNameBytes is the longest schema name DropSchema accepts: 63 bytes,
+	// PostgreSQL's identifier limit (NAMEDATALEN-1). The server does not reject a
+	// longer identifier, it silently truncates it, so without this bound a
+	// caller-supplied 64-byte name would be dropped as whichever existing schema
+	// shares its first 63 bytes. Longer names fail with ErrInvalidSchemaName.
+	MaxSchemaNameBytes = 63
+
+	// schemaSuffixBytes is the length of the "_<UnixNano>" suffix CreateSchema
+	// appends to a prefix: an underscore plus the 19 decimal digits a Unix
+	// nanosecond timestamp has from 2001 until int64 overflows in 2262.
+	schemaSuffixBytes = 1 + 19
+
+	// MaxSchemaPrefixBytes is the longest prefix CreateSchema (and therefore
+	// WithSchemaPrefix) accepts: 43 bytes, so that "<prefix>_<UnixNano>" always
+	// fits MaxSchemaNameBytes and DropSchema accepts every name CreateSchema
+	// returns. Longer prefixes fail with ErrInvalidSchemaPrefix.
+	MaxSchemaPrefixBytes = MaxSchemaNameBytes - schemaSuffixBytes
+)
+
 // PostgresContainer represents a PostgreSQL test container.
+//
+// Each instance remembers the schema names its CreateSchema has returned and
+// DropSchema will only drop those (see ErrSchemaNotOwned), so hold on to the
+// handle that created a schema to clean it up. The zero value is usable; the
+// ownership set is created lazily and guarded by a mutex, so one handle may be
+// shared by parallel subtests.
 type PostgresContainer struct {
 	Host     string
 	Port     string
@@ -54,6 +111,11 @@ type PostgresContainer struct {
 	User     string
 	Password string
 	connStr  string
+
+	// mu guards owned. owned holds every schema name CreateSchema has returned
+	// on this instance; DropSchema refuses any name that is not in it.
+	mu    sync.Mutex
+	owned map[string]struct{}
 }
 
 // PostgresOption configures a PostgreSQL container.
@@ -120,6 +182,18 @@ func getEnvOrDefault(key, defaultValue string) string {
 //   - POSTGRES_USER or TEST_POSTGRES_USER: Username (default: postgres)
 //   - POSTGRES_PASSWORD or TEST_POSTGRES_PASSWORD: Password (default: postgres)
 //   - POSTGRES_PORT or TEST_POSTGRES_PORT: Port (default: 5432)
+//
+// TEST-ONLY CREDENTIALS: with nothing set, these defaults assemble the DSN
+// postgres://postgres:postgres@localhost:5432/mink_test?sslmode=disable — the
+// throw-away database started by docker-compose.test.yml. The user/password
+// pair is deliberately well known and is meant solely for a disposable local
+// or CI instance; never reuse it for, or point this helper at, a shared or
+// production server. Redirect the helper with the per-field variables above
+// or with PostgresOption values. This package does NOT read TEST_DATABASE_URL
+// (a complete DSN): that variable is honoured by testutil.DefaultConfig and by
+// integration tests that read it directly, so when you override it you should
+// set the matching POSTGRES_* / TEST_POSTGRES_* variables as well to keep the
+// two helpers pointed at the same database.
 func defaultPostgresConfig() *postgresConfig {
 	return &postgresConfig{
 		image:    getEnvOrDefault("POSTGRES_IMAGE", "postgres:17"),
@@ -140,6 +214,12 @@ func defaultPostgresConfig() *postgresConfig {
 // If the instance is not reachable within the readiness timeout, the calling
 // test is skipped (t.Skip) rather than failed, so the suite still passes in
 // environments without the infrastructure.
+//
+// The built-in defaults (postgres/postgres on localhost:5432, database
+// mink_test, sslmode=disable) are test-only credentials for the disposable
+// docker-compose database; see defaultPostgresConfig for the environment
+// variables that override them. StartPostgres does not consult
+// TEST_DATABASE_URL — that full-DSN variable drives testutil.DefaultConfig.
 //
 // StartKafka (kafka.go) is the analogous helper for Kafka: it connects via
 // TEST_KAFKA_BROKERS and skips when it is unset/unreachable. Neither helper
@@ -208,7 +288,19 @@ func (c *PostgresContainer) MustDB(ctx context.Context) *sql.DB {
 	return db
 }
 
-// CreateSchema creates a unique test schema.
+// CreateSchema creates a unique test schema named "<prefix>_<UnixNano>".
+//
+// The prefix must be a plain identifier of at most MaxSchemaPrefixBytes (43)
+// bytes; anything else returns ErrInvalidSchemaPrefix before the database is
+// contacted. The bound guarantees the generated name never exceeds PostgreSQL's
+// 63-byte identifier limit, so the server cannot silently truncate the
+// uniqueness suffix away (which would make successive calls resolve to the same
+// schema) and DropSchema accepts every name this method returns.
+//
+// The returned name is recorded as owned by this instance (for the lifetime of
+// the instance, a successful drop does not forget it), which is what entitles a
+// later DropSchema on the same instance to drop it. A name is recorded only
+// after the CREATE SCHEMA statement succeeds.
 func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix string) (string, error) {
 	if err := validateSchemaPrefix(prefix); err != nil {
 		return "", err
@@ -218,13 +310,85 @@ func (c *PostgresContainer) CreateSchema(ctx context.Context, db *sql.DB, prefix
 	if err != nil {
 		return "", fmt.Errorf("containers: failed to create schema: %w", err)
 	}
+	c.recordSchema(schema)
 	return schema, nil
 }
 
-// DropSchema drops a test schema.
+// DropSchema drops a test schema (and everything in it, CASCADE) that this
+// PostgresContainer instance created.
+//
+// Two checks run before the database is contacted, in this order:
+//
+//  1. The schema name is interpolated into DDL, so it is validated: it must be
+//     a plain identifier matching ^[A-Za-z_][A-Za-z0-9_]*$ of at most
+//     MaxSchemaNameBytes (63) bytes — which every name returned by CreateSchema
+//     satisfies. Any other value (empty, leading digit, quotes, semicolons,
+//     whitespace, non-ASCII, or 64+ bytes) returns ErrInvalidSchemaName. The
+//     character rule stops a caller-supplied name from escaping the quoted
+//     identifier; the length rule stops PostgreSQL from silently truncating a
+//     longer name onto an existing 63-byte schema.
+//  2. The name must have been returned by CreateSchema on this same instance;
+//     otherwise ErrSchemaNotOwned is returned. A valid identifier alone proves
+//     nothing about whose schema it is — "public", a schema created by another
+//     test, or one created through a different StartPostgres handle are all
+//     refused — so a test can only ever drop the schemas it created.
+//
+// Together the two rules make it impossible to drop anything other than a
+// schema this instance created. Dropping an owned schema is idempotent (DROP
+// SCHEMA IF EXISTS), so cleanup may safely run more than once. To drop a
+// schema that was created elsewhere, opt in explicitly with DropSchemaUnsafe.
 func (c *PostgresContainer) DropSchema(ctx context.Context, db *sql.DB, schema string) error {
+	if err := validateSchemaName(schema); err != nil {
+		return err
+	}
+	if !c.ownsSchema(schema) {
+		return ErrSchemaNotOwned
+	}
+	return c.dropSchema(ctx, db, schema)
+}
+
+// DropSchemaUnsafe drops a schema (and everything in it, CASCADE) WITHOUT the
+// ownership check DropSchema applies, for the rare case of cleaning up a schema
+// that was created elsewhere — by another PostgresContainer instance, by a
+// previous process that crashed before its cleanup ran, or by hand.
+//
+// The identifier validation is unchanged: the name must be a plain identifier
+// of at most MaxSchemaNameBytes bytes or ErrInvalidSchemaName is returned
+// before the database is contacted. Everything else is the caller's
+// responsibility: nothing stops this method from dropping "public" or another
+// running test's schema, so prefer DropSchema with the handle that created the
+// schema whenever you have it.
+func (c *PostgresContainer) DropSchemaUnsafe(ctx context.Context, db *sql.DB, schema string) error {
+	if err := validateSchemaName(schema); err != nil {
+		return err
+	}
+	return c.dropSchema(ctx, db, schema)
+}
+
+// dropSchema executes the DROP SCHEMA statement. Callers must have validated
+// the name (validateSchemaName) first; quoteIdentifier is only defence in depth.
+func (c *PostgresContainer) dropSchema(ctx context.Context, db *sql.DB, schema string) error {
 	_, err := db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(schema)))
 	return err
+}
+
+// recordSchema marks schema as created by (and therefore droppable through)
+// this instance.
+func (c *PostgresContainer) recordSchema(schema string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.owned == nil {
+		c.owned = make(map[string]struct{})
+	}
+	c.owned[schema] = struct{}{}
+}
+
+// ownsSchema reports whether CreateSchema on this instance returned schema.
+func (c *PostgresContainer) ownsSchema(schema string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.owned[schema]
+	return ok
 }
 
 // waitForPostgres waits for PostgreSQL to be ready.
@@ -250,18 +414,34 @@ func waitForPostgres(ctx context.Context, connStr string) error {
 	}
 }
 
-// quoteIdentifier quotes a PostgreSQL identifier after validating it.
+// quoteIdentifier quotes a PostgreSQL identifier with double quotes, doubling
+// any embedded double quote (" -> "") so the value can never terminate the
+// quoted identifier early. Callers still validate the name against
+// identifierRegex first; the escaping here is a second, independent barrier.
 func quoteIdentifier(name string) string {
-	return `"` + name + `"`
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-// validateSchemaPrefix validates a schema prefix for use in test schema names.
+// validateSchemaPrefix validates a schema prefix for use in test schema names:
+// a non-empty identifier (identifierRegex) of at most MaxSchemaPrefixBytes
+// bytes, so that the "<prefix>_<UnixNano>" name built from it always passes
+// validateSchemaName. Returns ErrInvalidSchemaPrefix otherwise.
 func validateSchemaPrefix(prefix string) error {
-	if prefix == "" {
+	if prefix == "" || len(prefix) > MaxSchemaPrefixBytes || !identifierRegex.MatchString(prefix) {
 		return ErrInvalidSchemaPrefix
 	}
-	if !identifierRegex.MatchString(prefix) {
-		return ErrInvalidSchemaPrefix
+	return nil
+}
+
+// validateSchemaName validates a full schema name before it is interpolated
+// into DDL (see DropSchema). It accepts exactly the identifiers matched by
+// identifierRegex that are at most MaxSchemaNameBytes bytes long, and returns
+// ErrInvalidSchemaName for anything else. The length check matters because
+// PostgreSQL truncates, rather than rejects, longer identifiers: a 64-byte name
+// would otherwise address the existing schema that shares its first 63 bytes.
+func validateSchemaName(schema string) error {
+	if schema == "" || len(schema) > MaxSchemaNameBytes || !identifierRegex.MatchString(schema) {
+		return ErrInvalidSchemaName
 	}
 	return nil
 }
@@ -287,7 +467,9 @@ type integrationTestConfig struct {
 	timeout      time.Duration
 }
 
-// WithSchemaPrefix sets the schema prefix.
+// WithSchemaPrefix sets the schema prefix. It must satisfy CreateSchema's
+// rules (a plain identifier of at most MaxSchemaPrefixBytes bytes) or
+// NewIntegrationTest fails the test with ErrInvalidSchemaPrefix.
 func WithSchemaPrefix(prefix string) IntegrationTestOption {
 	return func(c *integrationTestConfig) {
 		c.schemaPrefix = prefix

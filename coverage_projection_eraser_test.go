@@ -138,8 +138,10 @@ func TestDecryptStoredEvents_Error(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestLoadEventsFromPosition_DecryptError covers the decrypt-error branch of the projection
-// engine's and the rebuilder's loadEventsFromPosition.
+// TestLoadEventsFromPosition_DecryptError covers the decrypt-error branch of the rebuilder's
+// loadEventsFromPosition, and pins that the engine's load is a RAW load: the async worker
+// decrypts per handled event so an undecryptable event reaches the poison path (see
+// TestProjectionEngine_Async_UndecryptableEvent_ReachesOnPoisonEvent).
 func TestLoadEventsFromPosition_DecryptError(t *testing.T) {
 	ctx := context.Background()
 	store, provider := covEncStore(t)
@@ -147,8 +149,10 @@ func TestLoadEventsFromPosition_DecryptError(t *testing.T) {
 	require.NoError(t, provider.RevokeKey("k")) // no handler -> decrypt is a hard error
 
 	engine := NewProjectionEngine(store)
-	_, err := engine.loadEventsFromPosition(ctx, 0, 10)
-	require.Error(t, err, "engine load surfaces the decrypt error")
+	events, err := engine.loadEventsFromPosition(ctx, 0, 10)
+	require.NoError(t, err, "engine load is a raw load; decryption is per handled event in processAsyncBatch")
+	require.Len(t, events, 1)
+	assert.True(t, IsEncrypted(events[0].Metadata), "events are returned as stored")
 
 	rb := NewProjectionRebuilder(store, newTestCheckpointStore())
 	_, err = rb.loadEventsFromPosition(ctx, 0, 10)

@@ -849,7 +849,7 @@ func (e *ProjectionEngine) ProcessInlineProjections(ctx context.Context, events 
 			}
 
 			start := time.Now()
-			err := projection.Apply(ctx, event)
+			err := e.applyInline(ctx, projection, event)
 			duration := time.Since(start)
 
 			if err != nil {
@@ -958,6 +958,36 @@ func (e *ProjectionEngine) NotifyLiveProjections(ctx context.Context, events []S
 // shouldHandleEvent checks if a projection should handle the given event type.
 func shouldHandleEvent(projection Projection, eventType string) bool {
 	return ShouldHandleEventType(projection.HandledEvents(), eventType)
+}
+
+// applyInline calls an inline projection's Apply, recovering from a panic in the
+// projection the same way the async (processAsyncBatch) and live (deliverLiveEvent)
+// paths do. Inline projections run synchronously inside the caller's append, so an
+// unrecovered panic would otherwise unwind through the event store into the
+// command handler. A panic is logged and converted into a *ProjectionError
+// (errors.Is(err, ErrProjectionFailed)) naming the projection, event type and
+// position — never the payload: the recovered value is reduced to
+// PanicValueSummary, so a projection that panics with the event or its data does
+// not copy it into the log or the error — and is then handled by
+// ProcessInlineProjections exactly like an Apply error: metrics are recorded and
+// the append's inline-projection step fails.
+func (e *ProjectionEngine) applyInline(ctx context.Context, projection InlineProjection, event StoredEvent) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			summary := PanicValueSummary(r)
+			e.logger.Error("Inline projection panicked",
+				"projection", projection.Name(),
+				"event_type", event.Type,
+				"stream_id", event.StreamID,
+				"global_position", event.GlobalPosition,
+				"panic", summary,
+			)
+			err = NewProjectionError(projection.Name(), event.Type, event.GlobalPosition,
+				fmt.Errorf("panic processing event %s (stream %s) at position %d: %s",
+					event.Type, event.StreamID, event.GlobalPosition, summary))
+		}
+	}()
+	return projection.Apply(ctx, event)
 }
 
 // anyInlineHandles reports whether any of the inline projections handles eventType. Used to
@@ -1452,11 +1482,14 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 // processAsyncBatch processes a batch of events for an async projection.
 func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncProjectionWorker) (retErr error) {
 	// Recover from panics in projection Apply/ApplyBatch handlers to prevent
-	// a panicking projection from killing the async worker goroutine.
+	// a panicking projection from killing the async worker goroutine. Only
+	// PanicValueSummary of the recovered value is logged and wrapped, so a
+	// projection that panics with the event or its data does not leak it.
 	var currentEvent *StoredEvent
 	var batchRange string
 	defer func() {
 		if r := recover(); r != nil {
+			summary := PanicValueSummary(r)
 			switch {
 			case currentEvent != nil:
 				e.logger.Error("Async projection panicked",
@@ -1464,24 +1497,24 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 					"event_type", currentEvent.Type,
 					"stream_id", currentEvent.StreamID,
 					"global_position", currentEvent.GlobalPosition,
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %v",
-					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, r)
+				retErr = fmt.Errorf("panic processing event %s (stream %s) at position %d: %s",
+					currentEvent.Type, currentEvent.StreamID, currentEvent.GlobalPosition, summary)
 			case batchRange != "":
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
 					"batch", batchRange,
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic processing batch %s in projection %s: %v",
-					batchRange, worker.projection.Name(), r)
+				retErr = fmt.Errorf("panic processing batch %s in projection %s: %s",
+					batchRange, worker.projection.Name(), summary)
 			default:
 				e.logger.Error("Async projection panicked",
 					"projection", worker.projection.Name(),
-					"panic", r,
+					"panic", summary,
 				)
-				retErr = fmt.Errorf("panic in projection %s: %v", worker.projection.Name(), r)
+				retErr = fmt.Errorf("panic in projection %s: %s", worker.projection.Name(), summary)
 			}
 		}
 	}()
@@ -1512,12 +1545,49 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		return nil
 	}
 
-	// Filter events that this projection handles
+	// Filter events that this projection handles, decrypting each handled event as it
+	// is selected (events the projection does not handle are never decrypted). Zero
+	// overhead when encryption is unconfigured: no per-event call is made at all.
+	//
+	// A handled event that cannot be decrypted (revoked key, missing key, tampered
+	// field) is a failure attributable to THAT event, so it must flow through the
+	// normal per-event retry / classification / poison path — where OnPoisonEvent can
+	// skip it — instead of failing the whole batch load, which would fault every async
+	// projection with no poison event to skip:
+	//   - when it is the first event of the batch it is recorded as the failed event
+	//     and the cycle fails with the decryption error (wrapped, so errors.Is on
+	//     ErrDecryptionFailed / ErrKeyRevoked still holds);
+	//   - otherwise the batch is cut just before it: the events before it are
+	//     processed and checkpointed as usual, and the next cycle starts on it and
+	//     takes the first branch.
 	var filteredEvents []StoredEvent
-	for _, event := range events {
-		if shouldHandleEvent(worker.projection, event.Type) {
-			filteredEvents = append(filteredEvents, event)
+	decrypt := e.store.EncryptionConfig() != nil
+	for i := range events {
+		event := events[i]
+		if !shouldHandleEvent(worker.projection, event.Type) {
+			continue
 		}
+		if decrypt {
+			decrypted, derr := e.store.DecryptStoredEvent(ctx, event)
+			if derr != nil {
+				if i == 0 {
+					worker.setFailedEvent(&events[0])
+					return fmt.Errorf("failed to decrypt event %s (stream %s) at position %d: %w",
+						event.Type, event.StreamID, event.GlobalPosition, derr)
+				}
+				e.logger.Debug("Async projection: deferring undecryptable event to its own cycle",
+					"projection", worker.projection.Name(),
+					"event_type", event.Type,
+					"stream_id", event.StreamID,
+					"global_position", event.GlobalPosition,
+					"error", derr,
+				)
+				events = events[:i]
+				break
+			}
+			event = decrypted
+		}
+		filteredEvents = append(filteredEvents, event)
 	}
 
 	if len(filteredEvents) == 0 {
@@ -1590,19 +1660,16 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 	return nil
 }
 
-// loadEventsFromPosition loads events starting from the given global position.
-// Returns ErrSubscriptionNotSupported if the adapter does not implement SubscriptionAdapter.
+// loadEventsFromPosition loads events, AS STORED, starting from the given global
+// position. Returns ErrSubscriptionNotSupported if the adapter does not implement
+// SubscriptionAdapter.
+//
+// Field-encrypted events are deliberately not decrypted here: processAsyncBatch
+// decrypts only the events the projection handles, one at a time, so that a single
+// undecryptable event is attributed to itself and handled by the per-event
+// retry / poison path rather than failing the whole batch load.
 func (e *ProjectionEngine) loadEventsFromPosition(ctx context.Context, fromPosition uint64, limit int) ([]StoredEvent, error) {
-	events, err := e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
-	if err != nil {
-		return nil, err
-	}
-	// Field encryption is transparent on read: decrypt each event's Data before it reaches a
-	// projection, matching Load/LoadAggregate/DataExporter, via the shared batch primitive so
-	// every pull surface decrypts identically. A hard (unhandled) decryption error surfaces
-	// here — the cycle does not advance the checkpoint, so it retries rather than skipping
-	// silently. No-op when encryption is unconfigured.
-	return e.store.decryptStoredEvents(ctx, events)
+	return e.store.LoadEventsFromPosition(ctx, fromPosition, limit)
 }
 
 // liveProjectionWorker manages a live projection's real-time processing.
@@ -1671,10 +1738,11 @@ func (e *ProjectionEngine) runLiveWorker(ctx context.Context, worker *liveProjec
 }
 
 // deliverLiveEvent calls a live projection's OnEvent, recovering from panics.
+// Only PanicValueSummary of the recovered value is logged, never the value itself.
 func (e *ProjectionEngine) deliverLiveEvent(ctx context.Context, worker *liveProjectionWorker, event StoredEvent) {
 	defer func() {
 		if r := recover(); r != nil {
-			e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", r)
+			e.logger.Error("Live projection panicked", "projection", worker.projection.Name(), "panic", PanicValueSummary(r))
 		}
 	}()
 	worker.projection.OnEvent(ctx, event)

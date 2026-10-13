@@ -8,7 +8,7 @@ Production event-sourcing systems need visibility into throughput, latency, and 
 - **Metrics instance** — `minkmetrics.New(...)` builds a `*Metrics` configured with `WithNamespace("mink_example")` and `WithMetricsServiceName("user-service")`, which prefix and label every metric.
 - **Prometheus registration** — `MustRegister()` registers the collectors with the default Prometheus registry so they can be gathered and scraped.
 - **Command middleware** — `CommandMiddleware()` returns a `mink.Middleware` you plug into a command bus to record per-command counts, statuses, and durations.
-- **Live scrape endpoint** — a background HTTP server serves `promhttp.Handler()` at `:9090/metrics` for Prometheus to poll.
+- **Live scrape endpoint, hardened** — `newMetricsServer` serves `promhttp.Handler()` at `http://127.0.0.1:9090/metrics`: bound to loopback only, on its own `http.ServeMux` (nothing else on `http.DefaultServeMux` is exposed), with `ReadHeaderTimeout` / `ReadTimeout` / `WriteTimeout` / `IdleTimeout` set. It intentionally does **not** use `http.ListenAndServe(":9090", nil)`, which would publish the default mux on every interface with no timeouts.
 - **Simulated workload** — appends registration, login, and profile-update events against the in-memory store to generate realistic metric activity.
 
 ## Running
@@ -17,16 +17,19 @@ go run ./examples/metrics
 ```
 No infrastructure required — uses the in-memory adapter.
 
-This example starts an HTTP server on `:9090/metrics` and then runs until you press Ctrl+C.
+This example starts an HTTP server on `127.0.0.1:9090` (reachable from this machine only) and then runs until you press Ctrl+C.
 
 ## What happens
 1. Creates a `memory.NewAdapter()` event store and a metrics instance (`namespace=mink_example`, `service=user-service`), then calls `MustRegister()`.
-2. Launches the Prometheus HTTP server in a goroutine at `http://localhost:9090/metrics`.
+2. Launches the Prometheus HTTP server in a goroutine at `http://127.0.0.1:9090/metrics` (loopback, dedicated mux, timeouts).
 3. Registers 5 users (`user-001` … `user-005`) by appending a `UserRegistered` event per stream, printing each with its append latency in milliseconds.
 4. Simulates 20 logins — loads a random user's stream, then appends a `UserLoggedIn` event.
 5. Simulates 10 profile updates by appending `ProfileUpdated` events to random user streams.
 6. Prints a metrics summary showing sample metric names, the final per-stream event counts, and the list of registered `mink`-prefixed metrics gathered from Prometheus.
 7. Prints observability tips and keeps the `/metrics` endpoint alive until Ctrl+C.
+
+## Exposing metrics in production
+A metrics endpoint reveals operational detail (event types, stream names, error rates). Keep it on a private interface and let Prometheus reach it through network policy (a sidecar, a private network, or a service mesh) — never bind `0.0.0.0` on an internet-facing host, and never serve it from `http.DefaultServeMux`, which silently picks up `net/http/pprof` or `expvar` if any dependency imports them.
 
 ## Key APIs
 - `minkmetrics.New(opts ...MetricsOption) *Metrics` — construct the metrics collector set.
@@ -36,7 +39,7 @@ This example starts an HTTP server on `:9090/metrics` and then runs until you pr
 - `(*Metrics).CommandMiddleware() mink.Middleware` — middleware to instrument command dispatch.
 - `mink.New(adapter)` — create the event store over the memory adapter.
 - `store.Append(ctx, streamID, events, ...)` / `store.Load(ctx, streamID)` — the operations being measured.
-- `promhttp.Handler()` — Prometheus HTTP handler exposed at `:9090/metrics`.
+- `promhttp.Handler()` — Prometheus HTTP handler, mounted at `/metrics` by `newMetricsServer(addr, handler)`.
 
 ## Related
 - **Examples:** [tracing](../tracing) · [full-ecommerce](../full-ecommerce) · [basic](../basic)

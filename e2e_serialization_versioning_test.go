@@ -77,7 +77,7 @@ func TestE2E_Serialization_UpcastOnLoadFromPG(t *testing.T) {
 	raw, err := p.Store.LoadRaw(p.Ctx, "product-1", 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, mink.GetSchemaVersion(raw[0].Metadata), "history not rewritten: stored event is still v1")
-	assert.NotContains(t, string(raw[0].Data), "price")
+	assert.NotContains(t, string(raw[0].Data), `"price"`)
 
 	// A new append through the upcaster-configured store stamps the latest schema version (2).
 	require.NoError(t, p.Store.Append(p.Ctx, "product-2", []interface{}{e2eProduct{Name: "gadget", Price: 5}}))

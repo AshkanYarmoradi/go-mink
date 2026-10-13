@@ -115,8 +115,8 @@ func TestUniqueSchema(t *testing.T) {
 		schema := UniqueSchema("test")
 
 		assert.Contains(t, schema, "test_")
-		// Check that suffix is a number
-		assert.Regexp(t, `^test_\d+$`, schema)
+		// Suffix is "_<UnixNano>_<8-hex process nonce>_<counter>".
+		assert.Regexp(t, `^test_\d+_[0-9a-f]{8}_\d+$`, schema)
 	})
 
 	t.Run("uses custom prefix", func(t *testing.T) {

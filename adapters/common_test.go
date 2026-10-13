@@ -382,3 +382,41 @@ func TestDefaultLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestCopyIdempotencyRecord_Response_DoesNotAliasOriginal(t *testing.T) {
+	original := &IdempotencyRecord{Key: "k", Response: []byte(`{"result":"success"}`)}
+
+	copied := CopyIdempotencyRecord(original)
+	require.Equal(t, original.Response, copied.Response)
+
+	// Mutating the copy must not change the original, and vice versa.
+	copied.Response[0] = 'X'
+	assert.Equal(t, byte('{'), original.Response[0])
+	original.Response[1] = 'Y'
+	assert.Equal(t, byte('"'), copied.Response[1])
+
+	t.Run("nil response stays nil", func(t *testing.T) {
+		assert.Nil(t, CopyIdempotencyRecord(&IdempotencyRecord{Key: "k"}).Response)
+	})
+}
+
+func TestSanitizeSQLComment(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain name untouched", "my-project", "my-project"},
+		{"CR and LF stripped", "a\r\nb\nc", "abc"},
+		{"other control characters stripped", "a\tb\x00c\x7fd\x1be", "abcde"},
+		{"unicode line and paragraph separators and NEL stripped", "a\u2028b\u2029c\u0085d", "abcd"},
+		{"single quotes doubled", "O'Brien's", "O''Brien''s"},
+		{"comment markers survive as inert text", "x -- y /* z */", "x -- y /* z */"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, SanitizeSQLComment(tt.in))
+		})
+	}
+}

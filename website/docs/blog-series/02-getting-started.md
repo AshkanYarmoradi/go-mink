@@ -489,7 +489,7 @@ func main() {
     ctx := context.Background()
 
     // Create PostgreSQL adapter
-    connStr := "postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+    connStr := "postgres://user:pass@localhost:5432/mydb?sslmode=disable" // local development only: production must use sslmode=verify-full (+ sslrootcert)
     adapter, err := postgres.NewAdapter(connStr)
     if err != nil {
         log.Fatal(err)

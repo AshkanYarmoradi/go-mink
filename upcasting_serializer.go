@@ -26,6 +26,15 @@ func (s *UpcastingSerializer) Serialize(event interface{}) ([]byte, error) {
 // Deserialize converts bytes back to an event.
 // If upcasters are registered for the event type, the data is upcasted from
 // DefaultSchemaVersion before deserialization.
+//
+// Because the plain Serializer interface carries no metadata, this method has to
+// ASSUME the bytes are at DefaultSchemaVersion (1). Feeding it an event that was
+// stored at a later schema version re-runs upcasters that were already applied,
+// producing wrong data or an UpcastError. For stored events, use
+// DeserializeWithVersion with GetSchemaVersion(stored.Metadata) — or, preferably,
+// read through the EventStore (Load / LoadAggregate / ProcessStoredEvent), which
+// resolves the version from the event's metadata for you. Deserialize is only
+// appropriate for bytes known to be at version 1.
 func (s *UpcastingSerializer) Deserialize(data []byte, eventType string) (interface{}, error) {
 	return s.DeserializeWithVersion(data, eventType, DefaultSchemaVersion, Metadata{})
 }

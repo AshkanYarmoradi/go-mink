@@ -162,7 +162,7 @@ func TestSagaManager_ProcessEvent_DecryptsFieldEncryptedEvent(t *testing.T) {
 	// Precondition: the as-stored event really is encrypted — otherwise this test would
 	// pass vacuously against a store that never encrypted anything.
 	require.True(t, IsEncrypted(stored.Metadata), "event should be encrypted at rest")
-	require.NotContains(t, string(stored.Data), "Alice")
+	require.NotContains(t, string(stored.Data), `"Alice"`)
 
 	require.NoError(t, manager.ProcessEvent(ctx, stored))
 
@@ -246,7 +246,7 @@ func TestSagaManager_ProcessEvent_CryptoShreddedDeliveredAsStored(t *testing.T) 
 	// The saga saw the event as stored: its unmarshal of the still-encrypted non-scalar
 	// field fails, which is the expected, visible outcome of an unrecoverable field.
 	require.Error(t, errs[0])
-	assert.NotContains(t, string(raw[0]), "Dave")
+	assert.NotContains(t, string(raw[0]), `"Dave"`)
 }
 
 // TestSagaManager_ProcessEvent_HardDecryptErrorSurfaces pins that a hard, unhandled

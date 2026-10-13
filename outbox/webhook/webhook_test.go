@@ -195,7 +195,14 @@ func TestExtractURL(t *testing.T) {
 func TestPublisher_WithHTTPClient(t *testing.T) {
 	customClient := &http.Client{Timeout: 10 * time.Second}
 	p := New(WithHTTPClient(customClient))
-	assert.Equal(t, customClient, p.client)
+
+	// The publisher uses a shallow copy of the injected client: its settings are
+	// carried over, but the caller's instance is never mutated (the copy gets
+	// the publisher's redirect policy; the original keeps its nil CheckRedirect).
+	assert.NotSame(t, customClient, p.client)
+	assert.Equal(t, 10*time.Second, p.client.Timeout)
+	assert.Nil(t, customClient.CheckRedirect)
+	assert.NotNil(t, p.client.CheckRedirect)
 }
 
 func TestPublisher_WithTimeout(t *testing.T) {

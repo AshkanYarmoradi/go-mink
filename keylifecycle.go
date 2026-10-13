@@ -27,9 +27,22 @@ import (
 // ids are returned. Until then the PII exists under both keys.
 //
 // The source stream must still be decryptable (its key not yet revoked). Non-PII
-// metadata (correlation/causation/tenant/subject tags) is carried over; stale
-// $encryption_* markers are stripped so the new append re-stamps them for the current
-// key. The destination is appended with strict expected-version checks starting from
+// metadata (correlation/causation/tenant ids, custom keys) is carried over; stale
+// $encryption_* markers are stripped (SanitizeReservedMetadata) so the new append
+// re-stamps them for the current key. The copy is re-appended through the store's
+// internal trusted path, so:
+//
+//   - "$schema_version" is preserved verbatim — a store with no UpcasterChain copies
+//     the source marker unchanged (it never upcasts, so the data is still at that
+//     version), and a store whose chain upcasted the event on Load stamps the chain's
+//     latest version, matching the data it re-serializes. Configure the copying store
+//     with the application's UpcasterChain when the source carries versioned events.
+//   - "$subjects" follows the same policy as Append: a configured SubjectTagger's
+//     output replaces the carried-over tags (so a tag forged at rest cannot select the
+//     new wrapping key) unless the store was built WithCallerSubjectTags, which merges
+//     them; with no tagger the tags are carried over as-is.
+//
+// The destination is appended with strict expected-version checks starting from
 // NoStream, so a re-run against an existing destination fails instead of silently
 // duplicating the copy. Returns the number of events copied and the distinct old key
 // ids (for the caller to revoke).
@@ -59,35 +72,22 @@ func ReEncryptStream(ctx context.Context, store *EventStore, srcStreamID, dstStr
 				"mink: ReEncryptStream: cannot derive a Go event type for event %d of stream %q (stored type %q, version %d) — register the event type (RegisterEvents) before re-encrypting",
 				i, srcStreamID, ev.Type, ev.Version)
 		}
-		md := stripEncryptionMarkers(ev.Metadata)
+		md := SanitizeReservedMetadata(ev.Metadata)
+		// Load upcasts the data to the chain's latest version for types that have
+		// upcasters, but leaves the stored marker untouched; re-stamp it so the copy
+		// is self-consistent. Without a chain (or for a type without upcasters) the
+		// data is exactly what was stored, so the carried-over marker stays as-is —
+		// the trusted append path below persists it verbatim instead of dropping it.
+		if chain := store.upcasters.Load(); chain != nil && chain.HasUpcasters(ev.Type) {
+			md = SetSchemaVersion(md, chain.LatestVersion(ev.Type))
+		}
 		// Expected version i: 0 (NoStream) for the first event, then the running
 		// version — so a re-run against an existing destination errors rather than
 		// appending a duplicate copy.
 		if err := store.Append(ctx, dstStreamID, []interface{}{ev.Data},
-			WithAppendMetadata(md), ExpectVersion(int64(i))); err != nil {
+			WithAppendMetadata(md), ExpectVersion(int64(i)), withTrustedMetadata()); err != nil {
 			return i, oldKeyIDs, err
 		}
 	}
 	return len(events), oldKeyIDs, nil
-}
-
-// stripEncryptionMarkers returns a copy of m with the $encryption_* markers removed,
-// leaving all other custom metadata (subject tags, correlation ids) intact. Used when
-// re-appending a decrypted event so the append path re-stamps markers for the current
-// key instead of carrying stale ones (e.g. after a field-config change).
-func stripEncryptionMarkers(m Metadata) Metadata {
-	if len(m.Custom) == 0 {
-		return m
-	}
-	nc := make(map[string]string, len(m.Custom))
-	for k, v := range m.Custom {
-		switch k {
-		case encryptedFieldsKey, encryptionKeyIDKey, encryptedDEKKey, encryptionAlgorithmKey:
-			continue
-		default:
-			nc[k] = v
-		}
-	}
-	m.Custom = nc
-	return m
 }
