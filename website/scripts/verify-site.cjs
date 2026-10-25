@@ -11,14 +11,7 @@ const goSource =
 function read(file) {
   return fs.readFileSync(path.join(build, file), "utf8");
 }
-function decode(value) {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;|&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
+const { decode } = require("./html-utils.cjs");
 // The generated HTML uses quoted attributes. This limited parser deliberately
 // inspects static output without executing the site's scripts or needing a DOM.
 function tags(html, name) {

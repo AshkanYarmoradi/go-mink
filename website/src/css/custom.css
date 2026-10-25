@@ -1751,3 +1751,6 @@ button {
     min-height: 400px;
   }
 }
+.footer.footer--dark {
+  background: var(--mk-bg);
+}
