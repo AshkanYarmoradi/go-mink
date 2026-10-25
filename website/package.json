@@ -12,7 +12,10 @@
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test": "node --test tests/replay.test.ts plugins/local-search/search.test.cjs",
+    "check:examples": "node examples/check-snippets.mjs",
+    "verify:build": "node scripts/verify-search.cjs && node scripts/verify-site.cjs"
   },
   "dependencies": {
     "@docusaurus/core": "^3.10.2",
@@ -64,6 +67,6 @@
     ]
   },
   "engines": {
-    "node": ">=18.0"
+    "node": ">=24.0"
   }
 }
