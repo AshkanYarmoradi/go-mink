@@ -37,7 +37,8 @@ const config: Config = {
       tagName: "meta",
       attributes: {
         name: "go-source",
-        content: "go-mink.dev _ https://github.com/AshkanYarmoradi/go-mink/tree/main{/dir} https://github.com/AshkanYarmoradi/go-mink/blob/main{/dir}/{file}#L{line}",
+        content:
+          "go-mink.dev _ https://github.com/AshkanYarmoradi/go-mink/tree/main{/dir} https://github.com/AshkanYarmoradi/go-mink/blob/main{/dir}/{file}#L{line}",
       },
     },
     {
@@ -70,9 +71,13 @@ const config: Config = {
       {
         docs: {
           sidebarPath: "./sidebars.ts",
-          editUrl: "https://github.com/AshkanYarmoradi/go-mink/tree/main/website/",
+          editUrl:
+            "https://github.com/AshkanYarmoradi/go-mink/tree/main/website/",
         },
         blog: false,
+        sitemap: {
+          ignorePatterns: ["/404", "/404.html"],
+        },
         theme: {
           customCss: "./src/css/custom.css",
         },
@@ -81,15 +86,28 @@ const config: Config = {
   ],
 
   plugins: [
+    "./plugins/local-search/index.cjs",
     [
       "@docusaurus/plugin-client-redirects",
       {
         redirects: [
-          { from: "/docs/introduction", to: "/docs/getting-started/introduction" },
-          { from: "/docs/architecture", to: "/docs/getting-started/architecture" },
+          {
+            from: "/docs/introduction",
+            to: "/docs/getting-started/introduction",
+          },
+          {
+            from: "/docs/architecture",
+            to: "/docs/getting-started/architecture",
+          },
           { from: "/blog", to: "/docs/blog-series/introduction" },
-          { from: "/blog/01-introduction", to: "/docs/blog-series/introduction" },
-          { from: "/blog/02-getting-started", to: "/docs/blog-series/getting-started" },
+          {
+            from: "/blog/01-introduction",
+            to: "/docs/blog-series/introduction",
+          },
+          {
+            from: "/blog/02-getting-started",
+            to: "/docs/blog-series/getting-started",
+          },
           { from: "/blog/03-aggregates", to: "/docs/blog-series/aggregates" },
           { from: "/blog/04-event-store", to: "/docs/blog-series/event-store" },
           { from: "/blog/05-cqrs", to: "/docs/blog-series/cqrs" },
@@ -98,9 +116,18 @@ const config: Config = {
           { from: "/blog/08-production", to: "/docs/blog-series/production" },
           { from: "/tutorial", to: "/docs/tutorial/setup" },
           { from: "/tutorial/01-setup", to: "/docs/tutorial/setup" },
-          { from: "/tutorial/02-domain-modeling", to: "/docs/tutorial/domain-modeling" },
-          { from: "/tutorial/03-commands-cqrs", to: "/docs/tutorial/commands-cqrs" },
-          { from: "/tutorial/04-projections", to: "/docs/tutorial/projections" },
+          {
+            from: "/tutorial/02-domain-modeling",
+            to: "/docs/tutorial/domain-modeling",
+          },
+          {
+            from: "/tutorial/03-commands-cqrs",
+            to: "/docs/tutorial/commands-cqrs",
+          },
+          {
+            from: "/tutorial/04-projections",
+            to: "/docs/tutorial/projections",
+          },
           { from: "/tutorial/05-testing", to: "/docs/tutorial/testing" },
           { from: "/tutorial/06-production", to: "/docs/tutorial/production" },
         ],
@@ -109,7 +136,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: "img/og-image.svg",
+    image: "img/og-image.png",
     colorMode: {
       defaultMode: "dark",
       disableSwitch: true,
@@ -138,11 +165,15 @@ const config: Config = {
           type: "docSidebar",
           sidebarId: "blogSeries",
           position: "left",
-          label: "Blog Series",
+          label: "Learn",
         },
         {
           href: "https://github.com/AshkanYarmoradi/go-mink",
           label: "GitHub",
+          position: "right",
+        },
+        {
+          type: "search",
           position: "right",
         },
       ],

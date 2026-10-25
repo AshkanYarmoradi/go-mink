@@ -50,10 +50,29 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test replay and documentation search
+        run: npm test
+
+      - name: Verify displayed Go examples
+        run: npm run check:examples
+
+      - name: Setup Go for executable examples
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test complete Go examples
+        working-directory: .
+        run: go test ./website/examples/quickstart
+
       - name: Build Docusaurus
         run: npm run build
         env:
           NODE_ENV: production
+
+      - name: Verify routes, search, SEO, and Go module discovery
+        run: npm run verify:build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

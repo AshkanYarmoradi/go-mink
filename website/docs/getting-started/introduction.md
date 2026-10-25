@@ -1,115 +1,66 @@
 ---
 title: Introduction
+description: Learn what go-mink provides, choose a starting point, and understand the flow from commands to events and read models.
 sidebar_position: 2
 ---
 
 # Introduction
 
-<span class="badge badge--success">v1.0.0</span>
+go-mink is an Event Sourcing and CQRS toolkit for Go. It gives you the building blocks to record changes as events, rebuild domain state, and create read models for your application.
 
----
+Start with a small event stream. Add commands, projections, and workflow coordination as your application needs them.
 
-## The Problem
+## Choose your starting point
 
-Building Event Sourcing systems in Go today requires significant boilerplate code:
+| If you want to… | Start here |
+| --- | --- |
+| Build an application step by step | [The order system tutorial](/docs/tutorial/setup) |
+| Understand the moving parts | [Architecture](/docs/getting-started/architecture) |
+| Append events and load a stream | [The event store](/docs/core/event-store) |
+| Build query-friendly views | [Read models and projections](/docs/core/read-models) |
+| Compare storage capabilities | [Adapters](/docs/core/adapters) |
+| Learn the concepts from first principles | [The Event Sourcing series](/docs/blog-series/introduction) |
 
-```go
-// Typical boilerplate you write today:
-type EventStore interface {
-    Append(ctx context.Context, streamID string, events []Event) error
-    Load(ctx context.Context, streamID string) ([]Event, error)
-}
+## Install the module
 
-type Event struct {
-    ID        string
-    Type      string
-    Data      []byte
-    Metadata  map[string]string
-    Timestamp time.Time
-    Version   int64
-}
+From a Go module, add go-mink:
 
-// Then you implement for each database...
-// Then you build projections manually...
-// Then you handle concurrency...
-// Then you build read models...
-// Then you handle retries...
-// Then you build migrations...
+```bash
+go get go-mink.dev
 ```
 
-### Current Go Ecosystem Gaps
+Use the [memory adapter](/docs/core/adapters) for tests and local experiments. Use PostgreSQL when your events need durable storage. The [project setup tutorial](/docs/tutorial/setup) walks through configuration, schema initialization, and your first application.
 
-| Gap | Impact |
-|-----|--------|
-| **No unified library** | Teams reinvent the wheel |
-| **Fragmented solutions** | Combine 5+ libraries for full ES |
-| **Manual projections** | Error-prone, time-consuming |
-| **No schema management** | Manual migration scripts |
-| **Limited multi-tenancy** | Custom implementation required |
-| **Poor developer UX** | Steep learning curve |
+## Think in events
 
-## Why Event Sourcing?
+A conventional state update records that an order is now shipped. An event-sourced model also records the steps that got it there:
 
-```
-Traditional CRUD:                     Event Sourcing:
-┌─────────────────┐                  ┌─────────────────┐
-│  Current State  │                  │  Event 1        │
-│  (overwritten)  │                  │  Event 2        │
-└─────────────────┘                  │  Event 3        │
-                                     │  ...            │
-                                     │  Event N        │
-                                     └─────────────────┘
-                                            │
-                                     ┌──────▼──────┐
-                                     │ Rebuild to  │
-                                     │ any state   │
-                                     └─────────────┘
+```text
+OrderCreated → ItemAdded → PaymentReceived → OrderShipped
 ```
 
-### Event Sourcing Benefits
+The event stream is the history. An aggregate applies that history to rebuild its current state. A projection transforms events into a view designed for a specific query: an order summary, a fulfillment queue, or a report.
 
-- **Complete Audit Trail**: Every change is recorded
-- **Temporal Queries**: "What was the state on March 15th?"
-- **Debug Production**: Replay events locally
-- **Event Replay**: Fix bugs by reprocessing events
-- **Decoupled Systems**: Events enable loose coupling
+This is useful when the sequence of changes matters. It also introduces responsibilities: event schema evolution, projection maintenance, replay safety, and operational monitoring. For a small CRUD application with no need for historical behavior, a conventional database model may be simpler.
 
-## go-mink's Goals
+## Follow the data
 
-### Primary Goals
+1. **Handle a command.** Your domain logic validates an action and decides which events to record. The command bus can add validation, logging, tracing, and other middleware.
+2. **Persist the events.** The event store serializes events and appends them through an adapter. Expected stream versions protect against conflicting writes.
+3. **Build a view.** Your application explicitly invokes inline projections, runs async projections, or notifies live projections according to its consistency needs.
+4. **Query the read model.** Read a view shaped for your application instead of rebuilding an entire stream for every screen.
 
-1. **Zero Boilerplate**: Write business logic, not infrastructure
-2. **Pluggable Storage**: PostgreSQL today, MongoDB tomorrow
-3. **Automatic Projections**: Define once, update automatically
-4. **Developer Experience**: CLI tools, testing utilities, clear errors
-5. **Production Ready**: Battle-tested patterns, observability built-in
+:::note Projections are explicit
+Appending an event does not automatically run every projection. Inline projections are invoked through `ProcessInlineProjections`; async projections poll stored events and maintain checkpoints; live projections receive notifications through `NotifyLiveProjections`.
+:::
 
-### Design Principles
+## Add capabilities as you need them
 
-| Principle | Implementation |
-|-----------|----------------|
-| **Convention over Configuration** | Sensible defaults, override when needed |
-| **Explicit over Implicit** | No magic, clear data flow |
-| **Composition over Inheritance** | Interfaces and embedding |
-| **Fail Fast** | Validate early, clear error messages |
-| **Observable by Default** | Metrics, tracing, logging hooks |
+- **Domain modeling:** [aggregates and the event store](/docs/core/event-store), optimistic concurrency, and snapshots.
+- **Application workflows:** [the command bus, sagas, and outbox](/docs/advanced/advanced-patterns).
+- **Evolution:** [event versioning and upcasting](/docs/advanced/versioning).
+- **Data protection:** [field-level encryption](/docs/advanced/security) and [data governance](/docs/security).
+- **Verification:** [Given–When–Then tests, assertions, and projection utilities](/docs/guide/testing).
+- **Operations:** [the CLI](/docs/guide/cli), [benchmarks](/docs/guide/benchmarks), and [production guidance](/docs/tutorial/production).
 
-## Target Audience
-
-- **Startups**: Ship event-sourced systems fast
-- **Enterprise**: Reliable audit trails and compliance
-- **Platform Teams**: Standardized ES infrastructure
-- **Solo Developers**: Learn ES without complexity
-
-## Success Metrics
-
-| Metric | Target |
-|--------|--------|
-| Lines of code to get started | < 20 |
-| Time to first event stored | < 5 minutes |
-| Projection definition | < 10 lines |
-| Database adapter switch | Config change only |
-
----
-
-Next: [Architecture →](architecture)
+The library provides mechanisms; your application defines domain rules, consistency boundaries, access controls, and retention policies. The [architecture guide](/docs/getting-started/architecture) explains how these pieces fit together.
