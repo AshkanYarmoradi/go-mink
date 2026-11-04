@@ -1455,7 +1455,7 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 
 	// Stop manager
 	cancel()
-	<-done
+	assert.ErrorIs(t, <-done, context.Canceled)
 
 	step++ // Use variable to avoid unused warning
 	_ = step

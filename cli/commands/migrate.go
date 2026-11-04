@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
@@ -57,7 +57,7 @@ By default, applies all pending migrations. Use --steps to limit.`,
 				return err
 			}
 			if isMemory {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
+				styles.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
 				return nil
 			}
 			defer env.Close()
@@ -102,7 +102,7 @@ func runMigrateUp(ctx context.Context, env *MigrationEnv, steps int) error {
 	}
 
 	if len(pending) == 0 {
-		fmt.Println(styles.FormatSuccess("Database is up to date"))
+		styles.Println(styles.FormatSuccess("Database is up to date"))
 		return nil
 	}
 
@@ -110,20 +110,20 @@ func runMigrateUp(ctx context.Context, env *MigrationEnv, steps int) error {
 		pending = pending[:steps]
 	}
 
-	fmt.Printf("\n%s Applying %d migration(s)...\n\n", styles.IconPending, len(pending))
+	styles.Printf("\n%s Applying %d migration(s)...\n\n", styles.IconPending, len(pending))
 
 	for _, m := range pending {
-		fmt.Printf("  %s Applying %s... ", styles.IconPending, m.Name)
+		styles.Printf("  %s Applying %s... ", styles.IconPending, m.Name)
 
 		content, err := os.ReadFile(m.Path)
 		if err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("failed to read migration: %w", err)
 		}
 
 		// Execute migration using adapter
 		if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("migration failed: %w", err)
 		}
 
@@ -131,15 +131,15 @@ func runMigrateUp(ctx context.Context, env *MigrationEnv, steps int) error {
 		// function doc): stop and surface the error so the operator knows the
 		// recorded state is inconsistent.
 		if err := env.Adapter.RecordMigration(ctx, m.Name); err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("migration %q applied but failed to record (recorded state is now inconsistent; "+
 				"reconcile the migrations table before retrying): %w", m.Name, err)
 		}
-		fmt.Println(styles.SuccessStyle.Render("OK"))
+		styles.Println(styles.SuccessStyle.Render("OK"))
 	}
 
-	fmt.Println()
-	fmt.Println(styles.FormatSuccess(fmt.Sprintf("Applied %d migration(s)", len(pending))))
+	styles.Println()
+	styles.Println(styles.FormatSuccess(fmt.Sprintf("Applied %d migration(s)", len(pending))))
 	return nil
 }
 
@@ -177,7 +177,7 @@ skip the prompt when scripting.`,
 				return err
 			}
 			if isMemory {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
+				styles.Println(styles.FormatInfo("Memory driver doesn't require migrations"))
 				return nil
 			}
 			defer env.Close()
@@ -221,7 +221,7 @@ func runMigrateDown(ctx context.Context, env *MigrationEnv, steps int, confirm r
 	}
 
 	if len(applied) == 0 {
-		fmt.Println(styles.FormatInfo("No migrations to rollback"))
+		styles.Println(styles.FormatInfo("No migrations to rollback"))
 		return nil
 	}
 
@@ -244,48 +244,48 @@ func runMigrateDown(ctx context.Context, env *MigrationEnv, steps int, confirm r
 			return fmt.Errorf("rollback confirmation failed (pass --yes to skip the prompt when scripting): %w", err)
 		}
 		if !confirmed {
-			fmt.Println(styles.FormatInfo("Cancelled"))
+			styles.Println(styles.FormatInfo("Cancelled"))
 			return nil
 		}
 	}
 
-	fmt.Printf("\n%s Rolling back %d migration(s)...\n\n", styles.IconWarning, len(toRollback))
+	styles.Printf("\n%s Rolling back %d migration(s)...\n\n", styles.IconWarning, len(toRollback))
 
 	for i := len(toRollback) - 1; i >= 0; i-- {
 		m := toRollback[i]
-		fmt.Printf("  %s Rolling back %s... ", styles.IconPending, m.Name)
+		styles.Printf("  %s Rolling back %s... ", styles.IconPending, m.Name)
 
 		// Look for down migration
 		downPath := strings.TrimSuffix(m.Path, ".sql") + ".down.sql"
 		if err := ensureInsideDir(env.MigrationsDir, downPath); err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("refusing to run down migration for %q: %w", m.Name, err)
 		}
 		if _, err := os.Stat(downPath); os.IsNotExist(err) {
-			fmt.Println(styles.WarningStyle.Render("SKIPPED (no down migration)"))
+			styles.Println(styles.WarningStyle.Render("SKIPPED (no down migration)"))
 			continue
 		}
 
 		content, err := os.ReadFile(downPath)
 		if err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("failed to read down migration: %w", err)
 		}
 
 		if err := env.Adapter.ExecuteSQL(ctx, string(content)); err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("rollback failed: %w", err)
 		}
 
 		if err := env.Adapter.RemoveMigrationRecord(ctx, m.Name); err != nil {
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			return fmt.Errorf("failed to remove migration record %q (schema rolled back but the record remains — the migrations table is now inconsistent): %w", m.Name, err)
 		}
-		fmt.Println(styles.SuccessStyle.Render("OK"))
+		styles.Println(styles.SuccessStyle.Render("OK"))
 	}
 
-	fmt.Println()
-	fmt.Println(styles.FormatSuccess("Rollback complete"))
+	styles.Println()
+	styles.Println(styles.FormatSuccess("Rollback complete"))
 	return nil
 }
 
@@ -303,7 +303,7 @@ func confirmRollbackInteractive(names []string) (bool, error) {
 					"\nThe SQL is destructive and is not undone automatically.").
 				Value(&confirmed),
 		),
-	).WithTheme(huh.ThemeDracula())
+	).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 
 	if err := form.Run(); err != nil {
 		return false, err
@@ -323,7 +323,7 @@ func newMigrateStatusCommand() *cobra.Command {
 				return err
 			}
 			if isMemory {
-				fmt.Println(styles.FormatInfo("Memory driver doesn't use migrations"))
+				styles.Println(styles.FormatInfo("Memory driver doesn't use migrations"))
 				return nil
 			}
 			defer env.Close()
@@ -361,16 +361,16 @@ func newMigrateStatusCommand() *cobra.Command {
 				table.AddRow(status, m.Name, appliedAt)
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconDatabase + " Migration Status"))
-			fmt.Println()
-			fmt.Println(table.Render())
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconDatabase + " Migration Status"))
+			styles.Println()
+			styles.Println(table.Render())
+			styles.Println()
 
 			if pendingCount > 0 {
-				fmt.Println(styles.FormatWarning(fmt.Sprintf("%d pending migration(s)", pendingCount)))
+				styles.Println(styles.FormatWarning(fmt.Sprintf("%d pending migration(s)", pendingCount)))
 			} else {
-				fmt.Println(styles.FormatSuccess("Database is up to date"))
+				styles.Println(styles.FormatSuccess("Database is up to date"))
 			}
 
 			return nil
@@ -429,12 +429,12 @@ func newMigrateCreateCommand() *cobra.Command {
 			if err := os.WriteFile(upPath, []byte(upContent), 0644); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", upPath)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", upPath)))
 
 			if err := os.WriteFile(downPath, []byte(downContent), 0644); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", downPath)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", downPath)))
 
 			return nil
 		},

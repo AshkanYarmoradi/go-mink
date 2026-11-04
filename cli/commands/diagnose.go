@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
@@ -37,11 +37,11 @@ This command verifies:
 }
 
 func runDiagnose(cmd *cobra.Command, args []string) error {
-	fmt.Println()
-	fmt.Println(ui.Banner())
-	fmt.Println()
-	fmt.Println(styles.Title.Render(styles.IconHealth + " Running Diagnostics"))
-	fmt.Println()
+	styles.Println()
+	styles.Println(ui.Banner())
+	styles.Println()
+	styles.Println(styles.Title.Render(styles.IconHealth + " Running Diagnostics"))
+	styles.Println()
 
 	checks := []DiagnosticCheck{
 		{Name: "Go Version", Check: checkGoVersion},
@@ -56,43 +56,43 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 	allPassed := true
 
 	for _, check := range checks {
-		fmt.Printf("  %s Checking %s... ", styles.IconPending, check.Name)
+		styles.Printf("  %s Checking %s... ", styles.IconPending, check.Name)
 
 		result := check.Check()
 		results = append(results, result)
 
 		switch result.Status {
 		case StatusOK:
-			fmt.Println(styles.SuccessStyle.Render("OK"))
+			styles.Println(styles.SuccessStyle.Render("OK"))
 		case StatusWarning:
-			fmt.Println(styles.WarningStyle.Render("WARNING"))
+			styles.Println(styles.WarningStyle.Render("WARNING"))
 			allPassed = false
 		default:
-			fmt.Println(styles.ErrorStyle.Render("FAILED"))
+			styles.Println(styles.ErrorStyle.Render("FAILED"))
 			allPassed = false
 		}
 
 		if result.Message != "" {
-			fmt.Printf("    %s\n", styles.Muted.Render(result.Message))
+			styles.Printf("    %s\n", styles.Muted.Render(result.Message))
 		}
 	}
 
-	fmt.Println()
-	fmt.Println(ui.Divider(50))
-	fmt.Println()
+	styles.Println()
+	styles.Println(ui.Divider(50))
+	styles.Println()
 
 	// Summary
 	if allPassed {
-		fmt.Println(styles.FormatSuccess("All checks passed! Your mink setup is healthy."))
+		styles.Println(styles.FormatSuccess("All checks passed! Your mink setup is healthy."))
 	} else {
-		fmt.Println(styles.FormatWarning("Some checks failed or have warnings."))
-		fmt.Println()
+		styles.Println(styles.FormatWarning("Some checks failed or have warnings."))
+		styles.Println()
 
 		// Show recommendations
-		fmt.Println(styles.Subtitle.Render("Recommendations:"))
+		styles.Println(styles.Subtitle.Render("Recommendations:"))
 		for _, r := range results {
 			if r.Recommendation != "" {
-				fmt.Printf("  %s %s\n", styles.IconArrow, r.Recommendation)
+				styles.Printf("  %s %s\n", styles.IconArrow, r.Recommendation)
 			}
 		}
 	}
@@ -288,9 +288,9 @@ func NewVersionCommand(version, commit, date string) *cobra.Command {
 		Use:   "version",
 		Short: "Show version information",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println()
-			fmt.Println(ui.SimpleBanner())
-			fmt.Println()
+			styles.Println()
+			styles.Println(ui.SimpleBanner())
+			styles.Println()
 
 			table := ui.NewTable("", "")
 			table.AddRow("Version", version)
@@ -299,7 +299,7 @@ func NewVersionCommand(version, commit, date string) *cobra.Command {
 			table.AddRow("Go", runtime.Version())
 			table.AddRow("OS/Arch", fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH))
 
-			fmt.Println(table.Render())
+			styles.Println(table.Render())
 
 			return nil
 		},
@@ -334,15 +334,15 @@ func (m AnimatedVersionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 			return ui.AnimationTickMsg{}
 		})
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m AnimatedVersionModel) View() string {
+func (m AnimatedVersionModel) View() tea.View {
 	if m.done {
-		return ui.SimpleBanner() + "\n"
+		return tea.NewView(ui.SimpleBanner() + "\n")
 	}
 
 	phases := []string{
@@ -354,5 +354,5 @@ func (m AnimatedVersionModel) View() string {
 		ui.SimpleBanner(),
 	}
 
-	return "\n" + phases[m.phase] + "\n"
+	return tea.NewView("\n" + phases[m.phase] + "\n")
 }

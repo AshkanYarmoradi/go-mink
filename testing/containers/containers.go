@@ -177,7 +177,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 // that match docker-compose.test.yml for seamless local testing.
 //
 // Environment variables:
-//   - POSTGRES_IMAGE: Docker image (default: postgres:17)
+//   - POSTGRES_IMAGE: Docker image (default: postgres:18.6)
 //   - POSTGRES_DB or TEST_POSTGRES_DB: Database name (default: mink_test)
 //   - POSTGRES_USER or TEST_POSTGRES_USER: Username (default: postgres)
 //   - POSTGRES_PASSWORD or TEST_POSTGRES_PASSWORD: Password (default: postgres)
@@ -196,7 +196,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 // two helpers pointed at the same database.
 func defaultPostgresConfig() *postgresConfig {
 	return &postgresConfig{
-		image:    getEnvOrDefault("POSTGRES_IMAGE", "postgres:17"),
+		image:    getEnvOrDefault("POSTGRES_IMAGE", "postgres:18.6"),
 		database: getEnvOrDefault("POSTGRES_DB", getEnvOrDefault("TEST_POSTGRES_DB", "mink_test")),
 		user:     getEnvOrDefault("POSTGRES_USER", getEnvOrDefault("TEST_POSTGRES_USER", "postgres")),
 		password: getEnvOrDefault("POSTGRES_PASSWORD", getEnvOrDefault("TEST_POSTGRES_PASSWORD", "postgres")),

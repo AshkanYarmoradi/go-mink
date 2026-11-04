@@ -99,7 +99,7 @@ Examples:
 				return err
 			}
 
-			_, err = fmt.Fprintln(out, renderFeedTable(events))
+			_, err = fmt.Fprintln(styles.NewWriter(out), renderFeedTable(events))
 			return err
 		},
 	}

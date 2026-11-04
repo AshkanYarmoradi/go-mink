@@ -4,6 +4,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/styles"
 	"go-mink.dev/cli/ui"
@@ -49,6 +50,19 @@ It provides a complete solution for building event-driven systems.
 
 	// Global flags
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+	// Help runs before PersistentPreRun, so apply the flag at its output
+	// boundary too. Resolve the writer at call time to honor cmd.SetOut.
+	help := rootCmd.HelpFunc()
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		out := cmd.OutOrStdout()
+		w := styles.NewWriter(out)
+		if noColor {
+			w.Profile = colorprofile.NoTTY
+		}
+		cmd.SetOut(w)
+		defer cmd.SetOut(out)
+		help(cmd, args)
+	})
 
 	// Add subcommands
 	rootCmd.AddCommand(NewInitCommand())
@@ -96,7 +110,7 @@ func Execute() error {
 	rootCmd := NewRootCommand()
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(styles.FormatError(err.Error()))
+		styles.Println(styles.FormatError(err.Error()))
 		return err
 	}
 
