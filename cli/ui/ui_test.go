@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -51,7 +51,7 @@ func TestSpinnerUpdate(t *testing.T) {
 
 	// Test quit key
 	t.Run("quit with q", func(t *testing.T) {
-		model, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		model, cmd := s.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 		sm := model.(SpinnerModel)
 		assert.True(t, sm.quitting)
 		assert.NotNil(t, cmd)
@@ -60,7 +60,7 @@ func TestSpinnerUpdate(t *testing.T) {
 	// Test esc key
 	t.Run("quit with esc", func(t *testing.T) {
 		s2 := NewSpinner("Loading...", SpinnerDots)
-		model, cmd := s2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		model, cmd := s2.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 		sm := model.(SpinnerModel)
 		assert.True(t, sm.quitting)
 		assert.NotNil(t, cmd)
@@ -69,7 +69,7 @@ func TestSpinnerUpdate(t *testing.T) {
 	// Test ctrl+c
 	t.Run("quit with ctrl+c", func(t *testing.T) {
 		s3 := NewSpinner("Loading...", SpinnerDots)
-		model, cmd := s3.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		model, cmd := s3.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 		sm := model.(SpinnerModel)
 		assert.True(t, sm.quitting)
 		assert.NotNil(t, cmd)
@@ -117,7 +117,7 @@ func TestSpinnerUpdate(t *testing.T) {
 func TestSpinnerView(t *testing.T) {
 	t.Run("normal view", func(t *testing.T) {
 		spinner := NewSpinner("Loading...", SpinnerDots)
-		view := spinner.View()
+		view := spinner.View().Content
 		assert.Contains(t, view, "Loading...")
 	})
 
@@ -125,7 +125,7 @@ func TestSpinnerView(t *testing.T) {
 		s := NewSpinner("Loading...", SpinnerDots)
 		s.done = true
 		s.result = "Success!"
-		view := s.View()
+		view := s.View().Content
 		assert.Contains(t, view, "Success!")
 	})
 
@@ -134,14 +134,14 @@ func TestSpinnerView(t *testing.T) {
 		s.done = true
 		s.result = "Failed"
 		s.err = assert.AnError
-		view := s.View()
+		view := s.View().Content
 		assert.Contains(t, view, "Failed")
 	})
 
 	t.Run("quitting view", func(t *testing.T) {
 		s := NewSpinner("Loading...", SpinnerDots)
 		s.quitting = true
-		view := s.View()
+		view := s.View().Content
 		assert.Contains(t, view, "Cancelled")
 	})
 }
@@ -162,7 +162,7 @@ func TestProgressInit(t *testing.T) {
 func TestProgressUpdate(t *testing.T) {
 	t.Run("quit with q", func(t *testing.T) {
 		p := NewProgress("Loading...")
-		model, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		model, cmd := p.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 		_ = model.(ProgressModel)
 		assert.NotNil(t, cmd)
 	})
@@ -197,7 +197,7 @@ func TestProgressView(t *testing.T) {
 	t.Run("in progress", func(t *testing.T) {
 		p := NewProgress("Loading...")
 		p.percent = 0.5
-		view := p.View()
+		view := p.View().Content
 		assert.Contains(t, view, "Loading...")
 	})
 
@@ -205,7 +205,7 @@ func TestProgressView(t *testing.T) {
 		p := NewProgress("Loading...")
 		p.done = true
 		p.message = "Complete!"
-		view := p.View()
+		view := p.View().Content
 		assert.Contains(t, view, "Complete!")
 	})
 }
@@ -337,7 +337,7 @@ func TestAnimatedBannerUpdate(t *testing.T) {
 
 	t.Run("key press quits", func(t *testing.T) {
 		banner := NewAnimatedBanner()
-		model, cmd := banner.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		model, cmd := banner.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 		_ = model.(AnimatedBannerModel)
 		assert.NotNil(t, cmd)
 	})
@@ -352,7 +352,7 @@ func TestAnimatedBannerUpdate(t *testing.T) {
 
 func TestAnimatedBannerView(t *testing.T) {
 	banner := NewAnimatedBanner()
-	view := banner.View()
+	view := banner.View().Content
 	assert.NotEmpty(t, view)
 }
 

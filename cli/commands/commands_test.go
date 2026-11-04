@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -1169,7 +1169,7 @@ func TestAnimatedVersionModel_Update_Tick(t *testing.T) {
 func TestAnimatedVersionModel_Update_KeyPress(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
-	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Key press should trigger quit
 	assert.NotNil(t, cmd)
@@ -1179,12 +1179,12 @@ func TestAnimatedVersionModel_View(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
 	// View during animation
-	view := model.View()
+	view := model.View().Content
 	assert.NotEmpty(t, view)
 
 	// View when done
 	model.done = true
-	view = model.View()
+	view = model.View().Content
 	assert.NotEmpty(t, view)
 }
 
@@ -1194,7 +1194,7 @@ func TestAnimatedVersionModel_View_AllPhases(t *testing.T) {
 	// Test all phases
 	for i := 0; i <= 5; i++ {
 		model.phase = i
-		view := model.View()
+		view := model.View().Content
 		assert.NotEmpty(t, view)
 	}
 }
@@ -5286,7 +5286,7 @@ func TestAnimatedVersionModel_Lifecycle(t *testing.T) {
 	assert.True(t, model.done)
 
 	// Test View when done
-	view := model.View()
+	view := model.View().Content
 	assert.NotEmpty(t, view)
 }
 
@@ -5295,7 +5295,7 @@ func TestAnimatedVersionModel_KeyPress_Quit(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
 	// Simulate key press
-	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	assert.NotNil(t, cmd)
 }
 
@@ -5315,7 +5315,7 @@ func TestAnimatedVersionModel_View_Phases(t *testing.T) {
 
 	// Test view at each phase
 	for i := 0; i < 6; i++ {
-		view := model.View()
+		view := model.View().Content
 		assert.NotEmpty(t, view)
 
 		newModel, _ := model.Update(ui.AnimationTickMsg{})
@@ -5323,7 +5323,7 @@ func TestAnimatedVersionModel_View_Phases(t *testing.T) {
 	}
 
 	// Final view when done
-	finalView := model.View()
+	finalView := model.View().Content
 	assert.NotEmpty(t, finalView)
 }
 
@@ -6623,7 +6623,7 @@ func TestAnimatedVersionModel_FullCycle(t *testing.T) {
 	}
 
 	assert.True(t, model.done)
-	view := model.View()
+	view := model.View().Content
 	assert.NotEmpty(t, view)
 }
 
@@ -7101,7 +7101,7 @@ func TestAnimatedVersionModel_Init_Direct(t *testing.T) {
 	assert.NotNil(t, cmd)
 
 	// Test view at different stages
-	view := model.View()
+	view := model.View().Content
 	assert.NotEmpty(t, view)
 }
 
@@ -7425,7 +7425,7 @@ func TestAnimatedVersionModel_KeyPress(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
 	// Test key press should quit
-	newModel, cmd := model.Update(tea.KeyMsg{})
+	newModel, cmd := model.Update(tea.KeyPressMsg{})
 	_ = newModel
 	assert.NotNil(t, cmd)
 }
@@ -7435,7 +7435,7 @@ func TestAnimatedVersionModel_ViewPhases(t *testing.T) {
 	model := NewAnimatedVersion("1.0.0")
 
 	// Test view at phase 0
-	view0 := model.View()
+	view0 := model.View().Content
 	assert.NotEmpty(t, view0)
 
 	// Advance through phases
@@ -7445,7 +7445,7 @@ func TestAnimatedVersionModel_ViewPhases(t *testing.T) {
 	}
 
 	// Test view at phase 3
-	view3 := model.View()
+	view3 := model.View().Content
 	assert.NotEmpty(t, view3)
 }
 

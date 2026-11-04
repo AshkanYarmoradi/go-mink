@@ -56,9 +56,9 @@ func newSchemaGenerateCommand() *cobra.Command {
 				if err := os.WriteFile(output, []byte(schema), 0644); err != nil {
 					return err
 				}
-				fmt.Println(styles.FormatSuccess(fmt.Sprintf("Schema written to %s", output)))
+				styles.Println(styles.FormatSuccess(fmt.Sprintf("Schema written to %s", output)))
 			} else {
-				fmt.Println(schema)
+				styles.Println(schema)
 			}
 
 			return nil
@@ -88,10 +88,10 @@ func newSchemaPrintCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconDatabase + " Event Store Schema"))
-			fmt.Println()
-			fmt.Println(styles.Code.Render(schema))
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconDatabase + " Event Store Schema"))
+			styles.Println()
+			styles.Println(styles.Code.Render(schema))
 
 			return nil
 		},
@@ -115,7 +115,7 @@ Requires a configured non-memory driver and a reachable database (DATABASE_URL).
 			case DiagnosticSkipNoConfig:
 				return fmt.Errorf("no mink.yaml found; run 'mink init' first")
 			case DiagnosticSkipMemoryDriver:
-				fmt.Println(styles.FormatInfo("Memory driver - schema is in-memory, nothing to validate"))
+				styles.Println(styles.FormatInfo("Memory driver - schema is in-memory, nothing to validate"))
 				return nil
 			case DiagnosticSkipNoDBURL:
 				return fmt.Errorf("DATABASE_URL is not set; cannot validate schema against the database")
@@ -131,11 +131,11 @@ Requires a configured non-memory driver and a reachable database (DATABASE_URL).
 			}
 
 			if !result.TableExists {
-				fmt.Println(styles.FormatError(result.Message))
+				styles.Println(styles.FormatError(result.Message))
 				return fmt.Errorf("event store schema is missing; run 'mink migrate up' to create the tables")
 			}
 
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Schema is valid: %s", result.Message)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Schema is valid: %s", result.Message)))
 			return nil
 		},
 	}

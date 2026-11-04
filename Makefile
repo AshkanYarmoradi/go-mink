@@ -10,7 +10,7 @@
 # Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with the version input
 # of golangci/golangci-lint-action in .github/workflows/test.yml so local `make lint`
 # and CI run byte-for-byte the same linter.
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # Repo-local tool bin. Pinned tools install here (never onto $PATH / $GOPATH/bin), so
 # `make lint` is reproducible regardless of what golangci-lint or Go toolchain a

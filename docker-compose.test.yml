@@ -13,7 +13,7 @@
 
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18.6
     container_name: mink-test-postgres
     environment:
       POSTGRES_USER: postgres
@@ -28,7 +28,7 @@ services:
       retries: 15
       start_period: 5s
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql
     # Performance optimizations for testing
     command: >
       postgres
@@ -40,7 +40,7 @@ services:
       -c full_page_writes=off
 
   kafka:
-    image: apache/kafka:3.7.0
+    image: apache/kafka:4.4.0
     container_name: mink-test-kafka
     environment:
       KAFKA_NODE_ID: 1

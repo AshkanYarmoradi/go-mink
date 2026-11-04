@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // Config represents the mink CLI configuration

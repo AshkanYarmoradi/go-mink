@@ -57,7 +57,7 @@ docker run -d --name mink-pg \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=mink_test \
   -p 5432:5432 \
-  postgres:17
+  postgres:18.6
 
 # Run the example
 cd examples/full-ecommerce

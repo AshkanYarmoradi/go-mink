@@ -3,9 +3,10 @@
 package styles
 
 import (
+	"image/color"
 	"strconv"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Color palette - carefully chosen for accessibility and aesthetics
@@ -83,13 +84,13 @@ var (
 )
 
 // newStatusStyle creates a style with the given foreground color.
-func newStatusStyle(color lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(color)
+func newStatusStyle(c color.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(c)
 }
 
 // newStatusBoldStyle creates a bold style with the given foreground color.
-func newStatusBoldStyle(color lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(color)
+func newStatusBoldStyle(c color.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(c)
 }
 
 // Status styles - using helper functions to reduce duplication
@@ -129,7 +130,7 @@ const (
 )
 
 // newRoundedBox creates a box style with rounded border and specified border color.
-func newRoundedBox(borderColor lipgloss.Color) lipgloss.Style {
+func newRoundedBox(borderColor color.Color) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
@@ -233,8 +234,8 @@ const (
 var InfoBox = newRoundedBox(Info).MarginTop(1)
 
 // allColorPointers returns pointers to all color variables for bulk operations.
-func allColorPointers() []*lipgloss.Color {
-	return []*lipgloss.Color{
+func allColorPointers() []*color.Color {
+	return []*color.Color{
 		&Primary, &PrimaryLight, &PrimaryDark,
 		&Secondary, &SecondaryDark,
 		&Success, &SuccessLight,
@@ -249,8 +250,8 @@ func allColorPointers() []*lipgloss.Color {
 
 // DisableColors disables all colors for terminals that don't support them
 func DisableColors() {
-	noColor := lipgloss.Color("")
+	colorsDisabled.Store(true)
 	for _, c := range allColorPointers() {
-		*c = noColor
+		*c = nil
 	}
 }

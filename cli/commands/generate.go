@@ -11,7 +11,7 @@ import (
 	"text/template"
 	"unicode"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
@@ -40,7 +40,7 @@ func promptInput(title, description, placeholder string, value *string, nonInter
 		huh.NewGroup(
 			huh.NewInput().Title(title).Description(description).Value(value).Placeholder(placeholder),
 		),
-	).WithTheme(huh.ThemeDracula())
+	).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 	return form.Run()
 }
 
@@ -165,7 +165,7 @@ Examples:
 			if err := generateFile(aggFile, aggregateTemplate, data, force); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", aggFile)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", aggFile)))
 
 			// Create events file if events provided
 			if len(events) > 0 {
@@ -183,7 +183,7 @@ Examples:
 				if err := generateFile(eventsFile, eventsFileTemplate, eventFileData, force); err != nil {
 					return err
 				}
-				fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", eventsFile)))
+				styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", eventsFile)))
 			}
 
 			// Create test file
@@ -191,10 +191,10 @@ Examples:
 			if err := generateFile(testFile, aggregateTestTemplate, data, force); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
 
-			fmt.Println()
-			fmt.Println(styles.InfoBox.Render(fmt.Sprintf(`%s Generated aggregate: %s
+			styles.Println()
+			styles.Println(styles.InfoBox.Render(fmt.Sprintf(`%s Generated aggregate: %s
 
 Next steps:
   1. Implement your domain logic in %s
@@ -286,7 +286,7 @@ func newGenerateWithAggregateCommand(params generateWithAggregateParams) *cobra.
 			if err := generateFile(outputFile, params.template, data, force); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", outputFile)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", outputFile)))
 			return nil
 		},
 	}
@@ -388,13 +388,13 @@ func newGenerateProjectionCommand() *cobra.Command {
 			if err := generateFile(projFile, projectionTemplate, projData, force); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", projFile)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", projFile)))
 
 			testFile := filepath.Join(projDir, strings.ToLower(name)+"_test.go")
 			if err := generateFile(testFile, projectionTestTemplate, projData, force); err != nil {
 				return err
 			}
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", testFile)))
 			return nil
 		},
 	}
