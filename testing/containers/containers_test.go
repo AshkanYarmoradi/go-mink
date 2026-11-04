@@ -19,13 +19,8 @@ import (
 func setTestEnvVars(t *testing.T, envs map[string]string) {
 	t.Helper()
 	for k, v := range envs {
-		_ = os.Setenv(k, v)
+		t.Setenv(k, v)
 	}
-	t.Cleanup(func() {
-		for k := range envs {
-			_ = os.Unsetenv(k)
-		}
-	})
 }
 
 // clearTestEnvVars unsets the given env vars and restores their original values on cleanup.
@@ -151,6 +146,9 @@ func TestDefaultPostgresConfig(t *testing.T) {
 	})
 
 	t.Run("fallback to TEST_ prefixed env vars", func(t *testing.T) {
+		clearTestEnvVars(t, []string{
+			"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT",
+		})
 		setTestEnvVars(t, map[string]string{
 			"TEST_POSTGRES_DB":       "test_db",
 			"TEST_POSTGRES_USER":     "test_user",

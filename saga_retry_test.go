@@ -300,9 +300,9 @@ func TestRetrySaga_SerialisesWithEventLoop(t *testing.T) {
 	go func() { done <- h.manager.RetrySaga(ctx, sagaID) }()
 
 	select {
-	case <-done:
+	case err := <-done:
 		lock.Unlock()
-		t.Fatal("RetrySaga must not proceed while the per-saga lock is held")
+		t.Fatalf("RetrySaga must not proceed while the per-saga lock is held (returned %v)", err)
 	case <-time.After(50 * time.Millisecond):
 		// Still blocked on the lock — expected.
 	}
