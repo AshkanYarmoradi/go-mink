@@ -487,7 +487,7 @@ func TestWithPostgres(t *testing.T) {
     }
 
     container := containers.StartPostgres(t,
-        containers.WithPostgresImage("postgres:17"),
+        containers.WithPostgresImage("postgres:18.6"),
         containers.WithPostgresDatabase("test_db"),
         containers.WithPostgresUser("test_user"),
         containers.WithPostgresPassword("test_pass"),
@@ -676,7 +676,7 @@ The test containers respect these environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTGRES_IMAGE` | `postgres:17` | Docker image |
+| `POSTGRES_IMAGE` | `postgres:18.6` | Docker image |
 | `POSTGRES_DB` | `mink_test` | Database name |
 | `POSTGRES_USER` | `postgres` | Username |
 | `POSTGRES_PASSWORD` | `postgres` | Password |

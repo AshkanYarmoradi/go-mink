@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"go-mink.dev/cli/config"
 	"go-mink.dev/cli/styles"
@@ -54,13 +54,13 @@ Examples:
 
 			// Check if config already exists
 			if config.Exists(absDir) {
-				fmt.Println(styles.FormatWarning("mink.yaml already exists in this directory"))
+				styles.Println(styles.FormatWarning("mink.yaml already exists in this directory"))
 				return nil
 			}
 
 			// Print welcome banner
-			fmt.Println(ui.Banner())
-			fmt.Println()
+			styles.Println(ui.Banner())
+			styles.Println()
 
 			cfg := config.DefaultConfig()
 
@@ -131,7 +131,7 @@ Examples:
 							Description("Package path for projections").
 							Value(&cfg.Generation.ProjectionPackage),
 					).Title("Code Generation"),
-				).WithTheme(huh.ThemeDracula())
+				).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 
 				if err := form.Run(); err != nil {
 					return err
@@ -165,21 +165,21 @@ Examples:
 				cfg.Generation.CommandPackage,
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconFolder + " Creating project structure..."))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconFolder + " Creating project structure..."))
+			styles.Println()
 
 			for _, d := range dirs {
 				dirPath := filepath.Join(absDir, d)
 				if err := os.MkdirAll(dirPath, 0755); err != nil {
-					fmt.Println(styles.FormatError(fmt.Sprintf("Failed to create %s: %v", d, err)))
+					styles.Println(styles.FormatError(fmt.Sprintf("Failed to create %s: %v", d, err)))
 				} else {
-					fmt.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", d)))
+					styles.Println(styles.FormatSuccess(fmt.Sprintf("Created %s", d)))
 				}
 			}
 
 			// Create config file
-			fmt.Println()
+			styles.Println()
 			configContent := config.GenerateYAML(cfg)
 			configPath := filepath.Join(absDir, config.ConfigFileName)
 			// mink.yaml may later hold a literal database.url with credentials,
@@ -188,7 +188,7 @@ Examples:
 			if err := config.WriteSecureFile(configPath, []byte(configContent)); err != nil {
 				return fmt.Errorf("failed to create config file: %w", err)
 			}
-			fmt.Println(styles.FormatSuccess("Created mink.yaml"))
+			styles.Println(styles.FormatSuccess("Created mink.yaml"))
 
 			// Create .gitkeep files for empty directories (plain, non-sensitive
 			// placeholders: the default 0644 is intentional here).
@@ -198,8 +198,8 @@ Examples:
 			}
 
 			// Print next steps
-			fmt.Println()
-			fmt.Println(styles.InfoBox.Render(nextSteps(cfg)))
+			styles.Println()
+			styles.Println(styles.InfoBox.Render(nextSteps(cfg)))
 
 			return nil
 		},
@@ -272,5 +272,5 @@ func Splash() {
 		Bold(true).
 		Foreground(styles.Primary)
 
-	fmt.Println(style.Render("\n" + styles.IconMink + " mink\n"))
+	styles.Println(style.Render("\n" + styles.IconMink + " mink\n"))
 }

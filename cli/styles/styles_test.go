@@ -1,6 +1,7 @@
 package styles
 
 import (
+	"image/color"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,20 +45,25 @@ func TestFormatKeyValue(t *testing.T) {
 }
 
 func TestDisableColors(t *testing.T) {
-	// Store original values
-	originalPrimary := Primary
-	originalSuccess := Success
+	// Restore the complete palette and output setting after this global option.
+	originals := make([]color.Color, len(allColorPointers()))
+	for i, c := range allColorPointers() {
+		originals[i] = *c
+	}
+	wasDisabled := colorsDisabled.Load()
+	t.Cleanup(func() {
+		for i, c := range allColorPointers() {
+			*c = originals[i]
+		}
+		colorsDisabled.Store(wasDisabled)
+	})
 
 	// Disable colors
 	DisableColors()
 
-	// Check colors are empty
-	assert.Equal(t, "", string(Primary))
-	assert.Equal(t, "", string(Success))
-
-	// Restore original values for other tests
-	Primary = originalPrimary
-	Success = originalSuccess
+	assert.Nil(t, Primary)
+	assert.Nil(t, Success)
+	assert.True(t, colorsDisabled.Load())
 }
 
 func TestIcons(t *testing.T) {

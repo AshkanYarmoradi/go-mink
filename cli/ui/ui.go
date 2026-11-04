@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"go-mink.dev/cli/styles"
 )
 
@@ -86,7 +86,7 @@ func (m SpinnerModel) Init() tea.Cmd {
 
 func (m SpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			m.quitting = true
@@ -108,19 +108,19 @@ func (m SpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m SpinnerModel) View() string {
+func (m SpinnerModel) View() tea.View {
 	if m.done {
 		if m.err != nil {
-			return styles.FormatError(m.result) + "\n"
+			return tea.NewView(styles.FormatError(m.result) + "\n")
 		}
-		return styles.FormatSuccess(m.result) + "\n"
+		return tea.NewView(styles.FormatSuccess(m.result) + "\n")
 	}
 
 	if m.quitting {
-		return styles.FormatWarning("Cancelled") + "\n"
+		return tea.NewView(styles.FormatWarning("Cancelled") + "\n")
 	}
 
-	return m.spinner.View() + " " + styles.Normal.Render(m.message) + "\n"
+	return tea.NewView(m.spinner.View() + " " + styles.Normal.Render(m.message) + "\n")
 }
 
 // SpinnerDoneMsg signals that the spinner operation is complete
@@ -140,7 +140,7 @@ type ProgressModel struct {
 // NewProgress creates a new progress bar
 func NewProgress(message string) ProgressModel {
 	p := progress.New(
-		progress.WithDefaultGradient(),
+		progress.WithDefaultBlend(),
 		progress.WithWidth(40),
 		progress.WithoutPercentage(),
 	)
@@ -157,7 +157,7 @@ func (m ProgressModel) Init() tea.Cmd {
 
 func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
@@ -174,19 +174,19 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progress.FrameMsg:
 		progressModel, cmd := m.progress.Update(msg)
-		m.progress = progressModel.(progress.Model)
+		m.progress = progressModel
 		return m, cmd
 	}
 
 	return m, nil
 }
 
-func (m ProgressModel) View() string {
+func (m ProgressModel) View() tea.View {
 	if m.done {
-		return styles.FormatSuccess(m.message) + "\n"
+		return tea.NewView(styles.FormatSuccess(m.message) + "\n")
 	}
 
-	return m.progress.ViewAs(m.percent) + " " + styles.Muted.Render(m.message) + "\n"
+	return tea.NewView(m.progress.ViewAs(m.percent) + " " + styles.Muted.Render(m.message) + "\n")
 }
 
 // ProgressMsg updates the progress bar
@@ -415,17 +415,17 @@ func (m AnimatedBannerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.done = true
 		return m, tea.Quit
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m AnimatedBannerModel) View() string {
+func (m AnimatedBannerModel) View() tea.View {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(styles.Primary)
-	return titleStyle.Render(m.frames[m.frameIndex]) + "\n"
+	return tea.NewView(titleStyle.Render(m.frames[m.frameIndex]) + "\n")
 }
 
 // Divider returns a horizontal divider line

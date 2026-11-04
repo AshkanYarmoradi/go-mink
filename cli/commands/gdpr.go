@@ -86,9 +86,9 @@ func terminalSafe(s string) string {
 // printFootprint renders a resolved SubjectFootprint (shared by discover and erase).
 // Every stored value it prints goes through terminalSafe.
 func printFootprint(fp *mink.SubjectFootprint) {
-	fmt.Println()
-	fmt.Println(styles.Title.Render(fmt.Sprintf("%s Subject footprint: %s", styles.IconDatabase, terminalSafe(fp.SubjectID))))
-	fmt.Println()
+	styles.Println()
+	styles.Println(styles.Title.Render(fmt.Sprintf("%s Subject footprint: %s", styles.IconDatabase, terminalSafe(fp.SubjectID))))
+	styles.Println()
 
 	details := []string{
 		fmt.Sprintf("Streams:         %d", len(fp.Streams)),
@@ -96,21 +96,21 @@ func printFootprint(fp *mink.SubjectFootprint) {
 		fmt.Sprintf("Encryption keys: %d", len(fp.KeyIDs)),
 	}
 	for _, d := range details {
-		fmt.Println("  " + styles.Normal.Render(d))
+		styles.Println("  " + styles.Normal.Render(d))
 	}
 
 	if fp.Partial {
-		fmt.Println()
-		fmt.Println(styles.FormatWarning("Footprint is PARTIAL — untagged (legacy) events exist that may belong to this subject; treat as incomplete"))
+		styles.Println()
+		styles.Println(styles.FormatWarning("Footprint is PARTIAL — untagged (legacy) events exist that may belong to this subject; treat as incomplete"))
 	}
 
 	if len(fp.Streams) > 0 {
-		fmt.Println()
+		styles.Println()
 		table := ui.NewTable("Stream", "Tagged events")
 		for _, s := range fp.Streams {
 			table.AddRow(terminalSafe(s), fmt.Sprintf("%d", fp.StreamEventCounts[s]))
 		}
-		fmt.Println(table.Render())
+		styles.Println(table.Render())
 	}
 }
 
@@ -142,13 +142,13 @@ uniformly; if legacy untagged events exist, the footprint is reported as PARTIAL
 			printFootprint(fp)
 
 			if len(fp.KeyIDs) > 0 {
-				fmt.Println()
-				fmt.Println(styles.Subtitle.Render(fmt.Sprintf("%s Encryption keys", styles.IconKey)))
+				styles.Println()
+				styles.Println(styles.Subtitle.Render(fmt.Sprintf("%s Encryption keys", styles.IconKey)))
 				for _, k := range fp.KeyIDs {
-					fmt.Println("  " + styles.IconDot + " " + terminalSafe(k))
+					styles.Println("  " + styles.IconDot + " " + terminalSafe(k))
 				}
 			}
-			fmt.Println()
+			styles.Println()
 			return nil
 		},
 	}
@@ -201,9 +201,9 @@ application's encryption provider; run it via the DataEraser.Verify API.`,
 				}
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Erasure readiness: %s", styles.IconLock, terminalSafe(subjectID))))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(fmt.Sprintf("%s Erasure readiness: %s", styles.IconLock, terminalSafe(subjectID))))
+			styles.Println()
 			details := []string{
 				fmt.Sprintf("Tagged events:          %d", fp.EventCount),
 				fmt.Sprintf("Encrypted (shreddable): %d", encrypted),
@@ -211,22 +211,22 @@ application's encryption provider; run it via the DataEraser.Verify API.`,
 				fmt.Sprintf("Encryption keys:        %d", len(fp.KeyIDs)),
 			}
 			for _, d := range details {
-				fmt.Println("  " + styles.Normal.Render(d))
+				styles.Println("  " + styles.Normal.Render(d))
 			}
-			fmt.Println()
+			styles.Println()
 
 			switch {
 			case cleartext > 0:
-				fmt.Println(styles.FormatWarning(fmt.Sprintf("%d cleartext event(s) cannot be crypto-shredded — remediate via a RedactFields/Anonymize retention policy", cleartext)))
+				styles.Println(styles.FormatWarning(fmt.Sprintf("%d cleartext event(s) cannot be crypto-shredded — remediate via a RedactFields/Anonymize retention policy", cleartext)))
 			case fp.Partial:
-				fmt.Println(styles.FormatWarning("Footprint is PARTIAL — untagged events exist; readiness is a lower bound"))
+				styles.Println(styles.FormatWarning("Footprint is PARTIAL — untagged events exist; readiness is a lower bound"))
 			default:
-				fmt.Println(styles.FormatSuccess("All tagged events are encrypted — the subject is fully crypto-shreddable"))
+				styles.Println(styles.FormatSuccess("All tagged events are encrypted — the subject is fully crypto-shreddable"))
 			}
 			if cleartext > 0 && fp.Partial {
-				fmt.Println(styles.FormatWarning("Footprint is PARTIAL — untagged events exist; readiness is a lower bound"))
+				styles.Println(styles.FormatWarning("Footprint is PARTIAL — untagged events exist; readiness is a lower bound"))
 			}
-			fmt.Println()
+			styles.Println()
 			return nil
 		},
 	}
@@ -260,22 +260,22 @@ Vault. This command produces the auditable erasure plan.`,
 			}
 
 			printFootprint(fp)
-			fmt.Println()
+			styles.Println()
 
 			if len(fp.KeyIDs) == 0 {
-				fmt.Println(styles.FormatInfo("No encryption keys found for this subject — nothing to crypto-shred (any cleartext events must be handled on the read side)"))
-				fmt.Println()
+				styles.Println(styles.FormatInfo("No encryption keys found for this subject — nothing to crypto-shred (any cleartext events must be handled on the read side)"))
+				styles.Println()
 				return nil
 			}
 
-			fmt.Println(styles.Subtitle.Render(fmt.Sprintf("%s Erasure plan — revoke these keys", styles.IconKey)))
-			fmt.Println()
+			styles.Println(styles.Subtitle.Render(fmt.Sprintf("%s Erasure plan — revoke these keys", styles.IconKey)))
+			styles.Println()
 			for _, k := range fp.KeyIDs {
-				fmt.Println("  " + styles.IconArrow + " " + terminalSafe(k))
+				styles.Println("  " + styles.IconArrow + " " + terminalSafe(k))
 			}
-			fmt.Println()
-			fmt.Println(styles.FormatInfo("Execute via mink.NewDataEraser(store, ...).Erase — the CLI does not hold your keys, so it will not revoke them here"))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.FormatInfo("Execute via mink.NewDataEraser(store, ...).Erase — the CLI does not hold your keys, so it will not revoke them here"))
+			styles.Println()
 			return nil
 		},
 	}
@@ -370,9 +370,9 @@ func printRetentionReport(report *mink.RetentionReport) {
 	if report.DryRun {
 		title = " Retention preview (dry-run)"
 	}
-	fmt.Println()
-	fmt.Println(styles.Title.Render(styles.IconChart + title))
-	fmt.Println()
+	styles.Println()
+	styles.Println(styles.Title.Render(styles.IconChart + title))
+	styles.Println()
 
 	revoked := countWithKeyIDs("Keys revoked:        ", report.KeysRevoked)
 	if report.DryRun {
@@ -388,32 +388,32 @@ func printRetentionReport(report *mink.RetentionReport) {
 		fmt.Sprintf("Errors:              %d", len(report.Errors)),
 	}
 	for _, d := range details {
-		fmt.Println("  " + styles.Normal.Render(d))
+		styles.Println("  " + styles.Normal.Render(d))
 	}
-	fmt.Println()
+	styles.Println()
 
 	switch {
 	case report.Matched == 0:
-		fmt.Println(styles.FormatInfo("No events match this policy"))
+		styles.Println(styles.FormatInfo("No events match this policy"))
 	case report.DryRun:
-		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d event(s) would be crypto-shredded — run RetentionManager.Apply with your encryption provider to enforce", report.Matched)))
+		styles.Println(styles.FormatWarning(fmt.Sprintf("%d event(s) would be crypto-shredded — run RetentionManager.Apply with your encryption provider to enforce", report.Matched)))
 	default:
-		fmt.Println(styles.FormatInfo(fmt.Sprintf("%d event(s) matched — see Keys revoked for what was crypto-shredded", report.Matched)))
+		styles.Println(styles.FormatInfo(fmt.Sprintf("%d event(s) matched — see Keys revoked for what was crypto-shredded", report.Matched)))
 	}
 	if n := len(report.SharedKeysSkipped); n > 0 {
-		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d key(s) refused by the shared-key guard — they also protect events outside this policy and will NOT be revoked (use per-scope keys, or WithAllowSharedKeyRevocation to accept the blast radius)", n)))
+		styles.Println(styles.FormatWarning(fmt.Sprintf("%d key(s) refused by the shared-key guard — they also protect events outside this policy and will NOT be revoked (use per-scope keys, or WithAllowSharedKeyRevocation to accept the blast radius)", n)))
 	}
 	if n := report.UnencryptedMatches; n > 0 {
-		fmt.Println(styles.FormatWarning(fmt.Sprintf("%d matched event(s) carry no encryption envelope and would remain in plaintext — remediate via a RedactFields/Anonymize policy", n)))
+		styles.Println(styles.FormatWarning(fmt.Sprintf("%d matched event(s) carry no encryption envelope and would remain in plaintext — remediate via a RedactFields/Anonymize policy", n)))
 	}
 	if len(report.Errors) > 0 {
-		fmt.Println()
-		fmt.Println(styles.Subtitle.Render(styles.IconWarning + " Errors"))
+		styles.Println()
+		styles.Println(styles.Subtitle.Render(styles.IconWarning + " Errors"))
 		for _, e := range report.Errors {
-			fmt.Println("  " + styles.IconDot + " " + terminalSafe(e.Error()))
+			styles.Println("  " + styles.IconDot + " " + terminalSafe(e.Error()))
 		}
 	}
-	fmt.Println()
+	styles.Println()
 }
 
 // countWithKeyIDs renders "<label><count> [id, id]", listing the ids only when there are

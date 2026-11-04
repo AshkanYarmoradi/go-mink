@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 	"go-mink.dev/adapters"
 	"go-mink.dev/cli/config"
@@ -56,7 +56,7 @@ func newProjectionListCommand() *cobra.Command {
 			defer cleanup()
 
 			if cfg.Database.Driver == "memory" {
-				fmt.Println(styles.FormatInfo("Memory driver - projections are in-memory only"))
+				styles.Println(styles.FormatInfo("Memory driver - projections are in-memory only"))
 				return nil
 			}
 
@@ -66,13 +66,13 @@ func newProjectionListCommand() *cobra.Command {
 			}
 
 			if len(projections) == 0 {
-				fmt.Println(styles.FormatInfo("No projections registered"))
+				styles.Println(styles.FormatInfo("No projections registered"))
 				return nil
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconList + " Projections"))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconList + " Projections"))
+			styles.Println()
 
 			table := ui.NewTable("Name", "Position", "Status", "Last Updated")
 			for _, p := range projections {
@@ -80,8 +80,8 @@ func newProjectionListCommand() *cobra.Command {
 				table.AddRow(p.Name, fmt.Sprintf("%d", p.Position), status, p.UpdatedAt.Format("2006-01-02 15:04:05"))
 			}
 
-			fmt.Println(table.Render())
-			fmt.Println()
+			styles.Println(table.Render())
+			styles.Println()
 
 			return nil
 		},
@@ -117,9 +117,9 @@ func newProjectionStatusCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Projection: %s", styles.IconDatabase, name)))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(fmt.Sprintf("%s Projection: %s", styles.IconDatabase, name)))
+			styles.Println()
 
 			details := []string{
 				fmt.Sprintf("Name:        %s", projection.Name),
@@ -129,14 +129,14 @@ func newProjectionStatusCommand() *cobra.Command {
 			}
 
 			for _, d := range details {
-				fmt.Println("  " + styles.Normal.Render(d))
+				styles.Println("  " + styles.Normal.Render(d))
 			}
 
 			if totalEvents > 0 {
 				progress := float64(projection.Position) / float64(totalEvents) * 100
-				fmt.Println()
-				fmt.Println(styles.Subtitle.Render("  Progress:"))
-				fmt.Println(renderProgressBar(progress, 40))
+				styles.Println()
+				styles.Println(styles.Subtitle.Render("  Progress:"))
+				styles.Println(renderProgressBar(progress, 40))
 			}
 
 			return nil
@@ -180,28 +180,28 @@ func newProjectionRebuildCommand() *cobra.Command {
 							Description("This will reset the checkpoint and replay all events").
 							Value(&confirmed),
 					),
-				).WithTheme(huh.ThemeDracula())
+				).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 
 				if err := form.Run(); err != nil {
 					return err
 				}
 
 				if !confirmed {
-					fmt.Println(styles.FormatInfo("Cancelled"))
+					styles.Println(styles.FormatInfo("Cancelled"))
 					return nil
 				}
 			}
 
-			fmt.Println()
-			fmt.Printf("%s Rebuilding projection '%s'...\n\n", styles.IconPending, name)
+			styles.Println()
+			styles.Printf("%s Rebuilding projection '%s'...\n\n", styles.IconPending, name)
 
 			// Reset checkpoint to 0
 			if err := adapter.ResetProjectionCheckpoint(ctx, name); err != nil {
 				return fmt.Errorf("failed to reset checkpoint: %w", err)
 			}
 
-			fmt.Println(styles.FormatSuccess("Checkpoint reset to 0"))
-			fmt.Println(styles.FormatInfo("Projection will rebuild on next run"))
+			styles.Println(styles.FormatSuccess("Checkpoint reset to 0"))
+			styles.Println(styles.FormatInfo("Projection will rebuild on next run"))
 
 			return nil
 		},
@@ -232,7 +232,7 @@ func setProjectionStatusCommand(use, short, status, successVerb string) *cobra.C
 				return err
 			}
 
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("%s projection '%s'", successVerb, name)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("%s projection '%s'", successVerb, name)))
 			return nil
 		},
 	}
@@ -295,21 +295,21 @@ func newStreamListCommand() *cobra.Command {
 			}
 
 			if len(streams) == 0 {
-				fmt.Println(styles.FormatInfo("No streams found"))
+				styles.Println(styles.FormatInfo("No streams found"))
 				return nil
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconStream + " Event Streams"))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconStream + " Event Streams"))
+			styles.Println()
 
 			table := ui.NewTable("Stream ID", "Events", "Last Event", "Last Updated")
 			for _, s := range streams {
 				table.AddRow(s.StreamID, fmt.Sprintf("%d", s.EventCount), s.LastEventType, s.LastUpdated.Format("2006-01-02 15:04"))
 			}
 
-			fmt.Println(table.Render())
-			fmt.Printf("\nShowing %d streams\n", len(streams))
+			styles.Println(table.Render())
+			styles.Printf("\nShowing %d streams\n", len(streams))
 
 			return nil
 		},
@@ -347,30 +347,30 @@ func newStreamEventsCommand() *cobra.Command {
 			}
 
 			if len(events) == 0 {
-				fmt.Println(styles.FormatInfo(fmt.Sprintf("No events in stream '%s'", streamID)))
+				styles.Println(styles.FormatInfo(fmt.Sprintf("No events in stream '%s'", streamID)))
 				return nil
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Stream: %s", styles.IconStream, streamID)))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(fmt.Sprintf("%s Stream: %s", styles.IconStream, streamID)))
+			styles.Println()
 
 			for _, e := range events {
-				fmt.Println(styles.Subtitle.Render(fmt.Sprintf("Event #%d: %s", e.Version, e.Type)))
-				fmt.Println(styles.Muted.Render(fmt.Sprintf("  ID: %s", e.ID)))
-				fmt.Println(styles.Muted.Render(fmt.Sprintf("  Time: %s", e.Timestamp.Format(time.RFC3339))))
-				fmt.Println()
+				styles.Println(styles.Subtitle.Render(fmt.Sprintf("Event #%d: %s", e.Version, e.Type)))
+				styles.Println(styles.Muted.Render(fmt.Sprintf("  ID: %s", e.ID)))
+				styles.Println(styles.Muted.Render(fmt.Sprintf("  Time: %s", e.Timestamp.Format(time.RFC3339))))
+				styles.Println()
 
 				// Pretty print JSON data
 				var prettyData bytes.Buffer
 				if err := json.Indent(&prettyData, e.Data, "  ", "  "); err == nil {
-					fmt.Println(styles.Code.Render("  " + prettyData.String()))
+					styles.Println(styles.Code.Render("  " + prettyData.String()))
 				} else {
-					fmt.Println(styles.Code.Render("  " + string(e.Data)))
+					styles.Println(styles.Code.Render("  " + string(e.Data)))
 				}
-				fmt.Println()
-				fmt.Println(ui.Divider(60))
-				fmt.Println()
+				styles.Println()
+				styles.Println(ui.Divider(60))
+				styles.Println()
 			}
 
 			return nil
@@ -412,7 +412,7 @@ EventStore.UnregisteredStreamTypes, or WithStrictReplay, to catch this in code).
 				return err
 			}
 			if len(events) == 0 {
-				fmt.Println(styles.FormatInfo(fmt.Sprintf("No events in stream '%s'", streamID)))
+				styles.Println(styles.FormatInfo(fmt.Sprintf("No events in stream '%s'", streamID)))
 				return nil
 			}
 
@@ -426,15 +426,15 @@ EventStore.UnregisteredStreamTypes, or WithStrictReplay, to catch this in code).
 			}
 			sort.Strings(types)
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(fmt.Sprintf("%s Event types in %s", styles.IconStream, streamID)))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(fmt.Sprintf("%s Event types in %s", styles.IconStream, streamID)))
+			styles.Println()
 			table := ui.NewTable("Event Type", "Count")
 			for _, t := range types {
 				table.AddRow(t, fmt.Sprintf("%d", counts[t]))
 			}
-			fmt.Println(table.Render())
-			fmt.Println(styles.Muted.Render("Check each type is registered in your app; unregistered types are silently dropped on aggregate replay."))
+			styles.Println(table.Render())
+			styles.Println(styles.Muted.Render("Check each type is registered in your app; unregistered types are silently dropped on aggregate replay."))
 			return nil
 		},
 	}
@@ -510,7 +510,7 @@ func newStreamExportCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Println(styles.FormatSuccess(fmt.Sprintf("Exported %d events to %s", len(events), output)))
+			styles.Println(styles.FormatSuccess(fmt.Sprintf("Exported %d events to %s", len(events), output)))
 			return nil
 		},
 	}
@@ -546,9 +546,9 @@ func newStreamStatsCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Println()
-			fmt.Println(styles.Title.Render(styles.IconChart + " Event Store Statistics"))
-			fmt.Println()
+			styles.Println()
+			styles.Println(styles.Title.Render(styles.IconChart + " Event Store Statistics"))
+			styles.Println()
 
 			details := []string{
 				fmt.Sprintf("Total Events:   %d", stats.TotalEvents),
@@ -558,14 +558,14 @@ func newStreamStatsCommand() *cobra.Command {
 			}
 
 			for _, d := range details {
-				fmt.Println("  " + styles.Normal.Render(d))
+				styles.Println("  " + styles.Normal.Render(d))
 			}
 
 			if len(stats.TopEventTypes) > 0 {
-				fmt.Println()
-				fmt.Println(styles.Subtitle.Render("  Top Event Types:"))
+				styles.Println()
+				styles.Println(styles.Subtitle.Render("  Top Event Types:"))
 				for i, t := range stats.TopEventTypes {
-					fmt.Printf("    %d. %s (%d)\n", i+1, t.Type, t.Count)
+					styles.Printf("    %d. %s (%d)\n", i+1, t.Type, t.Count)
 				}
 			}
 

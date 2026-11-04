@@ -131,7 +131,7 @@ func TestDefaultPostgresConfig(t *testing.T) {
 			"TEST_POSTGRES_PASSWORD", "POSTGRES_PORT", "TEST_POSTGRES_PORT",
 		})
 		assertConfig(t, defaultPostgresConfig(), expected{
-			image: "postgres:17", database: "mink_test",
+			image: "postgres:18.6", database: "mink_test",
 			user: "postgres", password: "postgres", port: "5432",
 		})
 	})
