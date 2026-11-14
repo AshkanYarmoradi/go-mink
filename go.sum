@@ -10,8 +10,8 @@ github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
-github.com/aws/aws-sdk-go-v2 v1.47.6 h1:ksHUlfAKSsZoqdfTXKlZifcB1p3vlhaiSZ0uSP9zpgY=
-github.com/aws/aws-sdk-go-v2 v1.47.6/go.mod h1:I8lFSH4MGrZiw2m7miCrRYHsgpC1+HW8uiVGOiPYPcw=
+github.com/aws/aws-sdk-go-v2 v1.48.0 h1:tFU7EJVm7MfyaXLsXdYTZ0Vd6vwt9OljCyqq0gqk0Mc=
+github.com/aws/aws-sdk-go-v2 v1.48.0/go.mod h1:oeKU5p+TQBnpeLmU42WZLWvzv+ORLn+74n4QVLnm/Z0=
 github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.9 h1:UGOXaQNO01a4rK83urPV4nbUfqkh2JQy0xXJ/Le7kPg=
 github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.9/go.mod h1:hD5i4m0fRY6e32fCYw+WyDdUTlKrKDlVyn1Ff2r3NqQ=
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.9 h1:TZ6rQpJEskh5ymtNaAc/x3we7pfwRF5srGjDiRQWO0g=
@@ -20,8 +20,8 @@ github.com/aws/aws-sdk-go-v2/service/kms v1.62.3 h1:ywsv//lHW4eNLKzKOEXI7sl1Xguo
 github.com/aws/aws-sdk-go-v2/service/kms v1.62.3/go.mod h1:MFeMt6oFn5C5/M9WDR1SVOWavJktI4wCaiMXYGI3NI4=
 github.com/aws/aws-sdk-go-v2/service/sns v1.47.8 h1:jaBoWgJf9jfKp1XkXcHg044XbRR71Wjqyg3UkjAfzuE=
 github.com/aws/aws-sdk-go-v2/service/sns v1.47.8/go.mod h1:7F4RKKbVzrZku/PCI0w8aYOp005J9VrUYvjc7GnMR6g=
-github.com/aws/smithy-go v1.28.8 h1:aEmdAq7gVCoGCnvf1NnELlu3I6D/nhqrC321FyFiQkQ=
-github.com/aws/smithy-go v1.28.8/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/aws/smithy-go v1.28.9 h1:zkZ058OpNX0iGTK24b+ZUEQSMc11CBA6oO7xtKZfzkY=
+github.com/aws/smithy-go v1.28.9/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/aymanbagabas/go-udiff v0.4.1 h1:OEIrQ8maEeDBXQDoGCbbTTXYJMYRCRO1fnodZ12Gv5o=
 github.com/aymanbagabas/go-udiff v0.4.1/go.mod h1:0L9PGwj20lrtmEMeyw4WKJ/TMyDtvAoK9bf2u/mNo3w=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
