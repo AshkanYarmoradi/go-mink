@@ -357,6 +357,26 @@ func TestPostgresRepository_GetMany(t *testing.T) {
 	})
 }
 
+func TestPostgresRepository_ContainsIgnoreCase(t *testing.T) {
+	tr := setupOrderSummaryRepo(t, "order_case_insensitive_test")
+	for i, status := range []string{"Example %_\\ Road", "Example XY Road"} {
+		require.NoError(t, tr.repo.Insert(tr.ctx, &OrderSummary{
+			OrderID: fmt.Sprintf("order-%d", i), Status: status, CreatedAt: tr.now, UpdatedAt: tr.now,
+		}))
+	}
+	query := mink.NewQuery().Where("status", mink.FilterOpContainsIgnoreCase, "example %_\\ ROAD").Build()
+	items, err := tr.repo.Find(tr.ctx, query)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "order-0", items[0].OrderID)
+	count, err := tr.repo.Count(tr.ctx, query)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
+
+	_, err = tr.repo.Find(tr.ctx, mink.NewQuery().Where("status", mink.FilterOpContainsIgnoreCase, 42).Build())
+	require.ErrorIs(t, err, mink.ErrInvalidQuery)
+}
+
 func TestPostgresRepository_Query(t *testing.T) {
 	tr := setupOrderSummaryRepo(t, "order_query_test")
 	statuses := []string{"pending", "shipped", "delivered", "pending", "cancelled"}

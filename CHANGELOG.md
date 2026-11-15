@@ -94,6 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read models:** `FilterOpContainsIgnoreCase` matches literal text substrings without case sensitivity in the PostgreSQL and in-memory repositories.
+
 - **Projections:** `WithAsyncIdleBackoff(maxInterval)` lets async workers poll less often on empty feeds and restores their base cadence as they catch up.
 - **Async projection retry classification & fault supervision** — closes three compounding gaps that let a single transient database error silently and permanently kill an async projection's read model (all additive/opt-in, zero-overhead when unset, no schema change; the async worker only — inline/live projections are unchanged):
   - **Transient-vs-poison error classification** — a new optional `AsyncOptions.ErrorClassifier func(error) ErrorClass` splits the single retry budget in two: an error classified `ErrorClassTransient` is retried with backoff but never consumes the poison budget (`MaxRetries` / `RetryPolicy`), so it never reaches `OnPoisonEvent` or faults the worker, while an `ErrorClassPoison` error is accounted exactly as before. Ships `DefaultErrorClassifier`, which classifies as transient anything whose `Unwrap` chain satisfies `errors.Is(err, ErrTransient)`, implements the exported `Retryable() bool`, or implements `interface{ Temporary() bool }` (the `net.Error` idiom) — but deliberately **not** `context.DeadlineExceeded` (a hung poison event must not retry forever behind a batch timeout). Exports the `ErrTransient` sentinel and `Retryable` interface so callers can mark their own errors. `nil` classifier (the default) treats every error as poison — byte-for-byte the prior behavior and overhead.
