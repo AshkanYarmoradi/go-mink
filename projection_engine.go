@@ -26,8 +26,9 @@ type ProjectionEngine struct {
 	inlineMu          sync.RWMutex
 
 	// Async projections (background workers)
-	asyncProjections map[string]*asyncProjectionWorker
-	asyncMu          sync.RWMutex
+	asyncProjections    map[string]*asyncProjectionWorker
+	asyncMu             sync.RWMutex
+	maxIdlePollInterval time.Duration
 
 	// Live projections (real-time)
 	liveProjections map[string]*liveProjectionWorker
@@ -65,6 +66,17 @@ func WithProjectionMetrics(metrics ProjectionMetrics) ProjectionEngineOption {
 func WithProjectionLogger(logger Logger) ProjectionEngineOption {
 	return func(e *ProjectionEngine) {
 		e.logger = logger
+	}
+}
+
+// WithAsyncIdleBackoff doubles an async worker's poll interval after each empty
+// read, up to maxInterval. Progress or a read or processing error restores the
+// configured cadence. A worker may take up to maxInterval to notice new events
+// after an idle period. A cap at or below the worker's idle floor (the larger
+// of 100ms and its PollInterval) keeps the fixed idle cadence.
+func WithAsyncIdleBackoff(maxInterval time.Duration) ProjectionEngineOption {
+	return func(e *ProjectionEngine) {
+		e.maxIdlePollInterval = maxInterval
 	}
 }
 
@@ -120,8 +132,9 @@ type AsyncOptions struct {
 	// Default: 1 second
 	BatchTimeout time.Duration
 
-	// PollInterval is how often to poll for new events when idle.
-	// Default: 100ms
+	// PollInterval is the base interval between batch attempts. Empty feeds are
+	// polled at least 100ms apart and can back off further with WithAsyncIdleBackoff.
+	// Non-positive values use the 100ms default.
 	PollInterval time.Duration
 
 	// RetryPolicy defines how to handle errors. When set, its ShouldRetry method governs
@@ -165,12 +178,14 @@ type AsyncOptions struct {
 	StartFromBeginning bool
 }
 
+const defaultAsyncPollInterval = 100 * time.Millisecond
+
 // DefaultAsyncOptions returns the default async projection options.
 func DefaultAsyncOptions() AsyncOptions {
 	return AsyncOptions{
 		BatchSize:          100,
 		BatchTimeout:       time.Second,
-		PollInterval:       100 * time.Millisecond,
+		PollInterval:       defaultAsyncPollInterval,
 		RetryPolicy:        ExponentialBackoffRetry(3, 100*time.Millisecond, 10*time.Second),
 		MaxRetries:         3,
 		StartFromBeginning: false,
@@ -435,6 +450,9 @@ func (e *ProjectionEngine) RegisterAsync(projection AsyncProjection, opts ...Asy
 	options := DefaultAsyncOptions()
 	if len(opts) > 0 {
 		options = opts[0]
+	}
+	if options.PollInterval <= 0 {
+		options.PollInterval = defaultAsyncPollInterval
 	}
 
 	e.asyncMu.Lock()
@@ -1343,7 +1361,11 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 
 	worker.setState(ProjectionStateRunning)
 
-	ticker := time.NewTicker(worker.options.PollInterval)
+	baseInterval := worker.options.PollInterval
+	idleFloor := max(defaultAsyncPollInterval, baseInterval)
+	idleLimit := max(idleFloor, e.maxIdlePollInterval)
+	interval := baseInterval
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// poisonErrors drives the retry budget (shouldRetry / OnPoisonEvent / fault) and counts
@@ -1374,8 +1396,20 @@ func (e *ProjectionEngine) runAsyncWorkerOnce(ctx context.Context, worker *async
 			}
 			// Serialize with Rebuild so the rebuilder never applies concurrently.
 			worker.processingMu.Lock()
+			position := worker.lastPosition
 			err := e.processAsyncBatch(ctx, worker)
+			advanced := worker.lastPosition != position
 			worker.processingMu.Unlock()
+
+			nextInterval := baseInterval
+			if err == nil && !advanced {
+				// Double within the cap without overflowing a time.Duration.
+				nextInterval = max(idleFloor, interval+min(interval, idleLimit-interval))
+			}
+			if nextInterval != interval {
+				interval = nextInterval
+				ticker.Reset(interval)
+			}
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					worker.setState(ProjectionStateStopped)
@@ -1527,21 +1561,12 @@ func (e *ProjectionEngine) processAsyncBatch(ctx context.Context, worker *asyncP
 		defer cancel()
 	}
 
-	// Load events from current position
-	// Note: This is a simplified implementation. In production, you'd want
-	// to use the SubscriptionAdapter for better performance.
 	events, err := e.loadEventsFromPosition(ctx, worker.lastPosition, worker.options.BatchSize)
 	if err != nil {
 		return fmt.Errorf("failed to load events: %w", err)
 	}
 
 	if len(events) == 0 {
-		// No new events at this position; back off briefly to avoid tight polling loops.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
 		return nil
 	}
 

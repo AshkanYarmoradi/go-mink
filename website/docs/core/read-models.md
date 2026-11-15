@@ -259,6 +259,15 @@ and live paths have, which likewise log and wrap only the summary (visible for a
 workers as `ProjectionStatus.Error`) — instead of unwinding into the caller's append.
 :::
 
+### Idle polling
+
+Async projections use a fixed polling interval by default. To reduce reads on
+quiet feeds, pass `mink.WithAsyncIdleBackoff(time.Second)` to
+`mink.NewProjectionEngine`. Each worker doubles its interval on an empty read
+up to the configured cap, then returns to its base interval as soon as its
+checkpoint advances. The trade-off is that the first event after an idle
+period can wait up to the cap before the worker notices it.
+
 ### Poison-event handling
 
 By default an async projection that keeps failing on the same event exhausts its

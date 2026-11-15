@@ -5,10 +5,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go-mink.dev/adapters"
 	"go-mink.dev/adapters/memory"
 )
 
@@ -33,6 +35,78 @@ func fastAsyncOpts() AsyncOptions {
 	opts.PollInterval = 20 * time.Millisecond
 	opts.StartFromBeginning = true
 	return opts
+}
+
+type pollingMemoryAdapter struct {
+	*memory.MemoryAdapter
+	polls atomic.Int32
+}
+
+func (a *pollingMemoryAdapter) LoadFromPosition(ctx context.Context, position uint64, limit int) ([]adapters.StoredEvent, error) {
+	a.polls.Add(1)
+	return a.MemoryAdapter.LoadFromPosition(ctx, position, limit)
+}
+
+func TestProjectionEngine_AsyncIdleBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		adapter := &pollingMemoryAdapter{MemoryAdapter: memory.NewAdapter()}
+		store := New(adapter)
+		store.RegisterEvents(&ProjectionTestEvent{})
+		checkpoints := newTestCheckpointStore()
+		engine := NewProjectionEngine(store,
+			WithCheckpointStore(checkpoints),
+			WithAsyncIdleBackoff(800*time.Millisecond),
+		)
+		projection := newTestAsyncProjection("idle", "OtherEventType")
+		opts := DefaultAsyncOptions()
+		opts.BatchTimeout = 10 * time.Millisecond
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		ctx := startEngine(t, engine)
+
+		time.Sleep(1499 * time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, int32(3), adapter.polls.Load()) // 100ms, 300ms, 700ms
+		appendTestEvents(t, store, 1)
+
+		// A batch of ignored events still advances the checkpoint and restores
+		// the base cadence rather than waiting another 800ms.
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, int32(4), adapter.polls.Load())
+		position, err := checkpoints.GetCheckpoint(ctx, projection.Name())
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), position)
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, int32(5), adapter.polls.Load())
+
+		beforeStop := time.Now()
+		require.NoError(t, engine.Stop(ctx))
+		require.Equal(t, beforeStop, time.Now())
+	})
+}
+
+func TestProjectionEngine_AsyncIdlePollingDoesNotUseBatchTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		adapter := &pollingMemoryAdapter{MemoryAdapter: memory.NewAdapter()}
+		engine := NewProjectionEngine(New(adapter), WithCheckpointStore(newTestCheckpointStore()))
+		projection := newTestAsyncProjection("idle")
+		opts := DefaultAsyncOptions()
+		opts.PollInterval = 0
+		opts.BatchTimeout = 10 * time.Millisecond
+		opts.MaxRetries = 1
+		opts.RetryPolicy = nil
+		require.NoError(t, engine.RegisterAsync(projection, opts))
+		startEngine(t, engine)
+
+		time.Sleep(350 * time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, int32(3), adapter.polls.Load())
+		status, err := engine.GetStatus(projection.Name())
+		require.NoError(t, err)
+		require.Equal(t, ProjectionStateRunning, status.State)
+		require.Empty(t, status.Error)
+	})
 }
 
 // startEngine starts the engine under a cancelable context and registers cleanup that stops
