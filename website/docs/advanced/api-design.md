@@ -490,29 +490,37 @@ type Repository[T any] interface {
 
 // Query builder
 type Query struct {
-    filters  []Filter
-    orderBy  []OrderBy
-    limit    int
-    offset   int
+    Filters      []Filter
+    OrderBy      []OrderBy
+    Limit        int
+    Offset       int
+    IncludeCount bool
 }
 
 func NewQuery() *Query
-func (q *Query) Where(field string, op string, value interface{}) *Query
-func (q *Query) And(field string, op string, value interface{}) *Query
-func (q *Query) Or(field string, op string, value interface{}) *Query
-func (q *Query) OrderBy(field string, desc bool) *Query
-func (q *Query) Limit(n int) *Query
-func (q *Query) Offset(n int) *Query
+func (q *Query) Where(field string, op FilterOp, value interface{}) *Query
+func (q *Query) And(field string, op FilterOp, value interface{}) *Query
+func (q *Query) OrderByAsc(field string) *Query
+func (q *Query) OrderByDesc(field string) *Query
+func (q *Query) WithLimit(limit int) *Query
+func (q *Query) WithOffset(offset int) *Query
+func (q *Query) WithPagination(page, pageSize int) *Query
+func (q *Query) WithCount() *Query
+func (q *Query) Build() Query
 
-// Usage
-orders, _ := repo.Find(ctx,
-    go-mink.NewQuery().
-        Where("status", "=", "pending").
-        And("total", ">", 100).
-        OrderBy("created_at", true).
-        Limit(10),
-)
+// Case-insensitive literal substring search.
+query := mink.NewQuery().
+    Where("name", mink.FilterOpContainsIgnoreCase, "maple road").
+    OrderByAsc("name").
+    WithLimit(10).
+    Build()
+items, err := repo.Find(ctx, query)
 ```
+
+`FilterOpContainsIgnoreCase` requires a string operand and returns
+`ErrInvalidQuery` for an invalid operand. See
+[case-insensitive matching](../core/read-models.md#case-insensitive-matching)
+for supported adapters, literal matching, and locale behavior.
 
 ### Event Versioning & Upcasting
 

@@ -788,6 +788,14 @@ func (r *PostgresRepository[T]) buildWhereClause(filters []mink.Filter) (string,
 			conditions = append(conditions, cond)
 			args = append(args, arg)
 			paramIdx++
+		case mink.FilterOpContainsIgnoreCase:
+			needle, ok := f.Value.(string)
+			if !ok {
+				return "", nil, fmt.Errorf("%w: %s requires a string value", mink.ErrInvalidQuery, f.Op)
+			}
+			conditions = append(conditions, fmt.Sprintf("%s ILIKE $%d", quotedCol, paramIdx))
+			args = append(args, "%"+escapeLikePattern(needle)+"%")
+			paramIdx++
 		default:
 			return "", nil, fmt.Errorf("mink/postgres/readmodel: unsupported filter operator %q on field %q", f.Op, f.Field)
 		}

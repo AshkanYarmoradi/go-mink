@@ -32,6 +32,7 @@ Architecture Decision Records (ADRs) capture important architectural decisions m
 | [ADR-009](error-handling) | Sentinel Errors with Typed Wrappers | Accepted | 2024-01-20 |
 | [ADR-010](multi-tenancy) | Multi-tenancy via Metadata | Accepted | 2024-02-20 |
 | [ADR-011](audit-logging-middleware) | Audit Logging Middleware | Accepted | 2026-06-04 |
+| [ADR-012](012-case-insensitive-text-search.md) | Portable Case-Insensitive Text Search | Proposed | 2026-11-15 |
 
 ## ADR Template
 

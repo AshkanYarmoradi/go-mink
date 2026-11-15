@@ -259,6 +259,15 @@ and live paths have, which likewise log and wrap only the summary (visible for a
 workers as `ProjectionStatus.Error`) — instead of unwinding into the caller's append.
 :::
 
+### Idle polling
+
+Async projections use a fixed polling interval by default. To reduce reads on
+quiet feeds, pass `mink.WithAsyncIdleBackoff(time.Second)` to
+`mink.NewProjectionEngine`. Each worker doubles its interval on an empty read
+up to the configured cap, then returns to its base interval as soon as its
+checkpoint advances. The trade-off is that the first event after an idle
+period can wait up to the cap before the worker notices it.
+
 ### Poison-event handling
 
 By default an async projection that keeps failing on the same event exhausts its
@@ -647,6 +656,7 @@ mink.FilterOpIn        // IN     (value is one of a list/slice)
 mink.FilterOpNotIn     // NOT IN (value is not in a list/slice)
 mink.FilterOpLike      // LIKE   (SQL pattern; caller supplies % / _ wildcards)
 mink.FilterOpContains  // substring match on text, containment (@>) on JSONB
+mink.FilterOpContainsIgnoreCase // case-insensitive literal substring on text
 mink.FilterOpBetween   // BETWEEN (inclusive range; value is a 2-element slice)
 mink.FilterOpIsNull    // IS NULL
 mink.FilterOpIsNotNull // IS NOT NULL
@@ -671,88 +681,24 @@ mink.NewQuery().Where("total_amount", mink.FilterOpBetween, []float64{50, 100})
 mink.NewQuery().Where("shipped_at", mink.FilterOpIsNull, nil)
 ```
 
-> **Backend support:** the PostgreSQL repository implements every operator
-> above. The in-memory repository (`mink.NewInMemoryRepository`) is a lightweight
-> testing helper that does **not** apply filters — use the PostgreSQL repository
-> (or another database-backed implementation) for real querying.
+> The PostgreSQL and in-memory repositories implement these query operators.
 
 ### Case-insensitive matching
 
-All string operators (`FilterOpEq`, `FilterOpLike`, `FilterOpContains`) are
-**case-sensitive**. There is intentionally no `ILIKE` / case-insensitive
-operator (see the design note below). When you need case-insensitive search,
-make the *column* case-insensitive rather than reaching for a special operator.
-
-**Option 1 — `citext` column (transparent, no query changes).** Declare the
-column as PostgreSQL's case-insensitive text type. `FilterOpEq`,
-`FilterOpLike`, and `FilterOpContains` then match case-insensitively on that
-column automatically.
+Use `FilterOpContainsIgnoreCase` for a literal substring in a text field. For
+example, the following matches `Maple Road` with the search `maple road`:
 
 ```go
-type Customer struct {
-    ID   string `mink:"id,pk"`
-    Name string `mink:"name,type=citext"` // case-insensitive column
-}
+mink.NewQuery().Where("name", mink.FilterOpContainsIgnoreCase, "maple road")
 ```
 
-```sql
--- run once per database, before the table is created
-CREATE EXTENSION IF NOT EXISTS citext;
-```
+The operand must be a string. Characters such as `%`, `_`, and backslash are
+literal. A null field never matches. PostgreSQL uses its active locale and the
+in-memory repository uses Go's Unicode lowercase mapping. For identical matching
+across databases and locales, normalize the stored text and search term with
+the same function and use `FilterOpContains`.
 
-```go
-// matches "Smith", "SMITH", "smith"
-mink.NewQuery().Where("name", mink.FilterOpContains, "smith")
-```
-
-Because auto-migration emits `name citext`, the extension must already exist —
-create it first, or use `WithAutoMigrate(false)` and manage the DDL yourself.
-
-**Option 2 — lowercase shadow column (portable, index-friendly).** Keep a
-normalized copy and query it lowercased. Works on any backend and can be
-indexed for fast search.
-
-```go
-type Customer struct {
-    ID        string `mink:"id,pk"`
-    Name      string `mink:"name"`
-    NameLower string `mink:"name_lower,index"` // set to strings.ToLower(Name) in the projection
-}
-
-mink.NewQuery().Where("name_lower", mink.FilterOpContains, strings.ToLower(q))
-```
-
-**Option 3 — raw SQL for a one-off.** A read model is a plain table, so use the
-`*sql.DB` you already have together with `repo.TableName()`:
-
-```go
-rows, err := db.QueryContext(ctx,
-    `SELECT * FROM `+repo.TableName()+` WHERE name ILIKE $1`, "%"+q+"%")
-// note: you scan the rows yourself; the repository's typed scanner is internal
-```
-
-:::note Design note: why there is no `FilterOpILike`
-`FilterOp` is the **backend-neutral** query vocabulary shared by the
-`ReadModelRepository[T]` interface and *every* adapter. `ILIKE` is a
-PostgreSQL-specific keyword. Other engines support case-insensitive matching
-too, but express it at different layers — MongoDB via a `$regex` `i` flag or a
-collation, MySQL/SQL Server/SQLite often via a case-insensitive collation *by
-default* — so there is no shared *operator* to expose, and case-insensitivity is
-fundamentally a property of the **data and its collation**, not of the query
-operator.
-
-Adding `FilterOpILike` to the shared enum would (1) bake a vendor keyword into a
-cross-backend contract, (2) oblige every current and future adapter to emulate
-it faithfully or silently diverge — the exact "silently ignored operator" class
-of bug that motivated implementing `FilterOpContains` — and (3) invite a
-combinatorial explosion of case-insensitive variants (`IContains`, `IEq`,
-`IStartsWith`, …). The operator set is kept small and orthogonal, and
-case-folding is pushed to the schema (`citext`, a lowercased column, or a
-case-insensitive collation) where it belongs. If a portable case-insensitive
-match is ever added, it would be defined by its *semantics* — each adapter
-implementing it natively (PostgreSQL `ILIKE`, others `LOWER(col) LIKE LOWER(?)`)
-with cross-adapter tests — never as the raw `ILIKE` keyword.
-:::
+See [ADR-012](../adr/012-case-insensitive-text-search.md) for the design decision.
 
 ## Subscription System
 

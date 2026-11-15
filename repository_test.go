@@ -427,6 +427,36 @@ func TestInMemoryRepository_FindWithFiltersAndOrder(t *testing.T) {
 	})
 }
 
+func TestInMemoryRepository_ContainsIgnoreCase(t *testing.T) {
+	type model struct {
+		ID   string
+		Name *string
+	}
+	ctx := context.Background()
+	repo := NewInMemoryRepository(func(row *model) string { return row.ID })
+	match, other := "Example %_\\ Road", "Example XY Road"
+	require.NoError(t, repo.Insert(ctx, &model{ID: "match", Name: &match}))
+	require.NoError(t, repo.Insert(ctx, &model{ID: "other", Name: &other}))
+	require.NoError(t, repo.Insert(ctx, &model{ID: "null"}))
+
+	query := NewQuery().Where("Name", FilterOpContainsIgnoreCase, "example %_\\ ROAD").Build()
+	items, err := repo.Find(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "match", items[0].ID)
+	count, err := repo.Count(ctx, query)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
+
+	query = NewQuery().Where("Name", FilterOpContainsIgnoreCase, "").Build()
+	count, err = repo.Count(ctx, query)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, count)
+
+	_, err = repo.Find(ctx, NewQuery().Where("Name", FilterOpContainsIgnoreCase, 42).Build())
+	require.ErrorIs(t, err, ErrInvalidQuery)
+}
+
 type embeddedBase struct {
 	Score int    `json:"score"`
 	Tier  string `json:"tier"`
@@ -608,6 +638,7 @@ func TestFilterOp_AllValues(t *testing.T) {
 		FilterOpIsNull,
 		FilterOpIsNotNull,
 		FilterOpContains,
+		FilterOpContainsIgnoreCase,
 		FilterOpBetween,
 	}
 

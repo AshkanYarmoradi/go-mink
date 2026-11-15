@@ -1,7 +1,9 @@
 # read-model-store Specification
 
 ## Purpose
-TBD - created by archiving change fix-review-correctness-bugs. Update Purpose after archive.
+Define how read-model repositories validate query filters, match text, and read
+nullable columns so callers get predictable results across adapters.
+
 ## Requirements
 ### Requirement: Query filters never degrade to an unqualified statement
 The read-model query builder SHALL treat a caller-supplied, non-empty filter set that
@@ -23,6 +25,20 @@ set.
 #### Scenario: Mixed known and unknown fields
 - **WHEN** a query has one resolvable filter and one unknown field
 - **THEN** the builder returns `ErrUnknownFilterField` for the unknown field rather than silently applying only the resolvable one
+
+### Requirement: Case-insensitive literal substring filtering
+The read-model query API SHALL expose `FilterOpContainsIgnoreCase` for text fields
+through the existing `Filter` and `Query` types. Supporting adapters SHALL treat
+the string operand as literal text, apply their case mapping, and exclude null
+fields. A non-string operand MUST return an error matching `ErrInvalidQuery`.
+
+#### Scenario: Match mixed-case text with literal wildcard characters
+- **WHEN** a query searches for the literal text `maple %_ road` using `FilterOpContainsIgnoreCase`
+- **THEN** it matches `Maple %_ Road` and excludes `Maple AB Road` and null fields
+
+#### Scenario: Reject an invalid operand
+- **WHEN** a query uses `FilterOpContainsIgnoreCase` with a numeric operand
+- **THEN** the repository returns an error matching `ErrInvalidQuery`
 
 ### Requirement: Nullable scalar columns read NULL as the field's zero value
 The read-model store SHALL read a `NULL` from a column declared `nullable` whose

@@ -329,6 +329,10 @@ const (
 	// substring match with the value treated literally.
 	FilterOpContains FilterOp = "CONTAINS"
 
+	// FilterOpContainsIgnoreCase matches a literal substring in a text field.
+	// The value must be a string. Case mapping follows the adapter and its locale.
+	FilterOpContainsIgnoreCase FilterOp = "CONTAINS_IGNORE_CASE"
+
 	// FilterOpBetween matches values between two bounds.
 	FilterOpBetween FilterOp = "BETWEEN"
 )
@@ -742,6 +746,12 @@ func compileFilters(filters []Filter) ([]compiledFilter, error) {
 				return nil, err
 			}
 			cf.re = re
+		case FilterOpContainsIgnoreCase:
+			needle, ok := f.Value.(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: %s requires a string value", ErrInvalidQuery, f.Op)
+			}
+			cf.value = strings.ToLower(needle)
 		case FilterOpIn, FilterOpNotIn:
 			items, err := toSlice(f.Value)
 			if err != nil {
@@ -832,6 +842,9 @@ func matchCompiled[T any](model *T, cf compiledFilter) bool {
 	case FilterOpContains:
 		ok, _ := matchContains(val, cf.value)
 		return ok
+	case FilterOpContainsIgnoreCase:
+		text := reflect.Indirect(reflect.ValueOf(val))
+		return text.Kind() == reflect.String && strings.Contains(strings.ToLower(text.String()), cf.value.(string))
 	case FilterOpBetween:
 		lo, lok := compareOrdered(val, cf.lo)
 		hi, hok := compareOrdered(val, cf.hi)
