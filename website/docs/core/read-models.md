@@ -656,6 +656,7 @@ mink.FilterOpIn        // IN     (value is one of a list/slice)
 mink.FilterOpNotIn     // NOT IN (value is not in a list/slice)
 mink.FilterOpLike      // LIKE   (SQL pattern; caller supplies % / _ wildcards)
 mink.FilterOpContains  // substring match on text, containment (@>) on JSONB
+mink.FilterOpContainsIgnoreCase // case-insensitive literal substring on text
 mink.FilterOpBetween   // BETWEEN (inclusive range; value is a 2-element slice)
 mink.FilterOpIsNull    // IS NULL
 mink.FilterOpIsNotNull // IS NOT NULL
@@ -682,7 +683,7 @@ mink.NewQuery().Where("shipped_at", mink.FilterOpIsNull, nil)
 
 > The PostgreSQL and in-memory repositories implement these query operators.
 
-### Case-insensitive text search
+### Case-insensitive matching
 
 Use `FilterOpContainsIgnoreCase` for a literal substring in a text field. For
 example, the following matches `Maple Road` with the search `maple road`:
@@ -697,6 +698,7 @@ in-memory repository uses Go's Unicode lowercase mapping. For identical matching
 across databases and locales, normalize the stored text and search term with
 the same function and use `FilterOpContains`.
 
+See [ADR-012](../adr/012-case-insensitive-text-search.md) for the design decision.
 
 ## Subscription System
 
