@@ -1,3 +1,5 @@
+
+
 # go-mink 🦫
 
 **The batteries-included Event Sourcing & CQRS toolkit for Go.**
@@ -296,6 +298,7 @@ func (p *OrderSummaryProjection) Apply(ctx context.Context, e mink.StoredEvent) 
 	return nil
 }
 
+repo := mink.NewInMemoryRepository[OrderSummary]()
 engine := mink.NewProjectionEngine(store, mink.WithCheckpointStore(memory.NewCheckpointStore()))
 engine.RegisterInline(&OrderSummaryProjection{repo: repo})
 engine.Start(ctx)
